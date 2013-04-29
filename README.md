@@ -4,10 +4,10 @@ JBoss Community theme startup repository
 Introduction
 ------------
 
-This repository is an Awestruct example site built using Bootstrap with a help of various extensions which make it follow a look and feel of JBoss Community theme. It's also made as easy as possible to fork this repository in order to build your own JBoss Community theme based site, leveraging all the provided customizations.
+This repository is an Awestruct example site built using Bootstrap with a help of various extensions which make it follow a look and feel of JBoss Community theme. It's also made as easy as possible to fork this repository in order to build your own JBoss Community theme based site, leveraging all the provided customizations.  
 As mentioned before the theme is based as much as possible on [Bootstrap](http://twitter.github.io/bootstrap/) front-end framework. The idea is to include the newest Bootstrap libraries and provide a set of extensions by which the look and feel of JBoss Community is seamlessly applied.
-[Awestruct](http://awestruct.org), a framework for creating static HTML sites, was chosen as the best match for creating our JBoss Community sites. Therefore the repository contains a valid Awestruct site, which can be easily extended, built and deployed.
-In this Readme we imply that person reading is familiar with Awestruct and Bootstrap projects, please refer to documentation provided by those projects when needed.
+[Awestruct](http://awestruct.org), a framework for creating static HTML sites, was chosen as the best match for creating our JBoss Community sites. Therefore the repository contains a valid Awestruct site, which can be easily extended, built and deployed.  
+In this Readme we imply that person reading is familiar with Awestruct and Bootstrap projects, please refer to documentation provided by those projects when needed.  
 
 Required installed software
 ---------------------------
@@ -33,13 +33,13 @@ Please open _config/site.yml for editing and correct following entries:
 More detailed description of all repository contents
 ----------------------------------------------------
 
-`_config` - This directory contains Awestruct configuration. A detailed description of provided settings can be found in the next section of this document.
-`_ext` directory - contains a set of Awestruct extensions. Each of them contains detailed information about its usage and configuration at the beginning of source file.
-`_layouts` directory - contains our main community layout file `project.html.haml` which applies JBoss Community theme to a particular page. It also contains `project-nav.html.haml` file which extends the layout with a project navigation.
-`javascripts` - obviously it contains JavaScript files used in our theme. Mostly those are Bootstrap libraries with two additional files specific to our theme.
-`stylesheets` - contains Less implementation of Bootstrap along with our extensions over it. `bootstrap-default.less` file builds up as a default implementation of Bootstrap styles whereas `bootstrap-community.less` adds also our additional style modifications.
-`index.html.haml` - an example project website
-`swatch.html.haml` - a showcase of Bootstrap styles for an easy copy&paste reference
+`_config` - This directory contains Awestruct configuration. A detailed description of provided settings can be found in the next section of this document.  
+`_ext` directory - contains a set of Awestruct extensions. Each of them contains detailed information about its usage and configuration at the beginning of source file.  
+`_layouts` directory - contains our main community layout file `project.html.haml` which applies JBoss Community theme to a particular page. It also contains `project-nav.html.haml` file which extends the layout with a project navigation.  
+`javascripts` - obviously it contains JavaScript files used in our theme. Mostly those are Bootstrap libraries with two additional files specific to our theme.  
+`stylesheets` - contains Less implementation of Bootstrap along with our extensions over it. `bootstrap-default.less` file builds up as a default implementation of Bootstrap styles whereas `bootstrap-community.less` adds also our additional style modifications.  
+`index.html.haml` - an example project website  
+`swatch.html.haml` - a showcase of Bootstrap styles for an easy copy&paste reference  
 
 Provided Awestruct configuration
 --------------------------------
