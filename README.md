@@ -6,7 +6,7 @@ The aim of this repository is to provide a template for the creation of new JBos
 
 * Changes to the L&F will be vetoed by the [Visual Design Team](http://design.jboss.org) to ensure they meet branding guidelines and are consistent with the JBoss Community brand.
 
-* Project logos and other trademarked images must be hosted at http://static-stg.jboss.org/theme/images/*[project]* and http://static.jboss.org/theme/images/*[project]*
+* Project logos and other trademarked images must be hosted at http://static-stg.jboss.org/theme/images/[project] and http://static.jboss.org/theme/images/[project]
 
 System Requirements
 ===================
@@ -22,7 +22,7 @@ Getting Started
 ------------------------------------------
 To use the template simply select the version you require with the *branch/tag* dropdown on the [GitHub page](https://github.com/jbossorg/bootstrap-community) and click on the *ZIP* button to download the contents to your local machine. The repo should only be forked if you're looking to make contributions.
 
-**Note:** The first part of the version number indicates the Bootstrap version the theme is based on.
+**Note:** The first part of the version number indicates the Bootstrap version the template is based on.
 
 2. Build the website
 --------------------
@@ -42,7 +42,7 @@ Use a web browser to visit [http://localhost:4242](http://localhost:4242) where 
 ---------------------------------
 Use a text editor to create/edit web pages and/or layouts. Use the `bootstrap_css_url` and `bootstrap_js_url` variables to ensure you refer to the locally built versions of the files in the development profile and the hosted versions in the staging and production profiles.
 
-**Note:** Currently the template uses images from the JBoss Tools project. If you wish to use your own project images then you must upload them to http://static-stg.jboss.org/theme/images/*[project]*, edit the references in the layouts and edit the `http://static-stg.jboss.org/theme/images/tools/` line in the `wget: urls:` property in *_config/site.yml* to refer to your project directory.
+**Note:** Currently the template uses images from the JBoss Tools project. If you wish to use your own project images then you must upload them to http://static-stg.jboss.org/theme/images/[project], edit the references in the layouts and edit the `http://static-stg.jboss.org/theme/images/tools/` line in the `wget: urls:` property in *_config/site.yml* to refer to your project directory.
 
 5. Customize the theme
 ----------------------
