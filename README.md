@@ -1,51 +1,57 @@
-JBoss Community theme startup repository
-===================
-
 Introduction
-------------
+============
+The aim of this repository is to provide a template for the creation of new JBoss Community projects using [Awestruct](http://awestruct.org) and [Bootstrap](http://twitter.github.com/bootstrap). These are projects created and led by [Red Hat](http://www.redhat.com) who own the associated trademarks. To avoid unnecessary complexity and satisfy legal requirements users are kindly asked to observe the following:
 
-This repository is an Awestruct example site built using Bootstrap with a help of various extensions which make it follow a look and feel of JBoss Community theme. It's also made as easy as possible to fork this repository in order to build your own JBoss Community theme based site, leveraging all the provided customizations.  
-As mentioned before the theme is based as much as possible on [Bootstrap](http://twitter.github.io/bootstrap/) front-end framework. The idea is to include the newest Bootstrap libraries and provide a set of extensions by which the look and feel of JBoss Community is seamlessly applied.
-[Awestruct](http://awestruct.org), a framework for creating static HTML sites, was chosen as the best match for creating our JBoss Community sites. Therefore the repository contains a valid Awestruct site, which can be easily extended, built and deployed.  
-In this Readme we imply that person reading is familiar with Awestruct and Bootstrap projects, please refer to documentation provided by those projects when needed.  
+* This template should represent the majority view amongst users about the simplest and best way to create a website using Awestruct and Bootstrap (using LESS). It should strive to have the fewest dependencies and use the smallest number of template engines.
 
-Required installed software
----------------------------
+* Changes to the L&F will be vetoed by the [Visual Design Team](http://design.jboss.org) to ensure they meet branding guidelines and are consistent with the JBoss Community brand.
 
-* Ruby Gems: awestruct, execjs, therubyracer, uglifier, cssminify, html_press
-* `wget` shell command
+* Project logos and other trademarked images must be hosted at http://static-stg.jboss.org/theme/images/*[project]* and http://static.jboss.org/theme/images/*[project]*
 
-Getting started - fast track
-----------------------------
+System Requirements
+===================
+* Ruby 1.8.7 or above
+* RubyGems - 1.3.6 or above
+* Bundler - 1.3.5
 
-* Fork the repository.
-* Make a checkout.
-* Boot it up with Awestruct runtime: `awestruct -d`
-* Open your web browser on [http://localhost:4242](http://localhost:4242) and take a look what you get for a start.
+* GNU Wget 1.14
 
-Getting started - filling out missing configuration
----------------------------------------------------
+Getting Started
+===============
+1. Download the contents of the repository
+------------------------------------------
+To use the template simply select the version you require with the *branch/tag* dropdown on the [GitHub page](https://github.com/jbossorg/bootstrap-community) and click on the *ZIP* button to download the contents to your local machine. The repo should only be forked if you're looking to make contributions.
 
-Please open _config/site.yml for editing and correct following entries:
-* In `wget` urls configuration section, the last URL is a placeholder for location of your project copyrighted images stored on static.jboss.org domain.
-* Awestruct profiles section defines `base_url` variable for `staging` and `production` environments and once again, it requires update with a valid URL.
+**Note:** The first part of the version number indicates the Bootstrap version the theme is based on.
 
-More detailed description of all repository contents
-----------------------------------------------------
+2. Build the website
+--------------------
+Run Awestruct in development mode from the top-level directory to build the website and host it using a local web server:
 
-`_config` - This directory contains Awestruct configuration. A detailed description of provided settings can be found in the next section of this document.  
-`_ext` directory - contains a set of Awestruct extensions. Each of them contains detailed information about its usage and configuration at the beginning of source file.  
-`_layouts` directory - contains our main community layout file `project.html.haml` which applies JBoss Community theme to a particular page. It also contains `project-nav.html.haml` file which extends the layout with a project navigation.  
-`javascripts` - obviously it contains JavaScript files used in our theme. Mostly those are Bootstrap libraries with two additional files specific to our theme.  
-`stylesheets` - contains Less implementation of Bootstrap along with our extensions over it. `bootstrap-default.less` file builds up as a default implementation of Bootstrap styles whereas `bootstrap-community.less` adds also our additional style modifications.  
-`index.html.haml` - an example project website  
-`swatch.html.haml` - a showcase of Bootstrap styles for an easy copy&paste reference  
+`bundle exec awestruct -d`
 
-Provided Awestruct configuration
---------------------------------
+**Note:** The first time the site is built common JavaScript, font and image files will be downloaded from [http://static-stg.jboss.org](http://static-stg.jboss.org) and cached into a local *cache/* directory using wget. This then allows you to run the site locally rather than relying on a network connection. Currently the `wget` command will run on every build so to prevent this set the `wget: enabled:` property to `false` once the cache has been created.
 
-* `title` - is a default page title unless it's overriden by page setting
-* `css_minifier, js_minifier, html_minifier` - are settings for Awestruct extensions provided in `_ext` directory which minimize text content of corresponding file types. Disabled by default and enabled later in staging and production profiles.
-* `fileMerger` section is again a configuration for an Awestruct extension which merges listed files into a one. We use it here for merging of all JavaScript files.
-* `wget` section defines which URL trees need to be downloaded into a `cache` directory. It's provided due to copyrights of content stored under those URLs. It cannot be hosted on GitHub but still for development purposes it's convenient to use it from local storage. This extension relies on `wget` shell command. You may find it useful to disable it after first download if you don't expect any new images comming as it lengthens a build process.
-* `profiles` section as defined by Awestruct provides configuration settings specific for different build modes. In our case it's used mostly to change URLs to various external theme contents and switch on files minification in production profile.
+**Tip:** Use the `--directory-prefix` option of the `wget: urls:` property in *_config/site.yml* if you wish to use a different directory name. A *.gitignore* file is automatically created in this directory containing a * to prevent you adding cached files to GIT by mistake. 
+
+3. View the website
+-------------------
+Use a web browser to visit [http://localhost:4242](http://localhost:4242) where you can see the site.
+
+4. Add/edit web pages and layouts
+---------------------------------
+Use a text editor to create/edit web pages and/or layouts. Use the `bootstrap_css_url` and `bootstrap_js_url` variables to ensure you refer to the locally built versions of the files in the development profile and the hosted versions in the staging and production profiles.
+
+**Note:** Currently the template uses images from the JBoss Tools project. If you wish to use your own project images then you must upload them to http://static-stg.jboss.org/theme/images/*[project]*, edit the references in the layouts and edit the `http://static-stg.jboss.org/theme/images/tools/` line in the `wget: urls:` property in *_config/site.yml* to refer to your project directory.
+
+5. Customize the theme
+----------------------
+To use the theme simply reference the hosted *bootstrap-community.css* and *bootstrap-community.js* files on [http://static.jboss.org](http://static.jboss.org). However if you wish to make project-specific changes then test them locally using the development profile and host the compiled css and js files in your project-specific staging/production domains. Update the `bootstrap_css_url` and `bootstrap_js_url` variables in the staging/production profiles to refer to them.
+ 
+6. Stage the website
+--------------------
+Once you're happy with your website in development mode update the `profiles: staging: base_url:` property in *_config/site.yml* to point to your staging domain and run the `bundle exec awestruct -P staging` command to generate a version that can be uploaded for others to review.
+
+7. Publish the website
+----------------------
+If everyone is happy with staging then update the `profiles: production: base_url:` property in *_config/site.yml* to point to your production domain and run the `bundle exec awestruct -P production` command to produce a version that can be uploaded for the public to view.
