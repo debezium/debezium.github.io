@@ -48,16 +48,9 @@ module Awestruct
           return
         end
 
-        # Checking whether .gitignore files should be created (default)
-        createGitIgnoreFiles = true
-        if !site.wget['createGitIgnoreFiles'].nil? and !( site.wget['createGitIgnoreFiles'].to_s.eql?("true") )
-          createGitIgnoreFiles = false
-        end
-
+        # Start for constructing command with parameters.
         command = "wget "
 
-
-        
         noHostDirectories = false
         directoryPrefix = ""
 
@@ -85,11 +78,37 @@ module Awestruct
 
         end
 
+        # Checking whether rerunEach parameter was specified - default value is 86400.
+        rerunEach = site.wget['rerunEach'].nil? ? 86400 : site.wget['rerunEach']
+
+        # Checking wheter timestamp filename was provided - default _wget-timestamp
+        timestampFilename = "_wget-timestamp"
+        if !site.wget['timestampFilename'].nil?
+          timestampFilename = site.wget['timestampFilename']
+        end
+
+        # If directory prefix was provided we place timestamp file in it, otherwise in root.
+        timestampFilePath = File.join(".",timestampFilename);
+        if (!directoryPrefix.nil? and !directoryPrefix.eql?(""))
+          timestampFilePath = File.join(directoryPrefix,timestampFilename);
+        end
+
+        if (!rerunNeeded?(timestampFilePath,rerunEach))
+          print "Skipping files cache update.\n"
+          return
+        end
+
         # Getting urls from site.yml
         urls = site.wget['urls']
 
         # Paths for .gitignore files
         directories = Array.new
+
+        # Checking whether .gitignore files should be created (default)
+        createGitIgnoreFiles = true
+        if !site.wget['createGitIgnoreFiles'].nil? and !( site.wget['createGitIgnoreFiles'].to_s.eql?("true") )
+          createGitIgnoreFiles = false
+        end
 
         # If there is directory prefix defined then we know where should we search for downloaded files.
         if (createGitIgnoreFiles and !directoryPrefix.eql?(""))
@@ -169,6 +188,31 @@ module Awestruct
         gitIgnoreFile = File.new( gitIgnoreFilePath , "w" )
         gitIgnoreFile.write("*\n")
         gitIgnoreFile.close
+
+      end
+
+      # Check if timestamp difference is bigger than rerunEach.
+      # In case file doesn't extist if will be created and true returned.
+      def rerunNeeded? ( timestampFilePath , rerunEach )
+
+        isNeeded = true
+
+        # Checking if timestamp file already exists
+        if (File.exist?(timestampFilePath))
+          timestampFile = File.new(timestampFilePath, "r")
+          firstLine = timestampFile.gets
+          previousTimestamp = firstLine.nil? ? 0 : firstLine.to_i
+          isNeeded = (Time.now.to_i - previousTimestamp) > rerunEach
+        end
+
+        if (isNeeded)
+          FileUtils.mkdir_p(File.dirname(timestampFilePath))
+          timestampFile = File.new( timestampFilePath , "w" )
+          timestampFile.write(Time.now.to_i.to_s+"\n")
+          timestampFile.close
+        end
+        
+        return isNeeded
 
       end
 
