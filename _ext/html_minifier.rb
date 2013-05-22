@@ -1,4 +1,4 @@
-require 'html_press'
+require 'htmlcompressor'
 
 ##
 #
@@ -45,7 +45,8 @@ module Awestruct
           ext_txt = ext[1..-1]
           if ext_txt == "html"
             print "Minifying html #{page.output_path} \n"
-            input = HtmlPress.compress(input)
+            compressor = HtmlCompressor::Compressor.new
+            input = compressor.compress(input)
           end
         end
 
