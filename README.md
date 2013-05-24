@@ -30,7 +30,7 @@ Run Awestruct in development mode from the top-level directory to build the webs
 
 `bundle exec awestruct -d`
 
-**Note:** The first time the site is built common JavaScript, font and image files will be downloaded from [http://static-stg.jboss.org](http://static-stg.jboss.org) and cached into a local *cache/* directory using wget. This then allows you to run the site locally rather than relying on a network connection. Currently the `wget` command will run on every build so to prevent this set the `wget: enabled:` property to `false` once the cache has been created.
+**Note:** The first time the site is built common JavaScript, font and image files will be downloaded from [http://static.jboss.org](http://static.jboss.org) and cached into a local *cache/* directory using wget. This then allows you to run the site locally rather than relying on a network connection. Currently the `wget` command will run on every build so to prevent this set the `wget: enabled:` property to `false` once the cache has been created.
 
 **Tip:** Use the `--directory-prefix` option of the `wget: urls:` property in *_config/site.yml* if you wish to use a different directory name. A *.gitignore* file is automatically created in this directory containing a * to prevent you adding cached files to GIT by mistake. 
 
@@ -42,7 +42,7 @@ Use a web browser to visit [http://localhost:4242](http://localhost:4242) where 
 ---------------------------------
 Use a text editor to create/edit web pages and/or layouts. Use the `bootstrap_css_url` and `bootstrap_js_url` variables to ensure you refer to the locally built versions of the files in the development profile and the hosted versions in the staging and production profiles.
 
-**Note:** Currently the template uses images from the JBoss Tools project. If you wish to use your own project images then you must upload them to http://static-stg.jboss.org/theme/images/[project], edit the references in the layouts and edit the `http://static-stg.jboss.org/theme/images/tools/` line in the `wget: urls:` property in *_config/site.yml* to refer to your project directory.
+**Note:** Currently the template uses images from an example project. If you wish to use your own project images then you must upload them to http://static.jboss.org/images/[project], edit the references in the layouts and edit the `http://static.jboss.org/images/example/` line in the `wget: urls:` property in *_config/site.yml* to refer to your project directory.
 
 5. Customize the theme
 ----------------------
