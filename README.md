@@ -18,11 +18,11 @@ System Requirements
 
 Getting Started
 ===============
-1. Download the contents of the repository
+1. Fork the repository
 ------------------------------------------
-To use the template simply select the version you require with the *branch/tag* dropdown on the [GitHub page](https://github.com/jbossorg/bootstrap-community) and click on the *ZIP* button to download the contents to your local machine. The repo should only be forked if you're looking to make contributions.
+To use the template simply navigate to [GitHub page](https://github.com/jbossorg/bootstrap-community) and use *Fork* button to fork this repository into your own GitHub organization. Afterwards choose a tag from which you want to start your website development and create a development branch from it. Additionally, in GitHub repository settings tab you may want to rename your forked repository to follow your site name.
 
-**Note:** The first part of the version number indicates the Bootstrap version the template is based on.
+**Note:** The first part of the tag version number indicates the Bootstrap version the template is based on.
 
 2. Build the website
 --------------------
@@ -30,7 +30,7 @@ Run Awestruct in development mode from the top-level directory to build the webs
 
 `bundle exec awestruct -d`
 
-**Note:** The first time the site is built common JavaScript, font and image files will be downloaded from [http://static.jboss.org](http://static.jboss.org) and cached into a local *cache/* directory using wget. This then allows you to run the site locally rather than relying on a network connection. Currently the `wget` command will run on every build so to prevent this set the `wget: enabled:` property to `false` once the cache has been created.
+**Note:** The first time the site is built common JavaScript, font and image files will be downloaded from [http://static.jboss.org](http://static.jboss.org) and cached into a local *cache/* directory using wget. This then allows you to run the site locally rather than relying on a network connection. Since the cache download takes a considerable amount of time by default the `wget` command will run only once a day to prevent unrequired delays in build times. The time interval and other settings of this process can be configured in site.yml.
 
 **Tip:** Use the `--directory-prefix` option of the `wget: urls:` property in *_config/site.yml* if you wish to use a different directory name. A *.gitignore* file is automatically created in this directory containing a * to prevent you adding cached files to GIT by mistake. 
 
@@ -42,7 +42,7 @@ Use a web browser to visit [http://localhost:4242](http://localhost:4242) where 
 ---------------------------------
 Use a text editor to create/edit web pages and/or layouts. Use the `bootstrap_css_url` and `bootstrap_js_url` variables to ensure you refer to the locally built versions of the files in the development profile and the hosted versions in the staging and production profiles.
 
-**Note:** Currently the template uses images from an example project. If you wish to use your own project images then you must upload them to http://static.jboss.org/images/[project], edit the references in the layouts and edit the `http://static.jboss.org/images/example/` line in the `wget: urls:` property in *_config/site.yml* to refer to your project directory.
+**Note:** Currently the template uses images from an example project. If you wish to use your own project images then you must upload them to http://static.jboss.org/images/[project], edit `project` and `project_images_url` variables and edit the `http://static.jboss.org/images/example/` line in the `wget: urls:` property, all three settings can be found in *_config/site.yml*.
 
 5. Customize the theme
 ----------------------
