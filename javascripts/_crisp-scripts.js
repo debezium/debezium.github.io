@@ -28,7 +28,7 @@ if (document.documentElement.clientWidth > 767) { //if client width is greater t
         });
     };
 
-    $('#equalHeights,#equalHeightsA,#equalHeightsB,#equalHeightsC,#equalHeightsD').eqHeights(); /*one time per page unless you make another id to add here */
+    $('#equalHeights,#equalHeightsA,#equalHeightsB,#equalHeightsC,#equalHeightsD,#equalHeightsLayout').eqHeights(); /*one time per page unless you make another id to add here */
 
 }(jQuery));
 } // end if
