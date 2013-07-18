@@ -24,7 +24,7 @@
 module Awestruct
   module Extensions
     class LessConfig
-			
+
       def execute(site)
         output = ''
         if !site.jborg_fonts_url.nil?
@@ -41,7 +41,7 @@ module Awestruct
         tmpOutputFile.close
 
       end
-			
+
     end
   end
 end
