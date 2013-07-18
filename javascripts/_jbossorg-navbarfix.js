@@ -18,22 +18,22 @@ processScroll()
 $(window).on('scroll', processScroll)
 
 function processScroll() {
-	
-	var navbar = document.getElementById("navbar-fix");
+  
+  var navbar = document.getElementById("navbar-fix");
 
-	if (navbar == null) {
-		return
-	}
-	
-	if (!isFixed && $(window).scrollTop() >= $('.navbar#navbar-fix').offset().top) {
-		var element = navbar.cloneNode(true);
-		element.id = "navbar-fixed";
-		navbar.parentNode.appendChild(element);
-		isFixed = 1;
-	}
-	else if (isFixed && $(window).scrollTop() < $('.navbar#navbar-fix').offset().top)  {
-		element = document.getElementById("navbar-fixed");
-		element.parentNode.removeChild(element);
-		isFixed = 0
-	}
+  if (navbar == null) {
+    return
+  }
+  
+  if (!isFixed && $(window).scrollTop() >= $('.navbar#navbar-fix').offset().top) {
+    var element = navbar.cloneNode(true);
+    element.id = "navbar-fixed";
+    navbar.parentNode.appendChild(element);
+    isFixed = 1;
+  }
+  else if (isFixed && $(window).scrollTop() < $('.navbar#navbar-fix').offset().top)  {
+    element = document.getElementById("navbar-fixed");
+    element.parentNode.removeChild(element);
+    isFixed = 0
+  }
 }

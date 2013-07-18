@@ -1,6 +1,6 @@
 
 /*================================================================*/
-/*	TRIGGER EQUAL COLUMNS AT 767 px
+/*  TRIGGER EQUAL COLUMNS AT 767 px
 /*================================================================*/
 $(window).load(function(){
 if (document.documentElement.clientWidth > 767) { //if client width is greater than 767px load equal columns
@@ -36,14 +36,14 @@ if (document.documentElement.clientWidth > 767) { //if client width is greater t
 
 
 /*================================================================*/
-/*	BACK TO TOP
+/*  BACK TO TOP
 /*================================================================*/
 $(document).ready(function(){
 
 if ( navigator.userAgent.indexOf('iPad','iPhone','iPod') == -1 )
   {
-	// hide .backToTop first
-	$(".backToTop").hide();
+  // hide .backToTop first
+  $(".backToTop").hide();
     $(window).scroll(function(){
         if ($(this).scrollTop() > 100) {
             $('.backToTop').fadeIn();
@@ -63,8 +63,8 @@ var deviceAgent = navigator.userAgent.toLowerCase();
 var agentID = deviceAgent.match(/(iphone|ipod|ipad)/);
 if (agentID)   {
 
-	$('.backToTop').css({"position":"relative","clear":"both","margin":"0 auto","width":"100%","right":"auto","bottom":"auto"});
-	$('.backToTop a').css({"width":"100%"});
+  $('.backToTop').css({"position":"relative","clear":"both","margin":"0 auto","width":"100%","right":"auto","bottom":"auto"});
+  $('.backToTop a').css({"width":"100%"});
 
 }// end IS ipad/iphone/ipod
 
