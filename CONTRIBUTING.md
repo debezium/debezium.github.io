@@ -5,6 +5,7 @@
 We've chosen JIRA as our issue tracker, so please use https://issues.jboss.org/browse/ORG project to submit feature requests, bugs etc. 
 
 ### Viewing open issues
+
 You can see open issues by browsing ['www.jboss.org (Awestruct)' JIRA component](https://issues.jboss.org/browse/ORG/component/12315680#selectedTab=com.atlassian.jira.plugin.system.project%3Acomponent-issues-panel).
 
 ### Creating an issue
