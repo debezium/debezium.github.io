@@ -18,7 +18,7 @@
 # 2. This is an example site.yml configuration:
 #
 #    jborg_fonts_url: http://static.jboss.org/theme/fonts
-#    jborg_images_url: http://static.jboss.org/theme/images	
+#    jborg_images_url: http://static.jboss.org/theme/images
 #
 ##
 module Awestruct
@@ -35,7 +35,7 @@ module Awestruct
         end
 
         # Create a temporary file with the merged content.
-        tmpOutputPath = File.join( site.config.tmp_dir , "config-variables.less")
+        tmpOutputPath = File.join( site.config.stylesheets_dir , "_config-variables.less")
         tmpOutputFile = File.new(tmpOutputPath,"w")
         tmpOutputFile.write(output)
         tmpOutputFile.close
