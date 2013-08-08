@@ -1,3 +1,30 @@
+##
+#
+# Awestruct::Extensions:Symlinker is a classic type of awestruct extension.
+# If configured in project pipeline and site.yml, it will create a symlink from and to a given location.
+#
+# Configuration:
+#
+# 1. configure the extension in the project pipeline.rb:
+#    - add symlinker dependency:
+#
+#      require 'symlinker'
+#
+#    - put the extension initialization in the initialization itself:
+#
+#      extension Awestruct::Extensions::Symlinker.new
+#
+# 2. In your site.yml add:
+#
+#    symlinker:
+#      from: <source_path>
+#      to: <destination_path>
+#
+#    This setting is optional and defaults to enabled.
+#
+##
+require 'rbconfig'
+
 module Awestruct
   module Extensions
     class Symlinker
@@ -18,13 +45,15 @@ module Awestruct
         from = site.symlinker['from']
         to = site.symlinker['to']
 
-        # Linux command for creating a symlink.
-        command = "ln -s #{from} #{to}"
-
-        if system(command)
-          print "Symbolic link from #{from} to #{to} has been created.\n"
+        if File.symlink?(to)
+          print "Symlink from #{from} to #{to} already exists.\n"
         else
-          print "Creating symbolic link from #{from} to #{to} was unsuccessful.\n"
+          begin
+            File.symlink(from,to)
+            print "Symbolic link from #{from} to #{to} has been created.\n"
+          rescue
+            print "Symbolic link could not be created due to an unsupported OS.\n"
+          end
         end
 
       end
