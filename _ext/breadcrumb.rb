@@ -52,7 +52,7 @@ module Awestruct
         return "" if path==nil
 
         "<a class='breadcrumb_anchor' href='#{site.base_url}#{page.output_path}'
-        >#{page.title ? page.title : page.simple_name.capitalize }</a> -> "
+        >#{page.title ? page.title : page.simple_name.capitalize }</a> / "
 
       end
 
