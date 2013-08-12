@@ -6,14 +6,12 @@ module Awestruct
 
         return nil if !path or path.eql?("/") or path.eql?("index.html")
 
-        #output = generateAnchorHtml("/")
         output = ""
         index = -1
         while index=path.index("/",index+1)
 
           parent_path = path[0..index] + "index.html"
           if page=findInPages(parent_path)
-            print "PAGE: " + page.to_s + "\n"
             output += generateAnchorHtml(page)
             next
           end
