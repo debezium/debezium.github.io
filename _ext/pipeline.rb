@@ -5,9 +5,11 @@ require 'html_minifier'
 require 'file_merger'
 require 'less_config'
 require 'symlinker'
+require 'breadcrumb'
 
 Awestruct::Extensions::Pipeline.new do
   helper Awestruct::Extensions::Partial
+  helper Awestruct::Extensions::Breadcrumb
   extension Awestruct::Extensions::WgetWrapper.new
   transformer Awestruct::Extensions::JsMinifier.new
   transformer Awestruct::Extensions::CssMinifier.new
