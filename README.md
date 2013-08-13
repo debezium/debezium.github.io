@@ -8,6 +8,10 @@ The aim of this repository is to provide a template for the creation of new JBos
 
 * Project logos and other trademarked images must be hosted at http://static-stg.jboss.org/theme/images/[project] and http://static.jboss.org/theme/images/[project]
 
+License
+=======
+Contents of this repository are available as open source software under [Apache License Version 2.0](./LICENSE.txt).
+
 System Requirements
 ===================
 * Ruby 1.8.7 or above
@@ -32,7 +36,7 @@ Run Awestruct in development mode from the top-level directory to build the webs
 
 **Note:** The first time the site is built common JavaScript, font and image files will be downloaded from [http://static.jboss.org](http://static.jboss.org) and cached into a local *cache/* directory using wget. This then allows you to run the site locally rather than relying on a network connection. Since the cache download takes a considerable amount of time by default the `wget` command will run only once a day to prevent unrequired delays in build times. The time interval and other settings of this process can be configured in site.yml.
 
-**Tip:** Use the `--directory-prefix` option of the `wget: urls:` property in *_config/site.yml* if you wish to use a different directory name. A *.gitignore* file is automatically created in this directory containing a * to prevent you adding cached files to GIT by mistake. 
+**Tip:** Use the `--directory-prefix` option of the `wget: urls:` property in *_config/site.yml* if you wish to use a different directory name. A *.gitignore* file is automatically created in this directory containing a * to prevent you adding cached files to GIT by mistake.
 
 3. View the website
 -------------------
@@ -47,7 +51,7 @@ Use a text editor to create/edit web pages and/or layouts. Use the `bootstrap_cs
 5. Customize the theme
 ----------------------
 To use the theme simply reference the hosted *bootstrap-community.css* and *bootstrap-community.js* files on [http://static.jboss.org](http://static.jboss.org). However if you wish to make project-specific changes then test them locally using the development profile and host the compiled css and js files in your project-specific staging/production domains. Update the `bootstrap_css_url` and `bootstrap_js_url` variables in the staging/production profiles to refer to them.
- 
+
 6. Stage the website
 --------------------
 Once you're happy with your website in development mode update the `profiles: staging: base_url:` property in *_config/site.yml* to point to your staging domain and run the `bundle exec awestruct -P staging` command to generate a version that can be uploaded for others to review.
