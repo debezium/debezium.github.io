@@ -28,8 +28,8 @@ module Awestruct
           output += generateAnchorHtml(findInPages(path))
         end
 
-        # Returning output content without trailing arrow.
-        output[0..output.length-4]
+        # Returning output content without trailing arrow and wrapped in a div.
+        output = "<div class='breadcrumb'>" + output[0..output.length-4] + "</div>"
       end
 
 
