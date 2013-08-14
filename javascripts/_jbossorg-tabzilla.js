@@ -343,7 +343,8 @@ Tabzilla.preventDefault = function(ev)
 
 Tabzilla.content =
 '<div class="tabnavclearfix" id="tabnav">'
-+'  <span6>'
++'<div class="row-fluid tabcontent">'
++'  <span class="span6">'
 +'    <p> Like PROJECT NAME HERE? It’s part of the Red Hat JBoss Middleware community of projects. Learn more about our projects and offerings at the following locations:</p>'
 +'    <li> <a class="menu-title" href="http://www.jboss.org">JBoss Community</a>'
 +'      <ul class="level1">'
@@ -352,8 +353,8 @@ Tabzilla.content =
 +'        <li class="leaf"><a href="#">Access.redhat.com</a> allows Red Hat subscribers to submit trouble tickets and search a vast array of knowledge.</li>'
 +'      </ul>'
 +'    </li>'
-+'  </span6>'
-+'  <span6>'
++'  </span>'
++'  <span class="span6"'
 +'    <p> We like PROJECT NAME HERE too. In fact, we like it so much we’re included it in our supported products.</p>'
 +'    <li> <a class="menu-title" href="http://www.jboss.org">JBoss Community</a>'
 +'      <ul class="level1">'
@@ -364,7 +365,8 @@ Tabzilla.content =
 +'        <li class="leaf"><a href="#">Red Hat JBoss Fuse</a></li>'
 +'      </ul>'
 +'    </li>'
-+'  </span6>'
++'  </span>'
++'</div>'
 +'</div>';
 
 /* search.js - Code for search bar. */
