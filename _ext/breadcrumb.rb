@@ -34,20 +34,20 @@ module Awestruct
 
           parent_path = path[0..index] + "index.html"
           if page=findInPages(parent_path)
-            output += generateAnchorHtml(page)
+            output += generateAnchorHtml( page , parent_path.eql?(path) )
             next
           end
 
           parent_path = path[0..index-1] + ".html"
           if page=findInPages(parent_path)
-            output += generateAnchorHtml(page)
+            output += generateAnchorHtml( page , parent_path.eql?(path) )
             next
           end
 
         end
 
         if !parent_path.eql?(path)
-          output += generateAnchorHtml(findInPages(path))
+          output += generateAnchorHtml( findInPages(path) , true )
         end
 
         # Returning output content without trailing slash and wrapped in a div.
@@ -65,13 +65,13 @@ module Awestruct
         nil
       end
 
-      def generateAnchorHtml(page)
+      def generateAnchorHtml( page , isLast )
 
         path = (page.output_path.nil? ? page.url : page.output_path)
 
         return "" if path==nil
 
-        "<a class='breadcrumb_anchor' href='#{site.base_url}#{path}'
+        "<a class='breadcrumb_anchor #{isLast ? "active" : ""}' href='#{site.base_url}#{path}'
         >#{page.title ? page.title : page.simple_name.capitalize }</a> / "
 
       end
