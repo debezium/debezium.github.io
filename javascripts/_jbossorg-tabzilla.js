@@ -545,3 +545,90 @@ var initializeSearchBar = function() {
 
 // Tabzilla initialization
 Tabzilla();
+
+// =======================================
+// Content dynamic rendering for tabzilla.
+// =======================================
+
+// Function checks SessionStorage if there is cached content, validates its age
+// and optionally downloads again from the REST service and then caches it.
+function renderTabzilla() {
+
+var valueFromCache = null;
+if (window.sessionStorage && window.sessionStorage.getItem("#{site.project}TabzillaCache") ) {
+
+  var temp = JSON.parse(window.sessionStorage.getItem("#{site.project}TabzillaCache"));
+
+  // Checking if the item in cache is not older than 1 day
+  if ( new Date() - new Date(Date.parse(temp.cachedDate)) < (1000*60*60*24) ) {
+    valueFromCache = temp;
+  }
+
+}
+
+// If nothing was found in cache then we gather all the data from scratch.
+if (valueFromCache==null) {
+
+  // Getting information in what products the project is supported in.
+  var data = $.ajax({url:"http://rysiek.apiary.io/v1/rest/products/supported/#{site.project_name}",
+    dataType:'json'
+  });
+
+  // Getting HTML tab content from remote source.
+  var wrapper = $.ajax({url:"http://static.jboss.org/partials/tabcontent.html",
+    dataType:'html'
+  });
+
+  // When both results are available we continue with actual rendering of the data.
+  $.when( data , wrapper ).then( function( dataResult , wrapperResult ) {
+
+    var data = dataResult[0];
+    var content = wrapperResult[0];
+    var htmlContent;
+
+    // Depending on whether the project is supported in any product or not,
+    // we render different html entry.
+    if (data.total>0) {
+
+      htmlContent = $(content).find('#supported');
+      htmlContent.find("#project_name").html("#{site.project_name}");
+      var firstUl = htmlContent.find("#products-first-column");
+      var secondUl = htmlContent.find("#products-second-column");
+
+      var firstColumnSize = Math.ceil(data.total/2);
+      $.each(data.hits , function(index, value) {
+        if (index<firstColumnSize) {
+          firstUl.html(firstUl.html()+'<li class="leaf"><a href="'+value.url+'">'+value.name+'</a></li>');
+        } else {
+          secondUl.html(secondUl.html()+'<li class="leaf"><a href="'+value.url+'">'+value.name+'</a></li>');
+        }
+      });
+
+      $(".tabcontent").html(htmlContent);
+
+    } else {
+
+      htmlContent = $(content).find("#nonsupported");
+      htmlContent.find("#project_name").html("#{site.project_name}");
+      $(".tabcontent").html(htmlContent);
+
+    }
+
+    // Putting the whole generated HTML into SessionStorage.
+    if (window.sessionStorage && htmlContent) {
+      var entry = new Object();
+      entry.cachedDate = new Date();
+      entry.htmlContent = htmlContent.html();
+      window.sessionStorage.setItem("#{site.project}TabzillaCache",JSON.stringify(entry));
+    }
+
+  });
+
+} else {
+
+  $(".tabcontent").html(valueFromCache.htmlContent);
+
+}
+}
+
+window.addEventListener('load', function() { renderTabzilla() }, false);
