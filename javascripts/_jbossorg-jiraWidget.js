@@ -20,13 +20,15 @@ An example of how to use the widget.
   It's also required to initialize the widget by executing following JavaScript function.
 -->
 <script type="text/javascript">
-	renderJiraWidget( {
-		jqlQuery : 'project = ORG AND (status = Open OR status = Reopened)',
-		maxResults : 3,
-		startAt : 0,
-		divId : 'jiraDiv',
-		title : 'Open JBoss Community Issues'
-	} );
+	$(document).ready(function () {
+      processJiraWidget(  {
+        jqlQuery : 'project = ORG AND (status = Open OR status = Reopened)',
+        maxResults : 5,
+        startAt : 0,
+        divId : 'jiraDiv',
+        title : 'Jira Issues'
+      })
+    });
 </script>
 
 */
