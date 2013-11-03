@@ -569,10 +569,13 @@ if (window.sessionStorage && window.sessionStorage.getItem("#{site.project}Tabzi
 // If nothing was found in cache then we gather all the data from scratch.
 if (valueFromCache==null) {
 
+  var data;
+  /* THIS PART OF CODE IS TEMPORARILY DISABLED TILL THE SERVICE WILL BE IN PRODUCTION.  
   // Getting information in what products the project is supported in.
   var data = $.ajax({url:"http://rysiek.apiary.io/v1/rest/products/supported/#{site.project_name}",
     dataType:'json'
   });
+  */
 
   // Getting HTML tab content from remote source.
   var wrapper = $.ajax({url:"http://static.jboss.org/partials/tabcontent.html",
@@ -588,7 +591,7 @@ if (valueFromCache==null) {
 
     // Depending on whether the project is supported in any product or not,
     // we render different html entry.
-    if (data.total>0) {
+    if (typeof data!='undefined' && data.total>0) {
 
       htmlContent = $(content).find('#supported');
       htmlContent.find("#project_name").html("#{site.project_name}");
