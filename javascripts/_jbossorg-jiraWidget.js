@@ -74,11 +74,11 @@ function processJiraWidget(params) {
 			var assignee = rowData.fields.assignee==null ? 'Unassigned' : rowData.fields.assignee.displayName;
 			rawTableBodyHtml += '<li id="assignee"><b>Assignee:</b>&nbsp;'+assignee+'</li>';
 
-			var createDate = new Date(rowData.fields.created);
+			var createDate = new Date(safarifyDateString(rowData.fields.created));
 			var createDateStr = createDate.toLocaleDateString()+'&nbsp;'+createDate.toLocaleTimeString();
 			rawTableBodyHtml += '<li id="created"><b>Created:</b>&nbsp;'+createDateStr+'</li>';
 
-			var updateDate = new Date(rowData.fields.updated);
+			var updateDate = new Date(safarifyDateString(rowData.fields.updated));
 			var updateDateStr = updateDate.toLocaleDateString()+'&nbsp;'+updateDate.toLocaleTimeString();
 			rawTableBodyHtml += '<li id="lastUpdated"><b>Last updated:</b>&nbsp;'+updateDateStr+'</li>';
 
@@ -97,6 +97,12 @@ function processJiraWidget(params) {
 		rawTableHtml += '</div>';
 
 		div.innerHTML = rawTableHtml;
+	}
+
+	// Function modifies a bit string representation of a date so that it's consumable on Safari browser.
+	function safarifyDateString(dateStr) {
+		dateStr = dateStr.replace(/\.\d\d\d/, "");
+		return dateStr.substring(0,dateStr.length-2)+':'+dateStr.substring(dateStr.length-2,dateStr.length);
 	}
 
 	// This function searches for the queried data in SessionStorage of the web browser.
