@@ -31,8 +31,8 @@
                         }
                         s += '<a href="' + t.link + '" target="' + n.TitleLinkTarget + '" >' + t.title + '</a>';
                         if (n.ShowDesc) {
-                            if (n.DescCharacterLimit > 0 && t.content.length > n.DescCharacterLimit) {
-                                s += '<div class="itemContent">' + t.content.substr(0, n.DescCharacterLimit) + "...</div>"
+                            if (n.CharacterLimit > 0 && t.content.length > n.CharacterLimit) {
+                                s += '<div class="itemContent">' + t.content.substr(0, n.CharacterLimit) + "...</div>"
                             } else {
                                 s += '<div class="itemContent">' + t.content + "</div>"
                             }
