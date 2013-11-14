@@ -37,6 +37,7 @@
                                 s += '<div class="itemContent">' + t.content + "</div>"
                             }
                         }
+                        s += '</li>';
                     });
                 e("#" + r).append('<ul class="listPosts">' + s + "</ul>");
             }
