@@ -12,7 +12,7 @@
         }
         var r = e(this).attr("id");
         var i;
-        e("#" + r).empty().append('<div style="padding:3px;"><img src="loader.gif" /></div>');
+        e("#" + r).empty().append('<div style="padding:3px;"><img src="#{site.jborg_images_url}/common/loading.gif" /></div>');
         e.ajax({
             url: "http://ajax.googleapis.com/ajax/services/feed/load?v=1.0&num=" + n.MaxCount + "&output=json&q=" + encodeURIComponent(n.FeedUrl) + "&hl=en&callback=?",
             dataType: "json",
