@@ -586,14 +586,15 @@ function renderTabzilla() {
     $.when( data , wrapper ).then( function( dataResult , wrapperResult ) {
 
       var data = dataResult[0];
+      var content = wrapperResult[0];
       */
 
       // REPLACEMENT CODE
     $.when( wrapper ).then( function(wrapperResult ) {
       var data = undefined;
+      var content = wrapperResult;
       // END OF REPLACEMENT CODE
-
-      var content = wrapperResult[0];
+      
       var htmlContent;
 
       // Depending on whether the project is supported in any product or not,
