@@ -550,14 +550,14 @@ Tabzilla();
 // Content dynamic rendering for tabzilla.
 // =======================================
 
-// Function checks SessionStorage if there is cached content, validates its age
+// Function checks LocalStorage if there is cached content, validates its age
 // and optionally downloads again from the REST service and then caches it.
 function renderTabzilla() {
 
   var valueFromCache = null;
-  if (window.sessionStorage && window.sessionStorage.getItem("#{site.project}TabzillaCache") ) {
+  if (window.localStorage && window.localStorage.getItem("#{site.project}TabzillaCache") ) {
 
-    var temp = JSON.parse(window.sessionStorage.getItem("#{site.project}TabzillaCache"));
+    var temp = JSON.parse(window.localStorage.getItem("#{site.project}TabzillaCache"));
 
     // Checking if the item in cache is not older than a week
     if ( new Date() - new Date(Date.parse(temp.cachedDate)) < (1000*60*60*24*7) ) {
@@ -625,12 +625,12 @@ function renderTabzilla() {
 
       }
 
-      // Putting the whole generated HTML into SessionStorage.
-      if (window.sessionStorage && htmlContent) {
+      // Putting the whole generated HTML into LocalStorage.
+      if (window.localStorage && htmlContent) {
         var entry = new Object();
         entry.cachedDate = new Date();
         entry.htmlContent = htmlContent.html();
-        window.sessionStorage.setItem("#{site.project}TabzillaCache",JSON.stringify(entry));
+        window.localStorage.setItem("#{site.project}TabzillaCache",JSON.stringify(entry));
       }
 
     });
