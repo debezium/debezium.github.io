@@ -6,7 +6,7 @@ The aim of this repository is to provide a template for the creation of new JBos
 
 * Changes to the L&F will be vetoed by the [Visual Design Team](http://design.jboss.org) to ensure they meet branding guidelines and are consistent with the JBoss Community brand.
 
-* Project logos and other trademarked images must be hosted at http://static-stg.jboss.org/theme/images/[project] and http://static.jboss.org/theme/images/[project]
+* Project logos and other trademarked images must be hosted at http://static.jboss.org/[project]/images.
 
 License
 =======
@@ -46,7 +46,7 @@ Use a web browser to visit [http://localhost:4242](http://localhost:4242) where 
 ---------------------------------
 Use a text editor to create/edit web pages and/or layouts. Use the `bootstrap_css_url` and `bootstrap_js_url` variables to ensure you refer to the locally built versions of the files in the development profile and the hosted versions in the staging and production profiles.
 
-**Note:** Currently the template uses images from an example project. If you wish to use your own project images then you must upload them to http://static.jboss.org/images/[project], edit `project` and `project_images_url` variables and edit the `http://static.jboss.org/images/example/` line in the `wget: urls:` property, all three settings can be found in *_config/site.yml*.
+**Note:** Currently the template uses images from an example project. If you wish to use your own project images then you must upload them to http://static.jboss.org/[project]/images, edit `project` and `project_images_url` variables and edit the `http://static.jboss.org/example/images/` line in the `wget: urls:` property, all three settings can be found in *_config/site.yml*.
 
 5. Customize the theme
 ----------------------
