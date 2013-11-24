@@ -552,12 +552,17 @@ Tabzilla();
 
 // Function checks LocalStorage if there is cached content, validates its age
 // and optionally downloads again from the REST service and then caches it.
-function renderTabzilla() {
+function renderTabzilla( projectName , projectId ) {
+
+  if ( ( typeof projectName=='undefined' ) || ( typeof projectId=='undefined' ) ) {
+    console.error("Variables 'project' and 'project_name' have to be provided in your site.yml configuration file.");
+    return;
+  }
 
   var valueFromCache = null;
-  if (window.localStorage && window.localStorage.getItem("#{site.project}TabzillaCache") ) {
+  if (window.localStorage && window.localStorage.getItem(projectId+"TabzillaCache") ) {
 
-    var temp = JSON.parse(window.localStorage.getItem("#{site.project}TabzillaCache"));
+    var temp = JSON.parse(window.localStorage.getItem(projectId+"TabzillaCache"));
 
     // Checking if the item in cache is not older than a week
     if ( new Date() - new Date(Date.parse(temp.cachedDate)) < (1000*60*60*24*7) ) {
@@ -602,7 +607,7 @@ function renderTabzilla() {
       if (typeof data!='undefined' && data.total>0) {
 
         htmlContent = $(content).find('#supported');
-        htmlContent.find("#project_name").html("#{site.project_name}");
+        htmlContent.find("#project_name").html(projectName);
         var firstUl = htmlContent.find("#products-first-column");
         var secondUl = htmlContent.find("#products-second-column");
 
@@ -620,7 +625,7 @@ function renderTabzilla() {
       } else {
 
         htmlContent = $(content).find("#nonsupported");
-        htmlContent.find("#project_name").html("#{site.project_name}");
+        htmlContent.find("#project_name").html(projectName);
         $(".tabcontent").html(htmlContent);
 
       }
@@ -630,7 +635,7 @@ function renderTabzilla() {
         var entry = new Object();
         entry.cachedDate = new Date();
         entry.htmlContent = htmlContent.html();
-        window.localStorage.setItem("#{site.project}TabzillaCache",JSON.stringify(entry));
+        window.localStorage.setItem(projectId+"TabzillaCache",JSON.stringify(entry));
       }
 
     });
@@ -641,5 +646,3 @@ function renderTabzilla() {
 
   }
 }
-
-window.addEventListener('load', function() { renderTabzilla() }, false);
