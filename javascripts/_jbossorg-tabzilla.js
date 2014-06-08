@@ -552,11 +552,15 @@ Tabzilla();
 
 // Function checks LocalStorage if there is cached content, validates its age
 // and optionally downloads again from the REST service and then caches it.
-function renderTabzilla( projectName , projectId ) {
+function renderTabzilla( projectName , projectId, fullWidth ) {
 
   if ( ( typeof projectName=='undefined' ) || ( typeof projectId=='undefined' ) ) {
     console.error("Variables 'project' and 'project_name' have to be provided in your site.yml configuration file.");
     return;
+  }
+
+  if ( fullWidth ) {
+    $("#tabnav-panel").addClass( "fullwidth" );
   }
 
   var valueFromCache = null;
