@@ -12,28 +12,37 @@
  * for the collapsed navigation where menu items are shown vertically.
  */
 
-var isFixed = 0;
+var isNavBarFixed = 0;
 
-processScroll()
-$(window).on('scroll', processScroll)
+var defaultNavbarOffset = $("#sticky-navbar").offset().top;
+
+processScroll();
+$(window).on('scroll', processScroll);
 
 function processScroll() {
   
-  var navbar = document.getElementById("navbar-fix");
+  var navbar = $("#sticky-navbar");
 
-  if (navbar == null) {
+  if (navbar == null || typeof (navbar.offset()) == "undefined" ) {
     return
   }
-  
-  if (!isFixed && $(window).scrollTop() >= $('.navbar#navbar-fix').offset().top) {
-    var element = navbar.cloneNode(true);
-    element.id = "navbar-fixed";
-    navbar.parentNode.appendChild(element);
-    isFixed = 1;
+
+  var additionalTabzillaOffset = 0;
+  var tabzilla = $('#tabnav-panel');
+  if (typeof tabzilla != undefined) {
+    if (tabzilla.hasClass('tabnav-opened')) {
+      additionalTabzillaOffset=240;
+    }
   }
-  else if (isFixed && $(window).scrollTop() < $('.navbar#navbar-fix').offset().top)  {
-    element = document.getElementById("navbar-fixed");
-    element.parentNode.removeChild(element);
-    isFixed = 0
+  
+  // Tabzilla offset needs to bo added if it's open.
+  if (!isNavBarFixed && $(window).scrollTop() >= (defaultNavbarOffset + additionalTabzillaOffset) ) {
+    navbar.addClass("navbar-fixed");
+    navbar.removeClass("navbar-fix");
+    isNavBarFixed = 1;
+  } else if (isNavBarFixed && $(window).scrollTop() < (defaultNavbarOffset + additionalTabzillaOffset) ) {
+    navbar.addClass("navbar-fix");
+    navbar.removeClass("navbar-fixed");
+    isNavBarFixed = 0
   }
 }
