@@ -22,6 +22,11 @@ $(window).on('scroll', processScroll);
 function processScroll() {
   
   var navbar = $("#sticky-navbar");
+  var breadcrumb = $(".breadcrumb");
+
+  if (isNavBarFixed) {
+    breadcrumb = $(".breadcrumb-fixed");
+  }
 
   if (navbar == null || typeof (navbar.offset()) == "undefined" ) {
     return
@@ -39,10 +44,14 @@ function processScroll() {
   if (!isNavBarFixed && $(window).scrollTop() >= (defaultNavbarOffset + additionalTabzillaOffset) ) {
     navbar.addClass("navbar-fixed");
     navbar.removeClass("navbar-fix");
+    breadcrumb.addClass("breadcrumb-fixed");
+    breadcrumb.removeClass("breadcrumb");
     isNavBarFixed = 1;
   } else if (isNavBarFixed && $(window).scrollTop() < (defaultNavbarOffset + additionalTabzillaOffset) ) {
     navbar.addClass("navbar-fix");
     navbar.removeClass("navbar-fixed");
+    breadcrumb.removeClass("breadcrumb-fixed");
+    breadcrumb.addClass("breadcrumb");
     isNavBarFixed = 0
   }
 }
