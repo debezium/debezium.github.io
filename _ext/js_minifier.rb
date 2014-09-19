@@ -41,39 +41,39 @@ module Awestruct
 
         output = ''
 
-        # Test if it's a javascript file.
         ext = File.extname(page.output_path)
-        
-        if !ext.empty?
-          ext_txt = ext[1..-1]
-
-          # Filtering out non-css files and those which were already minimized with added suffix.
-          if ext_txt == "js" and !page.output_path.to_s.end_with?("min.js")
-            print "Minifying javascript #{page.output_path} \n"
-            output = Uglifier.new.compile(input)
-          else
-            return input
-          end
-
-          oldFileName = File.basename(page.output_path).to_s
-
-          # Create new file name with suffix added
-          newFileName = oldFileName.slice(0..oldFileName.length-3)+"min.js"
-          newOutputPath = File.join(File.dirname(page.output_path.to_s),newFileName)
-
-          # Create a temporary file with the merged content.
-          tmpOutputPath = File.join( "./_tmp/" , newFileName)
-          tmpOutputFile = File.new(tmpOutputPath,"w")
-          tmpOutputFile.write(output)
-          tmpOutputFile.close
-
-          # Add the temporary file to the list of pages for rendering phase.
-          newPage = site.engine.load_page(tmpOutputPath)
-          newPage.source_path = tmpOutputPath
-          newPage.output_path = newOutputPath
-          site.pages << newPage
-
+        # skip if the file has no extension
+        if ext.empty?
+          return input
         end
+
+        ext_txt = ext[1..-1]
+
+        # Filtering out non-js files and those which were already minimized with added suffix.
+        if ext_txt == "js" and !page.output_path.to_s.end_with?("min.js")
+          print "Minifying javascript #{page.output_path} \n"
+          output = Uglifier.new.compile(input)
+        else
+          return input
+        end
+
+        oldFileName = File.basename(page.output_path).to_s
+
+        # Create new file name with suffix added
+        newFileName = oldFileName.slice(0..oldFileName.length-3)+"min.js"
+        newOutputPath = File.join(File.dirname(page.output_path.to_s),newFileName)
+
+        # Create a temporary file with the merged content.
+        tmpOutputPath = File.join( "./_tmp/" , newFileName)
+        tmpOutputFile = File.new(tmpOutputPath,"w")
+        tmpOutputFile.write(output)
+        tmpOutputFile.close
+
+        # Add the temporary file to the list of pages for rendering phase.
+        newPage = site.engine.load_page(tmpOutputPath)
+        newPage.source_path = tmpOutputPath
+        newPage.output_path = newOutputPath
+        site.pages << newPage
 
         # We return the input because we leave the original file untouched
         input
