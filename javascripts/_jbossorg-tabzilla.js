@@ -345,18 +345,18 @@ Tabzilla.content =
 '<div class="tabnavclearfix" id="tabnav">'
 +'<div class="tabcontent">'
 +'  <p class="overview"> Like the project? It’s part of the community of Red Hat projects. Learn more about Red Hat and our open source communities:</p>'
-+'  <div class="row-fluid">'
-+'    <span class="span4 middlewarelogo">'
++'  <div class="row">'
++'    <span class="col-md-4 middlewarelogo">'
 +'      <img src="http://static.jboss.org/common/images/tabzilla/RHJB_Middleware_Logotype.png" alt="Red Hat JBoss MIDDLEWARE" />'
 +'    </span>'
-+'    <span class="span4">'
++'    <span class="col-md-4">'
 +'      <ul class="level1">'
 +'        <li class="leaf"><a href="#">Red Hat JBoss Middleware Overview</a></li>'
 +'        <li class="leaf"><a href="#">Red Hat JBoss Middleware Products</a></li>'
 +'        <li class="leaf"><a href="#">Red Hat JBoss Projects & Standards</a></li>'
 +'      </ul>'
 +'    </span>'
-+'    <span class="span4">'
++'    <span class="col-md-4">'
 +'      <ul class="level1">'
 +'        <li class="leaf"><a href="#">redhat.com</a></li>'
 +'        <li class="leaf"><a href="#">Red Hat Customer Portal</a></li>'
@@ -578,7 +578,7 @@ function renderTabzilla( projectName , projectId, fullWidth ) {
   // If nothing was found in cache then we gather all the data from scratch.
   if (valueFromCache==null) {
 
-    /* THIS PART OF CODE IS TEMPORARILY DISABLED TILL THE SERVICE WILL BE IN PRODUCTION.  
+    /* THIS PART OF CODE IS TEMPORARILY DISABLED TILL THE SERVICE WILL BE IN PRODUCTION.
     // Getting information in what products the project is supported in.
     var data = $.ajax({url:"http://rysiek.apiary.io/v1/rest/products/supported/#{site.project_name}",
       dataType:'json'
@@ -603,7 +603,7 @@ function renderTabzilla( projectName , projectId, fullWidth ) {
       var data = undefined;
       var content = wrapperResult;
       // END OF REPLACEMENT CODE
-      
+
       var htmlContent;
 
       // Depending on whether the project is supported in any product or not,

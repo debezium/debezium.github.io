@@ -20,20 +20,20 @@ processScroll();
 $(window).on('scroll', processScroll);
 
 function processScroll() {
-  
+
   var navbar = $("#sticky-navbar");
-  
+
   if (navbar.length==0) {
     return
   }
 
-  var breadcrumb;
+  // var breadcrumb;
 
-  if (isNavBarFixed) {
-    breadcrumb = $(".breadcrumb-fixed");
-  } else {
-    breadcrumb = $(".breadcrumb");
-  }
+  // if (isNavBarFixed) {
+  //   breadcrumb = $(".breadcrumb-fixed");
+  // } else {
+  //   breadcrumb = $(".breadcrumb");
+  // }
 
   // Measuring additionall offset depending whether tabzilla exists and is open.
   var additionalTabzillaOffset = 0;
@@ -43,7 +43,7 @@ function processScroll() {
       additionalTabzillaOffset=240;
     }
   }
-  
+
   // Tabzilla offset needs to bo added if it's open.
   if (!isNavBarFixed && $(window).scrollTop() >= (defaultNavbarOffset + additionalTabzillaOffset) ) {
 
@@ -52,19 +52,19 @@ function processScroll() {
     navbar.removeClass("navbar-fix");
 
     // Trick in order to prevent content movement when the navigation starts to scroll.
-    breadcrumb.addClass("breadcrumb-fixed");
-    breadcrumb.removeClass("breadcrumb");
+    //breadcrumb.addClass("breadcrumb-fixed");
+    //breadcrumb.removeClass("breadcrumb");
 
     isNavBarFixed = 1;
 
   } else if (isNavBarFixed && $(window).scrollTop() < (defaultNavbarOffset + additionalTabzillaOffset) ) {
-    
+
     // Switching navbar style to non-fixed position.
     navbar.addClass("navbar-fix");
     navbar.removeClass("navbar-fixed");
 
-    breadcrumb.removeClass("breadcrumb-fixed");
-    breadcrumb.addClass("breadcrumb");
+    //breadcrumb.removeClass("breadcrumb-fixed");
+    //breadcrumb.addClass("breadcrumb");
 
     isNavBarFixed = 0;
 
