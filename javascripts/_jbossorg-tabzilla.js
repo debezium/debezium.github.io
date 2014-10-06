@@ -586,7 +586,7 @@ function renderTabzilla( projectName , projectId, fullWidth ) {
     */
 
     // Getting HTML tab content from remote source.
-    var wrapper = $.ajax({url:"http://static.jboss.org/partials/tabcontent.html",
+    var wrapper = $.ajax({url:"http://static.jboss.org/partials/tabcontent-bootstrap3.html",
       dataType:'html'
     });
 
