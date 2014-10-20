@@ -29,11 +29,11 @@ function processScroll() {
 
   // var breadcrumb;
 
-  // if (isNavBarFixed) {
-  //   breadcrumb = $(".breadcrumb-fixed");
-  // } else {
-  //   breadcrumb = $(".breadcrumb");
-  // }
+  if (isNavBarFixed) {
+    breadcrumb = $(".breadcrumb-fixed");
+  } else {
+    breadcrumb = $(".breadcrumb");
+  }
 
   // Measuring additionall offset depending whether tabzilla exists and is open.
   var additionalTabzillaOffset = 0;
@@ -52,8 +52,8 @@ function processScroll() {
     navbar.removeClass("navbar-fix");
 
     // Trick in order to prevent content movement when the navigation starts to scroll.
-    //breadcrumb.addClass("breadcrumb-fixed");
-    //breadcrumb.removeClass("breadcrumb");
+    breadcrumb.addClass("breadcrumb-fixed");
+    breadcrumb.removeClass("breadcrumb");
 
     isNavBarFixed = 1;
 
@@ -63,8 +63,8 @@ function processScroll() {
     navbar.addClass("navbar-fix");
     navbar.removeClass("navbar-fixed");
 
-    //breadcrumb.removeClass("breadcrumb-fixed");
-    //breadcrumb.addClass("breadcrumb");
+    breadcrumb.removeClass("breadcrumb-fixed");
+    breadcrumb.addClass("breadcrumb");
 
     isNavBarFixed = 0;
 
