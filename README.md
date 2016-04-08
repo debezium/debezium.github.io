@@ -1,61 +1,76 @@
-Introduction
-============
-The aim of this repository is to provide a template for the creation of new JBoss Community projects using [Awestruct](http://awestruct.org) and [Bootstrap](http://twitter.github.com/bootstrap). These are projects created and led by [Red Hat](http://www.redhat.com) who own the associated trademarks. To avoid unnecessary complexity and satisfy legal requirements users are kindly asked to observe the following:
+[![License](http://img.shields.io/:license-apache%202.0-brightgreen.svg)](http://www.apache.org/licenses/LICENSE-2.0.html)
+[![User chat](https://img.shields.io/badge/chat-users-brightgreen.svg)](https://gitter.im/debezium/user)
+[![Developer chat](https://img.shields.io/badge/chat-devs-brightgreen.svg)](https://gitter.im/debezium/dev)
+[![Google Group](https://img.shields.io/:mailing%20list-debezium-brightgreen.svg)](https://groups.google.com/forum/#!forum/debezium)
+[![Stack Overflow](http://img.shields.io/:stack%20overflow-debezium-brightgreen.svg)](http://stackoverflow.com/questions/tagged/debezium)
 
-* This template should represent the majority view amongst users about the simplest and best way to create a website using Awestruct and Bootstrap (using LESS). It should strive to have the fewest dependencies and use the smallest number of template engines.
+# Introduction
 
-* Changes to the L&F will be vetoed by the [Visual Design Team](http://design.jboss.org) to ensure they meet branding guidelines and are consistent with the JBoss Community brand.
+This is the source code for the [Debezium website](http://debezium.io). This is based on [templates](https://github.com/jbossorg/bootstrap-community) created by the JBoss Community using [Awestruct](http://awestruct.org/) and [Bootstrap](http://twitter.github.com/bootstrap).
 
-* Project logos and other trademarked images must be hosted at http://static.jboss.org/[project]/images.
+# License
 
-License
-=======
 Contents of this repository are available as open source software under [Apache License Version 2.0](./LICENSE.txt).
 
-System Requirements
-===================
-* Ruby 1.8.7 or above
-* RubyGems - 1.3.6 or above
-* Bundler - 1.3.5
+# System Requirements
 
-* GNU Wget 1.14
+We use [Docker](http://docker.com) to build the site. Be sure you have a recent version of the [Docker Engine](http://docs.docker.com/engine/installation/) or [Docker Machine](http://docs.docker.com/toolbox).
 
-Getting Started
-===============
-1. Fork the repository
-------------------------------------------
-To use the template simply navigate to [GitHub page](https://github.com/jbossorg/bootstrap-community) and use *Fork* button to fork this repository into your own GitHub organization. Afterwards choose a tag from which you want to start your website development and create a development branch from it. Additionally, in GitHub repository settings tab you may want to rename your forked repository to follow your site name.
+# Getting Started
 
-**Note:** The first part of the tag version number indicates the Bootstrap version the template is based on.
+### 1. Get the site source code
 
-2. Build the website
---------------------
-Run Awestruct in development mode from the top-level directory to build the website and host it using a local web server:
+Use Git to clone the Debezium website Git repository and change into that directory:
 
-`bundle exec awestruct -d`
+    $ git clone https://github.com/debezium/debezium.io.git
+    $ cd debezium.io
 
-**Note:** The first time the site is built common JavaScript, font and image files will be downloaded from [http://static.jboss.org](http://static.jboss.org) and cached into a local *cache/* directory using wget. This then allows you to run the site locally rather than relying on a network connection. Since the cache download takes a considerable amount of time by default the `wget` command will run only once a day to prevent unrequired delays in build times. The time interval and other settings of this process can be configured in site.yml.
+If you plan to submit changes, fork the [Git repository](http://github.com/debezium/debezium.io) on GitHub and then add your fork as a remote:
 
-**Tip:** Use the `--directory-prefix` option of the `wget: urls:` property in *_config/site.yml* if you wish to use a different directory name. A *.gitignore* file is automatically created in this directory containing a * to prevent you adding cached files to GIT by mistake.
+    $ git remote rename origin upstream
+    $ git remote add origin https://github.com/<you>/debezium.io.git
 
-3. View the website
--------------------
-Use a web browser to visit [http://localhost:4242](http://localhost:4242) where you can see the site.
+### 2. Start the development webserver
 
-4. Add/edit web pages and layouts
----------------------------------
-Use a text editor to create/edit web pages and/or layouts. Use the `bootstrap_css_url` and `bootstrap_js_url` variables to ensure you refer to the locally built versions of the files in the development profile and the hosted versions in the staging and production profiles.
+In a new terminal initialized with the Docker host environment, start a Docker container that automatically downloads the correct Ruby libraries, builds the static website files, and runs a local webserver:
 
-**Note:** Currently the template uses images from an example project. If you wish to use your own project images then you must upload them to http://static.jboss.org/[project]/images, edit `project` and `project_images_url` variables and edit the `http://static.jboss.org/example/images/` line in the `wget: urls:` property, all three settings can be found in *_config/site.yml*.
+    $ docker run -it --rm -p 4242:4242 -v $(pwd):/site debezium/awestruct
 
-5. Customize the theme
-----------------------
-To use the theme simply reference the hosted *bootstrap-community.css* and *bootstrap-community.js* files on [http://static.jboss.org](http://static.jboss.org). However if you wish to make project-specific changes then test them locally using the development profile and host the compiled css and js files in your project-specific staging/production domains. Update the `bootstrap_css_url` and `bootstrap_js_url` variables in the staging/production profiles to refer to them.
+This command tells Docker to start a container using the `debezium/awestruct` image (downloading it if necessary) with an interactive terminal (via `-it` flag) to the container so that you will see the output of the process running in the container. The `--rm` flag will remove the container when it stops, while the `-p 4242` flag maps the container's 4242 port to the same port on the Docker host (which is the local machine on Linux or the virtual machine if running Boot2Docker or Docker Machine on OS X and Windows). The `-v $(pwd):/site` option mounts your current working directory (where the website's code is located) into the `/site` directory within the container (where Awestruct expects to find it).
 
-6. Stage the website
---------------------
-Once you're happy with your website in development mode update the `profiles: staging: base_url:` property in *_config/site.yml* to point to your staging domain and run the `bundle exec awestruct -P staging` command to generate a version that can be uploaded for others to review.
+Leave this container running.
 
-7. Publish the website
-----------------------
-If everyone is happy with staging then update the `profiles: production: base_url:` property in *_config/site.yml* to point to your production domain and run the `bundle exec awestruct -P production` command to produce a version that can be uploaded for the public to view.
+### 3. Forwarding ports
+
+If you are running on Linux, you can proceed to step 4.
+
+If you are running on Windows or OS X and are using Docker Machine or Boot2Docker to run the Docker host, then the container is running in a virtual machine. Although you can point your browser to the correct IP address, the generated site (at least in development mode) assumes a base URL of [http://localhost:4242]() and thus links will not work. Instead, use the following command to forward port 4242 on your local machine to the virtual machine. For Docker Machine, start a new terminal and run the following commands:
+
+    $ eval $(docker-machine env)
+    $ docker-machine ssh default -vnNTL *:4242:$(docker-machine ip):4242
+
+or, for Boot2Docker:
+
+    $ boot2docker shellinit
+    $ boot2docker ssh -vnNTL *:4242:$(boot2docker ip 2>/dev/null):4242
+
+Leave this running while you access the website through your browser. Use CTRL-C to stop this port forwarding process when you're finished testing.
+
+
+### 4. View the site
+
+Point your browser to [http://localhost:4242]() to view the site. You may notice some delay during development, since the site is generated somewhat lazily.
+
+### 5. Edit the site
+
+Use any development tools on your local machine to edit the source files for the site. For minor modifications, Awestruct will detect the changes and will regenerate the corresponding static file(s). However, more comprehensive modifications may require you to restart the container (step 2).
+
+If you have to change the Gemfile to use different libraries, you will need to let the container download the new versions. The simplest way to do this is to stop the container (using CTRL-C), use rm -rf bundler to remove the directory where the gem files are stored, and then restart the container. This ensures that you're always using the exact files that are specified in the Gemfile.lock file.
+
+### 6. Commit changes
+
+Use Git on your local machine to commit the changes to your site's codebase, and then publish the new version of the site.
+
+### 7. Publish the website
+
+TBD

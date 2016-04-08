@@ -8,3 +8,4 @@ gem 'cssminify', '~> 1.0.2'	# CSS compression using YUI compressor
 gem 'rb-fsevent', '~> 0.9.3'	# FSEvents API with Signals catching (without RubyCocoa)
 gem 'kramdown', '~> 1.0.1' # Kramdown works on all platforms, rdiscount only on mri
 gem 'htmlcompressor', '~> 0.0.3' # Adds in HTML minification, helps remove the warning on awestruct startup
+gem 'asciidoctor', '~> 1.5.1'

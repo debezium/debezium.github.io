@@ -1,0 +1,325 @@
+= Debezium Connector for MySQL
+:awestruct-layout: doc
+:linkattrs:
+:icons: font
+:source-highlighter: highlight.js
+
+The MySQL connector allows Debezium to monitor and record all of the row-level changes in the databases on a single MySQL server cluster. The connector reads the http://dev.mysql.com/doc/refman/5.7/en/binary-log.html[MySQL server's binlog], which is part of http://dev.mysql.com/doc/refman/5.7/en/replication.html[MySQL's replication mechanism] and which contains all of the changes made to the database schemas and to the data. All inserts, updates and deletes are then recorded as events in separate Kafka topics for each table.
+
+== Features
+
+MySQL has the ability to record in its _binary log_, or _binlog_, all operations in the same order they are committed by the database. In fact, this is the mechanism by which MySQL can be replicated across multiple machines: the master database records the operations in its binlog, and replica servers read the master's binlog and apply every operation to itself. The binlog is also an essential component of MySQL database recovery, since the binary log can be used after a backup has been restored to bring databases up to date from the point of the backup. Running a server with binary logging enabled will slightly reduce performance, although the benefits of the binary log in enabling replication and database recovery outweigh this minor performance decrement.
+
+Debezium's MySQL connector reads the same binary log produced by MySQL to understand what and in what order data has changed. It then produces for every row-level insert, update, and delete operations _change events_ and records these to a separate Kafka topic for each table. Your client applications can therefore simply read those Kafka topics that correspond to the database tables its interested in following, and react to every row-level event it sees in those topics.
+
+When a database client queries a database, it uses the database's current schema. However, the database schema can be changed at any time, which means that the connector must know what the schema looked like at the time each insert, update, or delete operation is _recorded_. Luckily, MySQL includes in the binlog not only the row-level changes to the data but also the DDL statements as they are applied to the database. As the connector reads the binlog and comes across these DDL statements, it parses them and updates an in-memory representation of each table's schema, which is then used to understand the structure of the tables at the time each insert, update, or delete occurs and to produce the appropriate change event. It also records in a separate _database history_ Kafka topic all of the DDL statements along with the position in the binlog where each DDL statement appeared.
+
+When the connector restarts after having crashed or been stopped gracefully, the connector will start reading the binlog from a specific position (or point in time). The connector has to rebuild the table structures that existed at this point in time, so it simply reads the database history Kafka topic and parses all DDL statements up until the point in the binlog where the connector is starting.
+
+The connector's reliance upon the binlog does mean the connector is limited to the data it can read from the binary log. MySQL may be configured to remove older portions of the binary log to save space. Additionally, some tables and data may have been created before the binlog was enabled on the server, in which case the DDL statements for those tables do not appear in the log and thus cannot be read. Although we are working on https://issues.jboss.org/projects/DBZ/issues/DBZ-31[eliminating these limitations], it is often possible to work around them by starting a new MySQL replica server and populating it from the existing database. In this case, the new replica's binlog will contain information for all tables and records.
+
+== Sample usage
+
+Using the MySQL connector is straightforward. Here is an example of the configuration for a MySQL connector that monitors a MySQL server at port 3306 on 192.168.99.100, which we logically name `fullfillment`:
+
+[source,json]
+----
+{
+  "name": "inventory-connector",  // <1>
+  "config": {
+    "connector.class": "io.debezium.connector.mysql.MySqlConnector", // <2>
+    "database.hostname": "192.168.99.100", // <3>
+    "database.port": "3306", // <4>
+    "database.user": "replicator", // <5>
+    "database.password": "replpass", // <6>
+    "database.server.id": "184054", // <7>
+    "database.server.name": "fullfillment", // <8>
+    "database.binlog": "mysql-bin.000001", // <9>
+    "database.whitelist": "inventory", // <10>
+    "database.history.kafka.bootstrap.servers": "kafka:9092", // <11>
+    "database.history.kafka.topic": "schema-changes.inventory" // <12>
+  }
+}
+----
+<1> The name of our connector when we register it with a Kafka Connect service.
+<2> The name of this MySQL connector class.
+<3> The address of the MySQL server.
+<4> The port number of the MySQL server.
+<5> The name of the MySQL user that has privileges to read the binlog.
+<6> The password for the MySQL user that has privileges to read the binlog.
+<7> The identifier of the connector that must be unique within the MySQL cluster.
+<8> The logical name of the MySQL server/cluster, which forms a namespace since it is used in all the names of the Kafka topics to which the connector writes.
+<9> The name of the first binlog file that the connector should read.
+<10> A list of all databases hosted by this server that this connector will monitor. This is optional, and there are other properties for listing the databases and tables to include or exclude from monitoring.
+<11> The list of Kafka brokers that this connector will use to write and recover DDL statements to the database history topic.
+<12> The name of the database history topic where the connector will write and recover DDL statements.
+
+This configuration can be sent via POST to a running Kafka Connect service, which will then record the configuration and start up the one connector task that will connect to the MySQL database, read the binlog, and record events to Kafka topics.
+
+== Change event topics
+
+The MySQL connector writes events for all insert, update, and delete operations on a single table to a single Kafka topic. The name of the Kafka topics always takes the form _serverName_._databaseName_._tableName_, where _serverName_ is the logical name of the connector as specified with the `database.server.name` configuration property, _databaseName_ is the name of the database where the operation occurred, and _tableName_ is the name of the database table on which the operation occurred.
+
+For example, consider a MySQL installation with an `inventory` database that contains four tables: `products`, `products_on_hand`, `customers`, and `orders`. If the connector monitoring this database were given a logical server name of `fullfillment`, then the connector might produce events on these four Kafka topics:
+
+* `fullfillment.inventory.products`
+* `fullfillment.inventory.products_on_hand`
+* `fullfillment.inventory.customers`
+* `fullfillment.inventory.orders`
+
+The connector produces an event message for each row insert, update, or delete on the respective table. Every event message contains a _key_ that contains the values from the row's primary or unique key columns, and a _value_ that contains the new values for the row's columns (the value is `null` for delete events). Both the message key and value are both described with a Kafka Connect's Schema.
+
+For example, consider that the `products` table is defined with:
+
+[source,sql]
+----
+CREATE TABLE products (
+  id INTEGER NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(255) NOT NULL,
+  description VARCHAR(512),
+  weight FLOAT
+);
+ALTER TABLE products AUTO_INCREMENT = 101;
+----
+
+Then an insert or update to this table will have a message key structured similarly to this JSON representation:
+
+[source,json]
+----
+{
+  "schema": {
+    "type": "struct",
+    "fields": [
+      {
+        "type": "int32",
+        "optional": false,
+        "field": "id"
+      }
+    ],
+    "optional": false,
+    "name": "inventory.customers/pk"
+  },
+  "payload": {
+    "id": 1001
+  }
+}
+----
+
+and a message value structured similarly to this JSON representation:
+
+[source,json]
+----
+{
+  "schema": {
+    "type": "struct",
+    "fields": [
+      {
+        "type": "int32",
+        "optional": false,
+        "field": "id"
+      },
+      {
+        "type": "string",
+        "optional": false,
+        "field": "first_name"
+      },
+      {
+        "type": "string",
+        "optional": false,
+        "field": "last_name"
+      },
+      {
+        "type": "string",
+        "optional": false,
+        "field": "email"
+      }
+    ],
+    "optional": false,
+    "name": "inventory.customers"
+  },
+  "payload": {
+    "id": 1001,
+    "first_name": "Sally",
+    "last_name": "Thomas",
+    "email": "sally.thomas@acme.com"
+  }
+}
+----
+
+Again, if the entire message value is null, then the event signals the record was deleted.
+
+Note that the message key uses the primary or unique key of the record. If the table has no primary key or unique key, then an insert or update to this table will result in a message with no key and a value that contain the representation of the row's values. The connector does _not_ generate an event for a delete on a table with no primary or unique key.
+
+== Schema change topic
+
+The connector can optionally be configured to write out all DDL statements applied to databases in this server to a Kafka topic named _serverName_, where _serverName_ is the logical name of the connector as specified with the `database.server.name` configuration property. Each message written to this topic will have a message key that contains the name of the database to which the DDL statement(s) apply:
+
+[source,json]
+----
+{
+  "schema": {
+    "type": "string"
+  },
+  "payload": "inventory"
+}
+----
+
+while the message value will contain a JSON document containing the DDL statement(s) and the position in the binlog where the statement(s) appeared:
+
+[source,json]
+----
+{
+  "schema": {
+    "type": "string"
+  },
+  "payload": "{
+    "source": {},
+    "position": {},
+    "databaseName": "inventory",
+    "ddl": "CREATE TABLE products ( id INTEGER NOT NULL AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255) NOT NULL, description VARCHAR(512), weight FLOAT ); ALTER TABLE products AUTO_INCREMENT = 101;"
+  }"
+}
+----
+
+== Configuration
+
+=== Prerequisites
+
+The MySQL server must be configured to use a row-level binary log, similar to the following fragment of a MySQL server configuration file:
+
+[source]
+----
+server-id         = 223344
+log_bin           = mysql-bin
+expire_logs_days  = 10
+binlog_format     = row
+----
+
+The server ID and prefix is both arbitrary, so you can use whatever values you deem appropriate. The expiration should be long enough to ensure the connector can process all of the events as they are recorded by the database. Finally, the binlog format _must_ be `row`.
+
+Likewise, a MySQL user must be defined that has both "REPLICATION SLAVE" and "REPLICATION CLIENT" roles. This can be created with a statement similar to the following:
+
+    GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'replicator' IDENTIFIED BY 'replpass';
+
+This grant is equivalent to specifying any authenticating client on _any_ hosts, but this is not recommended for production. Instead, in production you would almost certainly limit the replication user to the machine(s) where the MySQL connector is running within a Kafka Connect service, such as `'replicator'@'connect.host.acme.com'`.
+
+=== Connector Configuration Properties
+
+The following configuration properties are _required_ unless a default value is available.
+
+[cols="35%a,10%a,55%a",options="header,footer",role="table table-bordered table-striped"]
+|=======================
+|Property
+|Default
+|Description
+
+|`name` 
+|
+|Unique name for the connector. Attempting to register again with the same name will fail. (This property is required by all Kafka Connect connectors.)
+
+|`connector.class` 
+|
+|The name of the Java class for the connector. Always use a value of `io.debezium.connector.mysql.MySqlConnector` for the MySQL connector.
+
+|`tasks.max` 
+|`1`
+|The maximum number of tasks that should be created for this connector. The MySQL connector always uses a single task and therefore does not use this value, so the default is always acceptable.
+
+|`database.hostname` 
+|
+|IP address or hostname of the MySQL database server.
+
+|`database.port` 
+|`3306`
+|Integer port number of the MySQL database server.
+
+|`database.user` 
+|
+|Name of the MySQL database to use when when connecting to the MySQL database server.
+
+|`database.password` 
+|
+|Password to use when when connecting to the MySQL database server.
+
+|`database.binlog` 
+|
+|The name of the first binlog file (including basename, number, and extension) on the MySQL server that should be processed by this connector. The MySQL server must be http://dev.mysql.com/doc/refman/5.7/en/replication-howto-masterbaseconfig.html[configured for replication], and this will include a `log_bin` configuration property that specifies the base name that will be used as the prefix for all binlog files.
+
+|`database.server.name` 
+|_host:port_
+|Logical name that identifies and provides a namespace for the particular MySQL database server/cluster being monitored. The logical name should be unique across all other connectors, since it is used as a prefix for all Kafka topic names eminating from this connector. Defaults to '_host_:_port_', where _host_ is the value of the `database.hostname` property and _port_ is the value of the `database.port` property, though we recommend using an explicit and meaningful logical name.
+
+|`database.server.id` 
+|_random_
+|A numeric ID of this database client, which must be unique across all currently-running database processes in the MySQL cluster. This connector joins the MySQL database cluster as another server (with this unique ID) so it can read the binlog. By default, a random number is generated between 5400 and 6400, though we recommend setting an explicit value.
+
+|`database.history.kafka.topic` 
+|
+|The full name of the Kafka topic where the connector will store the database schema history.
+
+|`database.history.kafka.bootstrap.servers` 
+|
+|A list of host/port pairs that the connector will use for establishing an initial connection to the Kafka cluster. This connection will be used to retrieving database schema history previously stored by the connector, and for writing each DDL statement read from the source database. This should point to the same Kafka cluster used by the Kafka Connect process.
+
+|`database.whitelist` 
+|_empty string_
+|An optional comma-separated list of database names to be monitored; any database name not included in the whitelist will be excluded from monitoring. By default all databases will be monitoried. May not be used with `database.blacklist`.
+
+|`database.blacklist` 
+|_empty string_
+|An optional comma-separated list of database names to be excluded from monitoring; any database name not included in the blacklist will be monitored. May not be used with `database.whitelist`.
+
+|`table.whitelist` 
+|_empty string_
+|An optional comma-separated list of identifiers for tables to be monitored; any table not included in the whitelist will be excluded from monitoring. Each identifer is of the form _databaseName_._tableName_. By default the connector will monitor every non-system table in each monitored database. May not be used with `table.blacklist`.
+
+|`table.blacklist` 
+|_empty string_
+|An optional comma-separated list of identifiers for tables to be excluded from monitoring; any table not included in the blacklist will be monitored. Each identifer is of the form _databaseName_._tableName_. May not be used with `table.whitelist`.
+
+|`include.schema.changes` 
+|`false`
+|Boolean value that specifies whether the connector should publish changes in the database schema to a Kafka topic with the same name as the database server ID. Each schema change will be recorded using a key that contains the database name and whose value includes the DDL statement(s). This is independent of how the connector internally records database history. The default is `false`.
+
+|`max.batch.size` 
+|`2048`
+|Positive integer value that specifies the maximum size of the blocking queue into which change events read from the database log are placed before they are written to Kafka. This queue can provide backpressure to the binlog reader when, for example, writes to Kafka are slower or if Kafka is not available. Events that appear in the queue are not included in the offsets periodically recorded by this connector. Defaults to 2048, and should always be larger than the maximum batch size specified in the `max.batch.size` property.
+
+|`max.queue.size` 
+|`1024`
+|Positive integer value that specifies the maximum size of each batch of events that should be processed during each iteration of this connector. Defaults to 1024.
+
+|`poll.interval.ms` 
+|`1000`
+|Positive integer value that specifies the number of milliseconds the connector should wait during each iteration for new change events to appear. Defaults to 1000 milliseconds, or 1 second.
+
+|`connect.timeout.ms` 
+|`30000`
+|A positive integer value that specifies the maximum time in milliseconds this connector should wait after trying to connect to the MySQL database server before timing out. Defaults to 30 seconds.
+|=======================
+
+
+The following _advanced_ configuration properties have good defaults that will work in most situations and therefore rarely need to be specified in the connector's configuration.
+
+[cols="35%a,10%a,55%a",width=100,options="header,footer",role="table table-bordered table-striped"]
+|=======================
+|Property
+|Default
+|Description
+
+|`connect.keep.alive` 
+|`true`
+|A boolean value that specifies whether a separate thread should be used to ensure the connection to the MySQL server/cluster is kept alive.
+
+|`table.ignore.builtin` 
+|`true`
+|Boolean value that specifies whether built-in system tables should be ignored. This applies regardless of the table whitelist or blacklists. By default system tables are excluded from monitoring, and no events are generated when changes are made to any of the system tables.
+
+|`database.history.kafka.recovery.poll.interval.ms` 
+|`100`
+|An integer value that specifies the maximum number of milliseconds the connector should wait during startup/recovery while polling for persisted data. The default is 100ms.
+
+|`database.history.kafka.recovery.attempts` 
+|`4`
+|The maximum number of times that the connector should attempt to read persisted history data before the connector recovery fails with an error. The maximum amount of time to wait after receiving no data is `recovery.attempts` x `recovery.poll.interval.ms`.
+|=======================
