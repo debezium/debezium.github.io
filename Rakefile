@@ -50,14 +50,10 @@ task :setup, [:env] => :init do |task, args|
   next if !which('awestruct').nil?
 
   if File.exist? 'Gemfile'
-    if args[:env] == 'local'
-      require 'fileutils'
-      FileUtils.remove_file 'Gemfile.lock', true
-      FileUtils.remove_dir '.bundle', true
-      system 'bundle install --binstubs=_bin --path=.bundle'
-    else
-      system 'bundle install'
-    end
+    require 'fileutils'
+    FileUtils.remove_file 'Gemfile.lock', true
+    FileUtils.remove_dir '.bundle', true
+    system 'bundle install --binstubs=_bin --path=.bundle'
   else
     if args[:env] == 'local'
       $install_gems.each do |gem|
