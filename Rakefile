@@ -41,7 +41,6 @@
 # Now you're Awestruct with rake!
 
 $use_bundle_exec = true
-$install_gems = ['awestruct -v "~> 0.5.0"', 'rb-inotify -v "~> 0.9.0"']
 $awestruct_cmd = nil
 task :default => :preview
 
@@ -49,24 +48,9 @@ desc 'Setup the environment to run Awestruct'
 task :setup, [:env] => :init do |task, args|
   next if !which('awestruct').nil?
 
-  if File.exist? 'Gemfile'
-    require 'fileutils'
-    FileUtils.remove_file 'Gemfile.lock', true
-    FileUtils.remove_dir '.bundle', true
-    system 'bundle install --binstubs=_bin --path=.bundle'
-  else
-    if args[:env] == 'local'
-      $install_gems.each do |gem|
-        msg "Installing #{gem}..."
-        system "gem install --bindir=_bin --install-dir=.bundle #{gem}"
-      end
-    else
-      $install_gems.each do |gem|
-        msg "Installing #{gem}..."
-        system "gem install #{gem}"
-      end
-    end
-  end
+  require 'fileutils'
+  FileUtils.remove_dir '.bundle', true
+  system 'bundle install --binstubs=_bin --path=.bundle'
   msg 'Run awestruct using `awestruct` or `rake`'
   # Don't execute any more tasks, need to reset env
   exit 0
@@ -74,11 +58,7 @@ end
 
 desc 'Update the environment to run Awestruct'
 task :update => :init do
-  if File.exist? 'Gemfile'
-    system 'bundle update'
-  else
-    system 'gem update awestruct'
-  end
+  system 'bundle update'
   # Don't execute any more tasks, need to reset env
   exit 0
 end
@@ -174,11 +154,11 @@ task :check => :init do
     require 'bundler'
     Bundler.setup
   rescue LoadError
-    $use_bundle_exec = false
+    $use_bundle_exec = true
   rescue StandardError => e
     msg e.message, :warn
     if which('awestruct').nil?
-      msg 'Run `rake setup` or `rake setup[local]` to install required gems from RubyGems.'
+      msg 'Run `rake setup` to install required gems from RubyGems.'
     else
       msg 'Run `rake update` to install additional required gems from RubyGems.'
     end
@@ -188,7 +168,14 @@ end
 
 # Execute Awestruct
 def run_awestruct(args)
-  system "#{$use_bundle_exec ? 'bundle exec ' : ''}awestruct #{args}" 
+  # used to bind Awestruct to 0.0.0.0
+  # do export BIND="-b 0.0.0.0"
+  if ENV['BIND'] && ENV['BIND'] != ''
+    augmented_args = "#{ENV['BIND']} #{args}"
+  else
+    augmented_args = "#{args}"
+  end
+  system "#{$use_bundle_exec ? 'bundle exec ' : ''}awestruct #{augmented_args}"   
 end
 
 # A cross-platform means of finding an executable in the $PATH.
