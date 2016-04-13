@@ -6,7 +6,11 @@ Our website is a community effort, and we welcome suggestions, fixes, improvemen
 
 You can talk to us in our [chat room for developers](https://gitter.im/debezium/dev) or on our [Google Group](https://groups.google.com/forum/#!forum/debezium). We do [track our issues for the website](https://issues.jboss.org/issues/?jql=project%20%3D%20DBZ%20AND%20component%20%3D%20website), so please report any problems or suggestions even if you're going to propose a fix. No issue is required for new blog posts, though.
 
-### Install the tools
+### Get set up
+
+Before you can work on the website, you first need to get everything set up.
+
+#### Install the tools
 
 The following software is required to work with the Debezium website and build it locally:
 
@@ -18,15 +22,15 @@ See the links above for installation instructions on your platform. You can veri
     $ git --version
     $ docker --version
 
-### GitHub account
+#### GitHub account
 
 Debezium uses [GitHub](GitHub.com) for its primary code repository and for pull-requests, so if you don't already have a GitHub account you'll need to [join](https://github.com/join).
 
-### Fork the Debezium website repository
+#### Fork the Debezium website repository
 
 Go to the [Debezium repository](https://github.com/debezium/debezium.io) and press the "Fork" button near the upper right corner of the page. When finished, you will have your own "fork" at `https://github.com/<your-username>/debezium.io`, and this is the repository to which you will push your proposed changes and create pull requests. For details, see the [GitHub documentation](https://help.github.com/articles/fork-a-repo/).
 
-### Clone your fork
+#### Clone your fork
 
 Next, you need to get the code onto your local machine. At a terminal, go to the directory in which you want the code, and run the following command to use HTTPS authentication:
 
@@ -57,7 +61,11 @@ You will frequently need to get all the of the changes that are made to the upst
 
 The first command fetches all changes on all branches, while the second actually updates your local `master` branch with the latest commits from the `upstream` repository.
 
-### Building locally
+### Build and make changes
+
+This section goes into detail about how you can build and edit the website locally using Docker, and how you can submit the changes via pull requests.
+
+#### Building locally
 
 To build the source code locally, checkout and update the `master` branch:
 
@@ -78,13 +86,13 @@ This cleans up any previously-generated files in the `_site` directory, (re)gene
 
 Note: If you're running Docker on Windows or OS X, you must use /docs/docker#port-forwarding[port forwarding] so that requests get forwarded properly to the Docker host virtual machine.
 
-### Changing the source
+#### Changing the source
 
 You can edit and change the source files at any time. For small modifications, Awestruct will often recognize the changes and then regenerate the affected static pages. However, this recognition may not work for additions, deletions, or even larger modifications. In this case, use CTRL-C to stop the Awestruct webserver in the Docker container, and rerun the same command:
 
     /site$ rm -rf _site/ ; bundle exec awestruct -d
 
-### Committing changes
+#### Committing changes
 
 Before you make any changes, be sure to switch to the `master` branch and pull the latest commits on the `master` branch from the upstream repository. Also, it's probably good to run a build and verify all tests pass *before* you make any changes.
 
@@ -108,7 +116,7 @@ which should then pop up an editor of your choice in which you should place a go
 
 Make sure you didn't break any other part of the website. 
 
-### Rebasing
+#### Rebasing
 
 If its been more than a day or so since you created your topic branch, we recommend *rebasing* your topic branch on the latest `master` branch. This requires switching to the `master` branch, pulling the latest changes, switching back to your topic branch, and rebasing:
 
@@ -153,6 +161,40 @@ and in your fork:
 
 (This last command is a bit strange, but it basically is pushing an empty branch (the space before the `:` character) to the named branch. Pushing an empty branch is the same thing as removing it.)
 
+### Site characteristics
+
+When you build the site, the Awestruct tools will generate all of the static files for the site and place them into a local `_site` directory. These are the only files that will appear on the public website.
+
+We want the site to have nice URLs, so Awestruct has an _indexer_ that will transform each file into a folder with the same root name as the file and placing the content into an `index.hmtl` inside that folder. For example, the content from the `/community.html.haml` source file is placed into the `_site/community/index.html` file, which can be viewed on the website with the URL `http://debezium.io/community`.
+
+### Common changes
+
+Some changes to the website are fairly common, so they're described here.
+
+#### Add a blog post
+
+Anyone can write a blog post that is related to Debezium. Simply add a new AsciiDoc file to the `blog` directory, including the date in the filename using the same format as the other files (e.g., "2016-03-18-title-of-blog-post.adoc"). The file should also contain a header like the following:
+
+    = Title Of Blog Post
+    rhauch
+    :awestruct-tags: [ mysql, sql ]
+    :awestruct-layout: blog-post
+
+The second line is the key to an entry in the `_config/authors.yml` file, so the first time be sure to add an entry for yourself (avatar images go in the `images` directory). Specify the appropriate lowercase tags, surrounding multi-word tags with double quotes. The `:awestruct-layout` line should remain the same.
+
+Then, rebuild the site and make sure your post is formatted correctly and appears in the [blog](http://debezium.io/blog/).
+
+#### Releasing software
+
+When a release is made, write a blog post and update the `_config/releases.yml` file. The site will use that file to automatically generate the information for the releases.
+
+#### Edit documentation
+
+All of the source files for the site's [docs](http://debezium.io/docs/) are in the `docs` directory, which is structured identically to the URLs of the site (although the source files are _indexified_ as described above). Most of the time you will simply edit one of the existing files. If you want to add a new file, however, be sure that it is referenced in the [docs](http://debezium.io/docs/) table of contents defined in the `_partials/leftcol-doc.html.haml` file.
+
+#### Update the front page
+
+The site's main page is located in the `/index.html.haml` file.
 
 ### Summary
 
