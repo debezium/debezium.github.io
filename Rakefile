@@ -73,16 +73,15 @@ task :gen => :check do
   run_awestruct '-P development -g --force'
 end
 
-desc 'Push local commits to origin/master'
+desc 'Push local commits to upstream/master'
 task :push do
-  system 'git push origin master'
+  system 'git push upstream master'
 end
 
 #desc 'Generate the site and deploy to production'
-# TODO: This will need to be tweaked a bit for our site, we may need to shell out to a system command
-#task :deploy => [:check, :push] do
-  #run_awestruct '-P production -g --force --deploy'
-#end
+task :deploy => [:check, :push] do
+  run_awestruct '-P production -g --force --deploy'
+end
 
 #desc 'Generate site from Travis CI and, if not a pull request, publish site to production (GitHub Pages)'
 #task :travis => :check do
