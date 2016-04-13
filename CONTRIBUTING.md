@@ -80,7 +80,11 @@ This command will start a container using the `debezium/awestruct` Docker image,
 
 Next, at the command line of that container run the following command:
 
-    /site$ rm -rf _site/ ; bundle exec awestruct -d
+    /site$ rake setup
+
+This downloads all of the Ruby Gems that are required to build the site. Once this completes successfully, run the following command:
+
+    /site$ rake clean preview
 
 This cleans up any previously-generated files in the `_site` directory, (re)generates the files for the website, and runs a local webserver to access the site by pointing your browser to http://localhost:4242[http://localhost:4242].
 
@@ -90,7 +94,7 @@ Note: If you're running Docker on Windows or OS X, you must use /docs/docker#por
 
 You can edit and change the source files at any time. For small modifications, Awestruct will often recognize the changes and then regenerate the affected static pages. However, this recognition may not work for additions, deletions, or even larger modifications. In this case, use CTRL-C to stop the Awestruct webserver in the Docker container, and rerun the same command:
 
-    /site$ rm -rf _site/ ; bundle exec awestruct -d
+    /site$ rake clean preview
 
 #### Committing changes
 
