@@ -73,9 +73,9 @@ task :gen => :check do
   run_awestruct '-P development -g --force'
 end
 
-desc 'Push local commits to upstream/master'
+desc 'Push local commits to upstream/develop'
 task :push do
-  system 'git push upstream master'
+  system 'git push upstream develop'
 end
 
 #desc 'Generate the site and deploy to production'
