@@ -47,7 +47,7 @@ If you are running on Linux, you can proceed to step 4.
 If you are running on Windows or OS X and are using Docker Machine or Boot2Docker to run the Docker host, then the container is running in a virtual machine. Although you can point your browser to the correct IP address, the generated site (at least in development mode) assumes a base URL of [http://localhost:4242]() and thus links will not work. Instead, use the following command to forward port 4242 on your local machine to the virtual machine. For Docker Machine, start a new terminal and run the following commands:
 
     $ eval $(docker-machine env)
-    $ docker-machine ssh default -vnNTL *:4242:$(docker-machine ip):4242
+    $ docker-machine ssh default -vnNTL *:4242:$(docker-machine ip default):4242
 
 or, for Boot2Docker:
 
