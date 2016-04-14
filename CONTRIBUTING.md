@@ -1,6 +1,6 @@
 ## Contribute to Debezium's website
 
-Our website is a community effort, and we welcome suggestions, fixes, improvements, and even new blog posts related to Debezium. The website is statically generated from [source code](https://github.com/debezium/debezium.io) using [Awestruct](http://awestruct.org) and [Bootstrap](http://twitter.github.com/bootstrap). This document outlines the basic steps require to get the latest source code for the website, modify it, test it locally, and create pull requests. And, yes, this process is intentionally very similar to how we [contribute code](https://github.com/debezium/debezium/blob/master/CONTRIBUTE.md).
+Our website is a community effort, and we welcome suggestions, fixes, improvements, and even new blog posts related to Debezium. The website is statically generated from [source code](https://github.com/debezium/debezium.io) using [Awestruct](http://awestruct.org) and [Bootstrap](http://twitter.github.com/bootstrap). This document outlines the basic steps require to get the latest source code for the website, modify it, test it locally, and create pull requests. And, yes, this process is intentionally very similar to how we [contribute code](https://github.com/debezium/debezium/blob/develop/CONTRIBUTE.md).
 
 ### Talk to us
 
@@ -28,17 +28,17 @@ Debezium uses [GitHub](GitHub.com) for its primary code repository and for pull-
 
 #### Fork the Debezium website repository
 
-Go to the [Debezium repository](https://github.com/debezium/debezium.io) and press the "Fork" button near the upper right corner of the page. When finished, you will have your own "fork" at `https://github.com/<your-username>/debezium.io`, and this is the repository to which you will push your proposed changes and create pull requests. For details, see the [GitHub documentation](https://help.github.com/articles/fork-a-repo/).
+Go to the [Debezium repository](https://github.com/debezium/debezium.github.io) and press the "Fork" button near the upper right corner of the page. When finished, you will have your own "fork" at `https://github.com/<your-username>/debezium.github.io`, and this is the repository to which you will push your proposed changes and create pull requests. For details, see the [GitHub documentation](https://help.github.com/articles/fork-a-repo/).
 
 #### Clone your fork
 
 Next, you need to get the code onto your local machine. At a terminal, go to the directory in which you want the code, and run the following command to use HTTPS authentication:
 
-    $ git clone https://github.com/<your-username>/debezium.git
+    $ git clone https://github.com/<your-username>/debezium.github.git
 
 If you prefer to use SSH and have [uploaded your public key to your GitHub account](https://help.github.com/articles/adding-a-new-ssh-key-to-your-github-account/), you can instead use SSH:
 
-    $ git clone git@github.com:<your-username>/debezium.git
+    $ git clone git@github.com:<your-username>/debezium.github.git
 
 This will create a `debezium.io` directory, so change into that directory:
 
@@ -46,9 +46,9 @@ This will create a `debezium.io` directory, so change into that directory:
 
 This repository knows about your fork, but it doesn't yet know about the official or ["upstream" Debezium.io repository](https://github.com/debezium/debezium.io). Run the following commands:
 
-    $ git remote add upstream https://github.com/debezium/debezium.io.git
+    $ git remote add upstream https://github.com/debezium/debezium.github.io.git
     $ git fetch upstream
-    $ git branch --set-upstream-to=upstream/master master
+    $ git branch --set-upstream-to=upstream/develop develop
 
 Now, when you check the status using Git, it will compare your local repository to the *upstream* repository.
 
@@ -57,9 +57,9 @@ Now, when you check the status using Git, it will compare your local repository 
 You will frequently need to get all the of the changes that are made to the upstream repository, and you can do this with these commands:
 
     $ git fetch upstream
-    $ git pull upstream master
+    $ git pull upstream develop
 
-The first command fetches all changes on all branches, while the second actually updates your local `master` branch with the latest commits from the `upstream` repository.
+The first command fetches all changes on all branches, while the second actually updates your local `develop` branch with the latest commits from the `upstream` repository.
 
 ### Build and make changes
 
@@ -67,22 +67,22 @@ This section goes into detail about how you can build and edit the website local
 
 #### Building locally
 
-To build the source code locally, checkout and update the `master` branch:
+To build the source code locally, checkout and update the `develop` branch:
 
-    $ git checkout master
-    $ git pull upstream master
+    $ git checkout develop
+    $ git pull upstream develop
 
-Then use Docker to run a container with the Awestruct tooling. Start a new terminal, configure it with the Docker environment (if required), and run the following command:
+Then use Docker to run a container that initializes the Awestruct tooling. Start a new terminal, configure it with the Docker environment (if required), and run the following command:
+
+    $ docker run -it --rm -p 4242:4242 -v $(pwd):/site debezium/awestruct setup
+
+This should download all of the Ruby Gems the tooling uses, as defined in the `Gemfile` file. After it completes, run a container using the same image but with a different command:
 
     $ docker run -it --rm -p 4242:4242 -v $(pwd):/site debezium/awestruct bash
 
 This command will start a container using the `debezium/awestruct` Docker image, first downloading the image if necessary. It also mounts the current directory (where the website code is located) into the container's `/site` directory. 
 
 Next, at the command line of that container run the following command:
-
-    /site$ rake setup
-
-This downloads all of the Ruby Gems that are required to build the site. Once this completes successfully, run the following command:
 
     /site$ rake clean preview
 
@@ -98,10 +98,10 @@ You can edit and change the source files at any time. For small modifications, A
 
 #### Committing changes
 
-Before you make any changes, be sure to switch to the `master` branch and pull the latest commits on the `master` branch from the upstream repository. Also, it's probably good to run a build and verify all tests pass *before* you make any changes.
+Before you make any changes, be sure to switch to the `develop` branch and pull the latest commits on the `develop` branch from the upstream repository. Also, it's probably good to run a build and verify all tests pass *before* you make any changes.
 
-    $ git checkout master
-    $ git pull upstream master
+    $ git checkout develop
+    $ git pull upstream develop
     $ mvn clean install
 
 Once everything builds, create a *topic branch* named appropriately (we recommend using the issue number, such as `DBZ-1234`):
@@ -122,14 +122,14 @@ Make sure you didn't break any other part of the website.
 
 #### Rebasing
 
-If its been more than a day or so since you created your topic branch, we recommend *rebasing* your topic branch on the latest `master` branch. This requires switching to the `master` branch, pulling the latest changes, switching back to your topic branch, and rebasing:
+If its been more than a day or so since you created your topic branch, we recommend *rebasing* your topic branch on the latest `develop` branch. This requires switching to the `develop` branch, pulling the latest changes, switching back to your topic branch, and rebasing:
 
-    $ git checkout master
-    $ git pull upstream master
+    $ git checkout develop
+    $ git pull upstream develop
     $ git checkout DBZ-1234
-    $ git rebase master
+    $ git rebase develop
 
-If your changes are compatible with the latest changes on `master`, this will complete and there's nothing else to do. However, if your changes affect the same files/lines as other changes have since been merged into the `master` branch, then your changes conflict with the other recent changes on `master`, and you will have to resolve them. The git output will actually tell you you need to do (e.g., fix a particular file, stage the file, and then run `git rebase --continue`), but if you have questions consult Git or GitHub documentation or spend some time reading about Git rebase conflicts on the Internet.
+If your changes are compatible with the latest changes on `develop`, this will complete and there's nothing else to do. However, if your changes affect the same files/lines as other changes have since been merged into the `develop` branch, then your changes conflict with the other recent changes on `develop`, and you will have to resolve them. The git output will actually tell you you need to do (e.g., fix a particular file, stage the file, and then run `git rebase --continue`), but if you have questions consult Git or GitHub documentation or spend some time reading about Git rebase conflicts on the Internet.
 
 ### Creating a pull request
 
@@ -210,4 +210,4 @@ Here's a quick check list for a good pull request (PR):
 * One feature/change per PR
 * No changes not directly related to your change (e.g. no formatting changes or refactoring to existing code, if you want to refactor/improve existing code that's a separate discussion and separate JIRA issue)
 * A full build completes succesfully
-* Do a rebase on upstream `master`
+* Do a rebase on upstream `develop`
