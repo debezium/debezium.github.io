@@ -78,18 +78,18 @@ task :push do
   system 'git push upstream develop'
 end
 
-#desc 'Generate the site and deploy to production'
+desc 'Generate the site and deploy to production'
 task :deploy => [:check, :push] do
   run_awestruct '-P production -g --force --deploy'
 end
 
-#desc 'Generate site from Travis CI and, if not a pull request, publish site to production (GitHub Pages)'
-#task :travis => :check do
-  ## if this is a pull request, do a simple build of the site and stop
-  #if ENV['TRAVIS_PULL_REQUEST'] == '1' || ENV['TRAVIS_PULL_REQUEST'] == 'true'
-    #run_awestruct '-P production -g'
-    #next
-  #end
+desc 'Generate site from Travis CI and, if not a pull request, publish site to production (GitHub Pages)'
+task :travis => :check do
+  # if this is a pull request, do a simple build of the site and stop
+  if ENV['TRAVIS_PULL_REQUEST'] == '1' || ENV['TRAVIS_PULL_REQUEST'] == 'true'
+    run_awestruct '-P production -g'
+    next
+  end
 
   #require 'yaml'
 
@@ -111,7 +111,7 @@ end
   #system 'git branch master origin/master'
   #run_awestruct '-P production -g --deploy'
   #File.delete '.git/credentials'
-#end
+end
 
 desc 'Clean out generated site and temporary files'
 task :clean, :spec do |task, args|
