@@ -93,11 +93,8 @@ task :travis => :check do
   end
 
   repo = %x(git config remote.origin.url).gsub(/^git:/, 'https:')
-  deploy_branch = 'gh-pages'
-  if repo.match(/github\.com\.git$/)
-    deploy_branch = 'master'
-  end
-  msg 'Building #{deploy_branch} branch using production profile...'
+  deploy_branch = 'master'
+  msg "Building '#{deploy_branch}' branch using production profile..."
   system "git remote set-url --push origin #{repo}"
   system "git remote set-branches --add origin #{deploy_branch}"
   system 'git fetch -q'
@@ -111,6 +108,7 @@ task :travis => :check do
     f.write("https://#{ENV['GH_TOKEN']}:x-oauth-basic@github.com")
   end
   system "git branch #{deploy_branch} origin/#{deploy_branch}"
+  system "git status"
   run_awestruct '-P production -g --deploy'
   File.delete '.git/credentials'
 end
