@@ -33,7 +33,7 @@ Awestruct::Extensions::Pipeline.new do
   extension Awestruct::Extensions::TagCloud.new(:posts, '/blog/tags/index.html')
 
   # Indexifier moves HTML files to their own directory to achieve "pretty" URLs (e.g., docs.html -> /docs/index.html)
-  extension Awestruct::Extensions::Indexifier.new
+  extension Awestruct::Extensions::Indexifier.new([/\/404.html/]) # don't indexify 404 page
 
   extension Awestruct::Extensions::Atomizer.new(:posts, '/blog.atom', {:feed_title=>'Debezium Blog', :template=>'_layouts/atom.xml.haml'})
 
