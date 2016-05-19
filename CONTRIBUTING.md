@@ -86,9 +86,9 @@ Next, at the command line of that container run the following command:
 
     /site$ rake clean preview
 
-This cleans up any previously-generated files in the `_site` directory, (re)generates the files for the website, and runs a local webserver to access the site by pointing your browser to http://localhost:4242[http://localhost:4242].
+This cleans up any previously-generated files in the `_site` directory, (re)generates the files for the website, and runs a local webserver to access the site by pointing your browser to [http://localhost:4242]().
 
-Note: If you're running Docker on Windows or OS X, you must use /docs/docker#port-forwarding[port forwarding] so that requests get forwarded properly to the Docker host virtual machine.
+Note: If you're running Docker on Windows or OS X, you must use [port forwarding](http://debezium.io/docs/docker#port-forwarding) so that requests get forwarded properly to the Docker host virtual machine.
 
 #### Changing the source
 
