@@ -34,17 +34,17 @@ Go to the [Debezium repository](https://github.com/debezium/debezium.github.io) 
 
 Next, you need to get the code onto your local machine. At a terminal, go to the directory in which you want the code, and run the following command to use HTTPS authentication:
 
-    $ git clone https://github.com/<your-username>/debezium.github.git
+    $ git clone https://github.com/<your-username>/debezium.github.io.git
 
 If you prefer to use SSH and have [uploaded your public key to your GitHub account](https://help.github.com/articles/adding-a-new-ssh-key-to-your-github-account/), you can instead use SSH:
 
-    $ git clone git@github.com:<your-username>/debezium.github.git
+    $ git clone git@github.com:<your-username>/debezium.github.io.git
 
-This will create a `debezium.io` directory, so change into that directory:
+This will create a `debezium.github.io` directory, so change into that directory:
 
-    $ cd debezium.io
+    $ cd debezium.github.io
 
-This repository knows about your fork, but it doesn't yet know about the official or ["upstream" Debezium.io repository](https://github.com/debezium/debezium.io). Run the following commands:
+This repository knows about your fork, but it doesn't yet know about the official or ["upstream" Debezium.io repository](https://github.com/debezium/debezium.github.io). Run the following commands:
 
     $ git remote add upstream https://github.com/debezium/debezium.github.io.git
     $ git fetch upstream
