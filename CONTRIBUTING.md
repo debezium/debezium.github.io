@@ -75,6 +75,8 @@ To build the source code locally, checkout and update the `develop` branch:
 Then use Docker to run a container that initializes the Awestruct tooling. Start a new terminal, configure it with the Docker environment (if required), and run the following command:
 
     $ docker run -it --rm -p 4242:4242 -v $(pwd):/site debezium/awestruct setup
+    
+*Note:* Some times you may wish to use the `root` user of your linux machine to run docker (as docker needs elevated privileges to run). It's probably a better idea to run docker containers while [running as a user other than root and using sudo](http://www.projectatomic.io/blog/2015/08/why-we-dont-let-non-root-users-run-docker-in-centos-fedora-or-rhel/) or adding the [user to the group that has privileges](https://developer.fedoraproject.org/tools/docker/docker-installation.html) to run docker. When you checkout the code for this project don't clone the source code and try running this command as the `root` user. When you do this, all of the code (and the entire folder) then gets owned by the `root` user. The reason why this is undesirable is when we run `docker run -v $(pwd):/site` we are actually mounting the local file system where the source code lives _into_ the docker container. If this directory is owned by `root`, the image cannot create the necessary directories for running `rake` and `bundle`.     
 
 This should download all of the Ruby Gems the tooling uses, as defined in the `Gemfile` file. After it completes, run a container using the same image but with a different command:
 
@@ -88,7 +90,10 @@ Next, at the command line of that container run the following command:
 
 This cleans up any previously-generated files in the `_site` directory, (re)generates the files for the website, and runs a local webserver to access the site by pointing your browser to [http://localhost:4242]().
 
-Note: If you're running Docker on Windows or OS X, you must use [port forwarding](http://debezium.io/docs/docker#port-forwarding) so that requests get forwarded properly to the Docker host virtual machine.
+Note: If you're running Docker on Windows or OS X, you must use [port forwarding](http://debezium.io/docs/docker#port-forwarding) so that requests get forwarded properly to the Docker host virtual machine. For example, to port forward when using a Vagrant based VM (virtualbox, etc), you can port forward the `4242` port easily like this:
+
+
+    vagrant ssh -- -vnNTL *:4242:$DOCKER_HOST_IP:4242
 
 #### Changing the source
 
