@@ -8,6 +8,7 @@ require 'symlinker'
 require 'breadcrumb'
 require 'autotag'
 require 'authors_helper'
+require 'redirect_creator'
 #require 'releases'
 
 Awestruct::Extensions::Pipeline.new do
@@ -36,6 +37,8 @@ Awestruct::Extensions::Pipeline.new do
   extension Awestruct::Extensions::Indexifier.new([/\/404.html/]) # don't indexify 404 page
 
   extension Awestruct::Extensions::Atomizer.new(:posts, '/blog.atom', {:feed_title=>'Debezium Blog', :template=>'_layouts/atom.xml.haml'})
+
+  extension Awestruct::Extensions::RedirectCreator.new("redirects")
 
   #extension Release.new
 end

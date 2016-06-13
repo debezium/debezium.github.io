@@ -3,22 +3,729 @@
 :linkattrs:
 :icons: font
 :source-highlighter: highlight.js
+:debezium-version: 0.2.1
 
-The MySQL connector allows Debezium to monitor and record all of the row-level changes in the databases on a single MySQL server cluster. The connector reads the http://dev.mysql.com/doc/refman/5.7/en/binary-log.html[MySQL server's binlog], which is part of http://dev.mysql.com/doc/refman/5.7/en/replication.html[MySQL's replication mechanism] and which contains all of the changes made to the database schemas and to the data. All inserts, updates and deletes are then recorded as events in separate Kafka topics for each table.
+Debezium's MySQL Connector can monitor and record all of the row-level changes in the databases on a MySQL server or HA MySQL cluster. The first time it connects to a MySQL server/cluster, it reads a consistent snapshot of all of the databases. When that snapshot is complete, the connector continuously reads the changes that were committed to MySQL and generates corresponding insert, update and delete events. All of the events for each table are recorded in a separate Kafka topic, where they can be easily consumed by applications and services.
 
-== Features
+[[overview]]
+== Overview
 
-MySQL has the ability to record in its _binary log_, or _binlog_, all operations in the same order they are committed by the database. In fact, this is the mechanism by which MySQL can be replicated across multiple machines: the master database records the operations in its binlog, and replica servers read the master's binlog and apply every operation to itself. The binlog is also an essential component of MySQL database recovery, since the binary log can be used after a backup has been restored to bring databases up to date from the point of the backup. Running a server with binary logging enabled will slightly reduce performance, although the benefits of the binary log in enabling replication and database recovery outweigh this minor performance decrement.
+MySQL's http://dev.mysql.com/doc/refman/5.7/en/binary-log.html[_binary log_], or _binlog_, records all operations in the same order they are committed by the database, including changes to the schemas of tables or changes to data stored within the tables. MySQL uses its binlog for replication and recovery. 
 
-Debezium's MySQL connector reads the same binary log produced by MySQL to understand what and in what order data has changed. It then produces for every row-level insert, update, and delete operations _change events_ and records these to a separate Kafka topic for each table. Your client applications can therefore simply read those Kafka topics that correspond to the database tables its interested in following, and react to every row-level event it sees in those topics.
+Debezium's MySQL connector reads MySQL's binary log to understand what and in what order data has changed. It then produces a _change event_ for every row-level insert, update, and delete operation in the binlog, recording all the change events for each table in a separate Kafka topic. Your client applications read the Kafka topics that correspond to the database tables it's interested in following, and react to every row-level event it sees in those topics.
 
-When a database client queries a database, it uses the database's current schema. However, the database schema can be changed at any time, which means that the connector must know what the schema looked like at the time each insert, update, or delete operation is _recorded_. Luckily, MySQL includes in the binlog not only the row-level changes to the data but also the DDL statements as they are applied to the database. As the connector reads the binlog and comes across these DDL statements, it parses them and updates an in-memory representation of each table's schema, which is then used to understand the structure of the tables at the time each insert, update, or delete occurs and to produce the appropriate change event. It also records in a separate _database history_ Kafka topic all of the DDL statements along with the position in the binlog where each DDL statement appeared.
+MySQL is usually set up to purge the binary logs after some period of time. This means that the binary log won't have the complete history of all changes that have been made to the database. Therefore, when the MySQL connector first connects to a particular MySQL sever or cluster, it starts by performing a _consistent snapshot_ of each of the databases. When the connector completes the snapshot, it then starts reading the binlog from the exact point at which the snapshot was made. This way, we start with a consistent view of all of the data, yet continue reading without having lost any of the changes made while the snapshot was being made.
 
-When the connector restarts after having crashed or been stopped gracefully, the connector will start reading the binlog from a specific position (or point in time). The connector has to rebuild the table structures that existed at this point in time, so it simply reads the database history Kafka topic and parses all DDL statements up until the point in the binlog where the connector is starting.
+The connector is also very tolerant of failures. As the connector reads the binlog and produces events, it records the binlog position with each event. If the connector stops for any reason (including communication failures, network problems, or crashes), upon restart it simply continues reading the binlog where it last left off. This includes snapshots: if the snapshot was not completed when the connector is stopped, upon restart it will begin a new snapshot. We'll talk later about how the connector behaves link:#when-things-go-wrong[when things go wrong].
 
-The connector's reliance upon the binlog does mean the connector is limited to the data it can read from the binary log. MySQL may be configured to remove older portions of the binary log to save space. Additionally, some tables and data may have been created before the binlog was enabled on the server, in which case the DDL statements for those tables do not appear in the log and thus cannot be read. Although we are working on https://issues.jboss.org/projects/DBZ/issues/DBZ-31[eliminating these limitations], it is often possible to work around them by starting a new MySQL replica server and populating it from the existing database. In this case, the new replica's binlog will contain information for all tables and records.
 
-== Sample usage
+[[setting-up-mysql]]
+== Setting up MySQL
+
+Before the Debezium MySQL connector can be used to monitor the changes committed on a MySQL server, the server must be set up to use _row-level binary logging_ and have a database user with appropriate privileges. If MySQL is configured to use global transaction identifiers (GTIDs), then the Debezium connector can more easily reestablish connection should one of the MySQL servers fail. 
+
+The following sections outline in more detail how to set up these features in MySQL.
+
+[[enabling-the-binlog]]
+=== Enabling the binlog
+
+The MySQL server must be configured to use a _row-level_ binary log, which is described in more detail in the http://dev.mysql.com/doc/refman/5.7/en/replication-options.html[MySQL documentation]. This is most often done in the MySQL server configuration file, and will look similar to the following fragement:
+
+[source]
+----
+server-id         = 223344
+log_bin           = mysql-bin
+binlog_format     = row
+expire_logs_days  = 10
+----
+
+where:
+
+* the value for http://dev.mysql.com/doc/refman/5.7/en/server-system-variables.html#sysvar_server_id[`server-id`] must be unique for each server and replication client within the MySQL cluster. When we set up the connector, we'll also assign the connector a unique server ID.
+* the value for http://dev.mysql.com/doc/refman/5.7/en/replication-options-binary-log.html#sysvar_log_bin[`log_bin`] is the base name for the sequence of binlog files.
+* the value for http://dev.mysql.com/doc/refman/5.7/en/replication-options-binary-log.html#sysvar_binlog_format[`binlog_format`] must be set to `row` or `ROW`.
+* the value for http://dev.mysql.com/doc/refman/5.7/en/server-system-variables.html#sysvar_expire_logs_days[`expire_log_days`] is the number of days for automatic binary log file removal. The default is 0, which means "no automatic removal," so be sure to set a value that is appropriate for your environment.
+
+[TIP]
+====
+Running a MySQL server with binary logging enabled does slightly reduce performance of the MySQL server, but the benefits generally outweigh the costs. Each binlog reader will also place a small load on the server, so using Debezium is a great way to minimize this load while providing the change events to a large variety and number of consumers.
+====
+
+
+[[enabling-gtids]]
+[[enabling-gtids-optional]]
+=== Enabling GTIDs (optional)
+
+The MySQL server can be configured to use https://dev.mysql.com/doc/refman/5.6/en/replication-gtids.html[GTID-based replication]. Global transaction identifiers, or GTIDs, were introduced in MySQL 5.6.5, and they uniquely identify a transaction that occurred on a particular server within a cluster. Using GTIDs greatly simplifies replication and makes it possible to easily confirm whether masters and slaves are consistent. Enabling GTIDs can be done in the MySQL server configuration file, and will look similar to the following fragement:
+
+[source]
+----
+gtid_mode                 = on
+enforce_gtid_consistency  = on
+----
+
+where:
+
+* the value for https://dev.mysql.com/doc/refman/5.6/en/replication-options-gtids.html#option_mysqld_gtid-mode[`gtid_mode`] specifies the GTID mode of the MySQL server.
+* the value for https://dev.mysql.com/doc/refman/5.6/en/replication-options-gtids.html[`enforce_gtid_consistency`] instructs the server to enforce GTID consistency by allowing execution of only those statements that can be logged in a transactionally safe manner, and is required when using GTIDs.
+
+Consult the https://dev.mysql.com/doc/refman/5.6/en/replication-options-gtids.html#option_mysqld_gtid-mode[MySQL documentation] for details and specifics about setting up GTIDs.
+
+[TIP]
+====
+The MySQL connector does not require MySQL to use GTIDs and GTID-based replication. Each time the connector starts up, it will automatically detect whether it is enabled and adjust its behavior accordingly.
+====
+
+[[mysql-user]]
+[[create-a-mysql-user-for-the-connector]]
+=== Create a MySQL user for the connector
+
+A MySQL user must be defined that has all of the following permissions on all of the databases that the connector will monitor:
+
+* http://dev.mysql.com/doc/refman/5.7/en/privileges-provided.html#priv_select[`SELECT`] - enables the connector to select rows from tables in databases; used only when performing a snapshot
+* http://dev.mysql.com/doc/refman/5.7/en/privileges-provided.html#priv_reload[`RELOAD`] - enables the connector of the http://dev.mysql.com/doc/refman/5.7/en/flush.html[`FLUSH`] statement to clear or reload various internal caches, flush tables, or acquire locks; used only when performing a snapshot
+* http://dev.mysql.com/doc/refman/5.7/en/privileges-provided.html#priv_show-databases[`SHOW DATABASES`] - enables the connector to see database names by issuing the `SHOW DATABASE` statement; used only when performing a snapshot
+* http://dev.mysql.com/doc/refman/5.7/en/privileges-provided.html#priv_replication-slave[`REPLICATION SLAVE`] - enables the connector to connect to and read the binlog of its MySQL server; always required for the connector
+* http://dev.mysql.com/doc/refman/5.7/en/privileges-provided.html#priv_replication-client[`REPLICATION CLIENT`] - enables the use of `SHOW MASTER STATUS`, `SHOW SLAVE STATUS`, and `SHOW BINARY LOGS`; always required for the connector
+
+For example, the following statement grants these permissions for a user `debezium` that authenticates with the password `dbz`, where the user can be on any machine:
+
+    GRANT SELECT, RELOAD, SHOW DATABASES, REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'debezium' IDENTIFIED BY 'dbz';
+
+[WARNING]
+====
+Choose a good password that is different from what we use above.
+
+Also, the above grant is equivalent to specifying any authenticating client on _any_ hosts, so obviously this is not recommended for production. Instead, in production you would almost certainly limit the replication user to the machine(s) where the MySQL connector is running within a Kafka Connect service, such as `... 'debezium'@'connect.host.acme.com' ...`.
+====
+
+
+
+[[supported-mysql-topologies]]
+== Supported MySQL topologies
+
+The MySQL connector can be used with a variety of MySQL topologies.
+
+[[mysql-standalone]]
+=== MySQL standalone
+
+When a single MySQL server is used by itself, then that server must have the binlog enabled (and optionally GTIDs enabled) so that the MySQL connector can be able to monitor it. This is often acceptable, since the binary log can also be used as an http://dev.mysql.com/doc/refman/5.7/en/backup-methods.html[incremental backup]. In this case, the MySQL connector will always connect to and follow this standalone MySQL server instance.
+
+[[mysql-master-and-slave]]
+=== MySQL master and slave
+
+http://dev.mysql.com/doc/refman/5.7/en/replication-solutions.html[MySQL replication] can be used to set up a cluster of MySQL instances, where one of the MySQL server instances is considered the _master_ and the other(s) a _slave_. Topologies can include single master with single slave, single master with multiple slaves, and multiple masters with multiple slaves. Which you choose will depend on your requirements, your backup and recovery strategy, and how you are scaling MySQL to handle large data volumes and queries. 
+
+To use the MySQL connector with one of these topologies, the connector can follow one of the masters or one of the slaves (if that slave has its binlog enabled), but the connector will see only those changes in the cluster that are visible to that server. Generally, this is not a problem except for the multi-master topologies. 
+
+The connector records its position in the server's binlog, which is different on each server in the cluster. Therefore, the connector will need to follow just one MySQL server instance. If that server fails, it must be restarted or recovered before the connector can continue.
+
+
+[[ha-mysql-clusters]]
+[[highly-available-mysql-clusters]]
+=== Highly Available MySQL clusters
+
+A https://dev.mysql.com/doc/mysql-ha-scalability/en/[variety of high availability solutions] exist for MySQL, and they make it far easier to tolerate and almost immediately recover from problems and failures. Most HA MySQL clusters use GTIDs so that slaves are able to keep track of all changes on any of the master.
+
+Using the MySQL connector with a highly-available MySQL cluster is now possible with Debezium 0.2, as long as GTIDs are enabled in the MySQL cluster. When this is the case, the MySQL connector can connect to any of the servers that have a binlog enabled, and upon startup the connector uses the GTIDs to identify where in that server's binlog it should begin reading. 
+
+When the cluster is fronted by a load balancer with a single hostname, the connector can be configured to connect using that host. Upon startup, the connector establishes a connection with one of the load balanced servers, and continues to use it until the connector is stopped/rebalanced or until communication fails. At that point, the connector need only be restarted, and it will connect to one of the servers in the cluster and continue reading the binlog.
+
+[[how-it-works]]
+[[how-the-mysql-connector-works]]
+== How the MySQL connector works
+
+This section goes into detail about how the MySQL connector tracks the structure of the tables, performs snapshots, transform binlog events into Debezium change events, where those events are recorded in Kafka, and how the connector behaves when things go wrong.
+
+[[database-schema-history]]
+=== Database schema history
+
+When a database client queries a database, it uses the database's current schema. However, the database schema can be changed at any time, which means that the connector must know what the schema looked like at the time each insert, update, or delete operation is _recorded_. It can't just use the current schema, either, since it may be processing events that are relatively old and may have been recorded before the tables' schemas were changed. Luckily, MySQL includes in the binlog the row-level changes to the data _and_ the DDL statements that are applied to the database. As the connector reads the binlog and comes across these DDL statements, it parses them and updates an in-memory representation of each table's schema, which is then used to understand the structure of the tables at the time each insert, update, or delete occurs and to produce the appropriate change event. It also records in a separate _database history_ Kafka topic all of the DDL statements along with the position in the binlog where each DDL statement appeared.
+
+When the connector restarts after having crashed or been stopped gracefully, the connector will start reading the binlog from a specific position (i.e., a specific point in time). The connector rebuilds the table structures that existed _at this point in time_ by reading the database history Kafka topic and parsing all DDL statements up until the point in the binlog where the connector is starting.
+
+This database history topic is for connector use only, but the connector can optionally generate _schema change events_ on a different topic that is intended for consumer applications. We'll cover this in the link:#schema-change-topic[Schema Change Topic] section.
+
+
+[[snapshots]]
+=== Snapshots
+
+When a MySQL connector that is configured to follow a MySQL server instance is first started, it will by default perform an initial _consistent snapshot_ of a database. This is the default mode, since much of the time the MySQL binlogs no longer contain the complete history of the database.
+
+The connector performs the following steps each time it takes a snapshot:
+
+1. Start a transaction with https://dev.mysql.com/doc/refman/5.6/en/innodb-consistent-read.html[_repeatable read_ semantics] to ensure that all subsequent reads within this transaction are done against a single consistent snapshot.
+2. Grab a global read lock that blocks writes by other database clients.
+3. Read the current position of the binlog.
+4. Read the schema of the databases and tables allowed by the connector's configuration.
+5. Release the global read lock, allowing other DB clients to again write to the database
+6. Optionally write the DDL changes to the _schema change topic_, including all necessary `DROP ...` and `CREATE ...` DDL statements
+7. Scans all of the database tables and generates on the appropriate table-specific Kafka topics `CREATE` events for each row.
+8. Commit the transaction.
+9. Record in the connector offsets that the connector successfully completed the snapsho.
+
+If the connector fails, is rebalanced, or stops before the snapshot is complete, the connector will begin a new snapshot when it is restarted. Once the connector does complete its initial snapshot, the MySQL connector then proceeds to read the binlog from the position read during step 3, ensuring that the connector does not miss any updates. If the connector stops again for any reason, upon restart it will simply continue reading the binlog where it previously left off. However, if the connector remains stopped for long enough, MySQL might purge older binlog files and the connector's last position may be lost. In this case, when the connector configured with _initial_ snapshot mode (the default) is finally restarted, the MySQL server will no longer have the starting point and the connector will fail with an error.
+
+A second snapshot mode allows the connector to perform snapshots _whenever necessary_. This behavior is similar to the default _initial_ snapshot behavior mentioned above, except with one exception: if the connector is restarted _and_ MySQL no longer has its starting point in the binlog, rather than failing the connector will instead perform another snapshot. This mode is perhaps the most automated, but at the risk of performing additional snapshots when things go wrong (generally when the connector is down too long).
+
+The third snapshot mode ensures the connector _never_ performs snapshots. When a new connector is configured this way, it will start reading the binlog from the beginning. This is not the default behavior because starting a new connector in this mode (without a snapshot) requires the MySQL binlog contain the entire history of all monitored databases, and MySQL instances are rarely configured this way. Specifically, the binlog must contain at least the `CREATE TABLE ...` statement for every monitored table. If this requirement is not satisfied, the connector will not be able to properly interpret the structure of the low-level events in the binlog, and it will simply skip all events for those missing table definitions. (The connector cannot rely upon the current definition of those tables, since the tables may have been altered after the initial events were recorded in the binlog, preventing the connector from properly interpreting the binlog events.)
+
+Because of how the connector records offsets when performing a snapshot, the connector now defaults to `include.schema.events=true`. This writes all DDL changes performed during a snapshot to a topic that can be consumed by apps. And, more importantly, during the final step mentioned above it ensures that the updated offsets are recorded immediately (rather than waiting until a database change occurs).
+
+
+[[reading-the-binlog]]
+=== Reading the MySQL binlog
+
+The MySQL connector will typically spend the vast majority of its time reading the binlog of the MySQL server to which it is connected. 
+
+As the MySQL connector reads the binlog, it transforms the binary log events into Debezium _create_, _update_, or _delete_ events that include the position in the binlog (including GTIDs if they are used) where the event was found. The MySQL connector forwards these change events to the Kafka Connect framework (running in the same process), which then synchronously writes them to the appropriate Kafka topic. Kafka Connect uses the term _offset_ for the source-specific position information that Debezium includes with each event, and Kafka Connect periodically records the most recent offset in another Kafka topic. 
+
+When Kafka Connect gracefully shuts down, it stops the connectors, flushes all events to Kafka, and records the last offset received from each connector. Upon restart, Kafka Connect reads the last recorded offset for each connector, and starts the connector from that point. The MySQL connector uses the binlog filename, the position in that file, and the GTIDs (if they are enabled in MySQL server) recorded in its offset to request that MySQL send it the binlog events starting just after that position.
+
+[[topic-names]]
+=== Topics names
+
+The MySQL connector writes events for all insert, update, and delete operations on a single table to a single Kafka topic. The name of the Kafka topics always takes the form _serverName_._databaseName_._tableName_, where _serverName_ is the logical name of the connector as specified with the `database.server.name` configuration property, _databaseName_ is the name of the database where the operation occurred, and _tableName_ is the name of the database table on which the operation occurred.
+
+For example, consider a MySQL installation with an `inventory` database that contains four tables: `products`, `products_on_hand`, `customers`, and `orders`. If the connector monitoring this database were given a logical server name of `fulfillment`, then the connector would produce events on these four Kafka topics:
+
+* `fulfillment.inventory.products`
+* `fulfillment.inventory.products_on_hand`
+* `fulfillment.inventory.customers`
+* `fulfillment.inventory.orders`
+
+[[schema-change-topic]]
+=== Schema change topic
+
+The connector can optionally be configured to write out all DDL statements applied to databases in this server to a Kafka topic named _serverName_, where _serverName_ is the logical name of the connector as specified with the `database.server.name` configuration property. In our previous example of the logical server name of `fulfillment`, the schema change events would be recorded in the topic `fulfillment`.
+
+Each message written to the schema change topic will have a message key that contains the name of the database to which the client was connected and using when they applied the DDL statement(s):
+
+[source,json,indent=0]
+----
+  {
+    "schema": {
+      "type": "struct",
+      "name": "io.debezium.connector.mysql.SchemaChangeKey"
+      "optional": false,
+      "fields": [
+        {
+          "field": "databaseName",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    "payload": {
+      "databaseName": "inventory"
+    }
+  }
+----
+
+[NOTE]
+====
+The `databaseName` field may be empty if the client submitting the DDL statements was not using a specific database at the time.
+====
+
+Meanwhile, the schema change event message's value will contain a structure containing the DDL statement(s), the database to which the statements were _applied_, and the position in the binlog where the statement(s) appeared:
+
+[source,json,indent=0]
+----
+  {
+    "schema": {
+      "type": "struct",
+      "name": "io.debezium.connector.mysql.SchemaChangeValue"
+      "optional": false,
+      "fields": [
+        {
+          "field": "databaseName",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "field": "ddl",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "field": "source",
+          "type": "struct",
+          "name": "io.debezium.connector.mysql.Source",
+          "optional": false,
+          "fields": [
+            {
+              "type": "string",
+              "optional": false,
+              "field": "name"
+            },
+            {
+              "type": "int64",
+              "optional": false,
+              "field": "server_id"
+            },
+            {
+              "type": "int64",
+              "optional": false,
+              "field": "ts_sec"
+            },
+            {
+              "type": "string",
+              "optional": true,
+              "field": "gtid"
+            },
+            {
+              "type": "string",
+              "optional": false,
+              "field": "file"
+            },
+            {
+              "type": "int64",
+              "optional": false,
+              "field": "pos"
+            },
+            {
+              "type": "int32",
+              "optional": false,
+              "field": "row"
+            },
+            {
+              "type": "boolean",
+              "optional": true,
+              "field": "snapshot"
+            }
+          ]
+        }
+      ]
+    },
+    "payload": {
+      "databaseName": "inventory",
+      "ddl": "CREATE TABLE products ( id INTEGER NOT NULL AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255) NOT NULL, description VARCHAR(512), weight FLOAT ); ALTER TABLE products AUTO_INCREMENT = 101;",
+      "source" : {
+        "name": "mysql-server-1",
+        "server_id": 0,
+        "ts_sec": 0,
+        "gtid": null,
+        "file": "mysql-bin.000003",
+        "pos": 154,
+        "row": 0,
+        "snapshot": true
+      }
+    }
+  }
+----
+
+The `ddl` field may contain multiple DDL statements, but every statement in the event will apply to the database named in the `databaseName` field and they will appear in the same order as applied to the database. Additionally, all of the events in the schema change topic will appear in the same order as applied to the MySQL server.
+
+[TIP]
+====
+The `source` field is the exact same structure that appears in normal data change events written to table-specific topics. You can use the contents of this field to correlate the events on different topics.
+====
+
+[[events]]
+=== Events
+
+All data change events produced by the MySQL connector have a key and a value, although the structure of the key and value depend on the table from which the change events originated (see link:#topic-names[Topic Names]).
+
+[NOTE]
+====
+Starting with Kafka 0.10, Kafka can optionally record with the message key and value the http://kafka.apache.org/documentation.html#upgrade_10_performance_impact[_timestamp_] at which the message was created (recorded by the producer) or written to the log by Kafka.
+====
+
+Debezium and Kafka Connect are designed around _continuous streams of event messages_, and the structure of these events may change over time. This could be difficult for consumers to deal with, so to make it very easy Kafka Connect makes each event self-contained. Every message key and value has two parts: a _schema_ and _payload_. The schema describes the structure of the payload, while the payload contains the actual data.
+
+[[change-events-key]]
+==== Change event's key
+
+For a given table, the change event's key will have a structure that contains a field for each column in the primary key (or unique key constraint) of the table at the time the event was created. Consider an `inventory` database with a `customers` table defined as:
+
+[source,sql,indent=0]
+----
+CREATE TABLE customers (
+  id INTEGER NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  first_name VARCHAR(255) NOT NULL,
+  last_name VARCHAR(255) NOT NULL,
+  email VARCHAR(255) NOT NULL UNIQUE KEY
+) AUTO_INCREMENT=1001;
+----
+
+Every change event for the `customers` table while it has this definition will feature the same key structure, which in JSON looks like this:
+
+[source,json,indent=0]
+----
+  {
+    "schema": {
+      "type": "struct",
+      "name": "mysql-server-1.inventory.customers.Key"
+      "optional": false,
+      "fields": [
+        {
+          "field": "id",
+          "type": "int32",
+          "optional": false
+        }
+      ]
+    },
+    "payload": {
+      "id": 1001
+    }
+  }
+----
+
+The `schema` portion of the key contains a Kafka Connect schema describing what is in the payload portion, and in our case that means that the `payload` value is not optional, is a structure defined by a schema named `mysql-server-1.inventory.customers.Key`, and has one required field named `id` of type `int32`. If we look at the value of the key's `payload` field, we'll see that it is indeed a structure (which in JSON is just an object) with a single `id` field, whose value is `1004`.
+
+Therefore, we interpret this key as describing the row in the `inventory.customers` table (output from the connector named `mysql-server-1`) whose `id` primary key column had a value of `1004`.
+
+[NOTE]
+====
+Although the `column.blacklist` configuration property allows you to remove columns from the event values, all columns in a primary or unique key are always included in the event's key.
+====
+
+[WARNING]
+====
+If the table does not have a primary or unique key, then the change event's key will be null. This makes sense since the rows in a table without a primary or unique key constraint cannot be uniquely identified.
+====
+
+[[change-events-value]]
+==== Change event's value
+
+The value of the change event message is a bit more complicated. Like the key message, it has a _schema_ section and _payload_ section. Starting with Debezium 0.2, the payload section of every change event value produced by the MySQL connector has an _envelope_ structure with the following fields:
+
+* `op` is a mandatory field that contains a string value describing the type of operation. Values for the MySQL connector are `c` for create (or insert), `u` for update, `d` for delete, and `r` for read (in the case of a non-initial snapshot).
+* `before` is an optional field that if present contains the state of the row _before_ the event occurred. The structure will  be described by the `mysql-server-1.inventory.customers.Value` Kafka Connect schema, which the `mysql-server-1` connector uses for all rows in the `inventory.customers` table.
+* `after` is an optional field that if present contains the state of the row _after_ the event occurred. The structure is describe by the same `mysql-server-1.inventory.customers.Value` Kafka Connect schema used in `before`.
+* `source` is a mandatory field that conains a structure describing the source metadata for the event, which in the case of MySQL contains several fields: the connector name, the name of the binlog file where the event was recorded, the position in that binlog file where the event appeared, the row within the event (if there is more than one), whether this event was part of a snapshot, and if available the MySQL server ID, and the timestamp in seconds.
+* `ts_ms` is optional and if present contains the time (using the system clock in the JVM running the Kafka Connect task) at which the connector processed the event. 
+
+And of course, the _schema_ portion of the event message's value contains a schema that decribes tihs envelope structure and the nested fields within it.
+
+Let's look at what a _create_ event value might look like for our `customers` table:
+
+[source,json,indent=0]
+----
+{
+    "schema": {
+      "type": "struct",
+      "optional": false,
+      "name": "mysql-server-1.inventory.customers.Envelope",
+      "version": 1,
+      "fields": [
+        {
+          "field": "op",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "field": "before",
+          "type": "struct",
+          "optional": true,
+          "name": "mysql-server-1.inventory.customers.Value",
+          "fields": [
+            {
+              "type": "int32",
+              "optional": false,
+              "field": "id"
+            },
+            {
+              "type": "string",
+              "optional": false,
+              "field": "first_name"
+            },
+            {
+              "type": "string",
+              "optional": false,
+              "field": "last_name"
+            },
+            {
+              "type": "string",
+              "optional": false,
+              "field": "email"
+            }
+          ]
+        },
+        {
+          "field": "after",
+          "type": "struct",
+          "name": "mysql-server-1.inventory.customers.Value",
+          "optional": true,
+          "fields": [
+            {
+              "type": "int32",
+              "optional": false,
+              "field": "id"
+            },
+            {
+              "type": "string",
+              "optional": false,
+              "field": "first_name"
+            },
+            {
+              "type": "string",
+              "optional": false,
+              "field": "last_name"
+            },
+            {
+              "type": "string",
+              "optional": false,
+              "field": "email"
+            }
+          ]
+        },
+        {
+          "field": "source",
+          "type": "struct",
+          "name": "io.debezium.connector.mysql.Source",
+          "optional": false,
+          "fields": [
+            {
+              "type": "string",
+              "optional": false,
+              "field": "name"
+            },
+            {
+              "type": "int64",
+              "optional": false,
+              "field": "server_id"
+            },
+            {
+              "type": "int64",
+              "optional": false,
+              "field": "ts_sec"
+            },
+            {
+              "type": "string",
+              "optional": true,
+              "field": "gtid"
+            },
+            {
+              "type": "string",
+              "optional": false,
+              "field": "file"
+            },
+            {
+              "type": "int64",
+              "optional": false,
+              "field": "pos"
+            },
+            {
+              "type": "int32",
+              "optional": false,
+              "field": "row"
+            },
+            {
+              "type": "boolean",
+              "optional": true,
+              "field": "snapshot"
+            }
+          ]
+        },
+        {
+          "field": "ts_ms",
+          "type": "int64",
+          "optional": true
+        }
+      ]
+    },
+    "payload": {
+      "op": "c",
+      "ts_ms": 1465491411815,
+      "before": null,
+      "after": {
+        "id": 1004,
+        "first_name": "Anne",
+        "last_name": "Kretchmar",
+        "email": "annek@noanswer.org"
+      },
+      "source": {
+        "name": "mysql-server-1",
+        "server_id": 0,
+        "ts_sec": 0,
+        "gtid": null,
+        "file": "mysql-bin.000003",
+        "pos": 154,
+        "row": 0,
+        "snapshot": true
+      }
+    }
+  }
+----
+
+If we look at the `schema` portion of this event's _value_, we can see the schema for the _envelope_, the schema for the `source` structure (which is specific to the MySQL connector and reused across all events), and the table-specific schemas for the `before` and `after` fields.
+
+[TIP]
+====
+The names of the schemas for the `before` and `after` fields are of the form "_logicalName_._tableName_.Value", and thus are entirely independent from all other schemas for all other tables. This means that when using the link:/docs/faq#avro-converter[Avro Converter], the resulting Avro schems for _each table_ in each _logical source_ have their own evolution and history.
+====
+
+If we look at the `payload` portion of this event's _value_, we can see the information in the event, namely that it is describing that the row was created (since `op=c`), and that the `after` field value contains the values of the new inserted row's' `id`, `first_name`, `last_name`, and `email` columns.
+
+[TIP]
+====
+It may appear that the JSON representations of the events are much larger than the rows they describe. This is true, because the JSON representation must include the _schema_ and the _payload_ portions of the message. It is possible and even recommended to use the link:/docs/faq#avro-converter[Avro Converter] to dramatically decrease the size of the actual messages written to the Kafka topics.
+====
+
+The value of an _update_ change event on this table will actually have the exact same _schema_, and its payload will be structured the same but will hold different values. Here's an example:
+
+Here's that new event's _value_ formatted to be easier to read:
+
+[source,json,indent=0]
+----
+{
+    "schema": { ... },
+    "payload": {
+      "before": {
+        "id": 1004,
+        "first_name": "Anne",
+        "last_name": "Kretchmar",
+        "email": "annek@noanswer.org"
+      },
+      "after": {
+        "id": 1004,
+        "first_name": "Anne Marie",
+        "last_name": "Kretchmar",
+        "email": "annek@noanswer.org"
+      },
+      "source": {
+        "name": "mysql-server-1",
+        "server_id": 223344,
+        "ts_sec": 1465581,
+        "gtid": null,
+        "file": "mysql-bin.000003",
+        "pos": 484,
+        "row": 0,
+        "snapshot": null
+      },
+      "op": "u",
+      "ts_ms": 1465581029523
+    }
+----
+
+When we compare this to the value in the _insert_ event, we see a couple of differences in the `payload` section:
+
+* The `op` field value is now `u`, signifying that this row changed because of an update
+* The `before` field now has the state of the row with the values before the database commit
+* The `after` field now has the updated state of the row, and here was can see that the `first_name` value is now `Anne Marie`.
+* The `source` field structure has the same fields as before, but the values are different since this event is from a different position in the binlog.
+* The `ts_ms` shows the timestamp that Debezium processed this event.
+
+There are several things we can learn by just looking at this `payload` section. We can compare the `before` and `after` structures to determine what actually changed in this row because of the commit. The `source` structure tells us information about MySQL's record of this change (providing traceability), but more importantly this has information we can compare to other events in this and other topics to know whether this event occurred before, after, or as part of the same MySQL commit as other events.
+
+So far we've seen samples of _create_ and _update_ events. Now, let's look at the value of a _delete_ event for the same table. Once again, the `schema` portion of the value will be exactly the same as with the _create_ and _update_ events:
+
+[source,json,indent=0]
+----
+{
+    "schema": { ... },
+    "payload": {
+      "before": {
+        "id": 1004,
+        "first_name": "Anne Marie",
+        "last_name": "Kretchmar",
+        "email": "annek@noanswer.org"
+      },
+      "after": null,
+      "source": {
+        "name": "mysql-server-1",
+        "server_id": 223344,
+        "ts_sec": 1465581,
+        "gtid": null,
+        "file": "mysql-bin.000003",
+        "pos": 805,
+        "row": 0,
+        "snapshot": null
+      },
+      "op": "d",
+      "ts_ms": 1465581902461
+    }
+----
+
+If we look at the `payload` portion, we see a number of differences compared with the _create_ or _update_ event payloads:
+
+* The `op` field value is now `d`, signifying that this row was deleted
+* The `before` field now has the state of the row that was deleted with the database commit
+* The `after` field is null, signifying that the row no longer exists
+* The `source` field structure has many of the same values as before, except the `ts_sec` and `pos` fields have changed (and the `file` might have changed in other circumstances).
+* The `ts_ms` shows the timestamp that Debezium processed this event.
+
+This event gives a consumer all kinds of information that it can use to process the removal of this row. We include the old values so that some consumers might require them in order to properly handle the removal, and without it they may have to resort to far more complex behavior.
+
+The MySQL connector's events are designed to work with https://cwiki.apache.org/confluence/display/KAFKA/Log+Compaction[Kafka log compaction], which allows for the removal of some older messages as long as at least the most recent message for every key is kept. This allows Kafka to reclaim storage space while ensuring the topic contains a complete dataset and can be used for reloading key-based state.
+
+When a row is deleted, the _delete_ event value listed above still works with log compaction, since Kafka can still remove all earlier messages with that same key. But only if the message value is null will Kafka know that it can remove _all messages_ with that same key. To make this possible, Debezium's MySQL connector always follows _delete_ event with a special _tombstone_ event that has the same key but null value.
+
+[NOTE]
+====
+As of Kafka 0.10, the JSON converter provided by Kafka Connect never results in a null value for the message (https://issues.apache.org/jira/browse/KAFKA-3832[KAFKA-3832]). Therefore, Kafka's log compaction will always retain the last message, even when the tombstone event is supplied, though it will be free to remove all prior messages with the same key. In other words, until this is fixed using the JSON Converter will reduce the effectiveness of Kafka's log compaction.
+
+In the meantime, consider using the link:/docs/faq#avro-converter[Avro Converter], which does properly return a null value and will thus take full advantage of Kafka log compaction.
+====
+
+
+
+[[fault-tolerance]]
+[[when-things-go-wrong]]
+=== When things go wrong
+
+Debezium is a distributed system that captures all changes in multiple upstream databases, and will never miss or lose an event. Of course, when the system is operating nominally or being administered carefully, then Debezium provides _exactly once_ delivery of every change event. However, if a fault does happen then the system will still not lose any events, although while it is recovering from the fault it may repeat some change events. Thus, in these abnormal situations Debezium provides _at least once_ delivery of change events.
+
+The rest of this section describes how Debezium handles various kinds of faults and problems.
+
+==== Configuration and startup errors
+
+The connector will fail upon startup, report an error/exception in the log, and stop running when the connector's configuration is invalid, when the connector cannot successfully connect to MySQL using the specified connectivity parameters, or when the connector is restarting from a previously-recorded position in the MySQL history (via binlog coordinates or GTID set) and MySQL no longer has that history available. 
+
+In these cases, the error will have more details about the problem and possibly a suggested work around. The connector can be restarted when the configuration has been corrected or the MySQL problem has been addressed.
+
+==== MySQL becomes unavailable
+
+Once the connector is running, if the MySQL server it has been connected to becomes unavailable for any reason, the connector will fail with an error and the connector will stop. Simply restart the connector when the server is available. 
+
+Note that when using GTIDs and a highly available MySQL cluster, you can simply restart the connector immediately, and the connector will connect to a different MySQL server in the cluster, find the location in that server's binlog that represents the last transaction that was processed completely, and start reading the new server's binlog from that location.
+
+When the connector and MySQL are not using GTIDs, the connector records the position within the specific binlog of the MySQL server to which it is connected. These binlog coordinates are only valid on that MySQL server, so to recover the connector must do so only by connecting to that server (or to another server that has been recovered from backups of the MySQL server).
+
+==== Kafka Connect process stops gracefully
+
+If Kafka Connect is being run in distributed mode, and a Kafka Connect process is stopped gracefullly, then prior to shutdown of that processes Kafka Connect will migrate all of the process' connector tasks to another Kafka Connect process in that group, and the new connector tasks will pick up exactly where the prior tasks left off. There will be a short delay in processing while the connector tasks are stopped gracefully and restarted on the new processes.
+
+==== Kafka Connect process crashes
+
+If the Kafka Connector process stops unexpectedly, then any connector tasks it was running will obviously terminate without recording their most recently-processed offsets. When Kafka Connect is being run in distributed mode, it will restart those connector tasks on other processes. However, the MySQL connectors will resume from the last offset recorded by the earlier processes, which means that the new replacement tasks may generate some of the same change events that were processed just prior to the crash. The number of duplicate events will depend on the offset flush period and the volume of data changes just before the crash.
+
+[TIP]
+====
+Because there is a chance that some events may be duplicated during a recovery from failure, consumers should always anticipate some events may be duplicated. Although Debezium change events are strictly speaking not idempotent, the _state_ within the events can be used by consumuers in an idempotent way. For example, many consumers might treat _create events_ and _update events_ in a similar way by simply using the `after` state, so seeing a duplicate _create event_ is simply handled as sequential updates.
+
+Debezium also includes with each change event message the source-specific information about the origin of the event, including the MySQL server's time of the event, its binlog filename and position, and GTID (if used). Consumers can keep track of this information (especially GTIDs) to know whether it has already seen a particular event.
+====
+
+==== Kafka becomes unavailable
+
+As the connector generates change events, the Kafka Connect framework records those events in Kafka using the Kafka producer API. Kafka Connect will also periodically record the latest offset that appears in those change events, at a frequency you've specified in the Kakfa Connect worker configuration. If the Kafka brokers become unavailable, the Kafka Connect worker process running the connectors will simply wait attempt to reconnect to the Kafka brokers. The connector tasks will simply pause until a connection can be reestablished, at which point the connectors will resume exactly where they left off.
+
+==== Connector is stopped for a duration
+
+If the connector is gracefully stopped, the database can continue to be used and any new changes will be recorded in the MySQL server's binlog. When the connector is restarted, it will resume reading the MySQL binlog where it last left off, recording change events for all of the changes that were made while the connector was stopped. 
+
+A properly configured Kafka cluster is able to https://engineering.linkedin.com/kafka/benchmarking-apache-kafka-2-million-writes-second-three-cheap-machines[massive throughput]. Kafka Connect is written with Kafka best practices, and given enough resources will also be able to handle very large numbers of database change events. Because of this, when a connector has been restarted after a while, it is very likely to catch up with the database, though how quickly will depend upon the capabilities and performance of Kafka and the volume of changes being made to the data in MySQL.
+
+[NOTE]
+====
+If the connector remains stopped for long enough, MySQL might purge older binlog files and the connector's last position may be lost. In this case, when the connector configured with _initial_ snapshot mode (the default) is finally restarted, the MySQL server will no longer have the starting point and the connector will fail with an error.
+====
+
+[[configuration]]
+[[deploying-a-connector]]
+== Deploying a connector
+
+If you've already installed https://zookeeper.apache.org[Zookeeper], http://kafka.apache.org/[Kafka], and http://kafka.apache.org/documentation.html#connect[Kafka Connect], then using Debezium's MySQL connector is easy. Simply download the https://repo1.maven.org/maven2/io/debezium/debezium-connector-mysql/0.2.1/debezium-connector-mysql-0.2.1-plugin.tar.gz[connector's plugin archive], extract the JARs into your Kafka Connect environment, and add the directory with the JARs to http://docs.confluent.io/3.0.0/connect/userguide.html#installing-connector-plugins[Kafka Connect's classpath]. Restart your Kafka Connect process to pick up the new JARs.
+
+If immutable containers are your thing, then check out https://hub.docker.com/r/debezium/[Debezium's Docker images] for Zookeeper, Kafka, and Kafka Connect with the MySQL connector already pre-installed and ready to go. Our link:http://debezium.io/docs/tutorial[tutorial] even walks you through using these images, and this is a great way to learn what Debezium is all about. You can even link:/blog/2016/05/31/Debezium-on-Kubernetes[run Debezium on Kubernetes and OpenShift].
+
+To use the connector to produce change events for a particular MySQL server or cluster, simply create a link:#configuration[configuration file for the MySQL Connector] and use the link:http://docs.confluent.io/3.0.0/connect/userguide.html#rest-interface[Kafka Connect REST API] to add that connector to your Kafka Connect cluster. When the connector starts, it will grab a consistent snapshot of the databases in your MySQL server and start reading the MySQL binlog, producing events for every inserted, updated, and deleted row. The connector can optionally produce events with the DDL statements that were applied, and you can even choose to produce events for a subset of the databases and tables. Optionally ignore, mask, or truncate columns that are sensitive, too large, or not needed.
+
+[[example]]
+[[example-configuration]]
+=== Example configuration
 
 Using the MySQL connector is straightforward. Here is an example of the configuration for a MySQL connector that monitors a MySQL server at port 3306 on 192.168.99.100, which we logically name `fullfillment`:
 
@@ -30,14 +737,13 @@ Using the MySQL connector is straightforward. Here is an example of the configur
     "connector.class": "io.debezium.connector.mysql.MySqlConnector", // <2>
     "database.hostname": "192.168.99.100", // <3>
     "database.port": "3306", // <4>
-    "database.user": "replicator", // <5>
-    "database.password": "replpass", // <6>
+    "database.user": "debezium", // <5>
+    "database.password": "dbz", // <6>
     "database.server.id": "184054", // <7>
     "database.server.name": "fullfillment", // <8>
-    "database.binlog": "mysql-bin.000001", // <9>
-    "database.whitelist": "inventory", // <10>
-    "database.history.kafka.bootstrap.servers": "kafka:9092", // <11>
-    "database.history.kafka.topic": "schema-changes.inventory" // <12>
+    "database.whitelist": "inventory", // <9>
+    "database.history.kafka.bootstrap.servers": "kafka:9092", // <10>
+    "database.history.kafka.topic": "schema-changes.inventory" // <11>
   }
 }
 ----
@@ -45,170 +751,21 @@ Using the MySQL connector is straightforward. Here is an example of the configur
 <2> The name of this MySQL connector class.
 <3> The address of the MySQL server.
 <4> The port number of the MySQL server.
-<5> The name of the MySQL user that has privileges to read the binlog.
-<6> The password for the MySQL user that has privileges to read the binlog.
-<7> The identifier of the connector that must be unique within the MySQL cluster.
-<8> The logical name of the MySQL server/cluster, which forms a namespace since it is used in all the names of the Kafka topics to which the connector writes.
-<9> The name of the first binlog file that the connector should read.
-<10> A list of all databases hosted by this server that this connector will monitor. This is optional, and there are other properties for listing the databases and tables to include or exclude from monitoring.
-<11> The list of Kafka brokers that this connector will use to write and recover DDL statements to the database history topic.
-<12> The name of the database history topic where the connector will write and recover DDL statements.
+<5> The name of the MySQL user that has the link:#mysql-user[required privileges].
+<6> The password for the MySQL user that has the link:#mysql-user[required privileges].
+<7> The connector's identifier that must be unique within the MySQL cluster and similar to MySQL's `server-id` configuration property.
+<8> The logical name of the MySQL server/cluster, which forms a namespace and is used in all the names of the Kafka topics to which the connector writes, the Kafka Connect schema names, and the namespaces of the corresponding Avro schema when the link:#avro-converter[Avro Connector] is used.
+<9> A list of all databases hosted by this server that this connector will monitor. This is optional, and there are other properties for listing the databases and tables to include or exclude from monitoring.
+<10> The list of Kafka brokers that this connector will use to write and recover DDL statements to the database history topic.
+<11> The name of the database history topic where the connector will write and recover DDL statements.
+
+See the link:#connector-properties[complete list of connector properties] that can be specified in these configurations.
 
 This configuration can be sent via POST to a running Kafka Connect service, which will then record the configuration and start up the one connector task that will connect to the MySQL database, read the binlog, and record events to Kafka topics.
 
-[[topic-names]]
-== Change event topics
 
-The MySQL connector writes events for all insert, update, and delete operations on a single table to a single Kafka topic. The name of the Kafka topics always takes the form _serverName_._databaseName_._tableName_, where _serverName_ is the logical name of the connector as specified with the `database.server.name` configuration property, _databaseName_ is the name of the database where the operation occurred, and _tableName_ is the name of the database table on which the operation occurred.
-
-For example, consider a MySQL installation with an `inventory` database that contains four tables: `products`, `products_on_hand`, `customers`, and `orders`. If the connector monitoring this database were given a logical server name of `fullfillment`, then the connector might produce events on these four Kafka topics:
-
-* `fullfillment.inventory.products`
-* `fullfillment.inventory.products_on_hand`
-* `fullfillment.inventory.customers`
-* `fullfillment.inventory.orders`
-
-The connector produces an event message for each row insert, update, or delete on the respective table. Every event message contains a _key_ that contains the values from the row's primary or unique key columns, and a _value_ that contains the new values for the row's columns (the value is `null` for delete events). Both the message key and value are both described with a Kafka Connect's Schema.
-
-For example, consider that the `products` table is defined with:
-
-[source,sql]
-----
-CREATE TABLE products (
-  id INTEGER NOT NULL AUTO_INCREMENT PRIMARY KEY,
-  name VARCHAR(255) NOT NULL,
-  description VARCHAR(512),
-  weight FLOAT
-);
-ALTER TABLE products AUTO_INCREMENT = 101;
-----
-
-Then an insert or update to this table will have a message key structured similarly to this JSON representation:
-
-[source,json]
-----
-{
-  "schema": {
-    "type": "struct",
-    "fields": [
-      {
-        "type": "int32",
-        "optional": false,
-        "field": "id"
-      }
-    ],
-    "optional": false,
-    "name": "inventory.customers/pk"
-  },
-  "payload": {
-    "id": 1001
-  }
-}
-----
-
-and a message value structured similarly to this JSON representation:
-
-[source,json]
-----
-{
-  "schema": {
-    "type": "struct",
-    "fields": [
-      {
-        "type": "int32",
-        "optional": false,
-        "field": "id"
-      },
-      {
-        "type": "string",
-        "optional": false,
-        "field": "first_name"
-      },
-      {
-        "type": "string",
-        "optional": false,
-        "field": "last_name"
-      },
-      {
-        "type": "string",
-        "optional": false,
-        "field": "email"
-      }
-    ],
-    "optional": false,
-    "name": "inventory.customers"
-  },
-  "payload": {
-    "id": 1001,
-    "first_name": "Sally",
-    "last_name": "Thomas",
-    "email": "sally.thomas@acme.com"
-  }
-}
-----
-
-Again, if the entire message value is null, then the event signals the record was deleted.
-
-Note that the message key uses the primary or unique key of the record. If the table has no primary key or unique key, then an insert or update to this table will result in a message with no key and a value that contain the representation of the row's values. The connector does _not_ generate an event for a delete on a table with no primary or unique key.
-
-[[schema-change-topic]]
-== Schema change topic
-
-The connector can optionally be configured to write out all DDL statements applied to databases in this server to a Kafka topic named _serverName_, where _serverName_ is the logical name of the connector as specified with the `database.server.name` configuration property. Each message written to this topic will have a message key that contains the name of the database to which the DDL statement(s) apply:
-
-[source,json]
-----
-{
-  "schema": {
-    "type": "string"
-  },
-  "payload": "inventory"
-}
-----
-
-while the message value will contain a JSON document containing the DDL statement(s) and the position in the binlog where the statement(s) appeared:
-
-[source,json]
-----
-{
-  "schema": {
-    "type": "string"
-  },
-  "payload": "{
-    "source": {},
-    "position": {},
-    "databaseName": "inventory",
-    "ddl": "CREATE TABLE products ( id INTEGER NOT NULL AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255) NOT NULL, description VARCHAR(512), weight FLOAT ); ALTER TABLE products AUTO_INCREMENT = 101;"
-  }"
-}
-----
-
-[[configuration]]
-== Configuration
-
-[[prerequisites]]
-=== Prerequisites
-
-The MySQL server must be configured to use a row-level binary log, similar to the following fragment of a MySQL server configuration file:
-
-[source]
-----
-server-id         = 223344
-log_bin           = mysql-bin
-expire_logs_days  = 10
-binlog_format     = row
-----
-
-The server ID and prefix is both arbitrary, so you can use whatever values you deem appropriate. The expiration should be long enough to ensure the connector can process all of the events as they are recorded by the database. Finally, the binlog format _must_ be `row`.
-
-Likewise, a MySQL user must be defined that has both "REPLICATION SLAVE" and "REPLICATION CLIENT" roles. This can be created with a statement similar to the following:
-
-    GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'replicator' IDENTIFIED BY 'replpass';
-
-This grant is equivalent to specifying any authenticating client on _any_ hosts, but this is not recommended for production. Instead, in production you would almost certainly limit the replication user to the machine(s) where the MySQL connector is running within a Kafka Connect service, such as `'replicator'@'connect.host.acme.com'`.
-
-[[properties]]
-=== Connector Configuration Properties
+[[connector-properties]]
+=== Connector properties
 
 The following configuration properties are _required_ unless a default value is available.
 
@@ -246,10 +803,6 @@ The following configuration properties are _required_ unless a default value is 
 |
 |Password to use when when connecting to the MySQL database server.
 
-|`database.binlog` 
-|
-|The name of the first binlog file (including basename, number, and extension) on the MySQL server that should be processed by this connector. The MySQL server must be http://dev.mysql.com/doc/refman/5.7/en/replication-howto-masterbaseconfig.html[configured for replication], and this will include a `log_bin` configuration property that specifies the base name that will be used as the prefix for all binlog files.
-
 |`database.server.name` 
 |_host:port_
 |Logical name that identifies and provides a namespace for the particular MySQL database server/cluster being monitored. The logical name should be unique across all other connectors, since it is used as a prefix for all Kafka topic names eminating from this connector. Defaults to '_host_:_port_', where _host_ is the value of the `database.hostname` property and _port_ is the value of the `database.port` property, though we recommend using an explicit and meaningful logical name.
@@ -268,19 +821,31 @@ The following configuration properties are _required_ unless a default value is 
 
 |`database.whitelist` 
 |_empty string_
-|An optional comma-separated list of database names to be monitored; any database name not included in the whitelist will be excluded from monitoring. By default all databases will be monitoried. May not be used with `database.blacklist`.
+|An optional comma-separated list of regular expressions that match database names to be monitored; any database name not included in the whitelist will be excluded from monitoring. By default all databases will be monitoried. May not be used with `database.blacklist`.
 
 |`database.blacklist` 
 |_empty string_
-|An optional comma-separated list of database names to be excluded from monitoring; any database name not included in the blacklist will be monitored. May not be used with `database.whitelist`.
+|An optional comma-separated list of regular expressions that match database names to be excluded from monitoring; any database name not included in the blacklist will be monitored. May not be used with `database.whitelist`.
 
 |`table.whitelist` 
 |_empty string_
-|An optional comma-separated list of identifiers for tables to be monitored; any table not included in the whitelist will be excluded from monitoring. Each identifer is of the form _databaseName_._tableName_. By default the connector will monitor every non-system table in each monitored database. May not be used with `table.blacklist`.
+|An optional comma-separated list of regular expressions that match fully-qualified table identifiers for tables to be monitored; any table not included in the whitelist will be excluded from monitoring. Each identifer is of the form _databaseName_._tableName_. By default the connector will monitor every non-system table in each monitored database. May not be used with `table.blacklist`.
 
 |`table.blacklist` 
 |_empty string_
-|An optional comma-separated list of identifiers for tables to be excluded from monitoring; any table not included in the blacklist will be monitored. Each identifer is of the form _databaseName_._tableName_. May not be used with `table.whitelist`.
+|An optional comma-separated list of regular expressions that match fully-qualified table identifiers for tables to be excluded from monitoring; any table not included in the blacklist will be monitored. Each identifer is of the form _databaseName_._tableName_. May not be used with `table.whitelist`.
+
+|`column.blacklist` 
+|_empty string_
+|An optional comma-separated list of regular expressions that match the fully-qualified names of columns that should be excluded from change event message values. Fully-qualified names for columns are of the form _databaseName_._tableName_._columnName_, or _databaseName_._schemaName_._tableName_._columnName_.
+
+|`column.truncate.to._length_.chars` 
+|_n/a_
+|An optional comma-separated list of regular expressions that match the fully-qualified names of character-based columns whose values should be truncated in the change event message values if the field values are longer than the specified number of characters. Multiple properties with different lengths can be used in a single configuration, although in each the length must be a positive integer. Fully-qualified names for columns are of the form _databaseName_._tableName_._columnName_, or _databaseName_._schemaName_._tableName_._columnName_.
+
+|`column.mask.with._length_.chars` 
+|_n/a_
+|An optional comma-separated list of regular expressions that match the fully-qualified names of character-based columns whose values should be replaced in the change event message values with a field value consisting of the specified number of asterisk (`*`) characters. Multiple properties with different lengths can be used in a single configuration, although in each the length must be a positive integer. Fully-qualified names for columns are of the form _databaseName_._tableName_._columnName_, or _databaseName_._schemaName_._tableName_._columnName_.
 
 |`include.schema.changes` 
 |`false`
@@ -288,7 +853,7 @@ The following configuration properties are _required_ unless a default value is 
 
 |`max.batch.size` 
 |`2048`
-|Positive integer value that specifies the maximum size of the blocking queue into which change events read from the database log are placed before they are written to Kafka. This queue can provide backpressure to the binlog reader when, for example, writes to Kafka are slower or if Kafka is not available. Events that appear in the queue are not included in the offsets periodically recorded by this connector. Defaults to 2048, and should always be larger than the maximum batch size specified in the `max.batch.size` property.
+|Positive integer value that specifies the maximum size of the blocking queue into which change events read from the database log are placed before they are written to Kafka. This queue can provide backpressure to the binlog reader when, for example, writes to Kafka are slower or if Kafka is not available. Events that appear in the queue are not included in the offsets periodically recorded by this connector. Defaults to 2048, and should always be larger than the maximum queue size specified in the `max.queue.size` property.
 
 |`max.queue.size` 
 |`1024`
@@ -327,4 +892,17 @@ The following _advanced_ configuration properties have good defaults that will w
 |`database.history.kafka.recovery.attempts` 
 |`4`
 |The maximum number of times that the connector should attempt to read persisted history data before the connector recovery fails with an error. The maximum amount of time to wait after receiving no data is `recovery.attempts` x `recovery.poll.interval.ms`.
+
+
+|`snapshot.mode` 
+|`initial`
+|Specifies the criteria for running a snapshot upon startup of the connector. The default is `initial`, and specifies the connector can run a snapshot only when no offsets have been recorded for the logical server name. The `when_needed` option specifies that the connector run a snapshot upon startup whenever it deems it necessary (when no offsets are available, or when a previously recorded offset specifies a binlog location or GTID that is not available in the server). The `never` option specifies that the connect should never use snapshots and that upon first startup with a logical server name the connector should read from the beginning of the binlog; this should be used with care, as it is only valid when the binlog is guaranteed to contain the entire history of the database.
+
+|`snapshot.minimal.locks` 
+|`true`
+|Controls how long the connector holds onto the global MySQL read lock (preventing any updates to the database) while it is performing a snapshot. The default is `true`, meaning the connector holds the global read lock for just the initial portion of the snapshot while the connector reads the database schemas and other metadata. The remaining work in a snapshot involves selecting all rows from each table, and this can be done in a consistent fashion using the `REPEATABLE READ` transaction even when the global read lock is no longer held and while other
+MySQL clients are updating the database. However, in some cases where clients are submitting operations that MySQL excludes from `REPEATABLE READ` semantics, it may be desirable to _block all writes_ for the entire duration of the snapshot. In only such cases, set this property to `false`.
+
 |=======================
+
+

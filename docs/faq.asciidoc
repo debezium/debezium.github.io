@@ -36,15 +36,15 @@ Debezium is architected to be tolerant of faults and failures, and the only effe
 
 == Can my application directly monitor a single database?
 
-Yes. Although we recommend most people use the full Debezium platform, it is possible for a single application to _embed_ a Debezium connector so it can monitor a database and respond to the events. This approach is indeed far simpler with few moving parts, but it is more limited and far less tolerant of failures.
+Yes. Although we recommend most people use the full Debezium platform, it is possible for a single application to link:/docs/embedded[embed] a Debezium connector so it can monitor a database and respond to the events. This approach is indeed far simpler with few moving parts, but it is more limited and far less tolerant of failures. If your application needs at-least-once delivery guarantees of all messages, please consider using the full distributed system.
 
 == What does the Debezium platform look like?
 
-A running Debezium system consists of several pieces. A cluster of Apache Kafka brokers provides the persistent, replicated, and partitioned transaction logs where Debezium records all events and from which applications consume all events. The number of Kafka brokers depends largely on the volume of events, the number of database tables being monitored, and the number of applications that are consuming the events. Kafka does rely upon a small cluster of Zookeeper nodes to manage responsibilities of each broker.
+A running Debezium system consists of several pieces. A cluster of http://kafka.apache.org[Apache Kafka] brokers provides the persistent, replicated, and partitioned transaction logs where Debezium records all events and from which applications consume all events. The number of Kafka brokers depends largely on the volume of events, the number of database tables being monitored, and the number of applications that are consuming the events. Kafka does rely upon a small cluster of http://zookeeper.apache.org[Zookeeper] nodes to manage responsibilities of each broker.
 
-Each Debezium connector monitors one database cluster/server, and connectors are configured and deployed to a cluster of Kafka Connect services that ensure that each connector is always running, even as Kafka Connect service instances leave and join the cluster. Each Kafka Connect service cluster is independent, so it is possible for each group within an organization to manage its own clusters.
+Each Debezium connector monitors one database cluster/server, and connectors are configured and deployed to a cluster of Kafka Connect services that ensure that each connector is always running, even as Kafka Connect service instances leave and join the cluster. Each Kafka Connect service cluster (a.k.a., group) is independent, so it is possible for each group within an organization to manage its own clusters.
 
-All connectors record their events (and other information) to Apache Kafka, which persists, replicates, and partitions the events for each table in separate topics. Multiple Kafka Connect service clusters can share a single cluster of Kafka brokers, but the number of Kafka brokers depends largely on the volume of events, the number of database tables being monitored, and the number of applications that are consuming the events. Kafka also relies upon a small cluster of Zookeeper nodes to manage responsibilities of each broker.
+All connectors record their events (and other information) to Apache Kafka, which persists, replicates, and partitions the events for each table in separate topics. Multiple Kafka Connect service clusters can share a single cluster of Kafka brokers, but the number of Kafka brokers depends largely on the volume of events, the number of database tables being monitored, and the number of applications that are consuming the events.
 
 Applications connect to Kafka directly and consume the events within the appropriate topics.
 
@@ -63,6 +63,20 @@ Debezium connectors do not store any information inside the upstream databases.
 Most connectors will record all events for a single database table to a single topic. Additionally, all events within a topic are _totally-ordered_, meaning that the order of all of those events will be maintained. (Even if events are duplicated during failures, the end result after applying all of the events will remain the same.)
 
 For example, a MySQL connector monitoring a MySQL server/cluster (logically named "dbserverA") records all of the changes to the "Addresses" table within the "Customers" database in the topic named `dbserverA.Customers.Addresses`. Likewise, all of the changes to the "PaymentMethods" table in the same database will be recorded in the topic named `dbserverA.customers.PaymentMethods`.
+
+[[why-are-events-so-large]]
+[[avro-converter]]
+== Why are events so large?
+
+Debezium is designed to monitor upstream databases and produce for each row-level change one or more corresponding events that completely describe those changes. But Debezium connectors work _continuously_, and its events have to make sense even as the structure of the tables in the upstream databases change over time. A consumer, however, is much easier to write if it only has to deal with a single event at a time, rather than having to track state over the entire history of the event stream. 
+
+That means each event needs to be completely self-describing: an event's key and value contain a _payload_ with the actual information and a _schema_ that fully describes the structure of the information. Consuming applications can process each event, use the schema to understand the structure of the information in that event, and then correctly process the event's payload. The consuming application can take advantage of the fact that the schema will remain the same for many events in a row, and only when the schema changes might the consuming application need to do a bit more work preparing for the changed structure.
+
+Meanwhile, the Kafka Connect services serialize the connector's events and record them in Kafka. The JSON converter is very generic and very simple, but it has no choice but to serialize the entire event information. Therefore, events represented in JSON are very verbose and large.
+
+However, the http://docs.confluent.io/3.0.0/schema-registry/docs/index.html[Confluent's Avro Converter] is much smarter in two ways. First, it converts the connector's schema into an https://avro.apache.org[Apache Avro schema], so the payload can be serialized into a https://martin.kleppmann.com/2012/12/05/schema-evolution-in-avro-protocol-buffers-thrift.html[very compact binary form]. Secondly, it uses the fact that many events in a row will use the same schema (and thus Avro schema), and by registering those Avro schemas in a separate http://docs.confluent.io/3.0.0/schema-registry/docs/index.html[Schema Registry], it can place into each serialized event a small _identifier_ of the schema version used by the message. The Avro Converter and the Schema Registry can work together to track the history of each schema over time.
+
+Meanwhile, in the consumer, the same Avro Converter decodes the compact binary form of the event, reads the identifier of the schema version used by that message, and if it hasn't yet seen that version downloads the Avro schema from the Schema Registry, and then uses that Avro schema to decode the binary payload of the event. Again, many events in sequence will share the same schema (and Avro schema version), so most of the time the converter can simply decode the raw compact event into the same schema and payload expected by the consumer.
 
 == What happens when an application stops or crashes?
 
