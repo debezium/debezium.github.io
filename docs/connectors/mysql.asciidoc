@@ -3,7 +3,7 @@
 :linkattrs:
 :icons: font
 :source-highlighter: highlight.js
-:debezium-version: 0.2.4
+:debezium-version: 0.3.0
 
 Debezium's MySQL Connector can monitor and record all of the row-level changes in the databases on a MySQL server or HA MySQL cluster. The first time it connects to a MySQL server/cluster, it reads a consistent snapshot of all of the databases. When that snapshot is complete, the connector continuously reads the changes that were committed to MySQL and generates corresponding insert, update and delete events. All of the events for each table are recorded in a separate Kafka topic, where they can be easily consumed by applications and services.
 
@@ -335,6 +335,13 @@ All data change events produced by the MySQL connector have a key and a value, a
 Starting with Kafka 0.10, Kafka can optionally record with the message key and value the http://kafka.apache.org/documentation.html#upgrade_10_performance_impact[_timestamp_] at which the message was created (recorded by the producer) or written to the log by Kafka.
 ====
 
+[WARNING]
+====
+As of Debezium 0.3, the Debezium MySQL connector ensures that all Kafka Connect _schema names_ are http://avro.apache.org/docs/current/spec.html#names[valid Avro schema names]. This means that the logical server name must start with Latin letters or an underscore (e.g., [a-z,A-Z,\_]), and the remaining characters in the logical server name and all characters in the database and table names must be Latin letters, digits, or an underscore (e.g., [a-z,A-Z,0-9,\_]). If not, then all invalid characters will automatically be replaced with an underscore character.
+
+This can lead to unexpected conflicts in schemas names when the logical server name, database names, and table names contain other characters, and the only distinguishing characters between table full names are invalid and thus replaced with underscores.
+====
+
 Debezium and Kafka Connect are designed around _continuous streams of event messages_, and the structure of these events may change over time. This could be difficult for consumers to deal with, so to make it very easy Kafka Connect makes each event self-contained. Every message key and value has two parts: a _schema_ and _payload_. The schema describes the structure of the payload, while the payload contains the actual data.
 
 [[change-events-key]]
@@ -663,13 +670,231 @@ As of Kafka 0.10, the JSON converter provided by Kafka Connect never results in 
 In the meantime, consider using the link:/docs/faq#avro-converter[Avro Converter], which does properly return a null value and will thus take full advantage of Kafka log compaction.
 ====
 
+[[data-types]]
+=== Data types
+
+As described above, the MySQL connector represents the changes to rows with events that are structured like the table in which the row exist. The event contains a field for each column value, and how that value is represented in the event depends on the MySQL data type of the column. This section describes this mapping.
+
+The following table describes how the connector maps each of the MySQL data types to a _literal type_ and _semantic type_ within the events' fields. Here, the _literal type_ describes how the value is literally represented using Kafka Connect schema types, namely `INT8`, `INT16`, `INT32`, `INT64`, `FLOAT32`, `FLOAT64`, `BOOLEAN`, `STRING`, `BYTES`, `ARRAY`, `MAP`, and `STRUCT`. The _semantic type_ describes how the Kafka Connect schema captures the _meaning_ of the field using the name of the Kafka Connect schema for the field.
+
+[cols="20%a,15%a,30%a,35%a",width=100,options="header,footer",role="table table-bordered table-striped"]
+|=======================
+|MySQL Data Type
+|Literal type (schema type)
+|Semantic type (schema name)
+|Notes
+
+|`BOOLEAN`, `BOOL`
+|`BOOLEAN`
+|n/a
+|
+
+|`BIT(1)` 
+|`BOOLEAN`
+|n/a
+|
+
+|`BIT( > 1)` 
+|`BYTES`
+|`io.debezium.data.Bits`
+|The `length` schema parameter contains an integer representing the number of bits.
+
+|`TINYINT` 
+|`INT8`
+|n/a
+|
+
+|`SMALLINT[(M)]` 
+|`INT16`
+|n/a
+|
+
+|`MEDIUMINT[(M)]` 
+|`INT32`
+|n/a
+|
+
+|`INT`, `INTEGER[(M)]` 
+|`INT32`
+|n/a
+|
+
+|`BIGINT[(M)]` 
+|`INT64`
+|n/a
+|
+
+|`REAL[(M,D)]` 
+|`FLOAT32`
+|n/a
+|
+
+|`FLOAT[(M,D)]` 
+|`FLOAT64`
+|n/a
+|
+
+|`DOUBLE[(M,D)]` 
+|`FLOAT64`
+|n/a
+|
+
+|`DECIMAL[(M[,D])]` 
+|`BYTES`
+|`org.apache.kafka.connect.data.Decimal`
+|The `scaled` schema parameter contains an integer representing how many digits the decimal point was shifted.
+
+|`CHAR(M)]` 
+|`STRING`
+|n/a
+|
+
+|`VARCHAR(M)]` 
+|`STRING`
+|n/a
+|
+
+|`BINARY(M)]` 
+|`BYTES`
+|n/a
+|
+
+|`VARBINARY(M)]` 
+|`BYTES`
+|n/a
+|
+
+|`TINYBLOB` 
+|`BYTES`
+|n/a
+|
+
+|`TINYTEXT` 
+|`STRING`
+|n/a
+|
+
+|`BLOB` 
+|`BYTES`
+|n/a
+|
+
+|`TEXT` 
+|`STRING`
+|n/a
+|
+
+|`MEDIUMBLOB` 
+|`BYTES`
+|n/a
+|
+
+|`MEDIUMTEXT` 
+|`STRING`
+|n/a
+|
+
+|`LONGBLOB` 
+|`BYTES`
+|n/a
+|
+
+|`LONGTEXT` 
+|`STRING`
+|n/a
+|
+
+|`ENUM` 
+|`STRING`
+|`io.debezium.data.Enum`
+|The `allowed` schema parameter contains the comma-separated list of allowed values.
+
+|`SET` 
+|`STRING`
+|`io.debezium.data.EnumSet`
+|The `allowed` schema parameter contains the comma-separated list of allowed values.
+
+|`YEAR[(2\|4)]` 
+|`INT32`
+|`io.debezium.time.Year`
+|
+
+|`TIMSTAMP[(M)]`
+|`STRING`
+|`io.debezium.time.ZonedTimestamp`
+| Contains an ISO8601 formatted date and time (with up to microsecond precision) in a particular time zone. MySQL allows `M` to be in the range 0-6 to store up to microsecond precision.
+
+|=======================
+
+Other than MySQL's `TIMESTAMP` data type, the other MySQL temporal types depend on the value of the `time.precision.mode` configuration property. When `time.precision.mode` configuration property is set to `adaptive` (the default), then the connector will determine the literal type and semantic type for the temporal types based on the column's data type definition so that events _exactly_ represents the values in the database:
+
+[cols="15%a,15%a,35%a,35%a",width=100,options="header,footer",role="table table-bordered table-striped"]
+|=======================
+|MySQL Data Type
+|Literal type (schema type)
+|Semantic type (schema name)
+|Notes
+
+|`DATE` 
+|`INT32`
+|`io.debezium.time.Date`
+| Represents the number of days since epoch.
+
+|`TIME`, `TIME(0)`, `TIME(1)`, `TIME(2)`, `TIME(3)` 
+|`INT32`
+|`io.debezium.time.Time`
+| Represents the number of milliseconds past midnight, and does not include timezone information.
+
+|`TIME(4)`, `TIME(5)`, `TIME(6)` 
+|`INT64`
+|`io.debezium.time.MicroTime`
+| Represents the number of microseconds past midnight, and does not include timezone information.
+
+|`DATETIME`, `DATETIME(0)`, `DATETIME(1)`, `DATETIME(2)`, `DATETIME(3)` 
+|`INT64`
+|`io.debezium.time.Timestamp`
+| Represents the number of milliseconds past epoch, and does not include timezone information.
+
+|`DATETIME(4)`, `DATETIME(5)`, `DATETIME(6)`
+|`INT64`
+|`io.debezium.time.MicroTimestamp`
+| Represents the number of microseconds past epoch, and does not include timezone information.
+
+|=======================
+
+When `time.precision.mode` configuration property is set to `connect`, then the connector will use the predefined Kafka Connect logical types as was the case with the 0.2.x MySQL connector. This may be useful when consumers only know about the built-in Kafka Connect logical types and are unable to handle variable-precision time values. On the other hand, since MySQL allows both `TIME` and `DATETIME` to have _fractional second precision_ of 0-6 to store up to microsecond precision, the events generated by a connector with the `connect` time precision mode will _*result in a loss of precision*_ when the database column has a _fractional second precision_ value greater than 3:
+
+[cols="15%a,15%a,35%a,35%a",width=100,options="header,footer",role="table table-bordered table-striped"]
+|=======================
+|MySQL Data Type
+|Literal type (schema type)
+|Semantic type (schema name)
+|Notes
+
+|`DATE` 
+|`INT32`
+|`org.apache.kafka.connect.data.Date`
+| Represents the number of days since epoch.
+
+|`TIME[(M)]` 
+|`INT64`
+|`org.apache.kafka.connect.data.Time`
+| Represents the number of milliseconds since midnight, and does not include timezone information. MySQL allows `M` to be in the range 0-6 to store up to microsecond precision, though this mode results in a loss of precision when `M` > 3. 
+
+|`DATETIME[(M)]` 
+|`INT64`
+|`org.apache.kafka.connect.data.Timestamp`
+| Represents the number of milliseconds since epoch, and does not include timezone information. MySQL allows `M` to be in the range 0-6 to store up to microsecond precision, though this mode results in a loss of precision when `M` > 3. 
+
+|=======================
+
 
 
 [[fault-tolerance]]
 [[when-things-go-wrong]]
 === When things go wrong
 
-Debezium is a distributed system that captures all changes in multiple upstream databases, and will never miss or lose an event. Of course, when the system is operating nominally or being administered carefully, then Debezium provides _exactly once_ delivery of every change event. However, if a fault does happen then the system will still not lose any events, although while it is recovering from the fault it may repeat some change events. Thus, in these abnormal situations Debezium provides _at least once_ delivery of change events.
+Debezium is a distributed system that captures all changes in multiple upstream databases, and will never miss or lose an event. Of course, when the system is operating nominally or being administered carefully, then Debezium provides _exactly once_ delivery of every change event. However, if a fault does happen then the system will still not lose any events, although while it is recovering from the fault it may repeat some change events. Thus, in these abnormal situations Debezium (like Kafka) provides _at least once_ delivery of change events.
 
 The rest of this section describes how Debezium handles various kinds of faults and problems.
 
@@ -693,18 +918,18 @@ If Kafka Connect is being run in distributed mode, and a Kafka Connect process i
 
 ==== Kafka Connect process crashes
 
-If the Kafka Connector process stops unexpectedly, then any connector tasks it was running will obviously terminate without recording their most recently-processed offsets. When Kafka Connect is being run in distributed mode, it will restart those connector tasks on other processes. However, the MySQL connectors will resume from the last offset recorded by the earlier processes, which means that the new replacement tasks may generate some of the same change events that were processed just prior to the crash. The number of duplicate events will depend on the offset flush period and the volume of data changes just before the crash.
+If the Kafka Connector process stops unexpectedly, then any connector tasks it was running will obviously terminate without recording their most recently-processed offsets. When Kafka Connect is being run in distributed mode, it will restart those connector tasks on other processes. However, the MySQL connectors will resume from the last offset _recorded_ by the earlier processes, which means that the new replacement tasks may generate some of the same change events that were processed just prior to the crash. The number of duplicate events will depend on the offset flush period and the volume of data changes just before the crash.
 
 [TIP]
 ====
-Because there is a chance that some events may be duplicated during a recovery from failure, consumers should always anticipate some events may be duplicated. Although Debezium change events are strictly speaking not idempotent, the _state_ within the events can be used by consumuers in an idempotent way. For example, many consumers might treat _create events_ and _update events_ in a similar way by simply using the `after` state, so seeing a duplicate _create event_ is simply handled as sequential updates.
+Because there is a chance that some events may be duplicated during a recovery from failure, consumers should always anticipate some events may be duplicated. Debezium change are idempotent, so a sequence of events always results in the same state.
 
 Debezium also includes with each change event message the source-specific information about the origin of the event, including the MySQL server's time of the event, its binlog filename and position, and GTID (if used). Consumers can keep track of this information (especially GTIDs) to know whether it has already seen a particular event.
 ====
 
 ==== Kafka becomes unavailable
 
-As the connector generates change events, the Kafka Connect framework records those events in Kafka using the Kafka producer API. Kafka Connect will also periodically record the latest offset that appears in those change events, at a frequency you've specified in the Kakfa Connect worker configuration. If the Kafka brokers become unavailable, the Kafka Connect worker process running the connectors will simply wait attempt to reconnect to the Kafka brokers. The connector tasks will simply pause until a connection can be reestablished, at which point the connectors will resume exactly where they left off.
+As the connector generates change events, the Kafka Connect framework records those events in Kafka using the Kafka producer API. Kafka Connect will also periodically record the latest offset that appears in those change events, at a frequency you've specified in the Kakfa Connect worker configuration. If the Kafka brokers become unavailable, the Kafka Connect worker process running the connectors will simply repeatedly attempt to reconnect to the Kafka brokers. In other words, the connector tasks will simply pause until a connection can be reestablished, at which point the connectors will resume exactly where they left off.
 
 ==== Connector is stopped for a duration
 
@@ -714,14 +939,14 @@ A properly configured Kafka cluster is able to https://engineering.linkedin.com/
 
 [NOTE]
 ====
-If the connector remains stopped for long enough, MySQL might purge older binlog files and the connector's last position may be lost. In this case, when the connector configured with _initial_ snapshot mode (the default) is finally restarted, the MySQL server will no longer have the starting point and the connector will fail with an error.
+If the connector remains stopped for long enough, MySQL might purge older binlog files and the connector's last position may be lost. In this case, when the connector configured with _initial_ snapshot mode (the default) is finally restarted, the MySQL server will no longer have the starting point and the connector will perform an initial snapshot. On the other hand, if the connector's snapshot mode is disabled, then the connector will fail with an error.
 ====
 
 [[configuration]]
 [[deploying-a-connector]]
 == Deploying a connector
 
-If you've already installed https://zookeeper.apache.org[Zookeeper], http://kafka.apache.org/[Kafka], and http://kafka.apache.org/documentation.html#connect[Kafka Connect], then using Debezium's MySQL connector is easy. Simply download the https://repo1.maven.org/maven2/io/debezium/debezium-connector-mysql/0.2.1/debezium-connector-mysql-0.2.1-plugin.tar.gz[connector's plugin archive], extract the JARs into your Kafka Connect environment, and add the directory with the JARs to http://docs.confluent.io/3.0.0/connect/userguide.html#installing-connector-plugins[Kafka Connect's classpath]. Restart your Kafka Connect process to pick up the new JARs.
+If you've already installed https://zookeeper.apache.org[Zookeeper], http://kafka.apache.org/[Kafka], and http://kafka.apache.org/documentation.html#connect[Kafka Connect], then using Debezium's MySQL connector is easy. Simply download the https://repo1.maven.org/maven2/io/debezium/debezium-connector-mysql/0.3.0/debezium-connector-mysql-0.3.0-plugin.tar.gz[connector's plugin archive], extract the JARs into your Kafka Connect environment, and add the directory with the JARs to http://docs.confluent.io/3.0.0/connect/userguide.html#installing-connector-plugins[Kafka Connect's classpath]. Restart your Kafka Connect process to pick up the new JARs.
 
 If immutable containers are your thing, then check out https://hub.docker.com/r/debezium/[Debezium's Docker images] for Zookeeper, Kafka, and Kafka Connect with the MySQL connector already pre-installed and ready to go. Our link:http://debezium.io/docs/tutorial[tutorial] even walks you through using these images, and this is a great way to learn what Debezium is all about. You can even link:/blog/2016/05/31/Debezium-on-Kubernetes[run Debezium on Kubernetes and OpenShift].
 
@@ -747,7 +972,8 @@ Using the MySQL connector is straightforward. Here is an example of the configur
     "database.server.name": "fullfillment", // <8>
     "database.whitelist": "inventory", // <9>
     "database.history.kafka.bootstrap.servers": "kafka:9092", // <10>
-    "database.history.kafka.topic": "schema-changes.inventory" // <11>
+    "database.history.kafka.topic": "dbhistory.fullfillment" // <11>
+    "include.schema.changes": "true" // <12>
   }
 }
 ----
@@ -761,7 +987,8 @@ Using the MySQL connector is straightforward. Here is an example of the configur
 <8> The logical name of the MySQL server/cluster, which forms a namespace and is used in all the names of the Kafka topics to which the connector writes, the Kafka Connect schema names, and the namespaces of the corresponding Avro schema when the link:#avro-converter[Avro Connector] is used.
 <9> A list of all databases hosted by this server that this connector will monitor. This is optional, and there are other properties for listing the databases and tables to include or exclude from monitoring.
 <10> The list of Kafka brokers that this connector will use to write and recover DDL statements to the database history topic.
-<11> The name of the database history topic where the connector will write and recover DDL statements.
+<11> The name of the link:#database-schema-history[database history topic] where the connector will write and recover DDL statements. This topic is for internal use only and should not be used by consumers.
+<12> The flag specifying that the connector should generate on the link:#schema-change-topic[schema change topic] named `fullfillment` events with the DDL changes that _can_ be used by consumers.
 
 See the link:#connector-properties[complete list of connector properties] that can be specified in these configurations.
 
@@ -851,9 +1078,13 @@ The following configuration properties are _required_ unless a default value is 
 |_n/a_
 |An optional comma-separated list of regular expressions that match the fully-qualified names of character-based columns whose values should be replaced in the change event message values with a field value consisting of the specified number of asterisk (`*`) characters. Multiple properties with different lengths can be used in a single configuration, although in each the length must be a positive integer. Fully-qualified names for columns are of the form _databaseName_._tableName_._columnName_, or _databaseName_._schemaName_._tableName_._columnName_.
 
+|`time.precision.mode` 
+|`adaptive`
+a| Time, date, and timestamps can be represented with different kinds of precisions, including: `adaptive` (the default) captures the time and timestamp values exactly as in the database uses either millisecond, microsecond, or nanosecond precision values based on the database column's type; or `connect` always represents time and timestamp values using Kafka Connect's built-in representations for Time, Date, and Timestamp, which uses millisecond precision regardless of the database columns' precision.
+
 |`include.schema.changes` 
-|`false`
-|Boolean value that specifies whether the connector should publish changes in the database schema to a Kafka topic with the same name as the database server ID. Each schema change will be recorded using a key that contains the database name and whose value includes the DDL statement(s). This is independent of how the connector internally records database history. The default is `false`.
+|`true`
+|Boolean value that specifies whether the connector should publish changes in the database schema to a Kafka topic with the same name as the database server ID. Each schema change will be recorded using a key that contains the database name and whose value includes the DDL statement(s). This is independent of how the connector internally records database history. The default is `true`.
 
 |`max.batch.size` 
 |`2048`
