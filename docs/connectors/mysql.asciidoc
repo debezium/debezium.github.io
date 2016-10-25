@@ -3,7 +3,7 @@
 :linkattrs:
 :icons: font
 :source-highlighter: highlight.js
-:debezium-version: 0.3.3
+:debezium-version: 0.3.4
 
 Debezium's MySQL Connector can monitor and record all of the row-level changes in the databases on a MySQL server or HA MySQL cluster. The first time it connects to a MySQL server/cluster, it reads a consistent snapshot of all of the databases. When that snapshot is complete, the connector continuously reads the changes that were committed to MySQL 5.5 or later and generates corresponding insert, update and delete events. All of the events for each table are recorded in a separate Kafka topic, where they can be easily consumed by applications and services.
 
@@ -171,6 +171,8 @@ If the connector fails, is rebalanced, or stops before the snapshot is complete,
 A second snapshot mode allows the connector to perform snapshots _whenever necessary_. This behavior is similar to the default _initial_ snapshot behavior mentioned above, except with one exception: if the connector is restarted _and_ MySQL no longer has its starting point in the binlog, rather than failing the connector will instead perform another snapshot. This mode is perhaps the most automated, but at the risk of performing additional snapshots when things go wrong (generally when the connector is down too long).
 
 The third snapshot mode ensures the connector _never_ performs snapshots. When a new connector is configured this way, it will start reading the binlog from the beginning. This is not the default behavior because starting a new connector in this mode (without a snapshot) requires the MySQL binlog contain the entire history of all monitored databases, and MySQL instances are rarely configured this way. Specifically, the binlog must contain at least the `CREATE TABLE ...` statement for every monitored table. If this requirement is not satisfied, the connector will not be able to properly interpret the structure of the low-level events in the binlog, and it will simply skip all events for those missing table definitions. (The connector cannot rely upon the current definition of those tables, since the tables may have been altered after the initial events were recorded in the binlog, preventing the connector from properly interpreting the binlog events.)
+
+As of 0.3.4, a fourth snapshot mode allows the connector to start reading the MySQL binlog from its current position when the connector is started. With the `schema_only` mode the connector reads the current binlog position, captures the current table schemas without reading any data, and then proceeds to read the binlog from its current position. This happens very quickly, and the resulting change event streams include only those change events that occurred *after the snapshot started*. This may be useful for consumers that don't need to know the complete state of the database but only need to know the changes that were made since the connector was started.
 
 Because of how the connector records offsets when performing a snapshot, the connector now defaults to `include.schema.events=true`. This writes all DDL changes performed during a snapshot to a topic that can be consumed by apps. And, more importantly, during the final step mentioned above it ensures that the updated offsets are recorded immediately (rather than waiting until a database change occurs).
 
@@ -808,6 +810,11 @@ The following table describes how the connector maps each of the MySQL data type
 |n/a
 |
 
+|`JSON` 
+|`STRING`
+|`io.debezium.data.Json`
+|Contains the string representation of a JSON document, array, or scalar.
+
 |`ENUM` 
 |`STRING`
 |`io.debezium.data.Enum`
@@ -1140,7 +1147,7 @@ The following _advanced_ configuration properties have good defaults that will w
 
 |`snapshot.mode` 
 |`initial`
-|Specifies the criteria for running a snapshot upon startup of the connector. The default is `initial`, and specifies the connector can run a snapshot only when no offsets have been recorded for the logical server name. The `when_needed` option specifies that the connector run a snapshot upon startup whenever it deems it necessary (when no offsets are available, or when a previously recorded offset specifies a binlog location or GTID that is not available in the server). The `never` option specifies that the connect should never use snapshots and that upon first startup with a logical server name the connector should read from the beginning of the binlog; this should be used with care, as it is only valid when the binlog is guaranteed to contain the entire history of the database.
+|Specifies the criteria for running a snapshot upon startup of the connector. The default is `initial`, and specifies the connector can run a snapshot only when no offsets have been recorded for the logical server name. The `when_needed` option specifies that the connector run a snapshot upon startup whenever it deems it necessary (when no offsets are available, or when a previously recorded offset specifies a binlog location or GTID that is not available in the server). The `never` option specifies that the connect should never use snapshots and that upon first startup with a logical server name the connector should read from the beginning of the binlog; this should be used with care, as it is only valid when the binlog is guaranteed to contain the entire history of the database. If you don't need the topics to contain a consistent snapshot of the data but only need them to have the changes since the connector was started, you can use the `schema_only` option, where the connector only snapshots the schemas (not the data). 
 
 |`snapshot.minimal.locks` 
 |`true`
