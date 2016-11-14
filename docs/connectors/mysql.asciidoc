@@ -3,7 +3,7 @@
 :linkattrs:
 :icons: font
 :source-highlighter: highlight.js
-:debezium-version: 0.3.4
+:debezium-version: 0.3.5
 
 Debezium's MySQL Connector can monitor and record all of the row-level changes in the databases on a MySQL server or HA MySQL cluster. The first time it connects to a MySQL server/cluster, it reads a consistent snapshot of all of the databases. When that snapshot is complete, the connector continuously reads the changes that were committed to MySQL 5.6 or later and generates corresponding insert, update and delete events. All of the events for each table are recorded in a separate Kafka topic, where they can be easily consumed by applications and services.
 
@@ -122,16 +122,20 @@ To use the MySQL connector with one of these topologies, the connector can follo
 
 The connector records its position in the server's binlog, which is different on each server in the cluster. Therefore, the connector will need to follow just one MySQL server instance. If that server fails, it must be restarted or recovered before the connector can continue.
 
-
-[[ha-mysql-clusters]]
+[[mysql-clusters]]
 [[highly-available-mysql-clusters]]
 === Highly Available MySQL clusters
 
 A https://dev.mysql.com/doc/mysql-ha-scalability/en/[variety of high availability solutions] exist for MySQL, and they make it far easier to tolerate and almost immediately recover from problems and failures. Most HA MySQL clusters use GTIDs so that slaves are able to keep track of all changes on any of the master.
 
-Using the MySQL connector with a highly-available MySQL cluster is now possible with Debezium 0.2, as long as GTIDs are enabled in the MySQL cluster. When this is the case, the MySQL connector can connect to any of the servers that have a binlog enabled, and upon startup the connector uses the GTIDs to identify where in that server's binlog it should begin reading. 
 
-When the cluster is fronted by a load balancer with a single hostname, the connector can be configured to connect using that host. Upon startup, the connector establishes a connection with one of the load balanced servers, and continues to use it until the connector is stopped/rebalanced or until communication fails. At that point, the connector need only be restarted, and it will connect to one of the servers in the cluster and continue reading the binlog.
+[[multi-master-mysql]]
+=== Multi-Master MySQL
+
+A https://dev.mysql.com/doc/refman/5.7/en/mysql-cluster-replication-multi-master.html[multi-master MySQL] topology uses one or more MySQL slaves that each replicate from _multiple_ masters. This is a powerful way to aggregate the replication of multiple MySQL clusters, and requires using GTIDs.
+
+As of Debezium 0.3.5, the Debezium MySQL connector can use these multi-master MySQL slaves as sources, and can fail over to _different_ multi-master MySQL slaves as long as thew new slave is caught up to the old slave (e.g., the new slave has all of the transactions that were last seen on the first slave). This works even if the connector is only using a subset of databases and/or tables, as the connector can be configured to include or exclude specific GTID sources when attempting to reconnect to a new multi-master MySQL slave and find the correct position in the binlog.
+
 
 [[how-it-works]]
 [[how-the-mysql-connector-works]]
@@ -624,6 +628,11 @@ When we compare this to the value in the _insert_ event, we see a couple of diff
 
 There are several things we can learn by just looking at this `payload` section. We can compare the `before` and `after` structures to determine what actually changed in this row because of the commit. The `source` structure tells us information about MySQL's record of this change (providing traceability), but more importantly this has information we can compare to other events in this and other topics to know whether this event occurred before, after, or as part of the same MySQL commit as other events.
 
+[NOTE]
+====
+When the columms for a row's primary/unique key are updated, the value of the row's key has changed so Debezium will output _three_ events: a `DELETE` event and link:#tombstone-events[tombstone event] with the old key for the row, followed by an `INSERT` event with the new key for the row.
+====
+
 [[delete-events]]
 So far we've seen samples of _create_ and _update_ events. Now, let's look at the value of a _delete_ event for the same table. Once again, the `schema` portion of the value will be exactly the same as with the _create_ and _update_ events:
 
@@ -745,11 +754,6 @@ The following table describes how the connector maps each of the MySQL data type
 |n/a
 |
 
-|`DECIMAL[(M[,D])]` 
-|`BYTES`
-|`org.apache.kafka.connect.data.Decimal`
-|The `scaled` schema parameter contains an integer representing how many digits the decimal point was shifted.
-
 |`CHAR(M)]` 
 |`STRING`
 |n/a
@@ -839,7 +843,11 @@ The following table describes how the connector maps each of the MySQL data type
 
 Columns that store strings are defined in MySQL with a character set and collation, either explicitly on the column's definition or implicitly by inheriting the table's, database's, or server's default character sets and collations. As of 0.3.1, the MySQL connector uses the column's character set when reading the binary representation of the column values in the binlog events.
 
+Other data type mappings are described in the following sections.
+
 [[temporal-values]]
+==== Temporal values
+
 Other than MySQL's `TIMESTAMP` data type, the other MySQL temporal types depend on the value of the `time.precision.mode` configuration property. When `time.precision.mode` configuration property is set to `adaptive` (the default), then the connector will determine the literal type and semantic type for the temporal types based on the column's data type definition so that events _exactly_ represents the values in the database:
 
 [cols="15%a,15%a,35%a,35%a",width=100,options="header,footer",role="table table-bordered table-striped"]
@@ -904,6 +912,52 @@ When `time.precision.mode` configuration property is set to `connect`, then the 
 
 [[zero-values]]
 MySQL allows http://dev.mysql.com/doc/refman/5.7/en/date-and-time-types.html[zero-values] for `DATE`, `DATETIME`, and `TIMESTAMP` columns, which are sometimes preferred over null values. These values cannot be represented using any of the Java types with either of the `time.precision.mode` options, and therefore the MySQL connector will represent them as `null` values when the column definition allows nulls, or as the _epoch day_ when the column does not allow nulls.
+
+
+[[decimal-values]]
+==== Decimal values
+
+When `decimal.handling.mode` configuration property is set to `precise`, then the connector will use the predefined Kafka Connect `org.apache.kafka.connect.data.Decimal' logical type for all `DECIMAL` and `NUMERIC` columns. This is the default mode.
+
+[cols="15%a,15%a,35%a,35%a",width=100,options="header,footer",role="table table-bordered table-striped"]
+|=======================
+|MySQL Data Type
+|Literal type (schema type)
+|Semantic type (schema name)
+|Notes
+
+|`NUMERIC[(M[,D])]` 
+|`BYTES`
+|`org.apache.kafka.connect.data.Decimal`
+|The `scaled` schema parameter contains an integer representing how many digits the decimal point was shifted.
+
+|`DECIMAL[(M[,D])]` 
+|`BYTES`
+|`org.apache.kafka.connect.data.Decimal`
+|The `scaled` schema parameter contains an integer representing how many digits the decimal point was shifted.
+
+|=======================
+
+However, when `decimal.handling.mode` configuration property is set to `double`, then the connector will represent all `DECIMAL` and `NUMERIC` values as Java double values and encode them as follows:
+
+[cols="15%a,15%a,35%a,35%a",width=100,options="header,footer",role="table table-bordered table-striped"]
+|=======================
+|MySQL Data Type
+|Literal type (schema type)
+|Semantic type (schema name)
+|Notes
+
+|`NUMERIC[(M[,D])]` 
+|`FLOAT64`
+|
+|
+
+|`DECIMAL[(M[,D])]` 
+|`FLOAT64`
+|
+|
+
+|=======================
 
 
 [[fault-tolerance]]
@@ -1096,7 +1150,11 @@ The following configuration properties are _required_ unless a default value is 
 
 |`time.precision.mode` 
 |`adaptive`
-a| Time, date, and timestamps can be represented with different kinds of precisions, including: `adaptive` (the default) captures the time and timestamp values exactly as in the database uses either millisecond, microsecond, or nanosecond precision values based on the database column's type; or `connect` always represents time and timestamp values using Kafka Connect's built-in representations for Time, Date, and Timestamp, which uses millisecond precision regardless of the database columns' precision.
+a| Time, date, and timestamps can be represented with different kinds of precisions, including: `adaptive` (the default) captures the time and timestamp values exactly as in the database uses either millisecond, microsecond, or nanosecond precision values based on the database column's type; or `connect` always represents time and timestamp values using Kafka Connect's built-in representations for Time, Date, and Timestamp, which uses millisecond precision regardless of the database columns' precision. See link:#temporal-values.
+
+|`decimal.handling.mode`
+|`precise`
+a| Specifies how the connector should handle values for `DECIMAL` and `NUMERIC` columns: `precise` (the default) represents them precisely using `java.math.BigDecimal` values represented in change events in a binary form; or `double` represents them using `double` values, which may result in a loss of precision but will be far easier to use. See link:#decimal-values.
 
 |`include.schema.changes` 
 |`true`
@@ -1117,6 +1175,14 @@ a| Time, date, and timestamps can be represented with different kinds of precisi
 |`connect.timeout.ms` 
 |`30000`
 |A positive integer value that specifies the maximum time in milliseconds this connector should wait after trying to connect to the MySQL database server before timing out. Defaults to 30 seconds.
+
+|`gtid.source.includes` 
+|
+|A comma-separated list of regular expressions that match source UUIDs in the GTID set used to find the binlog position in the MySQL server. Only the GTID ranges that have sources matching one of these include patterns will be used. May not be used with `gtid.source.excludes`.
+
+|`gtid.source.excludes` 
+|
+|A comma-separated list of regular expressions that match source UUIDs in the GTID set used to find the binlog position in the MySQL server. Only the GTID ranges that have sources matching none of these exclude patterns will be used. May not be used with `gtid.source.includes`.
 |=======================
 
 
