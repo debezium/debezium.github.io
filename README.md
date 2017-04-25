@@ -29,6 +29,8 @@ If you plan to submit changes, fork the [Git repository](http://github.com/debez
     $ git remote rename origin upstream
     $ git remote add origin https://github.com/<you>/debezium.io.git
 
+Then check out the `develop` branch and get the latest. If you're going to make changes, create a topic branch and make the changes there.
+
 ### 2. Start the development webserver
 
 In a new terminal initialized with the Docker host environment, start a Docker container that has the build environment for our website:
@@ -58,8 +60,8 @@ If you have to change the Gemfile to use different libraries, you will need to l
 
 ### 6. Commit changes
 
-Use Git on your local machine to commit the changes to your site's codebase, and then publish the new version of the site.
+Use Git on your local machine to commit the changes to the site's codebase to your topic branch, and then create a pull request.
 
 ### 7. Publish the website
 
-TBD
+Review the pull request and merge onto the `develop` branch. The [Travis-CI build](https://travis-ci.org/debezium/debezium.github.io) will then build the `develop` branch and, if successful, store the generated site in the `master` branch and publish to the GitHub Pages.
