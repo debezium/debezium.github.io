@@ -39,7 +39,7 @@ Awestruct::Extensions::Pipeline.new do
   extension Awestruct::Extensions::Atomizer.new(:posts, '/blog.atom', {:feed_title=>'Debezium Blog', :template=>'_layouts/atom.xml.haml'})
 
   extension Awestruct::Extensions::RedirectCreator.new("redirects")
+  extension Awestruct::Extensions::Disqus.new
 
   #extension Release.new
 end
-
