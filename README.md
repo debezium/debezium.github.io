@@ -50,7 +50,7 @@ This should only need to be performed once. After the libraries are installed, w
     
 ### 4. View the site
 
-Point your browser to [http://localhost:4242]() to view the site. You may notice some delay during development, since the site is generated somewhat lazily.
+Point your browser to [http://localhost:4242](http://localhost:4242) to view the site. You may notice some delay during development, since the site is generated somewhat lazily.
 
 ### 5. Edit the site
 
