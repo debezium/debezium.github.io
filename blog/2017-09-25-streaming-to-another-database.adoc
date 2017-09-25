@@ -1,0 +1,222 @@
+= Streaming data to a downstream database
+Jiri Pechanec
+:awestruct-tags: [ mysql, postgres, smt, example ]
+:awestruct-layout: blog-post
+
+Recently there was a short https://www.confluent.io/blog/simplest-useful-kafka-connect-data-pipeline-world-thereabouts-part-1/[series] of blogposts on https://www.confluent.io/[Confluent's] blog.
+
+In this blogpost we will try to create a simple scenario: we are going to have a MySQL database instance running as a master database that feeds a Kafka broker with events representing a source of truth.
+Next we will add PostgreSQL database that will listen one of the topics and will replicate the state of the MySQL instance to its own data.
+
+We will also demonstrate a new functionality coming with version link:2017/09/21/debezium-0-6-0-released[0.6.0]: a single message transform for link:/docs/configuration/event-flattening[CDC Event Flattening].
+
+== Topology
+The general topology for this scenario is displayed on the following picture:
+
+.A General topology
+[#img-general]
+[caption="Figure 1: "]
+image::dbz-to-jdbc.svg[Scenario topology]
+
+To simplify the setup a little bit we will use only one Kafka Connect instance that will contain all connectors so the single instance will serve as an event producer and an event consumer.
+
+.A Simplified topology
+[#img-general]
+[caption="Figure 2: "]
+image::dbz-to-jdbc-simplified.svg[Scenario topology]
+
+== Configuration
+We will use this https://github.com/debezium/debezium-examples/tree/master/unwrap-smt[compose] for a fast deployment of the demo.
+The deployment consists of following images
+
+* Apache ZooKeeper
+* Apache Kafka
+* An enriched Kafka Connect image with changes
+** PostgreSQL JDBC driver placed into `/kafka/libs` directory
+** https://docs.confluent.io/current/connect/connect-jdbc/docs/index.html[Kafka Connect JDBC Connector] placed into `/kafka/connect/kafka-connect-jdbc` directory
+* Pre-populated MySQL used in our link:docs/tutorial[tutorial]
+* Empty PostgreSQL
+
+There are certain impedances between Debezium MySQL Connector and Kafka Connect JDBC connector
+
+* event format
+* delete records/tombstone records handling
+* topic naming
+
+We are going to go through all those issues in detail.
+
+=== Event format
+Debezium emits events in a complex format that contains two record values: a value of the row record before the change and value of the row record after the change is applied.
+Further metadata are also included and the result is so called `Envelope` format.
+
+[source,json,indent=0]
+----
+{
+	"op": "u",
+	"source": {
+		...
+	},
+	"ts_ms" : "...",
+	"before" : {
+		"field1" : "oldvalue1",
+		"field2" : "oldvalue2"
+	},
+	"after" : {
+		"field1" : "newvalue1",
+		"field2" : "newvalue2"
+	}
+}
+----
+
+Kafka Connect JDBC connector (as most of the others) emits outgoing and expects incoming events in a simple format that is generally a new row record.
+
+[source,json,indent=0]
+----
+{
+	"field1" : "newvalue1",
+	"field2" : "newvalue2"
+}
+----
+
+Debezium provides a bridge between those two formats in a form of a https://cwiki.apache.org/confluence/display/KAFKA/KIP-66%3A+Single+Message+Transforms+for+Kafka+Connect[single message transform].
+The `UnwrapFromEnvelope` transformation automatically extracts a new row record and thus effectively _flattens_ the complex record into a simple one consumable by other connectors.
+The SMT is applicable at both source and sink connectors but we generally recommend to apply it at sink connectors as then the records stored in Kafka will contain an associated context.
+In our example we apply the SMT at sink connector using configuration properties
+
+[source,indent=0]
+----
+        "transforms": "unwrap", 
+        "transforms.unwrap.type": "io.debezium.transforms.UnwrapFromEnvelope", 
+----
+
+=== Delete records
+When a record is deleted from source database Debezium creates two records: delete record and tombstone record (for compaction).
+Kafka Connect JDBC Sink is not able to work with neither of those to and any attempt to use them leads to `NullPointerException`.
+`UnwrapFromEnvelope` by default filters out both delete and tombstone records and no action is requested on users side.
+If a downstream connector is able to handle those events it is possible to configure `UnwrapFromEnvelope` to pass them downstream.
+
+=== Topic naming
+Last but not least there is a difference in naming of topics.
+Debezium uses fully qualified naming for target topics representing each table it manages.
+The naming follows the pattern `<instance-name>,<database-name>.<table-name>`.
+Kafka Connect JDBC Connector works with simple names `<table-name>`.
+
+In complex scenarios the user would deploy https://kafka.apache.org/documentation/streams/[Kafka Streams] framework to establish elaborated routing between source and target routes.
+In our example we will use a stock `RegexRouter` SMT that would route records created by Debezium into topics named according to JDBC Connector schema.
+[source,indent=0]
+----
+        "transforms": "route",
+        "transforms.route.type": "org.apache.kafka.connect.transforms.RegexRouter",
+        "transforms.route.regex": "([^.]+)\\.([^.]+)\\.([^.]+)",
+        "transforms.route.replacement": "$3"
+----
+
+== Example
+Kick the tires and let's try our example!
+
+First of all we need to deploy all components.
+[source,bash,indent=0]
+----
+export DEBEZIUM_VERSION=0.6
+docker-compose up
+----
+
+When all components are started we are going to register JDBC Sink connector writing into PostgreSQL database
+[source,bash,indent=0]
+----
+curl -i -X POST -H "Accept:application/json" -H  "Content-Type:application/json" http://localhost:8083/connectors/ -d @jdbc-sink.json
+----
+
+using this registration request.
+[source,json,indent=0]
+----
+{
+    "name": "jdbc-sink",
+    "config": {
+        "connector.class": "io.confluent.connect.jdbc.JdbcSinkConnector",
+        "tasks.max": "1",
+        "topics": "customers",
+        "connection.url": "jdbc:postgresql://postgres:5432/inventory?user=postgresuser&password=postgrespw",
+        "transforms": "unwrap",                                                  (1)
+        "transforms.unwrap.type": "io.debezium.transforms.UnwrapFromEnvelope",   (1)
+        "auto.create": "true",                                                   (2)
+        "insert.mode": "upsert",                                                 (3)
+        "pk.fields": "id",                                                       (4)
+        "pk.mode": "record_value"                                                (4)
+    }
+}
+----
+
+The request configures this options
+
+1. unwrapping Debezium complex format into a simple one
+2. automatically create target tables
+3. insert a row if it does not exist or update an existing one
+4. identify primary key stored in Kafka's record value field
+
+[source,bash,indent=0]
+----
+curl -i -X POST -H "Accept:application/json" -H  "Content-Type:application/json" http://localhost:8083/connectors/ -d @source.json
+----
+The registration request contains SMT for routing records into topics with simple name.
+
+Let's check if the databases are synchronized.
+[source,bash,indent=0]
+----
+docker-compose exec mysql bash -c 'mysql -u $MYSQL_USER  -p$MYSQL_PASSWORD inventory -e "select * from customers"'
++------+------------+-----------+-----------------------+
+| id   | first_name | last_name | email                 |
++------+------------+-----------+-----------------------+
+| 1001 | Sally      | Thomas    | sally.thomas@acme.com |
+| 1002 | George     | Bailey    | gbailey@foobar.com    |
+| 1003 | Edward     | Walker    | ed@walker.com         |
+| 1004 | Anne       | Kretchmar | annek@noanswer.org    |
++------+------------+-----------+-----------------------+
+
+docker-compose exec postgres bash -c 'psql -U $POSTGRES_USER $POSTGRES_DB -c "select * from customers"'
+ last_name |  id  | first_name |         email         
+-----------+------+------------+-----------------------
+ Thomas    | 1001 | Sally      | sally.thomas@acme.com
+ Bailey    | 1002 | George     | gbailey@foobar.com
+ Walker    | 1003 | Edward     | ed@walker.com
+ Kretchmar | 1004 | Anne       | annek@noanswer.org
+----
+
+Next we try to add a new record and verify that it was replicated into target database.
+[source,bash,indent=0]
+----
+docker-compose exec mysql bash -c 'mysql -u $MYSQL_USER  -p$MYSQL_PASSWORD inventory'
+mysql> insert into customers values(default, 'John', 'Doe', 'john.doe@example.com');
+Query OK, 1 row affected (0.02 sec)
+docker-compose exec -postgres bash -c 'psql -U $POSTGRES_USER $POSTGRES_DB -c "select * from customers"'
+ last_name |  id  | first_name |         email         
+-----------+------+------------+-----------------------
+...
+Doe        | 1005 | John       | john.doe@example.com
+(5 rows)
+----
+
+You can further play with the master data in MySQL and add a new data or modify an existing one and you can check the impact of the operations on target database.
+
+== What's next?
+
+In a future blogpost we will reproduce the same scenario with ElasticSearch as a target for events.
+
+== About Debezium
+
+Debezium is an open source distributed platform that turns your existing databases into event streams,
+so applications can see and respond almost instantly to each committed row-level change in the databases.
+Debezium is built on top of http://kafka.apache.org/[Kafka] and provides http://kafka.apache.org/documentation.html#connect[Kafka Connect] compatible connectors that monitor specific database management systems.
+Debezium records the history of data changes in Kafka logs, so your application can be stopped and restarted at any time and can easily consume all of the events it missed while it was not running,
+ensuring that all events are processed correctly and completely.
+Debezium is link:/license[open source] under the http://www.apache.org/licenses/LICENSE-2.0.html[Apache License, Version 2.0].
+
+== Get involved
+
+We hope you find Debezium interesting and useful, and want to give it a try.
+Follow us on Twitter https://twitter.com/debezium[@debezium], https://gitter.im/debezium/user[chat with us on Gitter],
+or join our https://groups.google.com/forum/#!forum/debezium[mailing list] to talk with the community.
+All of the code is open source https://github.com/debezium/[on GitHub],
+so build the code locally and help us improve ours existing connectors and add even more connectors.
+If you find problems or have ideas how we can improve Debezium, please let us know or https://issues.jboss.org/projects/DBZ/issues/[log an issue].
+
