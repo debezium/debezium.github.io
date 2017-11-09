@@ -15,7 +15,9 @@ PostgreSQL's https://www.postgresql.org/docs/9.6/static/logicaldecoding-explanat
 
 Debezium's PostgreSQL connector contains two different parts which work together in order to be able to read and process server changes:
 
-* a https://github.com/debezium/postgres-decoderbufs[_logical decoding output plugin_] which has to be installed and configured in the PostgreSQL server
+* a logical decoding output plugin which has to be installed and configured in the PostgreSQL server, one of
+** https://github.com/debezium/postgres-decoderbufs[Protobuf based]
+** https://github.com/eulerto/wal2json[wal2json]
 * Java code which reads the changes produced by the plugin in Protobuf format, using PostgreSQL's https://www.postgresql.org/docs/9.6/static/logicaldecoding-walsender.html[_streaming replication protocol_], via the PostgreSQL https://github.com/pgjdbc/pgjdbc[_JDBC driver_]
 
 The connector then produces a _change event_ for every row-level insert, update, and delete operation that was received, recording all the change events for each table in a separate Kafka topic. Your client applications read the Kafka topics that correspond to the database tables they're interested in following, and react to every row-level event it sees in those topics.
@@ -46,14 +48,23 @@ Note that *if your database is hosted by a service* such as https://aws.amazon.c
 
 As of PostgreSQL 9.4, the only way to read changes to the write-ahead-log is to first install a logical decoding output plugin. Plugins are written in C, compiled, and installed on the machine which runs the PostgreSQL server. Plugins use  a number of PostgreSQL specific APIs, as described by the https://www.postgresql.org/docs/9.6/static/logicaldecoding-output-plugin.html[_PostgreSQL documentation_].
 
-Debezium's PostgreSQL connector works with Debezium's logical decoding plugin to encodes the changes in https://github.com/google/protobuf[_Protobuf format_]. The https://github.com/debezium/postgres-decoderbufs/blob/master/README.md[_on the plugin's documentation_] describes the plugin's requirements, limitations, and how to compile it.
+Debezium's PostgreSQL connector works with one of Debezium's supported logical decoding plugin to encode the changes in either https://github.com/google/protobuf[_Protobuf format_] or http://www.json.org/[_JSON_] format. The on the plugins' documentation(https://github.com/debezium/postgres-decoderbufs/blob/master/README.md[_protobuf_], https://github.com/eulerto/wal2json/blob/master/README.md[_wal2json_]) describes the plugin's requirements, limitations, and how to compile it.
 
-For simplicity, Debezium also provides a Docker image based on a vanilla PostgreSQL server image on top of which it compiles and installs the plugin. We recommend https://github.com/debezium/docker-images/tree/master/postgres/9.6[_using this image_] as an example of the detailed steps required for the installation.
+For simplicity, Debezium also provides a Docker image based on a vanilla PostgreSQL server image on top of which it compiles and installs the plugins. We recommend https://github.com/debezium/docker-images/tree/master/postgres/9.6[_using this image_] as an example of the detailed steps required for the installation.
 
 [WARNING]
 ====
-The Debezium logical decoding plugin has only been installed and tested on _Linux_ machines. For Windows and other OSes it may require different installation steps
+The Debezium logical decoding plugins have only been installed and tested on _Linux_ machines. For Windows and other OSes it may require different installation steps
 ====
+
+[[discrepance-between-plugins]]
+==== Discrepance between plugins
+The plugins' behaviour is not completely same for all cases. So far these differences have been identified
+
+* wal2json plug-in is not able to process qouted identifiers (https://github.com/eulerto/wal2json/issues/35[issue])
+* wal2json plug-in does not emit events for tables without primary keys
+
+All up-to-date differences are tracked in a test suite https://github.com/debezium/debezium/blob/master/debezium-connector-postgres/src/test/java/io/debezium/connector/postgresql/DecoderDifferences.java[Java class].
 
 [[server-configuration]]
 ==== Configuring the PostgreSQL server
@@ -64,14 +75,14 @@ Once the link:#output-plugin[plugin] has been installed, configure the server to
 [source]
 ----
 # MODULES
-shared_preload_libraries = 'decoderbufs' //<1>
+shared_preload_libraries = 'decoderbufs,wal2json' //<1>
 
 # REPLICATION
 wal_level = logical             //<2>
 max_wal_senders = 1             //<3>
 max_replication_slots = 1       //<4>
 ----
-<1> tells the server that it should load at startup the `decoderbufs` logical decoding plugin (the name of the plugin is set in its https://github.com/debezium/postgres-decoderbufs/blob/v0.3.0/Makefile[_Makefile_])
+<1> tells the server that it should load at startup the `decoderbufs` and `wal2json` logical decoding plugins (the names of the plugins are set in https://github.com/debezium/postgres-decoderbufs/blob/v0.3.0/Makefile[_Protobuf_] and https://github.com/eulerto/wal2json/blob/master/Makefile[_wal2json_] Makefiles)
 <2> tells the server that it should use logical decoding with the write-ahead log
 <3> tells the server that it should use a maximum of `1` separate processes for processing WAL changes
 <4> tells the server that it should allow a maximum of `1` replication slots to be created for streaming WAL changes
@@ -149,7 +160,7 @@ The final snapshot mode, *initial only*, will perform a database snapshot and th
 
 The PostgreSQL connector will typically spend the vast majority of its time streaming changes from the PostgreSQL server to which it is connected. This mechanism relies on https://www.postgresql.org/docs/9.6/static/protocol-replication.html[_PostgreSQL's replication protocol_] where the client can receive changes from the server as they are committed in the server's transaction log at certain positions (also known as `Log Sequence Numbers` or in short LSNs)
 
-Whenever the server commits a transaction, a separate server process invokes a callback function from the link:#output-plugin[logical decoding plugin]. This function processes the changes from the transaction, converts them to a specific  format (Protobuf in the case of Debezium plugin) and writes them on an output stream which can then be consumed by clients.
+Whenever the server commits a transaction, a separate server process invokes a callback function from the link:#output-plugin[logical decoding plugin]. This function processes the changes from the transaction, converts them to a specific  format (Protobuf or JSON in the case of Debezium plugin) and writes them on an output stream which can then be consumed by clients.
 
 The PostgreSQL connector acts as a PostgreSQL client, and when it receives these changes it transforms the events into Debezium _create_, _update_, or _delete_ events that include the LSN position of the event. The PostgreSQL connector forwards these change events to the Kafka Connect framework (running in the same process), which then asynchronously writes them in the same order to the appropriate Kafka topic. Kafka Connect uses the term _offset_ for the source-specific position information that Debezium includes with each event, and Kafka Connect periodically records the most recent offset in another Kafka topic.
 
@@ -888,7 +899,7 @@ If the connector remains stopped for long enough, PostgreSQL might purge older W
 [[deploying-a-connector]]
 == Deploying a connector
 
-If you've already installed https://zookeeper.apache.org[Zookeeper], http://kafka.apache.org/[Kafka], and http://kafka.apache.org/documentation.html#connect[Kafka Connect], then using Debezium's PostgreSQL connector is easy. Simply download the https://repo1.maven.org/maven2/io/debezium/debezium-connector-PostgreSQL/0.4.0/debezium-connector-PostgreSQL-0.4.0-plugin.tar.gz[connector's plugin archive], extract the JARs into your Kafka Connect environment, and add the directory with the JARs to http://docs.confluent.io/3.0.0/connect/userguide.html#installing-connector-plugins[Kafka Connect's classpath]. Restart your Kafka Connect process to pick up the new JARs.
+If you've already installed https://zookeeper.apache.org[Zookeeper], http://kafka.apache.org/[Kafka], and http://kafka.apache.org/documentation.html#connect[Kafka Connect], then using Debezium's PostgreSQL connector is easy. Simply download the https://repo1.maven.org/maven2/io/debezium/debezium-connector-PostgreSQL/{debezium-version}/debezium-connector-PostgreSQL-{debezium-version}-plugin.tar.gz[connector's plugin archive], extract the JARs into your Kafka Connect environment, and add the directory with the JARs to http://docs.confluent.io/{confluent-platform-version}/connect/userguide.html#installing-plugins[Kafka Connect's classpath]. Restart your Kafka Connect process to pick up the new JARs.
 
 If immutable containers are your thing, then check out https://hub.docker.com/r/debezium/[Debezium's Docker images] for Zookeeper, Kafka, PostgreSQL and Kafka Connect with the PostgreSQL connector already pre-installed and ready to go.  You can even link:/blog/2016/05/31/Debezium-on-Kubernetes[run Debezium on Kubernetes and OpenShift].
 
@@ -896,7 +907,7 @@ To use the connector to produce change events for a particular PostgreSQL server
 
 . install the link:#output-plugin[logical decoding plugin]
 . configure the link:#server-configuration[PostgreSQL server] to support logical replication
-. create a link:#example-configuration[configuration file for the PostgreSQL Connector] and use the http://docs.confluent.io/3.0.0/connect/userguide.html#rest-interface[Kafka Connect REST API] to add that connector to your Kafka Connect cluster.
+. create a link:#example-configuration[configuration file for the PostgreSQL Connector] and use the http://docs.confluent.io/{confluent-platform-version}/connect/userguide.html#rest-interface[Kafka Connect REST API] to add that connector to your Kafka Connect cluster.
 
 When the connector starts, it will grab a consistent snapshot of the databases in your PostgreSQL server and start streaming changes, producing events for every inserted, updated, and deleted row. You can also choose to produce events for a subset of the schemas and tables. Optionally ignore, mask, or truncate columns that are sensitive, too large, or not needed.
 
@@ -963,7 +974,7 @@ The following configuration properties are _required_ unless a default value is 
 
 |`plugin.name`
 |`decoderbufs`
-|The name of the Postgres link:#output-plugin[logical decoding plugin] installed on the server.
+|The name of the Postgres link:#output-plugin[logical decoding plugin] installed on the server. Supported values are either `decoderbufs` or `wal2json`.
 
 |`slot.name`
 |`debezium`
