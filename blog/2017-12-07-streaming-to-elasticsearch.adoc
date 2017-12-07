@@ -1,0 +1,248 @@
+= Streaming data to a downstream Elasticsearch
+jpechane
+:awestruct-tags: [ mysql, postgres, elasticsearch, smt, example ]
+:awestruct-layout: blog-post
+
+We have seen how to stream a change data to a downstream database link:/blog/2017/09/25/streaming-to-another-database[few weeks ago].
+
+In this blog post we will follow the same approach to stream the data to an https://www.elastic.co/[Elasticsearch] engine for potential further search processing. But to make the matter a little bit more interesting we will stream the data to both PostgreSQL database and Elasticsearch so we will optimize access to data both via SQL query language and a full-text search.
+
+== Topology
+The general topology for this scenario is displayed on the following picture:
+
+.A General topology
+[#img-general]
+[caption="Figure 1: "]
+image::dbz-to-multiple.svg[Scenario topology]
+
+&nbsp; +
+
+We are going to simply the deployment again, so we will use only one Kafka Connect instance that will contain all connectors and will serve as bot an event producer and consumer.
+
+&nbsp; +
+
+.A Simplified topology
+[#img-general]
+[caption="Figure 2: "]
+image::dbz-to-multiple-simplified.svg[Scenario topology]
+
+== Configuration
+We will use this https://github.com/debezium/debezium-examples/tree/master/unwrap-smt[compose] for a fast deployment of the demo.
+The deployment consists of following Docker images:
+
+* https://hub.docker.com/r/debezium/zookeeper/[Apache ZooKeeper]
+* https://hub.docker.com/r/debezium/kafka/[Apache Kafka]
+* An https://github.com/debezium/debezium-examples/tree/master/unwrap-smt/debezium-jdbc[enriched] Kafka Connect / Debezium https://hub.docker.com/r/debezium/connect/[image] with changes
+** PostgreSQL JDBC driver placed into `/kafka/libs` directory
+** https://docs.confluent.io/current/connect/connect-jdbc/docs/index.html[Kafka Connect JDBC Connector] (developed by https://www.confluent.io/[Confluent]) placed into `/kafka/connect/kafka-connect-jdbc` directory
+* Pre-populated MySQL used in our link:docs/tutorial[tutorial]
+* Empty PostgreSQL
+* Empty ElasticSearch
+
+We again use the `UnwrapFromEnvelope` transformation to automatically extract a new row record and thus effectively convert the Debezium complex record into a simple one consumable by other connectors. Both JDBC and Elasticsearch connectors expect the same format.
+
+== Example
+Let's move directly to our exmaple as that's where the changes are visible.
+
+First of all we need to deploy all components.
+[source,bash,indent=0]
+----
+export DEBEZIUM_VERSION=0.6
+docker-compose up
+----
+
+When all components are started we are going to register the Elasticsearch Sink connector writing into the ElasticSearch instance.
+We want to use the same key (primary id) in the source and both PostgreSQL and Elasticsearch.
+[source,bash,indent=0]
+----
+curl -i -X POST -H "Accept:application/json" -H  "Content-Type:application/json" http://localhost:8083/connectors/ -d @es-sink.json
+----
+
+Using this registration request:
+
+[source,json,indent=0]
+----
+{
+    {
+        "name": "elastic-sink",
+        "config": {
+            "connector.class": "io.confluent.connect.elasticsearch.ElasticsearchSinkConnector",
+            "tasks.max": "1",
+            "topics": "customers",
+            "connection.url": "http://elastic:9200",
+            "transforms": "unwrap,key",
+            "transforms.unwrap.type": "io.debezium.transforms.UnwrapFromEnvelope",           (1)
+            "transforms.key.type": "org.apache.kafka.connect.transforms.ExtractField$Key",   (2)
+            "transforms.key.field": "id",                                                    (2)
+            "key.ignore": "false",                                                           (3)
+            "type.name": "kafka-connect"                                                     (4)
+        }
+    }
+}
+----
+
+The request configures these options:
+
+1. unwrapping Debezium's complex format into a simple one
+2. extracting `id` field from the key `struct`, then the same key is used for the source and both destinations.
+This is to overcome limitation of Elasticsearch connector that supports only `int`s and `string`s as keys.
+3. use key from the event instead of generating a synthetic one
+4. type under which the events will be registered in Elasticsearch
+
+Next we are going to register the JDBC Sink connector writing into PostgreSQL database:
+[source,bash,indent=0]
+----
+curl -i -X POST -H "Accept:application/json" -H  "Content-Type:application/json" http://localhost:8083/connectors/ -d @jdbc-sink.json
+----
+
+Then the source connector must be set up:
+
+[source,bash,indent=0]
+----
+curl -i -X POST -H "Accept:application/json" -H  "Content-Type:application/json" http://localhost:8083/connectors/ -d @source.json
+----
+
+Let's check if the databases are synchronized.
+All the rows of the `customers` table should be found in the source database (MySQL) as well as the target database (Postgres) and Elasticsearch:
+
+[source,bash,indent=0]
+----
+docker-compose exec mysql bash -c 'mysql -u $MYSQL_USER  -p$MYSQL_PASSWORD inventory -e "select * from customers"'
++------+------------+-----------+-----------------------+
+| id   | first_name | last_name | email                 |
++------+------------+-----------+-----------------------+
+| 1001 | Sally      | Thomas    | sally.thomas@acme.com |
+| 1002 | George     | Bailey    | gbailey@foobar.com    |
+| 1003 | Edward     | Walker    | ed@walker.com         |
+| 1004 | Anne       | Kretchmar | annek@noanswer.org    |
++------+------------+-----------+-----------------------+
+
+docker-compose exec postgres bash -c 'psql -U $POSTGRES_USER $POSTGRES_DB -c "select * from customers"'
+ last_name |  id  | first_name |         email
+-----------+------+------------+-----------------------
+ Thomas    | 1001 | Sally      | sally.thomas@acme.com
+ Bailey    | 1002 | George     | gbailey@foobar.com
+ Walker    | 1003 | Edward     | ed@walker.com
+ Kretchmar | 1004 | Anne       | annek@noanswer.org
+
+curl 'http://localhost:9200/customers/_search?pretty'
+{
+  "took" : 42,
+  "timed_out" : false,
+  "_shards" : {
+    "total" : 5,
+    "successful" : 5,
+    "failed" : 0
+  },
+  "hits" : {
+    "total" : 4,
+    "max_score" : 1.0,
+    "hits" : [
+      {
+        "_index" : "customers",
+        "_type" : "kafka-connect",
+        "_id" : "1001",
+        "_score" : 1.0,
+        "_source" : {
+          "id" : 1001,
+          "first_name" : "Sally",
+          "last_name" : "Thomas",
+          "email" : "sally.thomas@acme.com"
+        }
+      },
+      {
+        "_index" : "customers",
+        "_type" : "kafka-connect",
+        "_id" : "1004",
+        "_score" : 1.0,
+        "_source" : {
+          "id" : 1004,
+          "first_name" : "Anne",
+          "last_name" : "Kretchmar",
+          "email" : "annek@noanswer.org"
+        }
+      },
+      {
+        "_index" : "customers",
+        "_type" : "kafka-connect",
+        "_id" : "1002",
+        "_score" : 1.0,
+        "_source" : {
+          "id" : 1002,
+          "first_name" : "George",
+          "last_name" : "Bailey",
+          "email" : "gbailey@foobar.com"
+        }
+      },
+      {
+        "_index" : "customers",
+        "_type" : "kafka-connect",
+        "_id" : "1003",
+        "_score" : 1.0,
+        "_source" : {
+          "id" : 1003,
+          "first_name" : "Edward",
+          "last_name" : "Walker",
+          "email" : "ed@walker.com"
+        }
+      }
+    ]
+  }
+}
+----
+
+With the connectors still running, we can add a new row to the MySQL database and then check that it was replicated into both the PostgreSQL database and the Elasticsearch:
+
+[source,bash,indent=0]
+----
+docker-compose exec mysql bash -c 'mysql -u $MYSQL_USER  -p$MYSQL_PASSWORD inventory'
+mysql> insert into customers values(default, 'John', 'Doe', 'john.doe@example.com');
+Query OK, 1 row affected (0.02 sec)
+
+docker-compose exec -postgres bash -c 'psql -U $POSTGRES_USER $POSTGRES_DB -c "select * from customers"'
+ last_name |  id  | first_name |         email
+-----------+------+------------+-----------------------
+...
+Doe        | 1005 | John       | john.doe@example.com
+(5 rows)
+
+curl 'http://localhost:9200/customers/_search?pretty'
+...
+      {
+        "_index" : "customers",
+        "_type" : "kafka-connect",
+        "_id" : "1005",
+        "_score" : 1.0,
+        "_source" : {
+          "id" : 1005,
+          "first_name" : "John",
+          "last_name" : "Doe",
+          "email" : "john.doe@example.com"
+        }
+      }
+...
+----
+
+== Summary
+
+We set up a complex strewaming data pipeline to synchronize MySQL database with another database and also with Elasticsearch instance.
+We managed to keep the same identifier accors all systems which allows us to correlate records accross the system as the whole.
+
+== About Debezium
+
+Debezium is an open source distributed platform that turns your existing databases into event streams,
+so applications can see and respond almost instantly to each committed row-level change in the databases.
+Debezium is built on top of http://kafka.apache.org/[Kafka] and provides http://kafka.apache.org/documentation.html#connect[Kafka Connect] compatible connectors that monitor specific database management systems.
+Debezium records the history of data changes in Kafka logs, so your application can be stopped and restarted at any time and can easily consume all of the events it missed while it was not running,
+ensuring that all events are processed correctly and completely.
+Debezium is link:/license[open source] under the http://www.apache.org/licenses/LICENSE-2.0.html[Apache License, Version 2.0].
+
+== Get involved
+
+We hope you find Debezium interesting and useful, and want to give it a try.
+Follow us on Twitter https://twitter.com/debezium[@debezium], https://gitter.im/debezium/user[chat with us on Gitter],
+or join our https://groups.google.com/forum/#!forum/debezium[mailing list] to talk with the community.
+All of the code is open source https://github.com/debezium/[on GitHub],
+so build the code locally and help us improve ours existing connectors and add even more connectors.
+If you find problems or have ideas how we can improve Debezium, please let us know or https://issues.jboss.org/projects/DBZ/issues/[log an issue].
+
