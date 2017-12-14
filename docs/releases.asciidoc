@@ -6,6 +6,99 @@
 All notable changes for Debezium releases are documented in this file.
 Release numbers follow http://semver.org[Semantic Versioning].
 
+[[release-0-7-0]]
+== *Release 0.7.0* _(December 15th, 2017)_
+
+See the https://issues.jboss.org/secure/ReleaseNote.jspa?version=12335366&projectId=12317320[complete list of issues].
+
+=== Kafka compatibility
+
+This release has been built against Kafka Connect 1.0.0 and has been tested with version 1.0.0 of the Kafka brokers.
+See the https://kafka.apache.org/documentation/#upgrade[Kafka documentation] for compatibility with other versions of Kafka brokers.
+
+=== Upgrading
+
+Before upgrading the MySQL, MongoDB, or PostgreSQL connectors, be sure to check the backward-incompatible changes that have been made since the release you were using.
+
+When you decide to upgrade one of these connectors to 0.7.0 from any of the earlier 0.6.x, 0.5.x, 0.4.x, 0.3.x, 0.2.x, or 0.1.x versions,
+first check the upgrading notes for the version you're using.
+Gracefully stop the running connector, remove the old plugin files, install the 0.7.0 plugin files, and restart the connector using the same configuration.
+Upon restart, the 0.7.0 connectors will continue where the previous connector left off.
+As one might expect, all change events previously written to Kafka by the old connector will not be modified.
+
+=== Breaking changes
+
+This release includes the following changes that can affect existing installations:
+
+* Change default setting for BIGINT UNSIGNED handling https://issues.jboss.org/browse/DBZ-461[DBZ-461];
+`UNSIGNED BIGINT` is treated by default as `int64`, not as `Decimal` before. Set `bigint.unsigned.handling.mode` if you need to continue with the original behaviour.
+* Invalid value for HourOfDay ConnectException when the value of MySQL TIME filed is above 23:59:59 https://issues.jboss.org/browse/DBZ-342[DBZ-342]; The default mapping for MySQL TIME(0-3) columns has changed. Such columns can store values from -838:59:59.000000 to 838:59:59.000000, which cannot be stored as milliseconds in an int32 field (the previous default mapping).
+Hence the default mapping has changed to int64 and the semantic type io.debezium.time.MicroTime, i.e. values represent microseconds. +
+If you prefer to keep the previous mapping (which only should be done if it's guaranteed that no values are stored in that column whose milliseconds value exceeds int32), you can do so by specifying the connector option time.precision.mode=adaptive (see the connector documentation for further details). +
+This change does not affect other connectors.
+* Postgres connectors stops to work after concurrent schema changes and updates https://issues.jboss.org/browse/DBZ-379[DBZ-379]; PostgreSQL connector was using JDBC metadata to get additional type information when it was processing logical events.
+This could lead to a race condition when database schema was updated and Debezium was still processing events with old schema structure. +
+To mitigate the problem a new version of https://github.com/debezium/postgres-decoderbufs[Protocol Buffers decoder plugin] was introduced that passes additional type metadata with each event.
+The connector is backward compatible with the old decoder plugin (using the original approach) but we strongly recommend to upgrade it to the latest one as soon as possible. +
+The race condition issue can still happen when primary key structure is changed for the table as this information is still obtained from JDBC metadata.
+To properly handle primary key change you should follow the rules
+** Application should be placed in a _read-only_ mode, not writing any new data actively
+** PostgreSQL connector must consume all remaining events from the database
+** Primary key change is executed
+** Application can switch back to regular mode
+* Hardcoded schema version overrides schema registry version https://issues.jboss.org/browse/DBZ-466[DBZ-466]; The schema version returned for CDC message values (schema type dbserver1.inventory.customers.Envelope) has changed. While always `1` was returned in earlier versions, the schema version as managed by the schema registry will be returned in case the Avro serializer/deserializer is used. `Null` will be returned when using the JSON serializer/deserializer. Note that the schema version is only set during Avro message serialization, i.e. an SMT applied on the source side will also get null when querying for the schema version, as SMTs will be applied before the serialization.
+
+=== New Features
+
+This release includes the following new features:
+
+* PostgreSQL connector should work on Amazon RDS and be able to use the available plugin https://issues.jboss.org/browse/DBZ-256[DBZ-256]
+* Build Debezium against Kafka 1.0.0 https://issues.jboss.org/browse/DBZ-432[DBZ-432]
+* Build Debezium images with Kafka 1.0.0 https://issues.jboss.org/browse/DBZ-433[DBZ-433]
+* Protobuf message should contain type modifiers https://issues.jboss.org/browse/DBZ-485[DBZ-485]
+* Protobuf message should contain optional flags https://issues.jboss.org/browse/DBZ-486[DBZ-486]
+* Better support for large append-only tables by making the snapshotting process restartable https://issues.jboss.org/browse/DBZ-349[DBZ-349]
+* Support new wal2json type specifiers https://issues.jboss.org/browse/DBZ-453[DBZ-453]
+* Optionally return raw value for unsupported column types https://issues.jboss.org/browse/DBZ-498[DBZ-498]
+* Provide Postgres example image for 0.7 https://issues.jboss.org/browse/DBZ-382[DBZ-382]
+* Create an automated build for Postgres example image in Docker Hub https://issues.jboss.org/browse/DBZ-383[DBZ-383]
+* Move configuration of ProtoBuf code generation to Postgres module https://issues.jboss.org/browse/DBZ-416[DBZ-416]
+* Provide MongoDB example image for Debezium 0.7 https://issues.jboss.org/browse/DBZ-451[DBZ-451]
+* Upgrade to Confluent Platform 4.0 https://issues.jboss.org/browse/DBZ-492[DBZ-492]
+* Set up CI job for testing Postgres with new wal2json type identifiers https://issues.jboss.org/browse/DBZ-495[DBZ-495]
+* Change PostgreSQL connector to support multiple plugins https://issues.jboss.org/browse/DBZ-257[DBZ-257]
+* PostgreSQL connector should support the wal2json logical decoding plugin https://issues.jboss.org/browse/DBZ-258[DBZ-258]
+* Provide instructions for using Debezium on Minishift https://issues.jboss.org/browse/DBZ-364[DBZ-364]
+* Modify BinlogReader to process transactions via buffer https://issues.jboss.org/browse/DBZ-405[DBZ-405]
+* Modify BinlogReader to support transactions of unlimited size https://issues.jboss.org/browse/DBZ-406[DBZ-406]
+
+=== Fixes
+
+This release includes the following fixes:
+
+* Data are read from the binlog and not written into Kafka https://issues.jboss.org/browse/DBZ-390[DBZ-390]
+* MySQL connector may not read database history to end https://issues.jboss.org/browse/DBZ-464[DBZ-464]
+* connect-base image advertises wrong port by default https://issues.jboss.org/browse/DBZ-467[DBZ-467]
+* INSERT statements being written to db history topic https://issues.jboss.org/browse/DBZ-469[DBZ-469]
+* MySQL Connector does not handle properly startup/shutdown https://issues.jboss.org/browse/DBZ-473[DBZ-473]
+* Cannot parse NOT NULL COLLATE in DDL https://issues.jboss.org/browse/DBZ-474[DBZ-474]
+* Failed to parse the sql statement of RENAME user https://issues.jboss.org/browse/DBZ-475[DBZ-475]
+* Exception when parsing enum field with escaped characters values https://issues.jboss.org/browse/DBZ-476[DBZ-476]
+* All to insert null value into numeric array columns https://issues.jboss.org/browse/DBZ-478[DBZ-478]
+* produceStrings method slow down on sending messages https://issues.jboss.org/browse/DBZ-479[DBZ-479]
+* Failing unit tests when run in EST timezone https://issues.jboss.org/browse/DBZ-491[DBZ-491]
+* PostgresConnector falls with RejectedExecutionException https://issues.jboss.org/browse/DBZ-501[DBZ-501]
+* Docker images cannot be re-built when a new version of ZooKeeper/Kafka is released https://issues.jboss.org/browse/DBZ-503[DBZ-503]
+* Insert ids as long instead of float for MongoDB example image https://issues.jboss.org/browse/DBZ-470[DBZ-470]
+* Port changes in 0.6 Docker files into 0.7 files https://issues.jboss.org/browse/DBZ-463[DBZ-463]
+* Add check to release process to make sure all issues are assigned to a component https://issues.jboss.org/browse/DBZ-468[DBZ-468]
+* Document requirement for database history topic to be not partitioned https://issues.jboss.org/browse/DBZ-482[DBZ-482]
+* Remove dead code from MySqlSchema https://issues.jboss.org/browse/DBZ-483[DBZ-483]
+* Remove redundant calls to pfree https://issues.jboss.org/browse/DBZ-496[DBZ-496]
+
+== Known issues
+* PostgreSQL Connector does not detect schema changes in type constraints - e.g. the length of `array` datatype https://issues.jboss.org/browse/DBZ-504[DBZ-504]
+
 [[release-0-6-2]]
 == *Release 0.6.2* _(November 15th, 2017)_
 
