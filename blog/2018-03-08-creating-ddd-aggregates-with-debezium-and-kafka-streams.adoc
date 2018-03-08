@@ -41,11 +41,11 @@ together treated as a single unit of information.
 
 Concrete examples are:
 
-* **customers and their addresses** which are represented as a customer record aggregate
+* **customers and their addresses** which are represented as a customer record _aggregate_
 storing a customer and a list of addresses
 
 * **orders and corresponding line items** which are represented as an order record
-aggregate storing an order and all its line items
+_aggregate_ storing an order and all its line items
 
 Chances are that the data of the involved domain objects backing these DDD aggregates are stored in
 separate relations of an RDBMS. When making use of the CDC capabilities currently found
@@ -165,11 +165,9 @@ E.g. you should see the following output
 
 == Building DDD Aggregates
 
-The KStreams application is going to process data from two the two Kafka topics. These topics
+The KStreams application is going to process data from the two Kafka topics. These topics
 receive CDC events based on the customers and addresses relations found in MySQL, each of which has its
-corresponding Jackson-annotated POJO (https://github.com/hpgrahsl/kafka-streams-ddd-aggregator/blob/blog-post-sample/src/main/java/com/github/hpgrahsl/kafka/model/Customer.java[Customer] and
- https://github.com/hpgrahsl/kafka-streams-ddd-aggregator/blob/blog-post-sample/src/main/java/com/github/hpgrahsl/kafka/model/Address.java)[Address],
-enriched by a field holding the CDC event type (i.e. UPSERT/DELETE) for easier handling during the KStreams processing.
+corresponding Jackson-annotated POJO (Customer and Address), enriched by a field holding the CDC event type (i.e. UPSERT/DELETE).
 
 Since the Kafka topic records are in Debezium JSON format with unwrapped envelopes, a special **SerDe**
 has been written in order to be able to read/write these records using their POJO or Debezium event representation respectively.
@@ -215,9 +213,10 @@ KTable<DefaultId,LatestAddress> tempTable = addressStream
                         address, addressId, new DefaultId(address.getCustomer_id()));
                     return latest;
                 },
-                Materialized.as(childrenTopic+"_table_temp")
-                        .withKeySerde((Serde)defaultIdSerde)
-                            .withValueSerde(latestAddressSerde)
+                Materialized.<DefaultId,LatestAddress,KeyValueStore<Bytes, byte[]>>
+                        as(childrenTopic+"_table_temp")
+                            .withKeySerde(defaultIdSerde)
+                                .withValueSerde(latestAddressSerde)
         );
 ----
 
@@ -240,9 +239,10 @@ KTable<DefaultId, Addresses> addressTable = tempTable.toStream()
                     addresses.update(latestAddress);
                     return addresses;
                 },
-                Materialized.as(childrenTopic+"_table_aggregate")
-                        .withKeySerde((Serde)defaultIdSerde)
-                            .withValueSerde(addressesSerde)
+                Materialized.<DefaultId,Addresses,KeyValueStore<Bytes, byte[]>>
+                        as(childrenTopic+"_table_aggregate")
+                            .withKeySerde(defaultIdSerde)
+                                .withValueSerde(addressesSerde)
         );
 ----
 
@@ -308,7 +308,7 @@ docker-compose exec kafka /kafka/bin/kafka-console-consumer.sh \
 We originally set out to build these DDD aggregates in order to transfer data and synchronize changes between
 a data source (MySQL tables in this case) and a convenient data sink. By definition,
 DDD aggregates are typically complex data structures and therefore it makes perfect sense to write them
-to data stores which offer flexible ways and means to index and/or query them. Talking about NoSQL databases, a
+to data stores which offer flexible ways and means to query and/or index them. Talking about NoSQL databases, a
 document store seems the most natural choice with https://www.mongodb.com/[MongoDB] being the leading database
 for such use cases.
 
@@ -336,8 +336,8 @@ In case the DDD aggregates should get written unmodified into MongoDB, a configu
         "topics": "final_ddd_aggregates",
         "mongodb.connection.uri": "mongodb://mongodb:27017/inventory?w=1&journal=true",
         "mongodb.collection": "customers_with_addresses",
-        "mongodb.document.id.strategy":
-            "at.grahsl.kafka.connect.mongodb.processor.id.strategy.FullKeyStrategy"
+        "mongodb.document.id.strategy": "at.grahsl.kafka.connect.mongodb.processor.id.strategy.FullKeyStrategy",
+        "mongodb.delete.on.null.values": true
     }
 }
 ----
@@ -430,8 +430,10 @@ and will require some efforts at Debezium's own CDC mechanism.
 ## Outlook
 
 In this post we described an approach for creating aggregated events from Debezium's CDC events.
-In a follow-up blog post we may dive a bit more into the topic of partitioning and ...
-_//TODO: give a glimpse on planned upcoming blog posts..._
+In a follow-up blog post we may dive a bit more into the topic of how to be able to horizontally scale
+the DDD creation by running multiple KStreams aggregator instances. For that purpose, the data needs proper
+re-partitioning before running the topology. In addition, it could be interesting to look into 
+a somewhat more generic version which only needs custom classes to the describe the two main POJOs involved. 
 
 We also thought about providing a ready-to-use component which would work in a generic way
 (based on Connect records, i.e. not tied to a specific serialization format such as JSON) and
