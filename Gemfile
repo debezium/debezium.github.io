@@ -2,7 +2,7 @@ source 'https://rubygems.org'
 
 gem 'therubyracer', '~> 0.12.2'	# V8 JavaScript engine in Ruby
 
-gem 'awestruct', '~> 0.5.0'	# Framework for creating static HTML sites
+gem 'awestruct', '~> 0.5.7'	# Framework for creating static HTML sites
 gem 'uglifier', '~> 2.0.1'	# Ruby wrapper for UglifyJS JavaScript compressor
 gem 'cssminify', '~> 1.0.2'	# CSS compression using YUI compressor
 gem 'rb-fsevent', '~> 0.9.3'	# FSEvents API with Signals catching (without RubyCocoa)
