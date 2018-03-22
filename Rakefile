@@ -163,6 +163,8 @@ task :check => :init do
     end
     exit e.status_code
   end
+  system 'sed -i "/.LOG.debug .inherit_front_matter_from for/d" .bundle/ruby/2.3.0/gems/awestruct-0.5.7/lib/awestruct/page.rb'
+  system 'sed -i "/.LOG.debug .inherit_front_matter_from for/d" vendor/bundle/ruby/2.3.0/gems/awestruct-0.5.7/lib/awestruct/page.rb'
 end
 
 # Execute Awestruct
