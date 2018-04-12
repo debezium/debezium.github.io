@@ -19,7 +19,7 @@ It starts an OpenShift cluster just for you, allowing you to take your first ste
 For setting up Kafka and Kafka Connect on OpenShift, a set of images provided by the http://strimzi.io/[Strimzi] project can be used, which offers "Kafka as a Service".
 It consists of enterprise grade configuration files and images that bring Kafka to OpenShift.
 
-First we install the controlloers and templates for the Kafka broker and Kafka Connect into our OpenShift project:
+First we install the controllers and templates for the Kafka broker and Kafka Connect into our OpenShift project:
 
 [listing,subs="attributes",options="nowrap"]
 ----
@@ -28,7 +28,7 @@ git clone -b $STRIMZI_VERSION https://github.com/strimzi/strimzi
 cd strimzi
 
 # We need to create security objects as part of installation so it is necessary to switch to admin user
-oc login system:admin
+oc login -u system:admin
 oc create -f examples/install/cluster-controller && oc create -f examples/templates/cluster-controller
 ----
 
@@ -37,10 +37,10 @@ Next we will create a Kafka Connect image with the Debezium connectors installed
 [listing,subs="attributes",options="nowrap"]
 ----
 # Deploy an ephemeral single instance Kafka broker
-oc new-app strimzi-ephemeral -p ZOOKEEPER_NODE_COUNT=1 -p KAFKA_NODE_COUNT=1 -p KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1 -p KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
+oc new-app strimzi-ephemeral -p CLUSTER_NAME=broker -p ZOOKEEPER_NODE_COUNT=1 -p KAFKA_NODE_COUNT=1 -p KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1 -p KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
 
-# Deploy a single instance of Kafka Connect instance with no plug-in installed
-oc new-app strimzi-connect-s2i -p KAFKA_CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR=1 -p KAFKA_CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR=1 -p KAFKA_CONNECT_STATUS_STORAGE_REPLICATION_FACTOR=1
+# Deploy a single instance of Kafka Connect with no plug-in installed
+oc new-app strimzi-connect-s2i -p CLUSTER_NAME=debezium -p KAFKA_CONNECT_BOOTSTRAP_SERVERS=broker-kafka:9092 -p KAFKA_CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR=1 -p KAFKA_CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR=1 -p KAFKA_CONNECT_STATUS_STORAGE_REPLICATION_FACTOR=1
 
 # Build a Debezium image
 export DEBEZIUM_VERSION={debezium-version}
@@ -48,7 +48,7 @@ mkdir -p plugins && cd plugins && \
 for PLUGIN in {mongodb,mysql,postgres}; do \
     curl http://central.maven.org/maven2/io/debezium/debezium-connector-$PLUGIN/$DEBEZIUM_VERSION/debezium-connector-$PLUGIN-$DEBEZIUM_VERSION-plugin.tar.gz | tar xz; \
 done && \
-oc start-build my-connect-cluster-connect --from-dir=. --follow && \
+oc start-build debezium-connect --from-dir=. --follow && \
 cd .. && rm -rf plugins
 ----
 
@@ -59,13 +59,13 @@ After a while all parts should be up and running:
 oc get pods
 
 NAME                                           READY     STATUS      RESTARTS   AGE
-my-cluster-kafka-0                             1/1       Running     0          2m
-my-cluster-topic-controller-5dd57999cc-fj62s   1/1       Running     0          1m
-my-cluster-zookeeper-0                         1/1       Running     0          3m
-my-connect-cluster-connect-1-build             0/1       Completed   0          3m
-my-connect-cluster-connect-2-build             0/1       Completed   0          1m
-my-connect-cluster-connect-2-rdnqm             1/1       Running     0          1m
-strimzi-cluster-controller-6c9d4949b6-mnqtp    1/1       Running     0          5m
+broker-kafka-0                                1/1       Running     0          7m
+broker-topic-controller-d644d665-stmsr        1/1       Running     0          7m
+broker-zookeeper-0                            1/1       Running     0          7m
+debezium-connect-1-build                      0/1       Completed   0          3m
+debezium-connect-2-build                      0/1       Completed   0          2m
+debezium-connect-2-sxv5f                      1/1       Running     0          1m
+strimzi-cluster-controller-6c9d4949b6-cpksl   1/1       Running     0          7m
 ----
 
 Alternatively, you can go to the "Pods" view of your OpenShift Web Console (https://myhost:8443/console/project/myproject/browse/pods) to confirm all pods are up and running:
@@ -103,10 +103,10 @@ Then we are going to register the Debezium MySQL connector to run against the de
 
 [source%nowrap,bash]
 ----
-oc exec -i my-cluster-kafka-0 -- curl -X POST \
+oc exec -i broker-kafka-0 -- curl -X POST \
     -H "Accept:application/json" \
     -H "Content-Type:application/json" \
-    http://my-connect-cluster-connect:8083/connectors -d @- <<'EOF'
+    http://debezium-connect:8083/connectors -d @- <<'EOF'
 
 {
     "name": "inventory-connector",
@@ -120,7 +120,7 @@ oc exec -i my-cluster-kafka-0 -- curl -X POST \
         "database.server.id": "184054",
         "database.server.name": "dbserver1",
         "database.whitelist": "inventory",
-        "database.history.kafka.bootstrap.servers": "my-cluster-kafka:9092",
+        "database.history.kafka.bootstrap.servers": "broker-kafka:9092",
         "database.history.kafka.topic": "schema-changes.inventory"
     }
 }
@@ -138,7 +138,7 @@ Now we can read change events for the `customers` table from the corresponding K
 
 [source%nowrap,bash]
 ----
-oc exec -it my-cluster-kafka-0 -- /opt/kafka/bin/kafka-console-consumer.sh \
+oc exec -it broker-kafka-0 -- /opt/kafka/bin/kafka-console-consumer.sh \
     --bootstrap-server localhost:9092 \
     --from-beginning \
     --property print.key=true \
