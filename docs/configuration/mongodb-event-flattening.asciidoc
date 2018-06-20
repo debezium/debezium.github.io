@@ -16,6 +16,11 @@ Please see below for a descriptions of known limitations of this transformation.
 This SMT is supported only for the MongoDB connector.
 ====
 
+[CAUTION]
+====
+There is a https://issues.jboss.org/browse/DBZ-624[known issue] which prevents processing of update messages when MongoDB 3.6 is used.
+====
+
 The Debezium MongoDB connector generates the data in a form of a complex message structure.
 The message consists of two parts:
 
@@ -67,12 +72,114 @@ transforms=unwrap,...
 transforms.unwrap.type=io.debezium.connector.mongodb.transforms.UnwrapFromMongoDbEnvelope
 ----
 
+=== Array encoding
+
+The SMT converts MongoDB arrays into arrays as defined by Apache Connect (or Apache Avro) schema.
+The problem is that such arrays must contains elements of the same time.
+MongoDB allows the user to store elements of heterogeneous types into the same array.
+To bypass this impedance mismatch it is possible to encode the array in two different ways using `array.encoding` configuration option.
+
+[source]
+----
+transforms=unwrap,...
+transforms.unwrap.type=io.debezium.connector.mongodb.transforms.UnwrapFromMongoDbEnvelope
+transforms.unwrap.array.encoding=<array|struct>
+----
+
+Value `array` (the default) will encode arrays as the array datatype.
+It is user's responsibility to ensure that all elements for a given array instance are of the same time.
+This option is a restricting one but offers easy processing of arrays by downstream clients.
+
+Value `struct` will convert the array into a *struct* of *structs* in the similar way as done by http://bsonspec.org/[BSON serialization].
+The main *struct* contains fields named `_0`, `_1`, `_2` etc. where the name represents the index of the element in the array.
+Every element is then passed as the value for the give field.
+
+Let's suppose an example source MongoDB document with array with heterogeneous types
+[source,json,indent=0]
+----
+{
+    "_id": 1,
+    "a1": [
+        {
+            "a": 1,
+            "b", "none"
+        },
+        {
+            "a": "c",
+            "d": "something"
+        }
+    ]
+}
+----
+
+This document will be encoded as
+[source,json,indent=0]
+----
+{
+    "_id": 1,
+    "a1": {
+        "_0": {
+            "a": 1,
+            "b", "none"
+        },
+        "_1": {
+            "a": "c",
+            "d": "something"
+        }
+    }
+}
+----
+
+This option allows you to process arbitrary arrays but the consumer need to know how to properly handle them.
+
+_Note: The underscore in index names is present because Avro encoding requires field names not to start with digit._
+
+=== Nested structure flattening
+
+When a MongoDB document contains a nested document (structure) it is faithfully encoded as a nested structure field.
+If the sink connector does support only flat structure it is possible to flatten the internal structure into a flat one with a consistent field naming.
+To enable this feature the option `flatten.struct` must be set to `true`.
+
+[source]
+----
+transforms=unwrap,...
+transforms.unwrap.type=io.debezium.connector.mongodb.transforms.UnwrapFromMongoDbEnvelope
+transforms.unwrap.flatten.struct=<true|false>
+transforms.unwrap.flatten.struct.delimiter=<string>
+----
+
+The resulting flat document will consist of fields whose names are created by joining the name of the parent field and the name of the fields in the nested document.
+Those elements are separated with string defined by an option `struct.delimiter` by default set to the _underscore_.
+
+Let's suppose an example source MongoDB document with a field with a nested document
+[source,json,indent=0]
+----
+{
+    "_id": 1,
+    "a": {
+            "b": 1,
+            "c", "none"
+    },
+    "d": 100
+}
+----
+
+Such document will be encoded as
+[source,json,indent=0]
+----
+{
+    "_id": 1,
+    "a_c": 1,
+    "a_d": "none",
+    "d": 100
+}
+----
+
+This option allows you to convert a hierarchical document into a flat structure suitable for a table-like storage.
+
 == Known limitations
 
 * Feeding data changes from a schemaless store such as MongoDB to strictly schema-based datastores such as a relational database can by definition work within certain limits only.
 Specifically, all fields of documents within one collection with the same name must be of the same type. Otherwise, no consistent column definition can be derived in the target database.
-* Arrays will be restored in the emitted Kafka Connect record correctly, but they are not supported my sink connector just expecting a "flat" message structure.
+* Arrays will be restored in the emitted Kafka Connect record correctly, but they are not supported by sink connector just expecting a "flat" message structure.
 * Currently it's not possible to drop deletes and tomb stone events. This requirement is tracked as https://issues.jboss.org/browse/DBZ-563[DBZ-563].
-* It's planned to optionally flatten nested structures (which are no arrays).
-That way a complex field such as `_id : { comp: 32, cust: NumberLong("1008") }` would be represented as `id_comp : 32, id_cust: 1008` in the emitted message.
-This requirement is tracked as https://issues.jboss.org/browse/DBZ-561[DBZ-561].

@@ -292,7 +292,7 @@ Each message written to the schema change topic will have a message key that con
   {
     "schema": {
       "type": "struct",
-      "name": "io.debezium.connector.mysql.SchemaChangeKey"
+      "name": "io.debezium.connector.mysql.SchemaChangeKey",
       "optional": false,
       "fields": [
         {
@@ -315,7 +315,7 @@ Meanwhile, the schema change event message's value will contain a structure cont
   {
     "schema": {
       "type": "struct",
-      "name": "io.debezium.connector.mysql.SchemaChangeValue"
+      "name": "io.debezium.connector.mysql.SchemaChangeValue",
       "optional": false,
       "fields": [
         {
@@ -451,7 +451,7 @@ Every change event for the `customers` table while it has this definition will f
   {
     "schema": {
       "type": "struct",
-      "name": "mysql-server-1.inventory.customers.Key"
+      "name": "mysql-server-1.inventory.customers.Key",
       "optional": false,
       "fields": [
         {
@@ -942,6 +942,12 @@ Columns that store strings are defined in MySQL with a character set and collati
 
 Other data type mappings are described in the following sections.
 
+If present, a column's default value will be propagated to the corresponding field's Kafka Connect schema.
+For `TIMESTAMP` columns who's default value is specified as `CURRENT_TIMESTAMP` or `NOW`, the value _1970-01-01 00:00:00_ will be used as the default value in the Kafka Connect schema.
+Change messages will contain the field's default value
+(unless an explicit column value had been given), so there should rarely be the need to obtain the default value from the schema.
+Passing the default value helps though with satisfying the compatibility rules when link:/docs/configuration/avro/[using Avro] as serialization format together with the Confluent schema registry.
+
 [[temporal-values]]
 ==== Temporal values
 
@@ -950,6 +956,15 @@ Other than MySQL's `TIMESTAMP` data type, the other MySQL temporal types depend 
 [NOTE]
 ====
 As of Debezium 0.7 `adaptive_time_microseconds` mode was introduced and is the default `time.precision.mode` for the MySQL connector. Mode `adaptive` was marked as deprecated.
+====
+
+[NOTE]
+====
+As of Debezium 0.8 all temporal column types without a timezone are interpreted as per the timezone configured for the database.
+At the start time Debezium queries the database for its timezone settings, but it is possible to configure this setting explicitly using the `database.serverTimezone` configuration option.
+
+Using that timezone, the time and timestamp values are converted to UTC time and represented as such in emitted CDC messages.
+So if for instance the database is running in Central European timezone, temporal values without an explicit timezone are shifted back by one hour to the corresponding UTC value.
 ====
 
 [WARNING]
@@ -1589,7 +1604,7 @@ _0.7.3 and later_
 
 `extended` In some cases where clients are submitting operations that MySQL excludes from REPEATABLE READ semantics, it may be desirable to block all writes for the entire duration of the snapshot. For these such cases, use this option. +
 
-`none` Will prevent the connector from acquiring any table locks during the snapshot process. This value can only be used in combination with configuration `snapshot.mode` values of `schema_only` or `schema_only_recovery` and is only safe to use if no schema changes are happening while the snapshot is taken.
+`none` Will prevent the connector from acquiring any table locks during the snapshot process. This value can be used with all snapshot modes but it is safe to use if and _only_ if no schema changes are happening while the snapshot is taken. Note that for tables defined with MyISAM engine, the tables would still be locked despite this property being set as MyISAM acquires a table lock. This behaviour is unlike InnoDB engine which acquires row level locks.
 
 |`snapshot.minimal.locks` +
 _deprecated since 0.7.3_
@@ -1627,6 +1642,19 @@ Disabled by default.
 |Controls the naming of topics to which heartbeat messages are sent. +
 The heartbeat messages are sent into topics named according to the pattern `<heartbeat.topics.prefix>.<server.name>`.
 
+|`database.initial.statements` +
+0.8.0 and later
+|
+|A semicolon separated list of SQL statements to be executed when a JDBC connection (not the transaction log reading connection) to the database is established.
+Use doubled semicolon (';;') to use a semicolon as a character and not as a delimiter.
+
+|`snapshot.delay.ms` +
+0.8.0 and later
+|
+|An interval in milli-seconds that the connector should wait before taking a snapshot after starting up; +
+Can be used to avoid snapshot interruptions when starting multiple connectors in a cluster, which may cause re-balancing of connectors.
+
+_Note: The connector may establish JDBC connections at its own discretion, so this should typically be used for configuration of session parameters only, but not for executing DML statements._
 |=======================
 
 The connector also supports _pass-through_ configuration properties that are used when creating the Kafka producer and consumer. Specifically, all connector configuration properties that begin with the `database.history.producer.` prefix are used (without the prefix) when creating the Kafka producer that writes to the database history, and all those that begin with the prefix `database.history.consumer.` are used (without the prefix) when creating the Kafka consumer that reads the database history upon connector startup.
