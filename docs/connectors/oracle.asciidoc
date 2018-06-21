@@ -3,4 +3,289 @@
 :linkattrs:
 :icons: font
 
-This connector is https://issues.jboss.org/browse/DBZ-20[incomplete]. Want to help us work on it? link:/docs/contribute[Learn how].
+Debezium's Oracle Connector can monitor and record all of the row-level changes in the databases on an Oracle server.
+This connector is at a very early stage of development and considered an incubating feature as of Debezium 0.8.
+It is not feature-complete (most notably, there's no support for initial snapshots yet) and the structure of emitted CDC messages may change in future revisions.
+
+[[overview]]
+== Overview
+
+As of Debezium 0.8, change events from Oracle are ingested using the https://docs.oracle.com/database/121/XSTRM/xstrm_intro.htm#XSTRM72647[XStream API].
+In order to use this API and hence this connector, you need to have a license for the GoldenGate product
+(though it's not required that GoldenGate itself is installed).
+We are going to explore alternatives to using XStream in future Debezium releases, e.g. based on LogMiner and/or alternative solutions.
+Please track the https://issues.jboss.org/browse/DBZ-137[DBZ-137] JIRA issue and join the discussion if you are aware of potential other ways for ingesting change events from Oracle.
+
+[[setting-up-oracle]]
+== Setting up Oracle
+
+=== Preparing the Database
+
+Enable GoldenGate replication and archive log mode:
+
+[source,indent=0]
+----
+ORACLE_SID=ORCLCDB dbz_oracle sqlplus /nolog
+
+CONNECT sys/top_secret AS SYSDBA
+alter system set db_recovery_file_dest_size = 5G;
+alter system set db_recovery_file_dest = '/opt/oracle/oradata/recovery_area' scope=spfile;
+alter system set enable_goldengate_replication=true;
+shutdown immediate
+startup mount
+alter database archivelog;
+alter database open;
+-- Should show "Database log mode: Archive Mode"
+archive log list
+
+exit;
+----
+
+=== Setting up a User
+
+Create a database user to be used by the connector
+(this should require less database privileges going forward, https://issues.jboss.org/browse/DBZ-754[DBZ-754]):
+
+[source,indent=0]
+----
+sqlplus sys/top_secret@//localhost:1521/ORCLCDB as sysdba
+CREATE TABLESPACE xstream_tbs DATAFILE '/opt/oracle/oradata/ORCLCDB/xstream_tbs.dbf'
+  SIZE 25M REUSE AUTOEXTEND ON MAXSIZE UNLIMITED;
+exit;
+
+sqlplus sys/top_secret@//localhost:1521/ORCLPDB1 as sysdba
+CREATE TABLESPACE xstream_tbs DATAFILE '/opt/oracle/oradata/ORCLCDB/ORCLPDB1/xstream_tbs.dbf'
+  SIZE 25M REUSE AUTOEXTEND ON MAXSIZE UNLIMITED;
+exit;
+
+sqlplus sys/top_secret@//localhost:1521/ORCLCDB as sysdba
+
+CREATE USER c##xstrmadmin IDENTIFIED BY xsa
+  DEFAULT TABLESPACE xstream_tbs
+  QUOTA UNLIMITED ON xstream_tbs
+  CONTAINER=ALL;
+
+GRANT CREATE SESSION, SET CONTAINER TO c##xstrmadmin CONTAINER=ALL;
+GRANT DBA TO c##xstrmadmin;
+
+BEGIN
+   DBMS_XSTREAM_AUTH.GRANT_ADMIN_PRIVILEGE(
+      grantee                 => 'c##xstrmadmin',
+      privilege_type          => 'CAPTURE',
+      grant_select_privileges => TRUE,
+      container               => 'ALL'
+   );
+END;
+/
+
+exit;
+----
+
+=== Create an XStream Outbound Server
+
+Create an https://docs.oracle.com/cd/E11882_01/server.112/e16545/xstrm_cncpt.htm#XSTRM1088[XStream Outbound server]
+(given the right privileges, this may be done automatically by the connector going forward, see https://issues.jboss.org/browse/DBZ-721[DBZ-721]):
+
+[source,indent=0]
+----
+sqlplus c##xstrmadmin/xsa@//localhost:1521/ORCLCDB
+
+DECLARE
+  tables  DBMS_UTILITY.UNCL_ARRAY;
+  schemas DBMS_UTILITY.UNCL_ARRAY;
+BEGIN
+    tables(1)  := NULL;
+    schemas(1) := 'debezium';
+  DBMS_XSTREAM_ADM.CREATE_OUTBOUND(
+    server_name     =>  'dbzxout',
+    table_names     =>  tables,
+    schema_names    =>  schemas);
+END;
+/
+
+exit;
+----
+
+=== Supported Configurations
+
+So far, the connector has been tested with the pluggable database set-up (CDB/PDB model).
+It should monitor a single PDB in this model.
+It should also work with traditional (non-CDB) set-ups, though this could not be tested so far.
+
+[[how-it-works]]
+[[how-the-oracle-connector-works]]
+== How the Oracle Connector Works
+
+[[database-schema-history]]
+=== Database Schema History
+
+tbd.
+
+[[snapshots]]
+=== Snapshots
+
+Snapshots are not implemented yet
+(please see https://issues.jboss.org/browse/DBZ-720[DBZ-720]).
+
+[[reading-the-log]]
+=== Reading the Redo Log
+
+Upon first start-up, the connector takes a snapshot of the structure of the captured tables (DDL)
+and persists this information in its internal database history topic.
+It then proceeds to listen for change events right from the SCN ("system change number")
+at which the schema structure was captured.
+Processed SCNs are passed as offsets to Kafka Connect and regularly acknowledged with the database server
+(allowing it to discard older log files).
+After restart, the connector will resume from the offset (SCN) where it left off before.
+
+[[topic-names]]
+=== Topics Names
+
+[[schema-change-topic]]
+=== Schema Change Topic
+
+The user-facing schema change topic is not implemented yet https://issues.jboss.org/browse/DBZ-753(DBZ-753).
+
+[[events]]
+=== Events
+
+[[change-event-keys]]
+==== Change Events Keys
+
+tbd.
+
+[[change-event-values]]
+==== Change Event Values
+
+tbd.
+
+[[data-types]]
+=== Data Types
+
+tbd.
+
+[[deploying-a-connector]]
+== Deploying a Connector
+
+Due to licensing requirements, the Debezium Oracle Connector does not ship with the Oracle JDBC driver and the XStream API JAR.
+You can obtain them for free by downloading the http://www.oracle.com/technetwork/topics/linuxx86-64soft-092277.html[Oracle Instant Client].
+
+Extract the archive into a directory, e.g. _/path/to/instant_client/.
+Copy the files _ojdbc8.jar_ and _xstreams.jar_ from the Instant Client into Kafka's _libs_ directory.
+Create the environment variable `LD_LIBRARY_PATH`, pointing to the Instant Client directory:
+
+[source,indent=0]
+----
+LD_LIBRARY_PATH=/path/to/instant_client/
+----
+
+[[example-configuration]]
+=== Example Configuration
+
+The following shows an example JSON request for registering an instance of the Debezium Oracle connector:
+
+[source,indent=0]
+----
+{
+    "name": "inventory-connector",
+    "config": {
+        "connector.class" : "io.debezium.connector.oracle.OracleConnector",
+        "tasks.max" : "1",
+        "database.server.name" : "server1",
+        "database.hostname" : "<oracle ip>",
+        "database.port" : "1521",
+        "database.user" : "c##xstrmadmin",
+        "database.password" : "xsa",
+        "database.dbname" : "ORCLCDB",
+        "database.pdb.name" : "ORCLPDB1",
+        "database.out.server.name" : "dbzxout",
+        "database.history.kafka.bootstrap.servers" : "kafka:9092",
+        "database.history.kafka.topic": "schema-changes.inventory"
+    }
+}
+----
+
+[[connector-properties]]
+=== Connector Properties
+
+The following configuration properties are _required_ unless a default value is available.
+
+[cols="35%a,10%a,55%a",options="header,footer",role="table table-bordered table-striped"]
+|=======================
+|Property
+|Default
+|Description
+
+|`name`
+|
+|Unique name for the connector. Attempting to register again with the same name will fail. (This property is required by all Kafka Connect connectors.)
+
+|`connector.class`
+|
+|The name of the Java class for the connector. Always use a value of `io.debezium{zwsp}.connector.oracle.OracleConnector` for the Oracle connector.
+
+|`tasks.max`
+|`1`
+|The maximum number of tasks that should be created for this connector. The Oracle connector always uses a single task and therefore does not use this value, so the default is always acceptable.
+
+|`database.hostname`
+|
+|IP address or hostname of the Oracle database server.
+
+|`database.port`
+|
+|Integer port number of the Oracle database server.
+
+|`database.user`
+|
+|Name of the user to use when when connecting to the Oracle database server.
+
+|`database.password`
+|
+|Password to use when when connecting to the Oracle database server.
+
+|`database.dbname`
+|
+|Name of the database to connect to. Must be the CDB name when working with the CDB + PDB model.
+
+|`database.pdb.name`
+|
+|Name of the PDB to connect to, when working with the CDB + PDB model.
+
+|`database.out.server.name`
+|
+|Name of the XStream outbound server configured in the database.
+
+|`database.server.name`
+|
+|Logical name that identifies and provides a namespace for the particular Oracle database server being monitored. The logical name should be unique across all other connectors, since it is used as a prefix for all Kafka topic names eminating from this connector.
+
+|`database.history.kafka.topic`
+|
+|The full name of the Kafka topic where the connector will store the database schema history.
+
+|`database.history{zwsp}.kafka.bootstrap.servers`
+|
+|A list of host/port pairs that the connector will use for establishing an initial connection to the Kafka cluster. This connection will be used to retrieving database schema history previously stored by the connector, and for writing each DDL statement read from the source database. This should point to the same Kafka cluster used by the Kafka Connect process.
+
+|`table.whitelist`
+|_empty string_
+|An optional comma-separated list of regular expressions that match fully-qualified table identifiers for tables to be monitored; any table not included in the whitelist will be excluded from monitoring. Each identifier is of the form _databaseName_._tableName_. By default the connector will monitor every non-system table in each monitored database. May not be used with `table.blacklist`.
+
+|`table.blacklist`
+|_empty string_
+|An optional comma-separated list of regular expressions that match fully-qualified table identifiers for tables to be excluded from monitoring; any table not included in the blacklist will be monitored. Each identifier is of the form _databaseName_._tableName_. May not be used with `table.whitelist`.
+
+|`max.queue.size`
+|`8192`
+|Positive integer value that specifies the maximum size of the blocking queue into which change events read from the database log are placed before they are written to Kafka. This queue can provide backpressure to the binlog reader when, for example, writes to Kafka are slower or if Kafka is not available. Events that appear in the queue are not included in the offsets periodically recorded by this connector. Defaults to 8192, and should always be larger than the maximum batch size specified in the `max.batch.size` property.
+
+|`max.batch.size`
+|`2048`
+|Positive integer value that specifies the maximum size of each batch of events that should be processed during each iteration of this connector. Defaults to 2048.
+
+|`poll.interval.ms`
+|`1000`
+|Positive integer value that specifies the number of milliseconds the connector should wait during each iteration for new change events to appear. Defaults to 1000 milliseconds, or 1 second.
+
+|=======================
