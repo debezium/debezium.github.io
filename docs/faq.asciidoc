@@ -163,3 +163,31 @@ String encoded = ...;
 int scale = ...;
 final BigDecimal decoded = new BigDecimal(new BigInteger(Base64.getDecoder().decode(encoded)), scale);
 ----
+
+== How to change the offsets of the source database?
+
+[WARNING]
+This is a highly technical operation manipulating Kafka Connect internals.
+Please use this only as the last resort solution.
+
+Sometimes the database log contains an invalid data (like invalid date) that needs to be skipped or it is necessary to reprocess part of the log from the past.
+There is generally no straight way (apart from `event.deserialization.failure.handling.mode` for MySQL connector) how to achieve this operation but there is a workaround that manipulates Kafka Connect's internal data.
+
+First step is to find out the name of the topic that contains plugin-offsets.
+This is configured in `offset.storage.topic` option.
+
+Next step is to find out the last offset for the given connector, key under which it is stored and identify the partition used to store the offset.
+An example would be:
+
+```
+$ kafkacat -b localhost -C -t my_connect_offsets -'Partition(%p) %k %s\n'
+Partition(11) ["inventory-connector",{"server":"dbserver1"}] {"ts_sec":1530088501,"file":"mysql-bin.000003","pos":817,"row":1,"server_id":223344,"event":2}
+Partition(11) ["inventory-connector",{"server":"dbserver1"}] {"ts_sec":1530168941,"file":"mysql-bin.000004","pos":3261,"row":1,"server_id":223344,"event":2}
+```
+The key for `inventory-connector` is `["inventory-connector",{"server":"dbserver1"}]`, the partition number is `11` and the last offset is `{"ts_sec":1530168941,"file":"mysql-bin.000004","pos":3261,"row":1,"server_id":223344,"event":2}`.
+
+To move back to a previous offset the connector should be stopped and the following command has to be issued:
+```
+$ echo '["inventory-connector",{"server":"dbserver1"}]|{"ts_sec":1530168950,"file":"mysql-bin.000003","pos":817,"row":1,"server_id":223344,"event":2}' | \
+kafkacat -P -b localhost -t my_connect_offsets -K \| -p 11
+```
