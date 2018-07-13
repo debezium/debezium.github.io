@@ -23,6 +23,12 @@ Please track the https://issues.jboss.org/browse/DBZ-137[DBZ-137] JIRA issue and
 [[setting-up-oracle]]
 == Setting up Oracle
 
+The following steps need to be performed in order to prepare the database so the Debezium connector can be used.
+This assumes the multi-tenancy configuration (with a container database and at least one pluggable database);
+if you're not using this model, adjust the steps accordingly.
+
+You can find a template for setting up Oracle in a virtual machine (via Vagrant) in the https://github.com/debezium/oracle-vagrant-box/[oracle-vagrant-box/] repository.
+
 === Preparing the Database
 
 Enable GoldenGate replication and archive log mode:
@@ -45,32 +51,44 @@ archive log list
 exit;
 ----
 
-=== Setting up a User
+Furthermore, in order to capture the _before_ state of changed rows, supplemental logging must be enabled for the captured tables or the database in general.
+E.g. like so for a specific table:
 
-Create a database user to be used by the connector
-(this should require less database privileges going forward, https://issues.jboss.org/browse/DBZ-754[DBZ-754]):
+[source,indent=0]
+----
+ALTER TABLE inventory.customers ADD SUPPLEMENTAL LOG DATA (ALL) COLUMNS;
+----
+
+=== Creating an XStream Admin User and a User For the Connector
+
+Create an XStream admin user in the container database (used per Oracle's recommendation for administering XStream):
 
 [source,indent=0]
 ----
 sqlplus sys/top_secret@//localhost:1521/ORCLCDB as sysdba
-CREATE TABLESPACE xstream_tbs DATAFILE '/opt/oracle/oradata/ORCLCDB/xstream_tbs.dbf'
+CREATE TABLESPACE xstream_adm_tbs DATAFILE '/opt/oracle/oradata/ORCLCDB/xstream_adm_tbs.dbf'
   SIZE 25M REUSE AUTOEXTEND ON MAXSIZE UNLIMITED;
 exit;
+----
 
+[source,indent=0]
+----
 sqlplus sys/top_secret@//localhost:1521/ORCLPDB1 as sysdba
-CREATE TABLESPACE xstream_tbs DATAFILE '/opt/oracle/oradata/ORCLCDB/ORCLPDB1/xstream_tbs.dbf'
+CREATE TABLESPACE xstream_adm_tbs DATAFILE '/opt/oracle/oradata/ORCLCDB/ORCLPDB1/xstream_adm_tbs.dbf'
   SIZE 25M REUSE AUTOEXTEND ON MAXSIZE UNLIMITED;
 exit;
+----
 
+[source,indent=0]
+----
 sqlplus sys/top_secret@//localhost:1521/ORCLCDB as sysdba
 
 CREATE USER c##xstrmadmin IDENTIFIED BY xsa
-  DEFAULT TABLESPACE xstream_tbs
-  QUOTA UNLIMITED ON xstream_tbs
+  DEFAULT TABLESPACE xstream_adm_tbs
+  QUOTA UNLIMITED ON xstream_adm_tbs
   CONTAINER=ALL;
 
 GRANT CREATE SESSION, SET CONTAINER TO c##xstrmadmin CONTAINER=ALL;
-GRANT DBA TO c##xstrmadmin;
 
 BEGIN
    DBMS_XSTREAM_AUTH.GRANT_ADMIN_PRIVILEGE(
@@ -81,6 +99,41 @@ BEGIN
    );
 END;
 /
+
+exit;
+----
+
+Create XStream user (used by the Debezium connector to connect to the XStream outbound server):
+
+[source,indent=0]
+----
+sqlplus sys/top_secret@//localhost:1521/ORCLCDB as sysdba
+CREATE TABLESPACE xstream_tbs DATAFILE '/opt/oracle/oradata/ORCLCDB/xstream_tbs.dbf'
+  SIZE 25M REUSE AUTOEXTEND ON MAXSIZE UNLIMITED;
+exit;
+----
+
+[source,indent=0]
+----
+sqlplus sys/top_secret@//localhost:1521/ORCLPDB1 as sysdba
+CREATE TABLESPACE xstream_tbs DATAFILE '/opt/oracle/oradata/ORCLCDB/ORCLPDB1/xstream_tbs.dbf'
+  SIZE 25M REUSE AUTOEXTEND ON MAXSIZE UNLIMITED;
+exit;
+----
+
+[source,indent=0]
+----
+sqlplus sys/top_secret@//localhost:1521/ORCLCDB as sysdba
+
+CREATE USER c##xstrm IDENTIFIED BY xs
+  DEFAULT TABLESPACE xstream_tbs
+  QUOTA UNLIMITED ON xstream_tbs
+  CONTAINER=ALL;
+
+GRANT CREATE SESSION TO c##xstrm CONTAINER=ALL;
+GRANT SET CONTAINER TO c##xstrm CONTAINER=ALL;
+GRANT SELECT ON V_$DATABASE to c##xstrm CONTAINER=ALL;
+GRANT FLASHBACK ANY TABLE TO c##xstrm CONTAINER=ALL;
 
 exit;
 ----
@@ -104,6 +157,22 @@ BEGIN
     server_name     =>  'dbzxout',
     table_names     =>  tables,
     schema_names    =>  schemas);
+END;
+/
+
+exit;
+----
+
+Alter the XStream Outbound server to allow the xstrm user to connect to it:
+
+[source,indent=0]
+----
+sqlplus sys/top_secret@//localhost:1521/ORCLCDB as sysdba
+
+BEGIN
+  DBMS_XSTREAM_ADM.ALTER_OUTBOUND(
+    server_name  => 'dbzxout',
+    connect_user => 'c##xstrm');
 END;
 /
 
