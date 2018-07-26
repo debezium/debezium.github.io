@@ -74,13 +74,13 @@ To build the source code locally, checkout and update the `develop` branch:
 
 Then use Docker to run a container that initializes the Awestruct tooling. Start a new terminal, configure it with the Docker environment (if required), and run the following command:
 
-    $ docker run -it --rm -p 4242:4242 -v $(pwd):/site debezium/awestruct setup
+    $ docker run -it --rm -p 4242:4242 -e LC_ALL=C.UTF-8 -e LANG=C.UTF-8 -v $(pwd):/site debezium/awestruct setup
     
 *Note:* Some times you may wish to use the `root` user of your linux machine to run docker (as docker needs elevated privileges to run). It's probably a better idea to run docker containers while [running as a user other than root and using sudo](http://www.projectatomic.io/blog/2015/08/why-we-dont-let-non-root-users-run-docker-in-centos-fedora-or-rhel/) or adding the [user to the group that has privileges](https://developer.fedoraproject.org/tools/docker/docker-installation.html) to run docker. When you checkout the code for this project don't clone the source code and try running this command as the `root` user. When you do this, all of the code (and the entire folder) then gets owned by the `root` user. The reason why this is undesirable is when we run `docker run -v $(pwd):/site` we are actually mounting the local file system where the source code lives _into_ the docker container. If this directory is owned by `root`, the image cannot create the necessary directories for running `rake` and `bundle`.     
 
 This should download all of the Ruby Gems the tooling uses, as defined in the `Gemfile` file. After it completes, run a container using the same image but with a different command:
 
-    $ docker run -it --rm -p 4242:4242 -v $(pwd):/site debezium/awestruct bash
+    $ docker run -it --rm -p 4242:4242 -e LC_ALL=C.UTF-8 -e LANG=C.UTF-8 -v $(pwd):/site debezium/awestruct bash
 
 This command will start a container using the `debezium/awestruct` Docker image, first downloading the image if necessary. It also mounts the current directory (where the website code is located) into the container's `/site` directory. 
 
