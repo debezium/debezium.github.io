@@ -17,8 +17,8 @@
 #
 # 2. This is an example site.yml configuration:
 #
-#    jborg_fonts_url: http://static.jboss.org/theme/fonts
-#    jborg_images_url: http://static.jboss.org/theme/images
+#    jborg_fonts_url: https://static.jboss.org/theme/fonts
+#    jborg_images_url: https://static.jboss.org/theme/images
 #
 ##
 module Awestruct
