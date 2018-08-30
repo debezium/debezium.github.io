@@ -2,13 +2,534 @@
 <feed xml:lang="en-US" xmlns="http://www.w3.org/2005/Atom">
   <id>http://debezium.io/</id>
   <title>Debezium Blog</title>
-  <updated>2018-08-30T16:45:14+00:00</updated>
+  <updated>2018-08-30T19:06:27+00:00</updated>
   <link href="http://debezium.io/blog.atom" rel="self" type="application/atom+xml" />
   <link href="http://debezium.io/" rel="alternate" type="text/html" />
   <entry>
+    <id>http://debezium.io/blog/2018/08/30/streaming-mysql-data-changes-into-kinesis/</id>
+    <title>Streaming MySQL Data Changes to Amazon Kinesis</title>
+    <updated>2018-08-30T19:06:27+00:00</updated>
+    <published>2018-08-30T00:00:00+00:00</published>
+    <link href="http://debezium.io/blog/2018/08/30/streaming-mysql-data-changes-into-kinesis/" rel="alternate" type="text/html" />
+    <author>
+      <name>Gunnar Morling</name>
+    </author>
+    <category term="discussion"></category>
+    <category term="examples"></category>
+    <summary>
+      
+      
+      
+      Most of the times Debezium is used to stream data changes into Apache Kafka.
+      What though if you&#8217;re using another streaming platform such as Apache Pulsar or a cloud-based solution such as Amazon Kinesis, Azure Event Hubs and the like?
+      Can you still benefit from Debezium&#8217;s powerful change data capture (CDC) capabilities  and ingest changes from databases such as MySQL, Postgres, SQL Server etc.?
+      
+      
+      Turns out, with just a bit of glue code, you can!
+      In the following we&#8217;ll discuss how to use Debezium to capture changes in a MySQL database and stream the change events into Kinesis,
+      a fully-managed data streaming service available...
+    </summary>
+    <content type="html">
+      &lt;div id=&quot;preamble&quot;&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Most of the times Debezium is used to stream data changes into &lt;a href=&quot;http://kafka.apache.org/&quot;&gt;Apache Kafka&lt;/a&gt;.
+      What though if you’re using another streaming platform such as &lt;a href=&quot;https://pulsar.incubator.apache.org/&quot;&gt;Apache Pulsar&lt;/a&gt; or a cloud-based solution such as &lt;a href=&quot;https://aws.amazon.com/kinesis/&quot;&gt;Amazon Kinesis&lt;/a&gt;, &lt;a href=&quot;https://azure.microsoft.com/services/event-hubs/&quot;&gt;Azure Event Hubs&lt;/a&gt; and the like?
+      Can you still benefit from Debezium’s powerful change data capture (CDC) capabilities  and ingest changes from databases such as MySQL, Postgres, SQL Server etc.?&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Turns out, with just a bit of glue code, you can!
+      In the following we’ll discuss how to use Debezium to capture changes in a MySQL database and stream the change events into Kinesis,
+      a fully-managed data streaming service available on the Amazon cloud.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect1&quot;&gt;
+      &lt;h2 id=&quot;introducing_the_debezium_embedded_engine&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#introducing_the_debezium_embedded_engine&quot;&gt;&lt;/a&gt;Introducing the Debezium Embedded Engine&lt;/h2&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Debezium is implemented as a set of connectors for Kafka and thus usually is run via &lt;a href=&quot;https://kafka.apache.org/documentation/#connect&quot;&gt;Kafka Connect&lt;/a&gt;.
+      But there’s one little gem in Debezium which isn’t as widely known yet, which is the &lt;a href=&quot;http://debezium.io/docs/embedded/&quot;&gt;embedded engine&lt;/a&gt;.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;When using this engine, the Debezium connectors are not executed within Kafka Connect, but as a library embedded into your own Java application.
+      For this purpose, the &lt;em&gt;debezium-embedded&lt;/em&gt; module provides a small runtime environment which performs the tasks that’d otherwise be handled by the Kafka Connect framework:
+      requesting change records from the connector, committing offsets etc.
+      Each change record produced by the connector is passed to a configured event handler method,
+      which in our case will convert the record into its JSON representation and submit it to a Kinesis stream, using the Kinesis Java API.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;The overall architecture looks like so:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;img src=&quot;http://debezium.io/images/debezium-embedded.png&quot; style=&quot;max-width:100%; margin-bottom:10px;&quot; class=&quot;responsive-image&quot; alt=&quot;Debezium Embedded Engine Streaming to Amazon Kinesis&quot; /&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Now let’s walk through the relevant parts of the code required for that.
+      A complete executable example can be found in the &lt;a href=&quot;https://github.com/debezium/debezium-examples/tree/master/kinesis&quot;&gt;debezium-examples&lt;/a&gt; repo on GitHub.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect1&quot;&gt;
+      &lt;h2 id=&quot;set_up&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#set_up&quot;&gt;&lt;/a&gt;Set-Up&lt;/h2&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;In order to use Debezium’s embedded engine, add the &lt;em&gt;debezium-embedded&lt;/em&gt; dependency as well as the Debezium connector of your choice to your project’s &lt;em&gt;pom.xml&lt;/em&gt;.
+      In the following we’re going to use the connector for MySQL.
+      We also need to add a dependency to the &lt;a href=&quot;https://docs.aws.amazon.com/AWSJavaSDK/latest/javadoc/com/amazonaws/services/kinesis/package-summary.html&quot;&gt;Kinesis Client API&lt;/a&gt;, so these are the dependencies needed:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;listingblock&quot;&gt;
+      &lt;div class=&quot;content&quot;&gt;
+      &lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-xml&quot; data-lang=&quot;xml&quot;&gt;...
+      &amp;lt;dependency&amp;gt;
+          &amp;lt;groupId&amp;gt;io.debezium&amp;lt;/groupId&amp;gt;
+          &amp;lt;artifactId&amp;gt;debezium-embedded&amp;lt;/artifactId&amp;gt;
+          &amp;lt;version&amp;gt;0.8.1.Final&amp;lt;/version&amp;gt;
+      &amp;lt;/dependency&amp;gt;
+      &amp;lt;dependency&amp;gt;
+          &amp;lt;groupId&amp;gt;io.debezium&amp;lt;/groupId&amp;gt;
+          &amp;lt;artifactId&amp;gt;debezium-connector-mysql&amp;lt;/artifactId&amp;gt;
+          &amp;lt;version&amp;gt;0.8.1.Final&amp;lt;/version&amp;gt;
+      &amp;lt;/dependency&amp;gt;
+      &amp;lt;dependency&amp;gt;
+          &amp;lt;groupId&amp;gt;com.amazonaws&amp;lt;/groupId&amp;gt;
+          &amp;lt;artifactId&amp;gt;amazon-kinesis-client&amp;lt;/artifactId&amp;gt;
+          &amp;lt;version&amp;gt;1.9.0&amp;lt;/version&amp;gt;
+      &amp;lt;/dependency&amp;gt;
+      ...&lt;/code&gt;&lt;/pre&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect1&quot;&gt;
+      &lt;h2 id=&quot;configuring_the_embedded_engine&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#configuring_the_embedded_engine&quot;&gt;&lt;/a&gt;Configuring the Embedded Engine&lt;/h2&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;The Debezium embedded engine is configured through an instance of &lt;code&gt;io.debezium.config.Configuration&lt;/code&gt;.
+      This class can obtain values from system properties or from a given config file,
+      but for the sake of the example we’ll simply pass all required values via its fluent builder API:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;listingblock&quot;&gt;
+      &lt;div class=&quot;content&quot;&gt;
+      &lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-java&quot; data-lang=&quot;java&quot;&gt;Configuration config = Configuration.create()
+          .with(EmbeddedEngine.CONNECTOR_CLASS, &quot;io.debezium.connector.mysql.MySqlConnector&quot;)
+          .with(EmbeddedEngine.ENGINE_NAME, &quot;kinesis&quot;)
+          .with(MySqlConnectorConfig.SERVER_NAME, &quot;kinesis&quot;)
+          .with(MySqlConnectorConfig.SERVER_ID, 8192)
+          .with(MySqlConnectorConfig.HOSTNAME, &quot;localhost&quot;)
+          .with(MySqlConnectorConfig.PORT, 3306)
+          .with(MySqlConnectorConfig.USER, &quot;debezium&quot;)
+          .with(MySqlConnectorConfig.PASSWORD, &quot;dbz&quot;)
+          .with(MySqlConnectorConfig.DATABASE_WHITELIST, &quot;inventory&quot;)
+          .with(MySqlConnectorConfig.TABLE_WHITELIST, &quot;inventory.customers&quot;)
+          .with(EmbeddedEngine.OFFSET_STORAGE,
+              &quot;org.apache.kafka.connect.storage.MemoryOffsetBackingStore&quot;)
+          .with(MySqlConnectorConfig.DATABASE_HISTORY,
+              MemoryDatabaseHistory.class.getName())
+          .with(&quot;schemas.enable&quot;, false)
+          .build();&lt;/code&gt;&lt;/pre&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;If you’ve ever set up the Debezium MySQL connector in Kafka Connect, most of the properties will look familiar to you.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;But let’s talk about the &lt;code&gt;OFFSET_STORAGE&lt;/code&gt; and &lt;code&gt;DATABASE_HISTORY&lt;/code&gt; options in a bit more detail.
+      They deal with how connector offsets and the database history should be persisted.
+      When running the connector via Kafka Connect, both would typically be stored in specific Kafka topics.
+      But that’s not an option here, so an alternative is needed.
+      For this example we’re simply going to keep the offsets and database history in memory.
+      I.e. if the engine is restarted, this information will be lost and the connector will start from scratch, e.g. with a new initial snapshot.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;While out of scope for this blog post, it wouldn’t be too difficult to create alternative implementations of the &lt;code&gt;OffsetBackingStore&lt;/code&gt; and &lt;code&gt;DatabaseHistory&lt;/code&gt; contracts, respectively.
+      For instance if you’re fully committed into the AWS cloud services, you could think of storing offsets and database history in the DynamoDB NoSQL store.
+      Note that, different from Kafka, a Kinesis stream wouldn’t be suitable for storing the database history.
+      The reason being, that the maximum retention period for Kinesis data streams is seven days, whereas the database history must be kept for the entire lifetime of the connector.
+      Another alternative could be to use the existing filesystem based implementations &lt;code&gt;FileOffsetBackingStore&lt;/code&gt; and &lt;code&gt;FileDatabaseHistory&lt;/code&gt;, respectively.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;The next step is to build an &lt;code&gt;EmbeddedEngine&lt;/code&gt; instance from the configuration.
+      Again this is done using a fluent API:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;listingblock&quot;&gt;
+      &lt;div class=&quot;content&quot;&gt;
+      &lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-java&quot; data-lang=&quot;java&quot;&gt;EmbeddedEngine engine = EmbeddedEngine.create()
+          .using(config)
+          .using(this.getClass().getClassLoader())
+          .using(Clock.SYSTEM)
+          .notifying(this::sendRecord)
+          .build();&lt;/code&gt;&lt;/pre&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;The most interesting part here is the &lt;code&gt;notifying&lt;/code&gt; call.
+      The method passed here is the one which will be invoked by the engine for each emitted data change record.
+      So let’s take a look at the implementation of this method.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect1&quot;&gt;
+      &lt;h2 id=&quot;sending_change_records_to_kinesis&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#sending_change_records_to_kinesis&quot;&gt;&lt;/a&gt;Sending Change Records to Kinesis&lt;/h2&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;The &lt;code&gt;sendRecord()&lt;/code&gt; method is where the magic happens.
+      We’ll convert the incoming &lt;code&gt;SourceRecord&lt;/code&gt; into an equivalent JSON representation and propagate it to a Kinesis stream.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;For that, it’s important to understand some conceptual differences between Apache Kafka and Kinesis.
+      Specifically, messages in Kafka have a &lt;em&gt;key&lt;/em&gt; and a &lt;em&gt;value&lt;/em&gt; (which both are arbitrary byte arrays).
+      In case of Debezium, the key of data change events represents the primary key of the affected record and the value is a structure comprising of old and new row state as well as some additional metadata.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;In Kinesis on the other hand a message contains a &lt;em&gt;data blob&lt;/em&gt; (again an arbitrary byte sequence) and a &lt;em&gt;partition key&lt;/em&gt;.
+      Kinesis streams can be split up into multiple shards and the partition key is used to determine into which shard a given message should go.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Now one could think of mapping the key from Debezium’s change data events to the Kinesis partition key,
+      but partition keys are limited to a length of 256 bytes.
+      Depending on the length of primary key column(s) in the captured tables, this might not be enough.
+      So a safer option is to create a hash value from the change message key and use that as the partition key.
+      This in turn means that the change message key structure should be added next to the actual value to the Kinesis message’s data blob.
+      While the key column values themselves are part of the value structure, too, a consumer otherwise wouldn’t know which column(s) make up the primary key.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;With that in mind, let’s take a look at the &lt;code&gt;sendRecord()&lt;/code&gt; implementation:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;listingblock&quot;&gt;
+      &lt;div class=&quot;content&quot;&gt;
+      &lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-java&quot; data-lang=&quot;java&quot;&gt;private void sendRecord(SourceRecord record) {
+          // We are interested only in data events not schema change events
+          if (record.topic().equals(&quot;kinesis&quot;)) {
+              return;
+          }
+      
+          // create schema for container with key *and* value
+          Schema schema = SchemaBuilder.struct()
+              .field(&quot;key&quot;, record.keySchema())
+              .field(&quot;value&quot;, record.valueSchema())
+              .build();
+      
+          Struct message = new Struct(schema);
+          message.put(&quot;key&quot;, record.key());
+          message.put(&quot;value&quot;, record.value());
+      
+          // create partition key by hashing the record's key
+          String partitionKey = String.valueOf(
+              record.key() != null ? record.key().hashCode() : -1);
+      
+          // create data blob representing the container by using Kafka Connect's
+          // JSON converter
+          final byte[] payload = valueConverter.fromConnectData(
+              &quot;dummy&quot;, schema, message);
+      
+          // Assemble the put-record request ...
+          PutRecordRequest putRecord = new PutRecordRequest();
+      
+          putRecord.setStreamName(record.topic());
+          putRecord.setPartitionKey(partitionKey);
+          putRecord.setData(ByteBuffer.wrap(payload));
+      
+          // ... and execute it
+          kinesisClient.putRecord(putRecord);
+      }&lt;/code&gt;&lt;/pre&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;The code is quite straight-forward; as discussed above it’s first creating a container structure containing key &lt;em&gt;and&lt;/em&gt; value of the incoming source record.
+      This structure then is converted into a binary representation using the JSON converter provided by Kafka Connect (an instance of &lt;code&gt;JsonConverter&lt;/code&gt;).
+      Then a &lt;code&gt;PutRecordRequest&lt;/code&gt; is assembled from that blob, the partition key and the change record’s topic name, which finally is sent to Kinesis.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;The Kinesis client object can be re-used and is set up once like so:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;listingblock&quot;&gt;
+      &lt;div class=&quot;content&quot;&gt;
+      &lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-java&quot; data-lang=&quot;java&quot;&gt;// Uses the credentials from the local &quot;default&quot; AWS profile
+      AWSCredentialsProvider credentialsProvider =
+          new ProfileCredentialsProvider(&quot;default&quot;);
+      
+      this.kinesisClient = AmazonKinesisClientBuilder.standard()
+          .withCredentials(credentialsProvider)
+          .withRegion(&quot;eu-central-1&quot;) // use your AWS region here
+          .build();&lt;/code&gt;&lt;/pre&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;With that, we’ve set up an instance of Debezium’s &lt;code&gt;EmbeddedEngine&lt;/code&gt; which runs the configured MySQL connector and passes each emitted change event to Amazon Kinesis.
+      The last missing step is to actually run the engine.
+      This is done on a separate thread using an &lt;code&gt;Executor&lt;/code&gt;, e.g. like so:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;listingblock&quot;&gt;
+      &lt;div class=&quot;content&quot;&gt;
+      &lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-java&quot; data-lang=&quot;java&quot;&gt;ExecutorService executor = Executors.newSingleThreadExecutor();
+      executor.execute(engine);&lt;/code&gt;&lt;/pre&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Note you also should make sure to properly shut down the engine eventually.
+      How that can be done &lt;a href=&quot;https://github.com/debezium/debezium-examples/blob/master/kinesis/src/main/java/io/debezium/examples/kinesis/ChangeDataSender.java#L83-L88&quot;&gt;is shown&lt;/a&gt; in the accompanying example in the &lt;em&gt;debezium-examples&lt;/em&gt; repo.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect1&quot;&gt;
+      &lt;h2 id=&quot;running_the_example&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#running_the_example&quot;&gt;&lt;/a&gt;Running the Example&lt;/h2&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Finally let’s take a look at running the complete example and consuming the Debezium CDC events from the Kinesis stream.
+      Start by cloning the examples repository and go to the &lt;em&gt;kinesis&lt;/em&gt; directory:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;listingblock&quot;&gt;
+      &lt;div class=&quot;content&quot;&gt;
+      &lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-shell&quot; data-lang=&quot;shell&quot;&gt;git clone https://github.com/debezium/debezium-examples.git
+      cd debezium-examples/kinesis&lt;/code&gt;&lt;/pre&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Make sure you’ve met the &lt;a href=&quot;https://github.com/debezium/debezium-examples/tree/master/kinesis#prerequisites&quot;&gt;prerequisites&lt;/a&gt; described in the example’s &lt;em&gt;README.md&lt;/em&gt;;
+      most notably you should have a local Docker installation and you’ll need to have set up an AWS account as well as have the AWS client tools installed.
+      Note that Kinesis isn’t part of the free tier when registering with AWS, i.e. you’ll pay a (small) amount of money when executing the example.
+      Don’t forget to delete the streams you’ve set up once done, we won’t pay your AWS bills :)&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Now run Debezium’s MySQL example database to have some data to play with:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;listingblock&quot;&gt;
+      &lt;div class=&quot;content&quot;&gt;
+      &lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-shell&quot; data-lang=&quot;shell&quot;&gt;docker run -it --rm --name mysql -p 3306:3306 \
+        -e MYSQL_ROOT_PASSWORD=debezium \
+        -e MYSQL_USER=mysqluser \
+        -e MYSQL_PASSWORD=mysqlpw \
+        debezium/example-mysql:0.8&lt;/code&gt;&lt;/pre&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Create a Kinesis stream for change events from the &lt;code&gt;customers&lt;/code&gt; table:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;listingblock&quot;&gt;
+      &lt;div class=&quot;content&quot;&gt;
+      &lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-shell&quot; data-lang=&quot;shell&quot;&gt;aws kinesis create-stream --stream-name kinesis.inventory.customers \
+        --shard-count 1&lt;/code&gt;&lt;/pre&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Execute the Java application that runs the Debezium embedded engine
+      (if needed, adjust the value of the &lt;code&gt;kinesis.region&lt;/code&gt; property in &lt;em&gt;pom.xml&lt;/em&gt; to your own region first):&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;listingblock&quot;&gt;
+      &lt;div class=&quot;content&quot;&gt;
+      &lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-shell&quot; data-lang=&quot;shell&quot;&gt;mvn exec:java&lt;/code&gt;&lt;/pre&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;This will start up the engine and the MySQL connector, which takes an initial snapshot of the captured database.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;In order to take a look at the CDC events in the Kinesis stream, the AWS CLI can be used
+      (usually, you’d implement a Kinesis Streams application for consuming the events).
+      To do so, set up a &lt;a href=&quot;https://docs.aws.amazon.com/streams/latest/dev/developing-consumers-with-sdk.html#kinesis-using-sdk-java-get-data-shard-iterators&quot;&gt;shard iterator&lt;/a&gt; first:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;listingblock&quot;&gt;
+      &lt;div class=&quot;content&quot;&gt;
+      &lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-shell&quot; data-lang=&quot;shell&quot;&gt;ITERATOR=$(aws kinesis get-shard-iterator --stream-name kinesis.inventory.customers --shard-id 0 --shard-iterator-type TRIM_HORIZON | jq '.ShardIterator')&lt;/code&gt;&lt;/pre&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Note how the &lt;a href=&quot;https://stedolan.github.io/jq/&quot;&gt;jq&lt;/a&gt; utility is used to obtain the generated id of the iterator from the JSON structure returned by the Kinesis API.
+      Next that iterator can be used to examine the stream:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;listingblock&quot;&gt;
+      &lt;div class=&quot;content&quot;&gt;
+      &lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-shell&quot; data-lang=&quot;shell&quot;&gt;aws kinesis get-records --shard-iterator $ITERATOR&lt;/code&gt;&lt;/pre&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;You should receive an array of records like this:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;listingblock&quot;&gt;
+      &lt;div class=&quot;content&quot;&gt;
+      &lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-json&quot; data-lang=&quot;json&quot;&gt;{
+          &quot;Records&quot;: [
+              {
+                  &quot;SequenceNumber&quot;:
+                      &quot;49587760482547027816046765529422807492446419903410339842&quot;,
+                  &quot;ApproximateArrivalTimestamp&quot;: 1535551896.475,
+                  &quot;Data&quot;: &quot;eyJiZWZvcm...4OTI3MzN9&quot;,
+                  &quot;PartitionKey&quot;: &quot;eyJpZCI6MTAwMX0=&quot;
+              },
+              ...
+          ]
+      }&lt;/code&gt;&lt;/pre&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;The &lt;code&gt;Data&lt;/code&gt; element is a Base64-encoded representation of the message’s data blob.
+      Again &lt;em&gt;jq&lt;/em&gt; comes in handy: we can use it to just extract the &lt;code&gt;Data&lt;/code&gt; part of each record and decode the Base64 representation
+      (make sure to use jq 1.6 or newer):&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;listingblock&quot;&gt;
+      &lt;div class=&quot;content&quot;&gt;
+      &lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-shell&quot; data-lang=&quot;shell&quot;&gt;aws kinesis get-records --shard-iterator $ITERATOR | \
+        jq -r '.Records[].Data | @base64d' | jq .&lt;/code&gt;&lt;/pre&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Now you should see the change events as JSON, each one with key and value:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;listingblock&quot;&gt;
+      &lt;div class=&quot;content&quot;&gt;
+      &lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-json&quot; data-lang=&quot;json&quot;&gt;{
+        &quot;key&quot;: {
+          &quot;id&quot;: 1001
+        },
+        &quot;value&quot;: {
+          &quot;before&quot;: null,
+          &quot;after&quot;: {
+            &quot;id&quot;: 1001,
+            &quot;first_name&quot;: &quot;Sally&quot;,
+            &quot;last_name&quot;: &quot;Thomas&quot;,
+            &quot;email&quot;: &quot;sally.thomas@acme.com&quot;
+          },
+          &quot;source&quot;: {
+            &quot;version&quot;: &quot;0.8.1.Final&quot;,
+            &quot;name&quot;: &quot;kinesis&quot;,
+            &quot;server_id&quot;: 0,
+            &quot;ts_sec&quot;: 0,
+            &quot;gtid&quot;: null,
+            &quot;file&quot;: &quot;mysql-bin.000003&quot;,
+            &quot;pos&quot;: 154,
+            &quot;row&quot;: 0,
+            &quot;snapshot&quot;: true,
+            &quot;thread&quot;: null,
+            &quot;db&quot;: &quot;inventory&quot;,
+            &quot;table&quot;: &quot;customers&quot;,
+            &quot;query&quot;: null
+          },
+          &quot;op&quot;: &quot;c&quot;,
+          &quot;ts_ms&quot;: 1535555325628
+        }
+      }
+      ...&lt;/code&gt;&lt;/pre&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Next let’s try and update a record in MySQL:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;listingblock&quot;&gt;
+      &lt;div class=&quot;content&quot;&gt;
+      &lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-shell&quot; data-lang=&quot;shell&quot;&gt;# Start MySQL CLI client
+      docker run -it --rm --name mysqlterm --link mysql --rm mysql:5.7 \
+        sh -c 'exec mysql -h&quot;$MYSQL_PORT_3306_TCP_ADDR&quot; \
+        -P&quot;$MYSQL_PORT_3306_TCP_PORT&quot; -uroot -p&quot;$MYSQL_ENV_MYSQL_ROOT_PASSWORD&quot;'
+      
+      # In the MySQL client
+      use inventory;
+      update customers set first_name = 'Trudy' where id = 1001;&lt;/code&gt;&lt;/pre&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;If you now fetch the iterator again, you should see one more data change event representing that update:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;listingblock&quot;&gt;
+      &lt;div class=&quot;content&quot;&gt;
+      &lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-json&quot; data-lang=&quot;json&quot;&gt;...
+      
+      {
+        &quot;key&quot;: {
+          &quot;id&quot;: 1001
+        },
+        &quot;value&quot;: {
+          &quot;before&quot;: {
+            &quot;id&quot;: 1001,
+            &quot;first_name&quot;: &quot;Sally&quot;,
+            &quot;last_name&quot;: &quot;Thomas&quot;,
+            &quot;email&quot;: &quot;sally.thomas@acme.com&quot;
+          },
+          &quot;after&quot;: {
+            &quot;id&quot;: 1001,
+            &quot;first_name&quot;: &quot;Trudy&quot;,
+            &quot;last_name&quot;: &quot;Thomas&quot;,
+            &quot;email&quot;: &quot;sally.thomas@acme.com&quot;
+          },
+          &quot;source&quot;: {
+            &quot;version&quot;: &quot;0.8.1.Final&quot;,
+            &quot;name&quot;: &quot;kinesis&quot;,
+            &quot;server_id&quot;: 223344,
+            &quot;ts_sec&quot;: 1535627629,
+            &quot;gtid&quot;: null,
+            &quot;file&quot;: &quot;mysql-bin.000003&quot;,
+            &quot;pos&quot;: 364,
+            &quot;row&quot;: 0,
+            &quot;snapshot&quot;: false,
+            &quot;thread&quot;: 10,
+            &quot;db&quot;: &quot;inventory&quot;,
+            &quot;table&quot;: &quot;customers&quot;,
+            &quot;query&quot;: null
+          },
+          &quot;op&quot;: &quot;u&quot;,
+          &quot;ts_ms&quot;: 1535627622546
+        }
+      }&lt;/code&gt;&lt;/pre&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Once you’re done, stop the embedded engine application by hitting Ctrl + C,
+      stop the MySQL server by running &lt;code&gt;docker stop mysql&lt;/code&gt; and delete the &lt;em&gt;kinesis.inventory.customers&lt;/em&gt; stream in Kinesis.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect1&quot;&gt;
+      &lt;h2 id=&quot;summary_and_outlook&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#summary_and_outlook&quot;&gt;&lt;/a&gt;Summary and Outlook&lt;/h2&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;In this blog post we’ve demonstrated that Debezium cannot only be used to stream data changes into Apache Kafka, but also into other streaming platforms such as Amazon Kinesis.
+      Leveraging its embedded engine and by implementing a bit of glue code, you can benefit from &lt;a href=&quot;http://debezium.io/docs/connectors/&quot;&gt;all the CDC connectors&lt;/a&gt; provided by Debezium and their capabilities and connect them to the streaming solution of your choice.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;And we’re thinking about even further simplifying this usage of Debezium.
+      Instead of requiring you to implement your own application that invokes the embedded engine API,
+      we’re considering to provide a small self-contained Debezium runtime which you can simply execute.
+      It’d be configured with the source connector to run and make use of an outbound plug-in SPI with ready-to-use implementations for Kinesis, Apache Pulsar and others.
+      Of course such runtime would also provide suitable implementations for safely persisting offsets and database history,
+      and it’d offer means of monitoring, health checks etc.
+      Meaning you could connect the Debezium source connectors with your preferred streaming platform in a robust and reliable way, without any manual coding required!&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;If you like this idea, then please check out JIRA issue &lt;a href=&quot;https://issues.jboss.org/browse/DBZ-651&quot;&gt;DBZ-651&lt;/a&gt; and let us know about your thoughts,
+      e.g. by leaving a comment on the issue, in the comment section below or on our &lt;a href=&quot;https://groups.google.com/forum/#!forum/debezium&quot;&gt;mailing list&lt;/a&gt;.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect1&quot;&gt;
+      &lt;h2 id=&quot;about_debezium&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#about_debezium&quot;&gt;&lt;/a&gt;About Debezium&lt;/h2&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Debezium is an open source distributed platform that turns your existing databases into event streams,
+      so applications can see and respond almost instantly to each committed row-level change in the databases.
+      Debezium is built on top of &lt;a href=&quot;http://kafka.apache.org/&quot;&gt;Kafka&lt;/a&gt; and provides &lt;a href=&quot;http://kafka.apache.org/documentation.html#connect&quot;&gt;Kafka Connect&lt;/a&gt; compatible connectors that monitor specific database management systems.
+      Debezium records the history of data changes in Kafka logs, so your application can be stopped and restarted at any time and can easily consume all of the events it missed while it was not running,
+      ensuring that all events are processed correctly and completely.
+      Debezium is &lt;a href=&quot;http://debezium.io/license&quot;&gt;open source&lt;/a&gt; under the &lt;a href=&quot;http://www.apache.org/licenses/LICENSE-2.0.html&quot;&gt;Apache License, Version 2.0&lt;/a&gt;.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect1&quot;&gt;
+      &lt;h2 id=&quot;get_involved&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#get_involved&quot;&gt;&lt;/a&gt;Get involved&lt;/h2&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;We hope you find Debezium interesting and useful, and want to give it a try.
+      Follow us on Twitter &lt;a href=&quot;https://twitter.com/debezium&quot;&gt;@debezium&lt;/a&gt;, &lt;a href=&quot;https://gitter.im/debezium/user&quot;&gt;chat with us on Gitter&lt;/a&gt;,
+      or join our &lt;a href=&quot;https://groups.google.com/forum/#!forum/debezium&quot;&gt;mailing list&lt;/a&gt; to talk with the community.
+      All of the code is open source &lt;a href=&quot;https://github.com/debezium/&quot;&gt;on GitHub&lt;/a&gt;,
+      so build the code locally and help us improve ours existing connectors and add even more connectors.
+      If you find problems or have ideas how we can improve Debezium, please let us know or &lt;a href=&quot;https://issues.jboss.org/projects/DBZ/issues/&quot;&gt;log an issue&lt;/a&gt;.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+    </content>
+  </entry>
+  <entry>
     <id>http://debezium.io/blog/2018/08/30/debezium-0-8-2-released/</id>
     <title>Debezium 0.8.2 Released</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2018-08-30T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/08/30/debezium-0-8-2-released/" rel="alternate" type="text/html" />
     <author>
@@ -113,7 +634,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/07/26/debezium-0-9-0-alpha1-released/</id>
     <title>Debezium 0.9 Alpha1 and 0.8.1 Released</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2018-07-26T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/07/26/debezium-0-9-0-alpha1-released/" rel="alternate" type="text/html" />
     <author>
@@ -278,7 +799,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/07/19/advantages-of-log-based-change-data-capture/</id>
     <title>Five Advantages of Log-Based Change Data Capture</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2018-07-19T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/07/19/advantages-of-log-based-change-data-capture/" rel="alternate" type="text/html" />
     <author>
@@ -415,7 +936,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/07/12/debezium-0-8-0-final-released/</id>
     <title>Debezium 0.8 Final Is Released</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2018-07-12T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/07/12/debezium-0-8-0-final-released/" rel="alternate" type="text/html" />
     <author>
@@ -526,7 +1047,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/07/04/debezium-0-8-0-cr1-released/</id>
     <title>Debezium 0.8.0.CR1 Is Released</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2018-07-04T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/07/04/debezium-0-8-0-cr1-released/" rel="alternate" type="text/html" />
     <author>
@@ -642,7 +1163,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/06/21/debezium-0-8-0-beta1-released/</id>
     <title>Debezium 0.8.0.Beta1 Is Released</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2018-06-21T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/06/21/debezium-0-8-0-beta1-released/" rel="alternate" type="text/html" />
     <author>
@@ -899,7 +1420,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/05/24/querying-debezium-change-data-eEvents-with-ksql/</id>
     <title>Querying Debezium Change Data Events With KSQL</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2018-05-24T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/05/24/querying-debezium-change-data-eEvents-with-ksql/" rel="alternate" type="text/html" />
     <author>
@@ -1335,7 +1856,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/03/20/debezium-0-7-5-released/</id>
     <title>Debezium 0.7.5 Is Released</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2018-03-20T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/03/20/debezium-0-7-5-released/" rel="alternate" type="text/html" />
     <author>
@@ -1434,7 +1955,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/03/16/note-on-database-history-topic-configuration/</id>
     <title>A Note On Database History Topic Configuration</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2018-03-16T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/03/16/note-on-database-history-topic-configuration/" rel="alternate" type="text/html" />
     <author>
@@ -1564,7 +2085,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/03/08/creating-ddd-aggregates-with-debezium-and-kafka-streams/</id>
     <title>Creating DDD aggregates with Debezium and Kafka Streams</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2018-03-08T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/03/08/creating-ddd-aggregates-with-debezium-and-kafka-streams/" rel="alternate" type="text/html" />
     <author>
@@ -2159,7 +2680,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/03/07/debezium-0-7-4-released/</id>
     <title>Debezium 0.7.4 Is Released</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2018-03-07T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/03/07/debezium-0-7-4-released/" rel="alternate" type="text/html" />
     <author>
@@ -2312,7 +2833,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/02/15/debezium-0-7-3-released/</id>
     <title>Debezium 0.7.3 Is Released</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2018-02-15T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/02/15/debezium-0-7-3-released/" rel="alternate" type="text/html" />
     <author>
@@ -2484,7 +3005,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/01/25/debezium-0-7-2-released/</id>
     <title>Debezium 0.7.2 Is Released</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2018-01-25T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/01/25/debezium-0-7-2-released/" rel="alternate" type="text/html" />
     <author>
@@ -2683,7 +3204,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/01/17/streaming-to-elasticsearch/</id>
     <title>Streaming Data Changes from Your Database to Elasticsearch</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2018-01-17T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/01/17/streaming-to-elasticsearch/" rel="alternate" type="text/html" />
     <author>
@@ -3082,7 +3603,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/12/20/debezium-0-7-1-released/</id>
     <title>Debezium 0.7.1 Is Released</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2017-12-20T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/12/20/debezium-0-7-1-released/" rel="alternate" type="text/html" />
     <author>
@@ -3159,7 +3680,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/12/15/debezium-0-7-0-released/</id>
     <title>Debezium 0.7.0 Is Released</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2017-12-15T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/12/15/debezium-0-7-0-released/" rel="alternate" type="text/html" />
     <author>
@@ -3341,7 +3862,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/11/15/debezium-0-6-2-released/</id>
     <title>Debezium 0.6.2 Is Released</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2017-11-15T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/11/15/debezium-0-6-2-released/" rel="alternate" type="text/html" />
     <author>
@@ -3500,7 +4021,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/11/11/debezium-at-devoxx-belgium/</id>
     <title>Debezium at Devoxx Belgium</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2017-11-11T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/11/11/debezium-at-devoxx-belgium/" rel="alternate" type="text/html" />
     <author>
@@ -3591,7 +4112,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/10/26/debezium-0-6-1-released/</id>
     <title>Debezium 0.6.1 Is Released</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2017-10-26T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/10/26/debezium-0-6-1-released/" rel="alternate" type="text/html" />
     <author>
@@ -3747,7 +4268,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/09/25/streaming-to-another-database/</id>
     <title>Streaming data to a downstream database</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2017-09-25T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/09/25/streaming-to-another-database/" rel="alternate" type="text/html" />
     <author>
@@ -4156,7 +4677,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/09/21/debezium-0-6-0-released/</id>
     <title>Debezium 0.6 Is Out</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2017-09-21T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/09/21/debezium-0-6-0-released/" rel="alternate" type="text/html" />
     <author>
@@ -4324,7 +4845,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/08/17/debezium-0-5-2-is-out/</id>
     <title>Debezium 0.5.2 Is Out</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2017-08-17T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/08/17/debezium-0-5-2-is-out/" rel="alternate" type="text/html" />
     <author>
@@ -4468,7 +4989,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/06/12/debezium-0-5-1-released/</id>
     <title>Debezium 0.5.1 Released</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2017-06-12T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/06/12/debezium-0-5-1-released/" rel="alternate" type="text/html" />
     <author>
@@ -4577,7 +5098,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/04/27/hello-debezium/</id>
     <title>Hello Debezium!</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2017-04-27T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/04/27/hello-debezium/" rel="alternate" type="text/html" />
     <author>
@@ -4644,7 +5165,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/04/26/Debezium-evolving/</id>
     <title>Debezium Evolving</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2017-04-26T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/04/26/Debezium-evolving/" rel="alternate" type="text/html" />
     <author>
@@ -4677,7 +5198,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/03/27/Debezium-0-5-0-Released/</id>
     <title>Debezium 0.5.0 Released</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2017-03-27T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/03/27/Debezium-0-5-0-Released/" rel="alternate" type="text/html" />
     <author>
@@ -4746,7 +5267,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/03/17/Debezium-0-4-1-Released/</id>
     <title>Debezium 0.4.1 Released</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2017-03-17T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/03/17/Debezium-0-4-1-Released/" rel="alternate" type="text/html" />
     <author>
@@ -4820,7 +5341,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/02/22/Debezium-at-WePay/</id>
     <title>Streaming databases in realtime with MySQL, Debezium, and Kafka</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2017-02-22T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/02/22/Debezium-at-WePay/" rel="alternate" type="text/html" />
     <author>
@@ -5117,7 +5638,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/02/08/Support-for-Postgresql/</id>
     <title>PostgreSQL support added to Debezium</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2017-02-08T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/02/08/Support-for-Postgresql/" rel="alternate" type="text/html" />
     <author>
@@ -5226,7 +5747,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/02/07/Debezium-0-4-0-Released/</id>
     <title>Debezium 0.4.0 Released</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2017-02-07T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/02/07/Debezium-0-4-0-Released/" rel="alternate" type="text/html" />
     <author>
@@ -5298,7 +5819,7 @@
   <entry>
     <id>http://debezium.io/blog/2016/12/21/Debezium-0-3-6-Released/</id>
     <title>Debezium 0.3.6 Released</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2016-12-21T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2016/12/21/Debezium-0-3-6-Released/" rel="alternate" type="text/html" />
     <author>
@@ -5370,7 +5891,7 @@
   <entry>
     <id>http://debezium.io/blog/2016/11/14/Debezium-0-3-5-Released/</id>
     <title>Debezium 0.3.5 Released</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2016-11-14T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2016/11/14/Debezium-0-3-5-Released/" rel="alternate" type="text/html" />
     <author>
@@ -5423,7 +5944,7 @@
   <entry>
     <id>http://debezium.io/blog/2016/10/25/Debezium-0-3-4-Released/</id>
     <title>Debezium 0.3.4 Released</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2016-10-25T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2016/10/25/Debezium-0-3-4-Released/" rel="alternate" type="text/html" />
     <author>
@@ -5479,7 +6000,7 @@
   <entry>
     <id>http://debezium.io/blog/2016/10/19/Support-for-MySQL-JSON-typpe-coming-soon/</id>
     <title>Support for MySQL&#8217;s JSON type coming soon</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2016-10-19T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2016/10/19/Support-for-MySQL-JSON-typpe-coming-soon/" rel="alternate" type="text/html" />
     <author>
@@ -5509,7 +6030,7 @@
   <entry>
     <id>http://debezium.io/blog/2016/10/18/Debezium-0-3-3-Released/</id>
     <title>Debezium 0.3.3 Released</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2016-10-18T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2016/10/18/Debezium-0-3-3-Released/" rel="alternate" type="text/html" />
     <author>
@@ -5563,7 +6084,7 @@
   <entry>
     <id>http://debezium.io/blog/2016/09/26/Debezium-0-3-2-Released/</id>
     <title>Debezium 0.3.2 Released</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2016-09-26T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2016/09/26/Debezium-0-3-2-Released/" rel="alternate" type="text/html" />
     <author>
@@ -5617,7 +6138,7 @@
   <entry>
     <id>http://debezium.io/blog/2016/09/19/Serializing-Debezium-events-with-Avro/</id>
     <title>Serializing Debezium events with Avro</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2016-09-19T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2016/09/19/Serializing-Debezium-events-with-Avro/" rel="alternate" type="text/html" />
     <author>
@@ -5747,7 +6268,7 @@
   <entry>
     <id>http://debezium.io/blog/2016/08/30/Debezium-0-3-1-Released/</id>
     <title>Debezium 0.3.1 Released</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2016-08-30T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2016/08/30/Debezium-0-3-1-Released/" rel="alternate" type="text/html" />
     <author>
@@ -5801,7 +6322,7 @@
   <entry>
     <id>http://debezium.io/blog/2016/08/16/Debezium-0-3-0-Released/</id>
     <title>Debezium 0.3.0 Released</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2016-08-16T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2016/08/16/Debezium-0-3-0-Released/" rel="alternate" type="text/html" />
     <author>
@@ -5866,7 +6387,7 @@
   <entry>
     <id>http://debezium.io/blog/2016/08/16/Debezium-0-2-4-Released/</id>
     <title>Debezium 0.2.4 Released</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2016-08-16T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2016/08/16/Debezium-0-2-4-Released/" rel="alternate" type="text/html" />
     <author>
@@ -5924,7 +6445,7 @@
   <entry>
     <id>http://debezium.io/blog/2016/08/02/capturing-changes-from-mysql/</id>
     <title>Capturing changes from MySQL</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2016-08-02T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2016/08/02/capturing-changes-from-mysql/" rel="alternate" type="text/html" />
     <author>
@@ -6027,7 +6548,7 @@
   <entry>
     <id>http://debezium.io/blog/2016/07/26/Debezium-0-2-3-Released/</id>
     <title>Debezium 0.2.3 Released</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2016-07-26T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2016/07/26/Debezium-0-2-3-Released/" rel="alternate" type="text/html" />
     <author>
@@ -6085,7 +6606,7 @@
   <entry>
     <id>http://debezium.io/blog/2016/06/22/Debezium-0-2-2-Released/</id>
     <title>Debezium 0.2.2 Released</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2016-06-22T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2016/06/22/Debezium-0-2-2-Released/" rel="alternate" type="text/html" />
     <author>
@@ -6141,7 +6662,7 @@
   <entry>
     <id>http://debezium.io/blog/2016/06/10/Debezium-0/</id>
     <title>Debezium 0.2.1 Released</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2016-06-10T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2016/06/10/Debezium-0/" rel="alternate" type="text/html" />
     <author>
@@ -6242,7 +6763,7 @@
   <entry>
     <id>http://debezium.io/blog/2016/05/31/Debezium-on-Kubernetes/</id>
     <title>Debezium on Kubernetes</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2016-05-31T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2016/05/31/Debezium-on-Kubernetes/" rel="alternate" type="text/html" />
     <author>
@@ -6782,7 +7303,7 @@
   <entry>
     <id>http://debezium.io/blog/2016/04/15/parsing-ddl/</id>
     <title>Parsing DDL</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2016-04-15T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2016/04/15/parsing-ddl/" rel="alternate" type="text/html" />
     <author>
@@ -7112,7 +7633,7 @@
   <entry>
     <id>http://debezium.io/blog/2016/04/14/Debezium-website/</id>
     <title>Debezium Website</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2016-04-14T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2016/04/14/Debezium-website/" rel="alternate" type="text/html" />
     <author>
@@ -7133,7 +7654,7 @@
   <entry>
     <id>http://debezium.io/blog/2016/03/18/Debezium-0-1-Released/</id>
     <title>Debezium 0.1 Released</title>
-    <updated>2018-08-30T16:45:14+00:00</updated>
+    <updated>2018-08-30T19:06:27+00:00</updated>
     <published>2016-03-18T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2016/03/18/Debezium-0-1-Released/" rel="alternate" type="text/html" />
     <author>
