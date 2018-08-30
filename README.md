@@ -41,7 +41,7 @@ This command tells Docker to start a container using the `debezium/awestruct` im
 
 Next, in the shell in the container, run the following commands to remove and then (re)install all of the Ruby libraries required by the website:
 
-    awestruct@49d06009e1fa:/site$ rm -rf ./bundle
+    awestruct@49d06009e1fa:/site$ rm -rf ./.bundle/
     awestruct@49d06009e1fa:/site$ bundle install
 
 This should only need to be performed once. After the libraries are installed, we can then build the site from the code so you can preview it in a browser:
