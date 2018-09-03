@@ -35,7 +35,7 @@ Then check out the `develop` branch and get the latest. If you're going to make 
 
 In a new terminal initialized with the Docker host environment, start a Docker container that has the build environment for our website:
 
-    $ docker run -it --rm -p 4242:4242 -v $(pwd):/site debezium/awestruct bash
+    $ docker run -it --rm -p 4242:4242 -e LC_ALL=C.UTF-8 -e LANG=C.UTF-8 -v $(pwd):/site debezium/awestruct bash
 
 This command tells Docker to start a container using the `debezium/awestruct` image (downloading it if necessary) with an interactive terminal (via `-it` flag) to the container so that you will see the output of the process running in the container. The `--rm` flag will remove the container when it stops, while the `-p 4242` flag maps the container's 4242 port to the same port on the Docker host (which is the local machine on Linux or the virtual machine if running Boot2Docker or Docker Machine on OS X and Windows). The `-v $(pwd):/site` option mounts your current working directory (where the website's code is located) into the `/site` directory within the container (where Awestruct expects to find it). The `bash` command tells the container to start a bash shell.
 
