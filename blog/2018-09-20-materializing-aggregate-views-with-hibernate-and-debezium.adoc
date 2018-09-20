@@ -23,9 +23,9 @@ we'd like to present in this post an alternative for materializing such aggregat
 == Overview
 
 The idea is to materialize views in a separate table in the source database,
-right in the moment the primary data is altered.
+right in the moment the original data is altered.
 
-Aggregates are serialized as JSON structure (which naturally can represent any nested object structure) and stored in a specific table.
+Aggregates are serialized as JSON structures (which naturally can represent any nested object structure) and stored in a specific table.
 This is done within the actual transaction altering the data,
 which means the aggregate view is always consistent with the primary data.
 In particular this approach isn't prone to exposing intermediary aggregations as the KStreams-based solution discussed in the post linked above.
@@ -38,11 +38,14 @@ The following picture shows the overall architecture:
 ++++
 
 Here the aggregate views are materialized by means of a small extension to http://hibernate.org/orm/[Hibernate ORM],
-which stores the JSON aggregates within the source database.
+which stores the JSON aggregates within the source database
+(note "aggregate views" can be considered conceptually the same as "materialized views" as known from different RDBMS,
+as in that they materialize the result of a "join" operation,
+but technically we're not using the latter to store aggregate views, but a regular table).
 Changes to that aggregate table are then captured by Debezium and streamed to one topic per aggregate type.
 The Elasticsearch sink connector can subscribe to these topics and update corresponding full-text indexes.
 
-You can find a proof-of-concept implementation (said Hibernate extension and related code) of this idea in our https://github.com/debezium/debezium-examples/tree/master/end-to-end-demo[examples repository].
+You can find a proof-of-concept implementation (said Hibernate extension and related code) of this idea in our https://github.com/debezium/debezium-examples/tree/master/jpa-aggregations[examples repository].
 Of course the general idea isn't limited to Hibernate ORM or JPA,
 you could implement something similar with any other API you're using to access your data.
 
@@ -82,7 +85,7 @@ Now if any entity annotated with `@MaterializeAggregate` is inserted, updated or
 the listener will kick in and materialize a JSON view of the aggregate root (customer) and its associated entities (addresses, category).
 
 Under the hood the https://github.com/FasterXML/jackson[Jackson API] is used for serializing the model into JSON.
-This means you can use any of its annotations to customize the JSON out, e.g. `@JsonIgnore`  to exclude the inverse relationship from `Address` to `Customer`:
+This means you can use any of its annotations to customize the JSON output, e.g. `@JsonIgnore`  to exclude the inverse relationship from `Address` to `Customer`:
 
 [source,java]
 ----
@@ -108,7 +111,8 @@ public class Address {
 Note that `Address` itself isn't marked with `@MaterializeAggregate`, i.e. it won't be materialized into an aggregate view by itself.
 
 After using JPA's `EntityManager` to insert or update a few customers,
-let's take a look at the `aggregates` table which has been populated by the listener:
+let's take a look at the `aggregates` table which has been populated by the listener
+(value schema omitted for the sake of brevity):
 
 [source,sql]
 ----
@@ -224,7 +228,7 @@ capturing any changes to the "aggregates" table.
 If we now were to browse the corresponding Kafka topic, we'd see data change events in the known Debezium format for all the changes to the `aggregates` table.
 
 The "materialization" field with the records' "after" state still is a single field containing a JSON string, though.
-What'd we'd rather like to have is a strongly typed Kafka Connect record, whose schema exactly describes the aggregate structure and the types of its fields.
+What we'd rather like to have is a strongly typed Kafka Connect record, whose schema exactly describes the aggregate structure and the types of its fields.
 For that purpose the example project provides an SMT (single message transform) which takes the JSON materialization and the corresponding `valueSchema` and converts this into a full-blown Kafka Connect record.
 The same is done for keys.
 DELETE events are rewritten into tombstone events.
@@ -389,7 +393,7 @@ Finally, we can use the Elasticsearch REST API to browse the index and of course
 ----
 
 And there you have it: a customer's complete data, including their addresses, categories, tags etc., materialized into a single document within Elasticsearch.
-If you're using JPA to update the customer, you'll see the data in index being updated accordingly in near-realtime.
+If you're using JPA to update the customer, you'll see the data in the index being updated accordingly in near-realtime.
 
 == Pros and Cons
 
@@ -420,7 +424,7 @@ which one could use to sink customer aggregates into MongoDB, for instance enabl
 
 == Outlook
 
-The Hibernate ORM extension as well as the SMT discussed in this post can be found in our https://github.com/debezium/debezium-examples/tree/master/end-to-end-demo[examples repository].
+The Hibernate ORM extension as well as the SMT discussed in this post can be found in our https://github.com/debezium/debezium-examples/tree/master/jpa-aggregations[examples repository].
 They should be considered to be at "proof-of-concept" level currently.
 
 That being said, we're considering to make this a Debezium component proper,
@@ -435,6 +439,8 @@ If you like this idea, then let us know about it,
 so we can gauge the general interest in this.
 Also, this would be a great item to work on, if you're interested in contributing to the Debezium project.
 Looking forward to hearing from you, e.g. in the comment section below or on our https://groups.google.com/forum/#!forum/debezium[mailing list].
+
+Thanks a lot to Hans-Peter Grahsl for his feedback on an earlier version of this post!
 
 == About Debezium
 
