@@ -2,13 +2,578 @@
 <feed xml:lang="en-US" xmlns="http://www.w3.org/2005/Atom">
   <id>http://debezium.io/</id>
   <title>Debezium Blog</title>
-  <updated>2018-09-20T08:52:12+00:00</updated>
+  <updated>2018-09-20T20:03:38+00:00</updated>
   <link href="http://debezium.io/blog.atom" rel="self" type="application/atom+xml" />
   <link href="http://debezium.io/" rel="alternate" type="text/html" />
   <entry>
+    <id>http://debezium.io/blog/2018/09/20/materializing-aggregate-views-with-hibernate-and-debezium/</id>
+    <title>Materializing Aggregate Views With Hibernate and Debezium</title>
+    <updated>2018-09-20T20:03:38+00:00</updated>
+    <published>2018-09-20T00:00:00+00:00</published>
+    <link href="http://debezium.io/blog/2018/09/20/materializing-aggregate-views-with-hibernate-and-debezium/" rel="alternate" type="text/html" />
+    <author>
+      <name>Gunnar Morling</name>
+    </author>
+    <category term="discussion"></category>
+    <category term="examples"></category>
+    <summary>
+      
+      
+      
+      Updating external full text search indexes (e.g. Elasticsearch) after data changes is a very popular use case for change data capture (CDC).
+      
+      
+      As we&#8217;ve discussed in a blog post a while ago,
+      the combination of Debezium&#8217;s CDC source connectors and Confluent&#8217;s sink connector for Elasticsearch makes it straight forward to capture data changes in MySQL, Postgres etc. and push them towards Elastisearch in near real-time.
+      This results in a 1:1 relationship between tables in the source database and a corresponding search index in Elasticsearch,
+      which is perfectly fine for many use cases.
+      
+      
+      It gets more challenging though if you&#8217;d like to put entire aggregates into...
+    </summary>
+    <content type="html">
+      &lt;div id=&quot;preamble&quot;&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Updating external full text search indexes (e.g. &lt;a href=&quot;https://www.elastic.co/products/elasticsearch&quot;&gt;Elasticsearch&lt;/a&gt;) after data changes is a very popular use case for change data capture (CDC).&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;As we’ve discussed in a &lt;a href=&quot;http://debezium.io/blog/2018/01/17/streaming-to-elasticsearch/&quot;&gt;blog post&lt;/a&gt; a while ago,
+      the combination of Debezium’s CDC source connectors and Confluent’s &lt;a href=&quot;https://docs.confluent.io/current/connect/connect-elasticsearch/docs/index.html&quot;&gt;sink connector for Elasticsearch&lt;/a&gt; makes it straight forward to capture data changes in MySQL, Postgres etc. and push them towards Elastisearch in near real-time.
+      This results in a 1:1 relationship between tables in the source database and a corresponding search index in Elasticsearch,
+      which is perfectly fine for many use cases.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;It gets more challenging though if you’d like to put entire aggregates into a single index.
+      An example could be a customer and all their addresses;
+      those would typically be stored in two separate tables in an RDBMS, linked by a foreign key,
+      whereas you’d like to have just one index in Elasticsearch,
+      containing documents of customers with their addresses embedded,
+      allowing you to efficiently search for customers based on their address.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Following up to the &lt;a href=&quot;http://debezium.io/blog/2018/03/08/creating-ddd-aggregates-with-debezium-and-kafka-streams/&quot;&gt;KStreams-based solution&lt;/a&gt; to this we described recently,
+      we’d like to present in this post an alternative for materializing such aggregate views driven by the application layer.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect1&quot;&gt;
+      &lt;h2 id=&quot;overview&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#overview&quot;&gt;&lt;/a&gt;Overview&lt;/h2&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;The idea is to materialize views in a separate table in the source database,
+      right in the moment the original data is altered.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Aggregates are serialized as JSON structures (which naturally can represent any nested object structure) and stored in a specific table.
+      This is done within the actual transaction altering the data,
+      which means the aggregate view is always consistent with the primary data.
+      In particular this approach isn’t prone to exposing intermediary aggregations as the KStreams-based solution discussed in the post linked above.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;The following picture shows the overall architecture:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;img src=&quot;http://debezium.io/images/jpa_aggregations.png&quot; style=&quot;max-width:100%; margin-bottom:10px;&quot; class=&quot;responsive-image&quot; alt=&quot;Streaming Materialized Aggregate Views to Elastisearch&quot; /&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Here the aggregate views are materialized by means of a small extension to &lt;a href=&quot;http://hibernate.org/orm/&quot;&gt;Hibernate ORM&lt;/a&gt;,
+      which stores the JSON aggregates within the source database
+      (note &quot;aggregate views&quot; can be considered conceptually the same as &quot;materialized views&quot; as known from different RDBMS,
+      as in that they materialize the result of a &quot;join&quot; operation,
+      but technically we’re not using the latter to store aggregate views, but a regular table).
+      Changes to that aggregate table are then captured by Debezium and streamed to one topic per aggregate type.
+      The Elasticsearch sink connector can subscribe to these topics and update corresponding full-text indexes.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;You can find a proof-of-concept implementation (said Hibernate extension and related code) of this idea in our &lt;a href=&quot;https://github.com/debezium/debezium-examples/tree/master/jpa-aggregations&quot;&gt;examples repository&lt;/a&gt;.
+      Of course the general idea isn’t limited to Hibernate ORM or JPA,
+      you could implement something similar with any other API you’re using to access your data.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect1&quot;&gt;
+      &lt;h2 id=&quot;creating_aggregate_views_via_hibernate_orm&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#creating_aggregate_views_via_hibernate_orm&quot;&gt;&lt;/a&gt;Creating Aggregate Views via Hibernate ORM&lt;/h2&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;For the following let’s assume we’re persisting a simple domain model
+      (comprising a &lt;code&gt;Customer&lt;/code&gt; entity and a few related ones like &lt;code&gt;Address&lt;/code&gt;, (customer) &lt;code&gt;Category&lt;/code&gt; etc.) in a database.
+      Using Hibernate for that allows us to make the creation of aggregates fully transparent to the actual application code using a &lt;a href=&quot;http://docs.jboss.org/hibernate/orm/current/userguide/html_single/Hibernate_User_Guide.html#events-events&quot;&gt;Hibernate event listener&lt;/a&gt;.
+      Thanks to its extensible architecture, we can plug such listener into Hibernate just by adding it to the classpath,
+      from where it will be picked up automatically when bootstrapping the entity manager / session factory.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Our example listener reacts to an annotation, &lt;code&gt;@MaterializeAggregate&lt;/code&gt;,
+      which marks those entity types that should be the roots of materialized aggregates.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;listingblock&quot;&gt;
+      &lt;div class=&quot;content&quot;&gt;
+      &lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-java&quot; data-lang=&quot;java&quot;&gt;@Entity
+      @MaterializeAggregate(aggregateName=&quot;customers-complete&quot;)
+      public class Customer {
+      
+          @Id
+          private long id;
+      
+          private String firstName;
+      
+          @OneToMany(mappedBy = &quot;customer&quot;, fetch = FetchType.EAGER, cascade = CascadeType.ALL)
+          private Set&amp;lt;Address&amp;gt; addresses;
+      
+          @ManyToOne
+          private Category category;
+      
+          ...
+      }&lt;/code&gt;&lt;/pre&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Now if any entity annotated with &lt;code&gt;@MaterializeAggregate&lt;/code&gt; is inserted, updated or deleted via Hibernate,
+      the listener will kick in and materialize a JSON view of the aggregate root (customer) and its associated entities (addresses, category).&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Under the hood the &lt;a href=&quot;https://github.com/FasterXML/jackson&quot;&gt;Jackson API&lt;/a&gt; is used for serializing the model into JSON.
+      This means you can use any of its annotations to customize the JSON output, e.g. &lt;code&gt;@JsonIgnore&lt;/code&gt;  to exclude the inverse relationship from &lt;code&gt;Address&lt;/code&gt; to &lt;code&gt;Customer&lt;/code&gt;:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;listingblock&quot;&gt;
+      &lt;div class=&quot;content&quot;&gt;
+      &lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-java&quot; data-lang=&quot;java&quot;&gt;@Entity
+      public class Address {
+      
+          @Id
+          private long id;
+      
+          @ManyToOne
+          @JoinColumn(name = &quot;customer_id&quot;)
+          @JsonIgnore
+          private Customer customer;
+      
+          private String street;
+      
+          private String city;
+      
+          ...
+      }&lt;/code&gt;&lt;/pre&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Note that &lt;code&gt;Address&lt;/code&gt; itself isn’t marked with &lt;code&gt;@MaterializeAggregate&lt;/code&gt;, i.e. it won’t be materialized into an aggregate view by itself.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;After using JPA’s &lt;code&gt;EntityManager&lt;/code&gt; to insert or update a few customers,
+      let’s take a look at the &lt;code&gt;aggregates&lt;/code&gt; table which has been populated by the listener
+      (value schema omitted for the sake of brevity):&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;listingblock&quot;&gt;
+      &lt;div class=&quot;content&quot;&gt;
+      &lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-sql&quot; data-lang=&quot;sql&quot;&gt;&amp;gt; select * from aggregates;
+      
+      | rootType | keySchema | rootId | materialization | valueSchema |
+      
+      | customers-complete
+      
+      | {
+        &quot;schema&quot; : {
+          &quot;type&quot; : &quot;struct&quot;,
+          &quot;fields&quot; : [ {
+            &quot;type&quot; : &quot;int64&quot;,
+            &quot;optional&quot; : false,
+            &quot;field&quot; : &quot;id&quot;
+          } ],
+          &quot;optional&quot; : false,
+          &quot;name&quot; : &quot;customers-complete.Key&quot;
+        }
+      }
+      
+      | { &quot;id&quot; : 1004 }
+      
+      | { &quot;schema&quot; : { ... } }
+      
+      | {
+        &quot;id&quot; : 1004,
+        &quot;firstName&quot; : &quot;Anne&quot;,
+        &quot;lastName&quot; : &quot;Kretchmar&quot;,
+        &quot;email&quot; : &quot;annek@noanswer.org&quot;,
+        &quot;tags&quot; : [ &quot;long-term&quot;, &quot;vip&quot; ],
+        &quot;birthday&quot; : 5098,
+        &quot;category&quot; : {
+          &quot;id&quot; : 100001,
+          &quot;name&quot; : &quot;Retail&quot;
+        },
+        &quot;addresses&quot; : [ {
+          &quot;id&quot; : 16,
+          &quot;street&quot; : &quot;1289 University Hill Road&quot;,
+          &quot;city&quot; : &quot;Canehill&quot;,
+          &quot;state&quot; : &quot;Arkansas&quot;,
+          &quot;zip&quot; : &quot;72717&quot;,
+          &quot;type&quot; : &quot;SHIPPING&quot;
+        } ]
+      } |&lt;/code&gt;&lt;/pre&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;The table contains these columns:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;ulist&quot;&gt;
+      &lt;ul&gt;
+      &lt;li&gt;
+      &lt;p&gt;&lt;code&gt;rootType&lt;/code&gt;: The name of the aggregate as given in the &lt;code&gt;@MaterializeAggregate&lt;/code&gt; annotation&lt;/p&gt;
+      &lt;/li&gt;
+      &lt;li&gt;
+      &lt;p&gt;&lt;code&gt;rootId&lt;/code&gt;: The aggregate’s id as serialized JSON&lt;/p&gt;
+      &lt;/li&gt;
+      &lt;li&gt;
+      &lt;p&gt;&lt;code&gt;materialization&lt;/code&gt;: The aggregate itself as serialized JSON; in this case a customer and their addresses, category etc.&lt;/p&gt;
+      &lt;/li&gt;
+      &lt;li&gt;
+      &lt;p&gt;&lt;code&gt;keySchema&lt;/code&gt;: The Kafka Connect schema of the row’s key&lt;/p&gt;
+      &lt;/li&gt;
+      &lt;li&gt;
+      &lt;p&gt;&lt;code&gt;valueSchema&lt;/code&gt;: The Kafka Connect schema of the materialization&lt;/p&gt;
+      &lt;/li&gt;
+      &lt;/ul&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Let’s talk about the two schema columns for a bit.
+      JSON itself is quite limited as far as its supported data types are concerned.
+      So for instance we’d loose information about a numeric field’s value range (int vs. long etc.) without any additional information.
+      Therefore the listener derives the corresponding schema information for key and aggregate view from the entity model and stores it within the aggregate records.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Now Jackson itself only supports JSON Schema, which would be a bit too limited for our purposes.
+      Hence the example implementation provides custom serializers for Jackson’s schema system,
+      which allow us to emit Kafka Connect’s schema representation (with more precise type information) instead of plain JSON Schema.
+      This will come in handy in the following when we’d like to expand the string-based JSON representations of key and value into properly typed Kafka Connect records.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect1&quot;&gt;
+      &lt;h2 id=&quot;capturing_changes_to_the_aggregate_table&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#capturing_changes_to_the_aggregate_table&quot;&gt;&lt;/a&gt;Capturing Changes to the Aggregate Table&lt;/h2&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;We now have a mechanism in place which transparently persists aggregates into a separate table within the source database,
+      whenever the application data is changed through Hibernate.
+      Note that this happens within the boundaries of the source transaction,
+      so if the same would be rolled back for some reason, also the aggregate view would not be updated.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;The Hibernate listener uses insert-or-update semantics when writing an aggregate view,
+      i.e. for a given aggregate root there’ll always be exactly one corresponding entry in the aggregate table which reflects its current state.
+      If an aggregate root entity is deleted, the listener will also drop the entry from the aggregate table.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;So let’s set up Debezium now to capture any changes to the &lt;code&gt;aggregates&lt;/code&gt; table:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;listingblock&quot;&gt;
+      &lt;div class=&quot;content&quot;&gt;
+      &lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-json&quot; data-lang=&quot;json&quot;&gt;curl -i -X POST \
+        -H &quot;Accept:application/json&quot; \
+        -H &quot;Content-Type:application/json&quot; \
+        http://localhost:8083/connectors/ -d @- &amp;lt;&amp;lt;-EOF
+        {
+            &quot;name&quot;: &quot;inventory-connector&quot;,
+            &quot;config&quot;: {
+                &quot;connector.class&quot;: &quot;io.debezium.connector.mysql.MySqlConnector&quot;,
+                &quot;tasks.max&quot;: &quot;1&quot;,
+                &quot;database.hostname&quot;: &quot;mysql&quot;,
+                &quot;database.port&quot;: &quot;3306&quot;,
+                &quot;database.user&quot;: &quot;debezium&quot;,
+                &quot;database.password&quot;: &quot;dbz&quot;,
+                &quot;database.server.id&quot;: &quot;184054&quot;,
+                &quot;database.server.name&quot;: &quot;dbserver1&quot;,
+                &quot;database.whitelist&quot;: &quot;inventory&quot;,
+                &quot;table.whitelist&quot;: &quot;.*aggregates&quot;,
+                &quot;database.history.kafka.bootstrap.servers&quot;: &quot;kafka:9092&quot;,
+                &quot;database.history.kafka.topic&quot;: &quot;schema-changes.inventory&quot;
+            }
+        }
+      EOF&lt;/code&gt;&lt;/pre&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;This registers the MySQL connector with the &quot;inventory&quot; database
+      (we’re using an expanded version of the schema from the &lt;a href=&quot;http://debezium.io/docs/tutorial&quot;&gt;Debezium tutorial&lt;/a&gt;),
+      capturing any changes to the &quot;aggregates&quot; table.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect1&quot;&gt;
+      &lt;h2 id=&quot;expanding_json&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#expanding_json&quot;&gt;&lt;/a&gt;Expanding JSON&lt;/h2&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;If we now were to browse the corresponding Kafka topic, we’d see data change events in the known Debezium format for all the changes to the &lt;code&gt;aggregates&lt;/code&gt; table.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;The &quot;materialization&quot; field with the records' &quot;after&quot; state still is a single field containing a JSON string, though.
+      What we’d rather like to have is a strongly typed Kafka Connect record, whose schema exactly describes the aggregate structure and the types of its fields.
+      For that purpose the example project provides an SMT (single message transform) which takes the JSON materialization and the corresponding &lt;code&gt;valueSchema&lt;/code&gt; and converts this into a full-blown Kafka Connect record.
+      The same is done for keys.
+      DELETE events are rewritten into tombstone events.
+      Finally, the SMT re-routes every record to a topic named after the aggregate root,
+      allowing consumers to subscribe just to changes to specific aggregate types.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;So let’s add that SMT when registering the Debezium CDC connector:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;listingblock&quot;&gt;
+      &lt;div class=&quot;content&quot;&gt;
+      &lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-json&quot; data-lang=&quot;json&quot;&gt;...
+      &quot;transforms&quot;:&quot;expandjson&quot;,
+      &quot;transforms.expandjson.type&quot;:&quot;io.debezium.aggregation.smt.ExpandJsonSmt&quot;,
+      ...&lt;/code&gt;&lt;/pre&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;When now browsing the &quot;customers-complete&quot; topic, we’ll see the strongly typed Kafka Connect records we’d expect:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;listingblock&quot;&gt;
+      &lt;div class=&quot;content&quot;&gt;
+      &lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-json&quot; data-lang=&quot;json&quot;&gt;{
+          &quot;schema&quot;: {
+              &quot;type&quot;: &quot;struct&quot;,
+              &quot;fields&quot;: [
+                  {
+                      &quot;type&quot;: &quot;int64&quot;,
+                      &quot;optional&quot;: false,
+                      &quot;field&quot;: &quot;id&quot;
+                  }
+              ],
+              &quot;optional&quot;: false,
+              &quot;name&quot;: &quot;customers-complete.Key&quot;
+          },
+          &quot;payload&quot;: {
+              &quot;id&quot;: 1004
+          }
+      }
+      {
+          &quot;schema&quot;: {
+              &quot;type&quot;: &quot;struct&quot;,
+              &quot;fields&quot;: [ ... ],
+              &quot;optional&quot;: true,
+              &quot;name&quot;: &quot;urn:jsonschema:com:example:domain:Customer&quot;
+          },
+          &quot;payload&quot;: {
+              &quot;id&quot;: 1004,
+              &quot;firstName&quot;: &quot;Anne&quot;,
+              &quot;lastName&quot;: &quot;Kretchmar&quot;,
+              &quot;email&quot;: &quot;annek@noanswer.org&quot;,
+              &quot;active&quot;: true,
+              &quot;tags&quot; : [ &quot;long-term&quot;, &quot;vip&quot; ],
+              &quot;birthday&quot; : 5098,
+              &quot;category&quot;: {
+                  &quot;id&quot;: 100001,
+                  &quot;name&quot;: &quot;Retail&quot;
+              },
+              &quot;addresses&quot;: [
+                  {
+                      &quot;id&quot;: 16,
+                      &quot;street&quot;: &quot;1289 University Hill Road&quot;,
+                      &quot;city&quot;: &quot;Canehill&quot;,
+                      &quot;state&quot;: &quot;Arkansas&quot;,
+                      &quot;zip&quot;: &quot;72717&quot;,
+                      &quot;type&quot;: &quot;LIVING&quot;
+                  }
+              ]
+          }
+      }&lt;/code&gt;&lt;/pre&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;To confirm that these are actual typed Kafka Connect records and not just a single JSON string field,
+      you could for instance use the &lt;a href=&quot;http://debezium.io/docs/configuration/avro/&quot;&gt;Avro message converter&lt;/a&gt; and examine the message schemas in the schema registry.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect1&quot;&gt;
+      &lt;h2 id=&quot;sinking_aggregate_messages_into_elasticsearch&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#sinking_aggregate_messages_into_elasticsearch&quot;&gt;&lt;/a&gt;Sinking Aggregate Messages Into Elasticsearch&lt;/h2&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;The last missing step is to register the Confluent Elasticsearch sink connector, hooking it up with the &quot;customers-complete&quot; topic and letting it push any changes to the corresponding index:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;listingblock&quot;&gt;
+      &lt;div class=&quot;content&quot;&gt;
+      &lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-json&quot; data-lang=&quot;json&quot;&gt;curl -i -X POST \
+        -H &quot;Accept:application/json&quot; \
+        -H &quot;Content-Type:application/json&quot; \
+        http://localhost:8083/connectors/ -d @- &amp;lt;&amp;lt;-EOF
+        {
+            &quot;name&quot;: &quot;es-customers&quot;,
+            &quot;config&quot;: {
+                &quot;connector.class&quot;: &quot;io.confluent.connect.elasticsearch.ElasticsearchSinkConnector&quot;,
+                &quot;tasks.max&quot;: &quot;1&quot;,
+                &quot;topics&quot;: &quot;customers-complete&quot;,
+                &quot;connection.url&quot;: &quot;http://elastic:9200&quot;,
+                &quot;key.ignore&quot;: &quot;false&quot;,
+                &quot;schema.ignore&quot; : &quot;false&quot;,
+                &quot;behavior.on.null.values&quot; : &quot;delete&quot;,
+                &quot;type.name&quot;: &quot;customer-with-addresses&quot;,
+                &quot;transforms&quot; : &quot;key&quot;,
+                &quot;transforms.key.type&quot;: &quot;org.apache.kafka.connect.transforms.ExtractField$Key&quot;,
+                &quot;transforms.key.field&quot;: &quot;id&quot;
+            }
+        }
+      EOF&lt;/code&gt;&lt;/pre&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;This uses Connect’s &lt;code&gt;ExtractField&lt;/code&gt; transformation to obtain just the actual id value from the key struct and use it as key for the corresponding Elasticsearch documents.
+      Specifying the &quot;behavior.on.null.values&quot; option will let the connector delete the corresponding document from the index when encountering a tombstone message (i.e. a message with a key but without value).&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Finally, we can use the Elasticsearch REST API to browse the index and of course use its powerful full-text query language to find customers by the address or any other property embedded into the aggregate structure:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;listingblock&quot;&gt;
+      &lt;div class=&quot;content&quot;&gt;
+      &lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-json&quot; data-lang=&quot;json&quot;&gt;&amp;gt; curl -X GET -H &quot;Accept:application/json&quot; \
+        http://localhost:9200/customers-complete/_search?pretty
+      
+        {
+            &quot;_shards&quot;: {
+                &quot;failed&quot;: 0,
+                &quot;successful&quot;: 5,
+                &quot;total&quot;: 5
+            },
+            &quot;hits&quot;: {
+                &quot;hits&quot;: [
+                    {
+                        &quot;_id&quot;: &quot;1004&quot;,
+                        &quot;_index&quot;: &quot;customers-complete&quot;,
+                        &quot;_score&quot;: 1.0,
+                        &quot;_source&quot;: {
+                            &quot;active&quot;: true,
+                            &quot;addresses&quot;: [
+                                {
+                                    &quot;city&quot;: &quot;Canehill&quot;,
+                                    &quot;id&quot;: 16,
+                                    &quot;state&quot;: &quot;Arkansas&quot;,
+                                    &quot;street&quot;: &quot;1289 University Hill Road&quot;,
+                                    &quot;type&quot;: &quot;LIVING&quot;,
+                                    &quot;zip&quot;: &quot;72717&quot;
+                                }
+                            ],
+                            &quot;tags&quot; : [ &quot;long-term&quot;, &quot;vip&quot; ],
+                            &quot;birthday&quot; : 5098,
+                            &quot;category&quot;: {
+                                &quot;id&quot;: 100001,
+                                &quot;name&quot;: &quot;Retail&quot;
+                            },
+                            &quot;email&quot;: &quot;annek@noanswer.org&quot;,
+                            &quot;firstName&quot;: &quot;Anne&quot;,
+                            &quot;id&quot;: 1004,
+                            &quot;lastName&quot;: &quot;Kretchmar&quot;,
+                            &quot;scores&quot;: [],
+                            &quot;someBlob&quot;: null,
+                            &quot;tags&quot;: []
+                        },
+                        &quot;_type&quot;: &quot;customer-with-addresses&quot;
+                    }
+                ],
+                &quot;max_score&quot;: 1.0,
+                &quot;total&quot;: 1
+            },
+            &quot;timed_out&quot;: false,
+            &quot;took&quot;: 11
+        }&lt;/code&gt;&lt;/pre&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;And there you have it: a customer’s complete data, including their addresses, categories, tags etc., materialized into a single document within Elasticsearch.
+      If you’re using JPA to update the customer, you’ll see the data in the index being updated accordingly in near-realtime.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect1&quot;&gt;
+      &lt;h2 id=&quot;pros_and_cons&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#pros_and_cons&quot;&gt;&lt;/a&gt;Pros and Cons&lt;/h2&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;So what are the advantages and disadvantages of this approach for materializing aggregates from multiple source tables compared to the &lt;a href=&quot;http://debezium.io/blog/2018/03/08/creating-ddd-aggregates-with-debezium-and-kafka-streams/&quot;&gt;KStreams-based approach&lt;/a&gt;?&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;The big advantage is consistency and awareness of transactional boundaries,
+      whereas the KStreams-based solution in its suggested form was prone to exposing intermediary aggregates.
+      For instance, if you’re storing a customer and three addresses, it might happen that the streaming query first creates an aggregation of the customer and the two addresses inserted first, and shortly thereafter the complete aggregate with all three addresses.
+      This not the case for the approach discussed here, as you’ll only ever stream complete aggregates to Kafka.
+      Also this approach feels a bit more &quot;light-weight&quot;, i.e. a simple marker annotation (together with some Jackson annotations for fine-tuning the emitted JSON structures) is enough in order to materialize aggregates from your domain model,
+      whereas some more effort was needed to set up the required streams, temporary tables etc. with the KStreams solution.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;The downside of driving aggregations through the application layer is that it’s not fully agnostic to the way you access the primary data.
+      If you bypass the application, e.g. by patching data directly in the database, naturally these updates would be missed, requiring a refresh of affected aggregates.
+      Although this again could be done through change data capture and Debezium:
+      change events to source tables could be captured and consumed by the application itself, allowing it to re-materialize aggregates after external data changes.
+      You also might argue that running JSON serializations within source transactions and storing aggregates within the source database represents some overhead.
+      This often may be acceptable, though.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Another question to ask is what’s the advantage of using change data capture on an intermediary aggregate table over simply posting REST requests to Elasticsearch.
+      The answer is the highly increased robustness and fault tolerance.
+      If the Elasticsearch cluster can’t be accessed for some reason, the machinery of Kafka and Kafka Connect will ensure that any change events will be propagated eventually, once the sink is up again.
+      Also other consumers than Elasticsearch can subscribe to the aggregate topic, the log can be replayed from the beginning etc.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Note that while we’ve been talking primarily about using Elasticsearch as a data sink, there are also other datastores and connectors that support complexly structured records.
+      One example would be MongoDB and the &lt;a href=&quot;https://github.com/hpgrahsl/kafka-connect-mongodb&quot;&gt;sink connector&lt;/a&gt; maintained by Hans-Peter Grahsl,
+      which one could use to sink customer aggregates into MongoDB, for instance enabling efficient retrieval of a customer and all their associated data with a single primary key look-up.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect1&quot;&gt;
+      &lt;h2 id=&quot;outlook&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#outlook&quot;&gt;&lt;/a&gt;Outlook&lt;/h2&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;The Hibernate ORM extension as well as the SMT discussed in this post can be found in our &lt;a href=&quot;https://github.com/debezium/debezium-examples/tree/master/jpa-aggregations&quot;&gt;examples repository&lt;/a&gt;.
+      They should be considered to be at &quot;proof-of-concept&quot; level currently.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;That being said, we’re considering to make this a Debezium component proper,
+      allowing you to employ this aggregation approach within your Hibernate-based applications just by pulling in this new component.
+      For that we’d have to improve a few things first, though.
+      Most importantly, an API is needed which will let you (re-)create aggregates on demand,
+      e.g. for existing data or for data updated by bulk updates via the Criteria API / JPQL (which will be missed by listeners).
+      Also aggregates should be re-created automatically, if any of the referenced entities change
+      (with the current PoC, only a change to the customer instance itself will trigger its aggregate view to be rebuilt, but not a change to one of its addresses).&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;If you like this idea, then let us know about it,
+      so we can gauge the general interest in this.
+      Also, this would be a great item to work on, if you’re interested in contributing to the Debezium project.
+      Looking forward to hearing from you, e.g. in the comment section below or on our &lt;a href=&quot;https://groups.google.com/forum/#!forum/debezium&quot;&gt;mailing list&lt;/a&gt;.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Thanks a lot to Hans-Peter Grahsl for his feedback on an earlier version of this post!&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect1&quot;&gt;
+      &lt;h2 id=&quot;about_debezium&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#about_debezium&quot;&gt;&lt;/a&gt;About Debezium&lt;/h2&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Debezium is an open source distributed platform that turns your existing databases into event streams,
+      so applications can see and respond almost instantly to each committed row-level change in the databases.
+      Debezium is built on top of &lt;a href=&quot;http://kafka.apache.org/&quot;&gt;Kafka&lt;/a&gt; and provides &lt;a href=&quot;http://kafka.apache.org/documentation.html#connect&quot;&gt;Kafka Connect&lt;/a&gt; compatible connectors that monitor specific database management systems.
+      Debezium records the history of data changes in Kafka logs, so your application can be stopped and restarted at any time and can easily consume all of the events it missed while it was not running,
+      ensuring that all events are processed correctly and completely.
+      Debezium is &lt;a href=&quot;http://debezium.io/license&quot;&gt;open source&lt;/a&gt; under the &lt;a href=&quot;http://www.apache.org/licenses/LICENSE-2.0.html&quot;&gt;Apache License, Version 2.0&lt;/a&gt;.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect1&quot;&gt;
+      &lt;h2 id=&quot;get_involved&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#get_involved&quot;&gt;&lt;/a&gt;Get involved&lt;/h2&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;We hope you find Debezium interesting and useful, and want to give it a try.
+      Follow us on Twitter &lt;a href=&quot;https://twitter.com/debezium&quot;&gt;@debezium&lt;/a&gt;, &lt;a href=&quot;https://gitter.im/debezium/user&quot;&gt;chat with us on Gitter&lt;/a&gt;,
+      or join our &lt;a href=&quot;https://groups.google.com/forum/#!forum/debezium&quot;&gt;mailing list&lt;/a&gt; to talk with the community.
+      All of the code is open source &lt;a href=&quot;https://github.com/debezium/&quot;&gt;on GitHub&lt;/a&gt;,
+      so build the code locally and help us improve ours existing connectors and add even more connectors.
+      If you find problems or have ideas how we can improve Debezium, please let us know or &lt;a href=&quot;https://issues.jboss.org/projects/DBZ/issues/&quot;&gt;log an issue&lt;/a&gt;.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+    </content>
+  </entry>
+  <entry>
     <id>http://debezium.io/blog/2018/09/19/debezium-0-8-3-final-released/</id>
     <title>Debezium 0.8.3.Final Released</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2018-09-19T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/09/19/debezium-0-8-3-final-released/" rel="alternate" type="text/html" />
     <author>
@@ -164,7 +729,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/08/30/streaming-mysql-data-changes-into-kinesis/</id>
     <title>Streaming MySQL Data Changes to Amazon Kinesis</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2018-08-30T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/08/30/streaming-mysql-data-changes-into-kinesis/" rel="alternate" type="text/html" />
     <author>
@@ -685,7 +1250,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/08/30/debezium-0-8-2-released/</id>
     <title>Debezium 0.8.2 Released</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2018-08-30T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/08/30/debezium-0-8-2-released/" rel="alternate" type="text/html" />
     <author>
@@ -790,7 +1355,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/07/26/debezium-0-9-0-alpha1-released/</id>
     <title>Debezium 0.9 Alpha1 and 0.8.1 Released</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2018-07-26T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/07/26/debezium-0-9-0-alpha1-released/" rel="alternate" type="text/html" />
     <author>
@@ -955,7 +1520,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/07/19/advantages-of-log-based-change-data-capture/</id>
     <title>Five Advantages of Log-Based Change Data Capture</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2018-07-19T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/07/19/advantages-of-log-based-change-data-capture/" rel="alternate" type="text/html" />
     <author>
@@ -1092,7 +1657,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/07/12/debezium-0-8-0-final-released/</id>
     <title>Debezium 0.8 Final Is Released</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2018-07-12T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/07/12/debezium-0-8-0-final-released/" rel="alternate" type="text/html" />
     <author>
@@ -1203,7 +1768,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/07/04/debezium-0-8-0-cr1-released/</id>
     <title>Debezium 0.8.0.CR1 Is Released</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2018-07-04T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/07/04/debezium-0-8-0-cr1-released/" rel="alternate" type="text/html" />
     <author>
@@ -1319,7 +1884,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/06/21/debezium-0-8-0-beta1-released/</id>
     <title>Debezium 0.8.0.Beta1 Is Released</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2018-06-21T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/06/21/debezium-0-8-0-beta1-released/" rel="alternate" type="text/html" />
     <author>
@@ -1576,7 +2141,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/05/24/querying-debezium-change-data-eEvents-with-ksql/</id>
     <title>Querying Debezium Change Data Events With KSQL</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2018-05-24T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/05/24/querying-debezium-change-data-eEvents-with-ksql/" rel="alternate" type="text/html" />
     <author>
@@ -2012,7 +2577,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/03/20/debezium-0-7-5-released/</id>
     <title>Debezium 0.7.5 Is Released</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2018-03-20T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/03/20/debezium-0-7-5-released/" rel="alternate" type="text/html" />
     <author>
@@ -2111,7 +2676,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/03/16/note-on-database-history-topic-configuration/</id>
     <title>A Note On Database History Topic Configuration</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2018-03-16T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/03/16/note-on-database-history-topic-configuration/" rel="alternate" type="text/html" />
     <author>
@@ -2241,7 +2806,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/03/08/creating-ddd-aggregates-with-debezium-and-kafka-streams/</id>
     <title>Creating DDD aggregates with Debezium and Kafka Streams</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2018-03-08T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/03/08/creating-ddd-aggregates-with-debezium-and-kafka-streams/" rel="alternate" type="text/html" />
     <author>
@@ -2836,7 +3401,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/03/07/debezium-0-7-4-released/</id>
     <title>Debezium 0.7.4 Is Released</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2018-03-07T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/03/07/debezium-0-7-4-released/" rel="alternate" type="text/html" />
     <author>
@@ -2989,7 +3554,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/02/15/debezium-0-7-3-released/</id>
     <title>Debezium 0.7.3 Is Released</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2018-02-15T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/02/15/debezium-0-7-3-released/" rel="alternate" type="text/html" />
     <author>
@@ -3161,7 +3726,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/01/25/debezium-0-7-2-released/</id>
     <title>Debezium 0.7.2 Is Released</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2018-01-25T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/01/25/debezium-0-7-2-released/" rel="alternate" type="text/html" />
     <author>
@@ -3360,7 +3925,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/01/17/streaming-to-elasticsearch/</id>
     <title>Streaming Data Changes from Your Database to Elasticsearch</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2018-01-17T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/01/17/streaming-to-elasticsearch/" rel="alternate" type="text/html" />
     <author>
@@ -3759,7 +4324,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/12/20/debezium-0-7-1-released/</id>
     <title>Debezium 0.7.1 Is Released</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2017-12-20T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/12/20/debezium-0-7-1-released/" rel="alternate" type="text/html" />
     <author>
@@ -3836,7 +4401,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/12/15/debezium-0-7-0-released/</id>
     <title>Debezium 0.7.0 Is Released</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2017-12-15T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/12/15/debezium-0-7-0-released/" rel="alternate" type="text/html" />
     <author>
@@ -4018,7 +4583,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/11/15/debezium-0-6-2-released/</id>
     <title>Debezium 0.6.2 Is Released</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2017-11-15T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/11/15/debezium-0-6-2-released/" rel="alternate" type="text/html" />
     <author>
@@ -4177,7 +4742,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/11/11/debezium-at-devoxx-belgium/</id>
     <title>Debezium at Devoxx Belgium</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2017-11-11T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/11/11/debezium-at-devoxx-belgium/" rel="alternate" type="text/html" />
     <author>
@@ -4268,7 +4833,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/10/26/debezium-0-6-1-released/</id>
     <title>Debezium 0.6.1 Is Released</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2017-10-26T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/10/26/debezium-0-6-1-released/" rel="alternate" type="text/html" />
     <author>
@@ -4424,7 +4989,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/09/25/streaming-to-another-database/</id>
     <title>Streaming data to a downstream database</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2017-09-25T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/09/25/streaming-to-another-database/" rel="alternate" type="text/html" />
     <author>
@@ -4833,7 +5398,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/09/21/debezium-0-6-0-released/</id>
     <title>Debezium 0.6 Is Out</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2017-09-21T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/09/21/debezium-0-6-0-released/" rel="alternate" type="text/html" />
     <author>
@@ -5001,7 +5566,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/08/17/debezium-0-5-2-is-out/</id>
     <title>Debezium 0.5.2 Is Out</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2017-08-17T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/08/17/debezium-0-5-2-is-out/" rel="alternate" type="text/html" />
     <author>
@@ -5145,7 +5710,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/06/12/debezium-0-5-1-released/</id>
     <title>Debezium 0.5.1 Released</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2017-06-12T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/06/12/debezium-0-5-1-released/" rel="alternate" type="text/html" />
     <author>
@@ -5254,7 +5819,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/04/27/hello-debezium/</id>
     <title>Hello Debezium!</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2017-04-27T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/04/27/hello-debezium/" rel="alternate" type="text/html" />
     <author>
@@ -5321,7 +5886,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/04/26/Debezium-evolving/</id>
     <title>Debezium Evolving</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2017-04-26T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/04/26/Debezium-evolving/" rel="alternate" type="text/html" />
     <author>
@@ -5354,7 +5919,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/03/27/Debezium-0-5-0-Released/</id>
     <title>Debezium 0.5.0 Released</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2017-03-27T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/03/27/Debezium-0-5-0-Released/" rel="alternate" type="text/html" />
     <author>
@@ -5423,7 +5988,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/03/17/Debezium-0-4-1-Released/</id>
     <title>Debezium 0.4.1 Released</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2017-03-17T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/03/17/Debezium-0-4-1-Released/" rel="alternate" type="text/html" />
     <author>
@@ -5497,7 +6062,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/02/22/Debezium-at-WePay/</id>
     <title>Streaming databases in realtime with MySQL, Debezium, and Kafka</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2017-02-22T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/02/22/Debezium-at-WePay/" rel="alternate" type="text/html" />
     <author>
@@ -5794,7 +6359,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/02/08/Support-for-Postgresql/</id>
     <title>PostgreSQL support added to Debezium</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2017-02-08T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/02/08/Support-for-Postgresql/" rel="alternate" type="text/html" />
     <author>
@@ -5903,7 +6468,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/02/07/Debezium-0-4-0-Released/</id>
     <title>Debezium 0.4.0 Released</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2017-02-07T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/02/07/Debezium-0-4-0-Released/" rel="alternate" type="text/html" />
     <author>
@@ -5975,7 +6540,7 @@
   <entry>
     <id>http://debezium.io/blog/2016/12/21/Debezium-0-3-6-Released/</id>
     <title>Debezium 0.3.6 Released</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2016-12-21T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2016/12/21/Debezium-0-3-6-Released/" rel="alternate" type="text/html" />
     <author>
@@ -6047,7 +6612,7 @@
   <entry>
     <id>http://debezium.io/blog/2016/11/14/Debezium-0-3-5-Released/</id>
     <title>Debezium 0.3.5 Released</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2016-11-14T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2016/11/14/Debezium-0-3-5-Released/" rel="alternate" type="text/html" />
     <author>
@@ -6100,7 +6665,7 @@
   <entry>
     <id>http://debezium.io/blog/2016/10/25/Debezium-0-3-4-Released/</id>
     <title>Debezium 0.3.4 Released</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2016-10-25T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2016/10/25/Debezium-0-3-4-Released/" rel="alternate" type="text/html" />
     <author>
@@ -6156,7 +6721,7 @@
   <entry>
     <id>http://debezium.io/blog/2016/10/19/Support-for-MySQL-JSON-typpe-coming-soon/</id>
     <title>Support for MySQL&#8217;s JSON type coming soon</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2016-10-19T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2016/10/19/Support-for-MySQL-JSON-typpe-coming-soon/" rel="alternate" type="text/html" />
     <author>
@@ -6186,7 +6751,7 @@
   <entry>
     <id>http://debezium.io/blog/2016/10/18/Debezium-0-3-3-Released/</id>
     <title>Debezium 0.3.3 Released</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2016-10-18T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2016/10/18/Debezium-0-3-3-Released/" rel="alternate" type="text/html" />
     <author>
@@ -6240,7 +6805,7 @@
   <entry>
     <id>http://debezium.io/blog/2016/09/26/Debezium-0-3-2-Released/</id>
     <title>Debezium 0.3.2 Released</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2016-09-26T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2016/09/26/Debezium-0-3-2-Released/" rel="alternate" type="text/html" />
     <author>
@@ -6294,7 +6859,7 @@
   <entry>
     <id>http://debezium.io/blog/2016/09/19/Serializing-Debezium-events-with-Avro/</id>
     <title>Serializing Debezium events with Avro</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2016-09-19T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2016/09/19/Serializing-Debezium-events-with-Avro/" rel="alternate" type="text/html" />
     <author>
@@ -6424,7 +6989,7 @@
   <entry>
     <id>http://debezium.io/blog/2016/08/30/Debezium-0-3-1-Released/</id>
     <title>Debezium 0.3.1 Released</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2016-08-30T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2016/08/30/Debezium-0-3-1-Released/" rel="alternate" type="text/html" />
     <author>
@@ -6478,7 +7043,7 @@
   <entry>
     <id>http://debezium.io/blog/2016/08/16/Debezium-0-3-0-Released/</id>
     <title>Debezium 0.3.0 Released</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2016-08-16T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2016/08/16/Debezium-0-3-0-Released/" rel="alternate" type="text/html" />
     <author>
@@ -6543,7 +7108,7 @@
   <entry>
     <id>http://debezium.io/blog/2016/08/16/Debezium-0-2-4-Released/</id>
     <title>Debezium 0.2.4 Released</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2016-08-16T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2016/08/16/Debezium-0-2-4-Released/" rel="alternate" type="text/html" />
     <author>
@@ -6601,7 +7166,7 @@
   <entry>
     <id>http://debezium.io/blog/2016/08/02/capturing-changes-from-mysql/</id>
     <title>Capturing changes from MySQL</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2016-08-02T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2016/08/02/capturing-changes-from-mysql/" rel="alternate" type="text/html" />
     <author>
@@ -6704,7 +7269,7 @@
   <entry>
     <id>http://debezium.io/blog/2016/07/26/Debezium-0-2-3-Released/</id>
     <title>Debezium 0.2.3 Released</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2016-07-26T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2016/07/26/Debezium-0-2-3-Released/" rel="alternate" type="text/html" />
     <author>
@@ -6762,7 +7327,7 @@
   <entry>
     <id>http://debezium.io/blog/2016/06/22/Debezium-0-2-2-Released/</id>
     <title>Debezium 0.2.2 Released</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2016-06-22T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2016/06/22/Debezium-0-2-2-Released/" rel="alternate" type="text/html" />
     <author>
@@ -6818,7 +7383,7 @@
   <entry>
     <id>http://debezium.io/blog/2016/06/10/Debezium-0/</id>
     <title>Debezium 0.2.1 Released</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2016-06-10T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2016/06/10/Debezium-0/" rel="alternate" type="text/html" />
     <author>
@@ -6919,7 +7484,7 @@
   <entry>
     <id>http://debezium.io/blog/2016/05/31/Debezium-on-Kubernetes/</id>
     <title>Debezium on Kubernetes</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2016-05-31T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2016/05/31/Debezium-on-Kubernetes/" rel="alternate" type="text/html" />
     <author>
@@ -7459,7 +8024,7 @@
   <entry>
     <id>http://debezium.io/blog/2016/04/15/parsing-ddl/</id>
     <title>Parsing DDL</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2016-04-15T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2016/04/15/parsing-ddl/" rel="alternate" type="text/html" />
     <author>
@@ -7789,7 +8354,7 @@
   <entry>
     <id>http://debezium.io/blog/2016/04/14/Debezium-website/</id>
     <title>Debezium Website</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
+    <updated>2018-09-20T20:03:38+00:00</updated>
     <published>2016-04-14T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2016/04/14/Debezium-website/" rel="alternate" type="text/html" />
     <author>
@@ -7804,56 +8369,6 @@
     <content type="html">
       &lt;div class=&quot;paragraph&quot;&gt;
       &lt;p&gt;As you may have noticed, we have a &lt;a href=&quot;http://debezium.io&quot;&gt;new website&lt;/a&gt; with &lt;a href=&quot;http://debezium.io/docs&quot;&gt;documentation&lt;/a&gt;, a &lt;a href=&quot;http://debezium.io/blog&quot;&gt;blog&lt;/a&gt;, and information about the &lt;a href=&quot;http://debezium.io/community&quot;&gt;Debezium community&lt;/a&gt; and how you can &lt;a href=&quot;http://debezium.io/docs/contribute&quot;&gt;contribute&lt;/a&gt;. Let us know what you think, and &lt;a href=&quot;http://debezium.io/docs/contribute&quot;&gt;contribute improvements&lt;/a&gt;.&lt;/p&gt;
-      &lt;/div&gt;
-    </content>
-  </entry>
-  <entry>
-    <id>http://debezium.io/blog/2016/03/18/Debezium-0-1-Released/</id>
-    <title>Debezium 0.1 Released</title>
-    <updated>2018-09-20T08:52:12+00:00</updated>
-    <published>2016-03-18T00:00:00+00:00</published>
-    <link href="http://debezium.io/blog/2016/03/18/Debezium-0-1-Released/" rel="alternate" type="text/html" />
-    <author>
-      <name>Randall Hauch</name>
-    </author>
-    <category term="releases"></category>
-    <category term="mysql"></category>
-    <category term="docker"></category>
-    <summary>
-      
-      Debezium is a distributed platform that turns your existing databases into event streams, so applications can see and respond almost instantly to each committed row-level change in the databases. Debezium is built on top of Kafka and provides Kafka Connect compatible connectors that monitor specific database management systems. Debezium records the history of data changes in Kafka logs, so your application can be stopped and restarted at any time and can easily consume all of the events it missed while it was not running, ensuring that all events are processed correctly and completely. Debezium is open source under the Apache...
-    </summary>
-    <content type="html">
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;Debezium is a distributed platform that turns your existing databases into event streams, so applications can see and respond almost instantly to each committed row-level change in the databases. Debezium is built on top of &lt;a href=&quot;http://kafka.apache.org/&quot;&gt;Kafka&lt;/a&gt; and provides &lt;a href=&quot;http://kafka.apache.org/documentation.html#connect&quot;&gt;Kafka Connect&lt;/a&gt; compatible connectors that monitor specific database management systems. Debezium records the history of data changes in Kafka logs, so your application can be stopped and restarted at any time and can easily consume all of the events it missed while it was not running, ensuring that all events are processed correctly and completely. Debezium is &lt;a href=&quot;http://debezium.io/license&quot;&gt;open source&lt;/a&gt; under the &lt;a href=&quot;http://www.apache.org/licenses/LICENSE-2.0.html&quot;&gt;Apache License, Version 2.0&lt;/a&gt;.&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;Now the good news — &lt;strong&gt;&lt;em&gt;Debezium 0.1 is now available&lt;/em&gt;&lt;/strong&gt; and includes several significant features:&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;ulist&quot;&gt;
-      &lt;ul&gt;
-      &lt;li&gt;
-      &lt;p&gt;A &lt;a href=&quot;http://debezium.io/docs/connectors/mysql&quot;&gt;connector for MySQL&lt;/a&gt; to monitor MySQL databases. It’s a Kafka Connect source connector, so simply install it into a Kafka Connect service (see below) and use the service’s REST API to configure and manage connectors to each DBMS server. The connector reads the MySQL binlog and generates data change events for every committed row-level modification in the monitored databases. The MySQL connector generates events based upon the tables' structure at the time the row is changed, and it automatically handles changes to the table structures.&lt;/p&gt;
-      &lt;/li&gt;
-      &lt;li&gt;
-      &lt;p&gt;A small library so applications can &lt;a href=&quot;http://debezium.io/docs/embedded&quot;&gt;embed any Kafka Connect connector&lt;/a&gt; and consume data change events read directly from the source system. This provides a much lighter weight system (since Zookeeper, Kafka, and Kafka Connect services are not needed), but as a consequence is not as fault tolerant or reliable since the application must maintain state normally kept inside Kafka’s distributed and replicated logs. Thus the application becomes completely responsible for managing all state.&lt;/p&gt;
-      &lt;/li&gt;
-      &lt;/ul&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;Although Debezium is really intended to be used as turnkey services, all of Debezium’s JARs and other artifacts are available in &lt;a href=&quot;http://search.maven.org/#search%7Cga%7C1%7Cg%3A%22io.debezium%22&quot;&gt;Maven Central&lt;/a&gt;. Detailed information about the features, tasks, and bugs are outlined in our release notes.&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;To make it easier to use a Debezium’s connector inside your own Kafka Connect service, we created a plugin archive (in both zip and tar.gz formats) that includes all JARs used by the connector not already included in Kafka Connect 0.9.0.1. Simply download, extract to your Kafka Connect 0.9.0.1 installation, and add all of the JARs to the service’s classpath. Once the service is restarted, you can then use the REST API to configure and manage connector instances that monitor the databases of your choice. &lt;a href=&quot;http://search.maven.org/#artifactdetails%7Cio.debezium%7Cdebezium-connector-mysql%7C0.1.0%7Cjar&quot;&gt;MySQL connector plugin archive&lt;/a&gt; is located in Maven Central, so it’s even possible to use Maven to build a customized Kafka Connect service. We’ll generate these plugins for future connectors, too.&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;The Debezium platform has a lot of moving parts in Zookeeper, Kafka, and Kafka Connect. To make it much easier for you to try it out and play with it, we created &lt;a href=&quot;https://hub.docker.com/u/debezium/&quot;&gt;Docker images&lt;/a&gt; and a &lt;a href=&quot;http://debezium.io/docs/tutorial&quot;&gt;tutorial&lt;/a&gt; that walks you through using Debezium. First, it has you use Docker to start a container for each of these services and a MySQL server with an example &quot;inventory&quot; database. It shows you how to use the RESTful API to register a connector to monitor the inventory database, how to watch the streams of data changes for various tables, and how changing the database produces new change events with very low latency. It also walks you through shutting down the Kafka Connect service, changing data while the service is not monitoring the database, and then restarting the Kafka Connect service to see how all of the data changes that occurred while the service was not running are still captured correctly in the streams. This tutorial really is a great way to interactively learn the basics of Debezium and change data capture.&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;We hope you find Debezium interesting and useful, and want to give it a try. Follow us on Twitter &lt;a href=&quot;https://twitter.com/debezium&quot;&gt;@debezium&lt;/a&gt;, &lt;a href=&quot;https://gitter.im/debezium/user&quot;&gt;chat with us on Gitter&lt;/a&gt;, or join our &lt;a href=&quot;https://groups.google.com/forum/#!forum/debezium&quot;&gt;mailing list&lt;/a&gt; to talk with the community. All of the code is open source &lt;a href=&quot;https://github.com/debezium/&quot;&gt;on GitHub&lt;/a&gt;, so build the code locally and help us improve the MySQL connector and add more connectors. If you find problems or have ideas how we can improve Debezium, please let us know or &lt;a href=&quot;https://issues.jboss.org/projects/DBZ/issues/&quot;&gt;log an issue&lt;/a&gt;. We plan to release 0.2 very soon with at least one additional connector.&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;Thanks to Emmanuel, Chris, Akshath, James, and Paul for their help with the release, questions, and discussions!&lt;/p&gt;
       &lt;/div&gt;
     </content>
   </entry>
