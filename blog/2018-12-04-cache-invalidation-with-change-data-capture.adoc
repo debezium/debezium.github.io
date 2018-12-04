@@ -291,13 +291,25 @@ For this we first need a class for the transaction book keeping:
 @ApplicationScoped
 public class KnownTransactions {
 
-    private Cache<Long, Boolean> applicationTransactions;
+    private final DefaultCacheManager cacheManager;
+    private final Cache<Long, Boolean> applicationTransactions;
 
     public KnownTransactions() {
-        applicationTransactions = Caffeine.newBuilder()
-                .maximumSize(10_000)
-                .expireAfterWrite(1, TimeUnit.MINUTES)
-                .build();
+        cacheManager = new DefaultCacheManager();
+        cacheManager.defineConfiguration(
+                "tx-id-cache",
+                new ConfigurationBuilder()
+                    .expiration()
+                        .lifespan(60, TimeUnit.SECONDS)
+                    .build()
+                );
+
+        applicationTransactions = cacheManager.getCache("tx-id-cache");
+    }
+
+    @PreDestroy
+    public void stopCacheManager() {
+        cacheManager.stop();
     }
 
     public void register(long txId) {
@@ -305,13 +317,13 @@ public class KnownTransactions {
     }
 
     public boolean isKnown(long txId) {
-        return Boolean.TRUE.equals(applicationTransactions.getIfPresent(txId));
+        return Boolean.TRUE.equals(applicationTransactions.get(txId));
     }
 }
 ----
 
-This uses the Caffeine library for maintaining a short-lived in-memory cache of transaction ids encountered by the application.
-As data change events arrive in near-realtime, the TTL can be rather short
+This uses the Infinispan `DefaultCacheManager` for creating and maintaining an in-memory cache of transaction ids encountered by the application.
+As data change events arrive in near-realtime, the TTL of the cache entries can be rather short
 (in fact, the value of one minute shown in the example is chosen very conservatively, usually events should be received within seconds).
 
 The next step is to retrieve the current transaction id whenever a request is processed by the application and register it within `KnownTransactions`.
