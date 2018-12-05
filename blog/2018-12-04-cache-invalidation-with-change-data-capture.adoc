@@ -18,14 +18,14 @@ A common way for doing so is to foresee some admin functionality that allows to 
 For this to work, it's vital to not forget about calling that invalidation functionality, or the application will keep working with outdated cached data.
 
 In the following we're going to explore an alternative approach for cache invalidation, which works in a reliable and fully automated way:
-by employing Debezium and its change data capture (CDC) capabilities, you can track data changes in the database itself and react to any applied change.
+by employing Debezium and its link:/blog/2018/07/19/advantages-of-log-based-change-data-capture/[change data capture] (CDC) capabilities, you can track data changes in the database itself and react to any applied change.
 This allows to invalidate affected cache entries in near-realtime,
 without the risk of stale data due to missed changes.
-If an entry has been evicted from the cache, Hibernate ORM will load the latest version of the requested entities from the database.
+If an entry has been evicted from the cache, Hibernate ORM will load the latest version of the entity from the database the next time is requested.
 
 == The Example Application
 
-As an example, let's consider this simple model of two entities, `PurchaseOrder` and `Item`:
+As an example, consider this simple model of two entities, `PurchaseOrder` and `Item`:
 
 ////
 http://yuml.me/diagram/plain/class/edit/%2F%2F Cool Class Diagram, [PurchaseOrder|-id:long;-customer:string;-quantity:int;-totalPrice:BigDecimal]-item>[Item|-id:long;-description:string;-price:BigDecimal], [Item]-[note:Cached{bg:wheat}]
@@ -70,7 +70,7 @@ public class PurchaseOrder {
 ----
 
 As changes to items are rare, the `Item` entity should be cached.
-This can be done by simply specifying the `@Cacheable` annotation:
+This can be done by simply specifying JPA's https://docs.oracle.com/javaee/7/api/javax/persistence/Cacheable.html[@Cacheable] annotation:
 
 [source,java]
 ----
@@ -122,7 +122,7 @@ When running on a https://www.oracle.com/technetwork/java/javaee/overview/index.
 that's all you need to enable second-level caching.
 In the case of http://wildfly.org/[WildFly] (which is what's used in the example project), the http://infinispan.org/[Infinispan] key/value store is used as the cache provider by default.
 
-Now let's try and see what happens when modifying an item's price by running some SQL in the database,
+Now try and see what happens when modifying an item's price by running some SQL in the database,
 bypassing the application layer.
 If you've checked out the example source code, comment out the `DatabaseChangeEventListener` class and start the application as described in the _README.md_.
 You then can place purchase orders using curl like this
@@ -152,7 +152,7 @@ You then can place purchase orders using curl like this
 ----
 
 The response is the expected one, as the item price is 14.99.
-Now let's update the item's price directly in the database.
+Now update the item's price directly in the database.
 The example uses Postgres, so you can use the _psql_ CLI utility to do so:
 
 [source,bash]
@@ -167,25 +167,25 @@ But it's not too surprising, given that the price update was applied completely 
 
 == The Change Event Handler
 
-Now let's explore how to use Debezium and CDC to react to changes in the `Item` table and invalidate corresponding cache entries.
+Now let's explore how to use Debezium and CDC to react to changes in the `item` table and invalidate corresponding cache entries.
 
 While Debezium most of the times is deployed into https://kafka.apache.org/documentation/#connect[Kafka Connect] (thus streaming change events into Apache Kafka topics),
 it has another mode of operation that comes in very handy for the use case at hand.
-Using the link:/docs/embedded/[embedded engine], you can run the Debezium connectors as a library directly within your application itself.
+Using the link:/docs/embedded/[embedded engine], you can run the Debezium connectors as a library directly within your application.
 For each change event received from the database, a configured callback method will be invoked, which in the case at hand will evict the affected item from the second-level cache.
 
 The following picture shows the design of this approach:
 
 ++++
 <div class="imageblock centered-image">
-    <img src="/images/cache_invalidation_architecture.png" style="max-width:100%; margin-bottom:20px; margin-top:20px;" class="responsive-image" alt="Example domain model">
+    <img src="/images/cache_invalidation_architecture.png" style="max-width:100%; margin-bottom:20px; margin-top:20px;" class="responsive-image" alt="Architecture Overview">
 </div>
 ++++
 
 While this doesn't come with the scalability and fault tolerance provided by Apache Kafka,
-it's a great fit for the requirements at hand.
+it nicely fits the given requirements.
 As the second-level cache is bound to the application lifecycle, there is for instance no need for the offset management and restarting capabilities provided by the Kafka Connect framework.
-For the use case at hand it is solely needed to receive data change events while the application is running, and using the embedded engine enables exactly that.
+For the given use case it is enough to receive data change events while the application is running, and using the embedded engine enables exactly that.
 
 .Clustered Applications
 [NOTE]
@@ -262,14 +262,14 @@ The link:/docs/connectors/postgresql/#connector-properties[connector options] (h
 There is no need for doing an initial snapshot of the existing data, hence the link:/docs/connectors/postgresql/#snapshots[snapshot mode] is set to "never".
 
 The offset storage option is used for controlling how connector offsets should be persisted.
-There's no need to process any change events occurring while the connector is not running
+As it's not necessary to process any change events occurring while the connector is not running
 (instead you'd just begin to read the log from the current location after the restart),
-so the in-memory implementation provided by Kafka Connect is used.
+the in-memory implementation provided by Kafka Connect is used.
 
 Once configured, the embedded engine must be run via an `Executor` instance.
 As the example runs in WildFly, a managed executor can simply be obtained through `@Resource` injection for that purpose (see https://www.jcp.org/en/jsr/detail?id=236[JSR 236]).
 
-The embedded engine is configured to invoke the `handleDbChangeEvent()` for each received data change event.
+The embedded engine is configured to invoke the `handleDbChangeEvent()` method for each received data change event.
 In this method it first is checked whether the incoming event originates from the `item` table.
 If that's the case, and if the change event represents an `UPDATE` or `DELETE` statement,
 the affected `Item` instance is evicted from the second-level cache.
