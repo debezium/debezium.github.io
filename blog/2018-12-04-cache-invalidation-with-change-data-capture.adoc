@@ -18,7 +18,7 @@ A common way for doing so is to foresee some admin functionality that allows to 
 For this to work, it's vital to not forget about calling that invalidation functionality, or the application will keep working with outdated cached data.
 
 In the following we're going to explore an alternative approach for cache invalidation, which works in a reliable and fully automated way:
-by employing Debezium and its change data capture (CDC) capabilities, we can track the database logs and react to any applied data change.
+by employing Debezium and its change data capture (CDC) capabilities, you can track data changes in the database itself and react to any applied change.
 This allows to invalidate affected cache entries in near-realtime,
 without the risk of stale data due to missed changes.
 If an entry has been evicted from the cache, Hibernate ORM will load the latest version of the requested entities from the database.
@@ -87,11 +87,11 @@ public class Item {
 }
 ----
 
-We also need to enable the second-level cache in the _META-INF/persistence.xml_ file.
+You also need to enable the second-level cache in the _META-INF/persistence.xml_ file.
 The property `hibernate.cache.use_second_level_cache` activates the cache itself, and the `ENABLE_SELECTIVE` cache mode
 causes only those entities to be put into the cache which are annotated with `@Cacheable`.
 It's also a good idea to enable SQL query logging and cache access statistics.
-That way we'll be able to verify whether things work as expected by examining the application log:
+That way you'll be able to verify whether things work as expected by examining the application log:
 
 [source,xml]
 ----
@@ -117,7 +117,9 @@ That way we'll be able to verify whether things work as expected by examining th
 </persistence>
 ----
 
-When running on a Java EE application server, that's all you need to enable second-level caching.
+When running on a https://www.oracle.com/technetwork/java/javaee/overview/index.html[Java EE] application server
+(or https://jakarta.ee/[Jakarta EE] how the stack is called after it has been donated to the Eclipse Foundation),
+that's all you need to enable second-level caching.
 In the case of http://wildfly.org/[WildFly] (which is what's used in the example project), the http://infinispan.org/[Infinispan] key/value store is used as the cache provider by default.
 
 Now let's try and see what happens when modifying an item's price by running some SQL in the database,
@@ -181,9 +183,9 @@ The following picture shows the design of this approach:
 ++++
 
 While this doesn't come with the scalability and fault tolerance provided by Apache Kafka,
-it's a great fit for our requirements.
-As the second-level cache is bound to the application lifecycle, there's for instance no need for the offset management and restarting capabilities provided by the Kafka Connect framework.
-We're solely interested in receiving data change events while the application is running, and using the embedded engine gives us exactly that.
+it's a great fit for the requirements at hand.
+As the second-level cache is bound to the application lifecycle, there is for instance no need for the offset management and restarting capabilities provided by the Kafka Connect framework.
+For the use case at hand it is solely needed to receive data change events while the application is running, and using the embedded engine enables exactly that.
 
 .Clustered Applications
 [NOTE]
@@ -257,18 +259,18 @@ public class DatabaseChangeEventListener {
 
 Upon application start-up, this configures an instance of the link:/docs/connectors/postgresql/[Debezium Postgres connector] and sets up the embedded engine for running the connector.
 The link:/docs/connectors/postgresql/#connector-properties[connector options] (host name, credentials etc.) are mostly the same as when deploying the connector into Kafka Connect.
-As we are only interested in capturing data changes while the application is running, the link:/docs/connectors/postgresql/#snapshots[snapshot mode] is set to "never".
+There is no need for doing an initial snapshot of the existing data, hence the link:/docs/connectors/postgresql/#snapshots[snapshot mode] is set to "never".
 
 The offset storage option is used for controlling how connector offsets should be persisted.
-We don't need to process any change events occurring while the connector is not running
-(instead we'd just begin to read the log from the current location after the restart),
+There's no need to process any change events occurring while the connector is not running
+(instead you'd just begin to read the log from the current location after the restart),
 so the in-memory implementation provided by Kafka Connect is used.
 
 Once configured, the embedded engine must be run via an `Executor` instance.
 As the example runs in WildFly, a managed executor can simply be obtained through `@Resource` injection for that purpose (see https://www.jcp.org/en/jsr/detail?id=236[JSR 236]).
 
 The embedded engine is configured to invoke the `handleDbChangeEvent()` for each received data change event.
-In this method we first check whether the incoming event originates from the `item` table.
+In this method it first is checked whether the incoming event originates from the `item` table.
 If that's the case, and if the change event represents an `UPDATE` or `DELETE` statement,
 the affected `Item` instance is evicted from the second-level cache.
 JPA 2.0 provides a https://javaee.github.io/javaee-spec/javadocs/index.html?javax/persistence/Cache.html[simple API] for this purpose which is accessible via the `EntityManagerFactory`.
@@ -294,13 +296,12 @@ cached items will also be purged when updating an `Item` instance through the ap
 This is not only not needed (as the cached item already is the current version), but it's even counter-productive:
 the superfluous cache evictions will cause additional database roundtrips, resulting in longer response times.
 
-So we need a way to distinguish between data changes performed by the application itself and external data changes.
+It is therefore necessary to distinguish between data changes performed by the application itself and external data changes.
 Only in the latter case the affected items should be evicted from the cache.
-In order to do so, we can leverage the fact that each Debezium data change event contains the id of the originating transaction.
-By keeping track of all transactions run by the application itself,
-we can trigger the cache eviction only for those items altered by external transactions.
+In order to do so, you can leverage the fact that each Debezium data change event contains the id of the originating transaction.
+Keeping track of all transactions run by the application itself allows to trigger the cache eviction only for those items altered by external transactions.
 
-For this we first need a class for the transaction book keeping:
+The first thing needed for that is a class for the transaction book keeping:
 
 [source,java]
 ----
@@ -420,9 +421,9 @@ io.debezium.examples.cacheinvalidation.persistence.TransactionRegistrationIntegr
 ----
 
 During bootstrap, Hibernate ORM will detect the integrator class (by means of the https://docs.oracle.com/en/java/javase/11/docs/api/java.base/java/util/ServiceLoader.html[Java service loader]),
-invoke its `integrate()` method which in turn will register our listener class for the `FLUSH` event.
+invoke its `integrate()` method which in turn will register the listener class for the `FLUSH` event.
 
-The last step is to exclude any events originating from our own application transactions in the database change event handler:
+The last step is to exclude any events stemming from transactions run by the application itself in the database change event handler:
 
 [source,java]
 ----
@@ -450,7 +451,7 @@ public class DatabaseChangeEventListener {
 }
 ----
 
-And with that, we got all the pieces in place:  cached ``Item``s will only be evicted after external data changes, but not after changes done by our application itself.
+And with that, you got all the pieces in place: cached ``Item``s will only be evicted after external data changes, but not after changes done by the application itself.
 To confirm, you can invoke the example's `items` resource using curl:
 
 [source,bash]
