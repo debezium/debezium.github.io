@@ -193,7 +193,11 @@ A second snapshot mode allows the connector to perform snapshots *always*. This 
 
 The third snapshot mode instructs the connector to *never* performs snapshots. When a new connector is configured this way, if will either continue streaming changes from a previous stored offset or it will start from the point in time when the PostgreSQL logical replication slot was first created on the server. Note that this mode is useful only when you know all data of interest is still reflected in the WAL.
 
-The final snapshot mode, *initial only*, will perform a database snapshot and then stop before streaming any other changes. If the connector had started but did not complete a snapshot before stopping, the connector will restart the snapshot process and stop once the snapshot completes.
+The forth snapshot mode, *initial only*, will perform a database snapshot and then stop before streaming any other changes. If the connector had started but did not complete a snapshot before stopping, the connector will restart the snapshot process and stop once the snapshot completes.
+
+The final snapshot mode, *write recovery*, will perform a full database snapshot initially (similiar to *initial*) but on subsequent restarts, it will query the replication slot to ensure it has the expected state.
+If it does, it continues on consuming normally.
+If not, it attempts to recover any potentially missed writes (`INSERT` and `UPDATE` changes), but may miss `DELETE` records. See the link:#write_recovery[write recovery docs] for more information.
 
 
 [[streaming-changes]]
@@ -268,6 +272,23 @@ The `sourceOffset` portion of the message contains information about the locatio
 * `lsn` represents the PostgreSQL https://www.postgresql.org/docs/9.6/static/datatype-pg-lsn.html[_log sequence number_] or `offset` in the transaction log
 * `txId` represents the identifier of the server transaction which caused the event
 * `ts_usec` represents the number of microseconds since Unix Epoch as the server time at which the transaction was committed
+
+[[write_recovery]]
+=== Write Recovery Snapshot
+
+
+The `write_recovery` snapshot mode makes uses of additional state in Postgres to ensure that the latest version of each row is seen (excluding row deletes). It does this by using the `xmin` from postgres to find any changed rows we may not know about.
+
+Each row in postgres has a system column called `xmin` (see: https://www.postgresql.org/docs/9.6/ddl-system-columns.html) for details. This is the transaction id that wrote the latest version of the row.
+
+Additionally, a replication slot keeps a `catalog_xmin` which is the lowest numbered transaction for which the replication slot can effectively decode. It is advanced by Postgres as the slot replication slot is consumed
+and as data is removed via `VACUUM`. Due to postgres internals, this value cannot be advanced beyond the earliest open transaction.
+
+By keeping track of the `catalog_xmin` as we consume a slot (see `xmin.fetch.interval` configuration value for more details). If the slot state is lost, we can use the `catalog_xmin` as a lower bound to get the latest version of any potentially missed `INSERT` or
+`UPDATE` statements. This *does not* work for `DELETE` as those records are no longer visible and we have no mechanism for being informed of them. Additionally, as multiple `UPDATE` changes may happen within the window where we have no replication slot, this *can not* be
+used as a full audit trail, but it does gurantee that you will get see the latest version of each row. It is also important to keep in mind that this may result in many duplicate messages be seen due to the `catalog_xmin` being only advanced periodically.
+
+The `write_recovery` cannot give a completely consistent change feed, but for many use cases, such as where only soft deletes are used, or where deletes aren't critical to be captured, it can provide a feed that is reslient to failure.
 
 [[events]]
 === Events
@@ -1101,6 +1122,8 @@ As of `9.6`, PostgreSQL allows logical replication slots _only on master servers
 
 One potential issue with this is that if there's a _large enough delay_ between the new server's promotion and the installation of the plugin together with the restart of the connector, the PostgreSQL server may have removed some WAL information. If this happens, the connector will miss out on all the changes that took place _after the election of the new master_ and _before the restart of the connector_.
 
+The `write_recovery` snapshot mode can _partially_ mitigate this problem, but only for `INSERT` and `UPDATE` statements. See the link:#write_recovery[write recovery docs] for details.
+
 [NOTE]
 ====
 There are discussions in the PostgreSQL community around a feature called `failover slots` which would help mitigate this problem, but as of `9.6` they have not been implemented yet. You can find out more about this particular issue from http://blog.2ndquadrant.com/failover-slots-postgresql[this blog post]
@@ -1426,6 +1449,12 @@ become outdated if TOASTable columns are dropped from the table.
 |
 |An interval in milli-seconds that the connector should wait before taking a snapshot after starting up; +
 Can be used to avoid snapshot interruptions when starting multiple connectors in a cluster, which may cause re-balancing of connectors.
+
+|`xmin.fetch.interval` +
+0.9.0 and later
+| 10000
+|An interval in milli-seconds, used only in `write_recovery` snapshot mode, which determines how often the `catalog_xmin` will be fetched; +
+Setting this value higher will result in a possibly more stale `xmin` value being saved, setting it too low may incur some performance penalty.
 
 |=======================
 
