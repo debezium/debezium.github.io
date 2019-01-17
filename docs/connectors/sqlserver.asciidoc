@@ -92,6 +92,123 @@ We welcome any feedback from a user to try the plug-in with database in managed 
 == How the SQL Server connector works
 TBD
 
+[[schema-evolution]]
+=== Database schema evolution
+
+Debezium is able to capture schema changes over time.
+Due to the way CDC is implemented in SQL Server, it is necessary to work in co-operation with a database operator in order to ensure the Debezium connector continues to produce data change events when the schema is updated.
+
+As was already mentioned before, Debezium uses SQL Server's change data capture functionality.
+This means that SQL Server creates a capture table that contains all changes executed on the source table.
+Unfortunately, the capture table is static and needs to be updated when the source table structure changes.
+This update is not done by the Debezium connector itself but must be executed by an operator with elevated privileges.
+
+There are generally two procedures how to execute the schema change:
+
+  * cold - this is executed when Debezium is stopped
+  * hot - executed while Debezium is running
+
+Both approaches have their own advantages and disadvantages.
+
+[WARNING]
+====
+In both cases, it is critically important to execute the procedure completely before a new schema update on the same source table is made.
+It is thus recommended to execute all DDLs in a single batch so the procedure is done only once.
+====
+
+[NOTE]
+====
+Not all schema changes are supported when CDC is enabled for a source table.
+One such exception identified is renaming the column - SQL Server will not allow executing the operation.
+====
+
+==== Cold schema update
+
+This is the safest procedure but might not be feasible for applications with high-availability requirements.
+The operator should follow this sequence of steps
+
+  1. Suspend the application that generates the database records
+  2. Wait for Debezium to stream all unstreamed changes
+  3. Stop Debezium connector
+  4. Apply all changes to the source table schema
+  5. Create a new capture table for the update source table using `sys.sp_cdc_enable_table` procedure with a unique value for parameter `@capture_instance`
+  6. Resume the application
+  7. Start Debezium connector
+  8. When Debezium starts streaming from the new capture table it is possible to drop the old one using `sys.sp_cdc_disable_table` stored procedure with parameter `@capture_instance` set to the old capture instance name
+
+==== Hot schema update
+
+The hot schema update does not require any downtime in application and data processing.
+The procedure itself is also much simpler than in case of cold schema update
+
+  1. Apply all changes to the source table schema
+  2. Create a new capture table for the update source table using `sys.sp_cdc_enable_table` procedure with a unique value for parameter `@capture_instance`
+  3. When Debezium starts streaming from the new capture table it is possible to drop the old one using `sys.sp_cdc_disable_table` stored procedure with parameter `@capture_instance` set to the old capture instance name
+
+The hot schema update has one drawback.
+There is a period of time between the database schema update and creating the new capture instance.
+All changes that will arrive during this period will be captured by the old instance with the old structure.
+For instance this means that in case of a newly added column any change event produced during this time will not yet contain a field for that new column.
+If your application does not tolerate such a transition period we recommend to follow the cold schema update.
+
+==== Example
+Let's deploy the SQL Server based https://github.com/debezium/debezium-examples/tree/master/tutorial#using-sql-server[Debezium tutorial] to demonstrate the hot schema update.
+A column `phone_number` will be added to the `customers` table.
+
+[source,shell]
+----
+# Start the database shell
+docker-compose -f docker-compose-sqlserver.yaml exec sqlserver bash -c '/opt/mssql-tools/bin/sqlcmd -U sa -P $SA_PASSWORD -d testDB'
+----
+
+[source,sql]
+----
+-- Modify the source table schema
+ALTER TABLE customers ADD phone_number VARCHAR(32);
+
+-- Create the new capture instance
+EXEC sys.sp_cdc_enable_table @source_schema = 'dbo', @source_name = 'customers', @role_name = NULL, @supports_net_changes = 0, @capture_instance = 'dbo_customers_v2';
+GO
+
+-- Insert new data
+INSERT INTO customers(first_name,last_name,email,phone_number) VALUES ('John','Doe','john.doe@example.com', '+1-555-123456');
+GO
+----
+
+Kafka Connect log will contain messages like these:
+```
+connect_1    | 2019-01-17 10:11:14,924 INFO   ||  Multiple capture instances ChangeTable [captureInstance=dbo_customers, sourceTableId=testDB.dbo.customers, changeTableId=testDB.cdc.dbo_customers_CT, startLsn=00000024:00000d98:0036, changeTableObjectId=1525580473, stopLsn=00000025:00000ef8:0048] and ChangeTable [captureInstance=dbo_customers_v2, sourceTableId=testDB.dbo.customers, changeTableId=testDB.cdc.dbo_customers_v2_CT, startLsn=00000025:00000ef8:0048, changeTableObjectId=1749581271, stopLsn=NULL] present for the same table   [io.debezium.connector.sqlserver.SqlServerStreamingChangeEventSource]
+connect_1    | 2019-01-17 10:11:14,924 INFO   ||  Schema will be changed for ChangeTable [captureInstance=dbo_customers_v2, sourceTableId=testDB.dbo.customers, changeTableId=testDB.cdc.dbo_customers_v2_CT, startLsn=00000025:00000ef8:0048, changeTableObjectId=1749581271, stopLsn=NULL]   [io.debezium.connector.sqlserver.SqlServerStreamingChangeEventSource]
+...
+connect_1    | 2019-01-17 10:11:33,719 INFO   ||  Migrating schema to ChangeTable [captureInstance=dbo_customers_v2, sourceTableId=testDB.dbo.customers, changeTableId=testDB.cdc.dbo_customers_v2_CT, startLsn=00000025:00000ef8:0048, changeTableObjectId=1749581271, stopLsn=NULL]   [io.debezium.connector.sqlserver.SqlServerStreamingChangeEventSource]
+```
+
+Eventually, there will be a new field in the schema and value of the messages written to the Kafka topic.
+[source,json]
+----
+...
+     {
+        "type": "string",
+        "optional": true,
+        "field": "phone_number"
+     }
+...
+    "after": {
+      "id": 1005,
+      "first_name": "John",
+      "last_name": "Doe",
+      "email": "john.doe@example.com",
+      "phone_number": "+1-555-123456"
+    },
+----
+
+[source,sql]
+----
+-- Drop the old capture instance
+EXEC sys.sp_cdc_disable_table @source_schema = 'dbo', @capture_instance = 'dbo_customers', @capture_instance = 'dbo_customers';
+GO
+----
+
 [[data-types]]
 === Data types
 
