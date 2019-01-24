@@ -10,7 +10,7 @@ toc::[level=2]
 
 == What is Debezium?
 
-Debezium is a set of distributed services capture row-level changes in your databases so that your applications can see and respond to those changes. Debezium records in a transaction log all row-level changes committed to each database table. Each application simply reads the transaction logs their interested in, and they see all of the events in the same order in which they occurred.
+Debezium is a set of distributed services that capture row-level changes in your databases so that your applications can see and respond to those changes. Debezium records in a transaction log all row-level changes committed to each database table. Each application simply reads the transaction logs their interested in, and they see all of the events in the same order in which they occurred.
 
 == Where did the name "Debezium" come from?
 
@@ -24,12 +24,19 @@ Debezium is essentially a modern, distributed open source _change data capture p
 
 == What databases can Debezium monitor?
 
-The latest version of Debezium includes support for monitoring link:/docs/connectors/mysql[MySQL database servers], link:/docs/connectors/mongodb[MongoDB replica sets or sharded clusters], and link:/docs/connectors/postgresql[PostgreSQL servers].
-In addition there are work-in-progress Debezium connectors for link:/docs/connectors/oracle[Oracle servers] (based on XStream) and link:/docs/connectors/sqlserver[SQL Server databases] which are released as preview versions as of Debezium 0.8/0.9.
+The latest version of Debezium includes support for monitoring link:/docs/connectors/mysql/[MySQL database servers], link:/docs/connectors/mongodb/[MongoDB replica sets or sharded clusters], and link:/docs/connectors/postgresql/[PostgreSQL servers].
+In addition there are work-in-progress Debezium connectors for link:/docs/connectors/oracle/[Oracle servers] (based on XStream) and link:/docs/connectors/sqlserver/[SQL Server databases] which are released as preview versions as of Debezium 0.8/0.9.
 
-Note that monitoring PostgreSQL requires installing https://github.com/debezium/postgres-decoderbufs/blob/master/README.md[an extension] (plugin) into the PostgreSQL server. If your database is hosted by a service such as https://aws.amazon.com/rds/[Amazon RDS] or https://www.heroku.com/postgres[Heroku Postgres] you may be unable to install the extension. If so, you'll be unable to monitor your database with Debezium (support for RDS is https://issues.jboss.org/browse/DBZ-256[planned]).
+Note that monitoring PostgreSQL requires installing an extension ("logical decoding plugin") into the PostgreSQL server.
+Debezium works with https://github.com/debezium/postgres-decoderbufs/[Decoderbufs] (maintained by the Debezium community) and https://github.com/eulerto/wal2json[wal2json].
 
-Support for other DBMSes will be added in future releases. See our link:/docs/connectors/[list of connectors].
+If your database is hosted on a (managed) cloud service, one of these plug-ins must be installed (or you must be able to install it yourself).
+Otherwise, you'll be unable to monitor your database with Debezium.
+On https://aws.amazon.com/rds/[Amazon RDS] wal2json is installed and as of the 0.9.0.CR1 release, Debezium is known to work with the latest versions of wal2json deployed there.
+You can find out about the exact wal2json commits deployed on Amazon RDS in the https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/CHAP_PostgreSQL.html[RDS docs for Postgres].
+
+Support for other DBMSes will be added in future releases.
+See our link:/docs/roadmap/[roadmap].
 
 == What are some uses of Debezium?
 
@@ -37,11 +44,11 @@ The primary use of Debezium is to enable applications to respond almost immediat
 
 == Why is Debezium a distributed system?
 
-Debezium is architected to be tolerant of faults and failures, and the only effectively way to do that is with a distributed system. Debezium distributes the monitoring processes, or _connectors_, across multiple machines so that, if anything does wrong, the connectors can be restarted. The events are recorded and replicated across multiple machines to minimize risk of information loss.
+Debezium is architected to be tolerant of faults and failures, and the only effectively way to do that is with a distributed system. Debezium distributes the monitoring processes, or _connectors_, across multiple machines so that, if anything goes wrong, the connectors can be restarted. The events are recorded and replicated across multiple machines to minimize risk of information loss.
 
 == Can my application directly monitor a single database?
 
-Yes. Although we recommend most people use the full Debezium platform, it is possible for a single application to link:/docs/embedded[embed] a Debezium connector so it can monitor a database and respond to the events. This approach is indeed far simpler with few moving parts, but it is more limited and far less tolerant of failures. If your application needs at-least-once delivery guarantees of all messages, please consider using the full distributed system.
+Yes. Although we recommend most people use the full Debezium platform, it is possible for a single application to link:/docs/embedded/[embed] a Debezium connector so it can monitor a database and respond to the events. This approach is indeed far simpler with few moving parts, but it is more limited and far less tolerant of failures. If your application needs at-least-once delivery guarantees of all messages, please consider using the full distributed system.
 
 == What does the Debezium platform look like?
 
@@ -89,7 +96,7 @@ Meanwhile, in the consumer, the same Avro Converter decodes the compact binary f
 Although our tutorial doesn't explicitly use them, you can certainly use http://docs.confluent.io/3.1.2/schema-registry/docs/index.html[Confluent's Avro Converter] with Debezium. As mentioned link:#why-are-events-so-large[above], the Avro Converter is much smarter and serializes the event messages much more compactly than the JSON converter that is used by default.
 
 If you are deploying Debezium connectors to a Kafka Connect worker service, simply make sure the Avro Converter JARs are available and configure the worker service to use the Avro Converter. You will, for example, need to point the converter to your Confluent Schema Registry. Then, simply deploy the Debezium connectors (or really, any other Kafka Connect connectors) to your worker service.
-See link:/docs/configuration/avro[Avro Serialization] for a detailed description of how to use the Avro converter.
+See link:/docs/configuration/avro/[Avro Serialization] for a detailed description of how to use the Avro converter.
 
 Our Docker images for Kafka Connect include the Avro Converter as an option.
 
@@ -123,6 +130,27 @@ When the Debezium's systems crash, they are not always able to record their last
 
 Additionally, network failures may cause the Debezium connectors to not receive confirmation of writes, resulting in the same event being recorded one or more times (until confirmation is received).
 
+== What is causing intermittent ``EventDataDeserializationException``s with the MySQL connector?
+
+When you run into intermittent deserialization exceptions around 1 minute after starting connector, with a root cause of type `EOFException` or `java.net.SocketException: Connection reset`:
+
+```
+Caused by: com.github.shyiko.mysql.binlog.event.deserialization.EventDataDeserializationException: Failed to deserialize data of EventHeaderV4{timestamp=1542193955000, eventType=GTID, serverId=91111, headerLength=19, dataLength=46, nextPosition=1058898202, flags=0}
+Caused by: java.lang.RuntimeException: com.github.shyiko.mysql.binlog.event.deserialization.EventDataDeserializationException: Failed to deserialize data of EventHeaderV4{timestamp=1542193955000, eventType=GTID, serverId=91111, headerLength=19, dataLength=46, nextPosition=1058898202, flags=0}
+Caused by: java.io.EOFException
+
+or
+
+Caused by: java.net.SocketException: Connection reset
+```
+
+Then updating these MySQL server global properties like this will fix it:
+
+```
+set global slave_net_timeout = 120; (default was 30sec)
+set global thread_pool_idle_timeout = 120;
+```
+
 == What is Kafka?
 
 http://kafka.apache.org[Apache Kafka] is a fast, scalable, durable, and distributed messaging system that records all messages in replicated, partitioned, and totally-ordered transaction logs. Consumers keep track of their position in the logs, and can control this position indepdently of all other consumers. This means that some consumers can start from the very beginning of the log while others are keeping up with the most recently-recorded messages. Kafka operates as a dynamic cluster of brokers. Each log partition is replicated to multiple brokers so that, should any broker fail, the cluster still has multiple copies of the partition.
@@ -144,7 +172,7 @@ This name will be published by Zookeeper to clients asking for the Kafka broker'
 
 == What database size can be handled with the default memory settings for the Connect image?
 
-The memory consumption during start-up and runtime depends on the total number if tables in the database that is monitored by Debezium, the number of columns in each table and also the amount of events coming from the database.
+The memory consumption during start-up and runtime depends on the total number of tables in the database that is monitored by Debezium, the number of columns in each table and also the amount of events coming from the database.
 As a rule of thumb the default memory settings (maximum heap set to 256 MB) will manage to handle databases where the total count of columns across all tables is less than 10000.
 
 == How to retrieve DECIMAL field from binary representation?
@@ -181,7 +209,7 @@ Next step is to find out the last offset for the given connector, key under whic
 An example would be:
 
 ```
-$ kafkacat -b localhost -C -t my_connect_offsets -'Partition(%p) %k %s\n'
+$ kafkacat -b localhost -C -t my_connect_offsets -f 'Partition(%p) %k %s\n'
 Partition(11) ["inventory-connector",{"server":"dbserver1"}] {"ts_sec":1530088501,"file":"mysql-bin.000003","pos":817,"row":1,"server_id":223344,"event":2}
 Partition(11) ["inventory-connector",{"server":"dbserver1"}] {"ts_sec":1530168941,"file":"mysql-bin.000004","pos":3261,"row":1,"server_id":223344,"event":2}
 ```
@@ -192,3 +220,14 @@ To move back to a previous offset the connector should be stopped and the follow
 $ echo '["inventory-connector",{"server":"dbserver1"}]|{"ts_sec":1530168950,"file":"mysql-bin.000003","pos":817,"row":1,"server_id":223344,"event":2}' | \
 kafkacat -P -b localhost -t my_connect_offsets -K \| -p 11
 ```
+
+== Why can't tombstone events be printed with KSQL?
+
+When using the KSQL streaming query engine, tombstone events (as created by the Debezium connector by default when deleting a record in a captured table) are not supported:
+
+```
+PRINT 'dbserver.inventory.orders' FROM BEGINNING;
+com.fasterxml.jackson.databind.node.NullNode cannot be cast to com.fasterxml.jackson.databind.node.ObjectNode
+```
+
+Consider to remove tombstone events by using the link:/docs/configuration/event-flattening/[after state extraction SMT] and its options for dropping tombstones.

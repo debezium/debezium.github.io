@@ -16,16 +16,18 @@ Please see below for a descriptions of known limitations of this transformation.
 This SMT is supported only for the MongoDB connector.
 ====
 
-[CAUTION]
+[WARNING]
 ====
-There is a https://issues.jboss.org/browse/DBZ-624[known issue] which prevents processing of update messages when MongoDB 3.6 is used.
+0.9.0 Backwards compatible breaking changes
+
+Breaking changes were introduced together with handling deletions features, the previous default behavior was to keep deletion messages, now the new default behavior is to remove them. To change this setting please refer to link:#configuration_options[`delete.handling.mode`] and link:#configuration_options[`drop.tombstones`]
 ====
 
 The Debezium MongoDB connector generates the data in a form of a complex message structure.
 The message consists of two parts:
 
 * operation and metadata
-* for inserts, the row data after the insert has been executed; for updates a patch element describing the altered fields
+* for inserts, the whole data after the insert has been executed; for updates a patch element describing the altered fields
 
 The `after` and `patch` elements are Strings containing JSON representations of the inserted/altered data.
 E.g. the general message structure for a insert event looks like this:
@@ -70,6 +72,9 @@ The configuration is a part of sink task connector and is expressed in a set of 
 ----
 transforms=unwrap,...
 transforms.unwrap.type=io.debezium.connector.mongodb.transforms.UnwrapFromMongoDbEnvelope
+transforms.unwrap.drop.tombstones=false
+transforms.unwrap.delete.handling.mode=drop
+transforms.unwrap.operation.header=true
 ----
 
 === Array encoding
@@ -83,14 +88,14 @@ To bypass this impedance mismatch it is possible to encode the array in two diff
 ----
 transforms=unwrap,...
 transforms.unwrap.type=io.debezium.connector.mongodb.transforms.UnwrapFromMongoDbEnvelope
-transforms.unwrap.array.encoding=<array|struct>
+transforms.unwrap.array.encoding=<array|document>
 ----
 
 Value `array` (the default) will encode arrays as the array datatype.
 It is user's responsibility to ensure that all elements for a given array instance are of the same time.
 This option is a restricting one but offers easy processing of arrays by downstream clients.
 
-Value `struct` will convert the array into a *struct* of *structs* in the similar way as done by http://bsonspec.org/[BSON serialization].
+Value `document` will convert the array into a *struct* of *structs* in the similar way as done by http://bsonspec.org/[BSON serialization].
 The main *struct* contains fields named `_0`, `_1`, `_2` etc. where the name represents the index of the element in the array.
 Every element is then passed as the value for the give field.
 
@@ -177,9 +182,81 @@ Such document will be encoded as
 
 This option allows you to convert a hierarchical document into a flat structure suitable for a table-like storage.
 
+=== MongoDB `$unset` handling
+
+MongoDB allows you to make `$unset` operations which allows you to remove a certain field from a Document, and since the collections are schemaless it becomes hard to find a way to tell the consumers/sinkers which a field is now missing, the approach debezium uses is to set the desired to remove field to null value.
+
+Given the operation
+[source,json,indent=0]
+----
+{
+    "after":null,
+    "patch":"{\"$unset\" : {\"a\" : true}}"
+}
+----
+
+The final encoding will look like
+[source,json,indent=0]
+----
+{
+    "id": 1,
+    "a": null
+}
+----
+
+Note that other mongo operations might cause an `$unset` internally, `$rename` is one example.
+
+=== Determine original operation
+
+When a message is flattened the final result won't show whether it was an insert, update or first read (Deletions can be detected via tombstones or rewrites, see link:#configuration_options[Configuration options]).
+
+To solve this problem Debezium offers an option to propagate the original operation via a header added to the message.
+To enable this feature the option `operation.header` must be set to `true`.
+
+[source]
+----
+transforms=unwrap,...
+transforms.unwrap.type=io.debezium.connector.mongodb.transforms.UnwrapFromMongoDbEnvelope
+transforms.unwrap.operation.header=true
+----
+
+The possible values are the ones from the `op` field of link:docs/connectors/mongodb/#change-events-value[MongoDB connector change events].
+
+== Configuration options
+[cols="35%a,10%a,55%a",width=100,options="header,footer",role="table table-bordered table-striped"]
+|=======================
+|Property
+|Default
+|Description
+
+|`array.encoding`
+|`array`
+|The SMT converts MongoDB arrays into arrays as defined by Apache Connect (or Apache Avro) schema.
+
+|`flatten.struct`
+|`false`
+|The SMT flattens structs by concatenating the fields into plain properties, using a configurable delimiter.
+
+|`flatten.struct.delimiter`
+|`_`
+|Delimiter to concat between field names from the input record when generating field names for the output record. Only applies when `flatten.struct` is set to `true`
+
+|`operation.header`
+|`false`
+|The SMT adds the link:docs/connectors/mongodb/#change-events-value[event operation] as a message header.
+
+|`drop.tombstones`
+|`true`
+|The SMT removes the tombstone generated by Debezium from the stream.
+
+|`delete.handling.mode`
+|`drop`
+|The SMT can `drop`, `rewrite` or pass delete records (`none`). The `rewrite` mode will add a `__deleted` field set to `true` or `false` depending on the represented operation.
+|=======================
+
+
 == Known limitations
 
 * Feeding data changes from a schemaless store such as MongoDB to strictly schema-based datastores such as a relational database can by definition work within certain limits only.
 Specifically, all fields of documents within one collection with the same name must be of the same type. Otherwise, no consistent column definition can be derived in the target database.
 * Arrays will be restored in the emitted Kafka Connect record correctly, but they are not supported by sink connector just expecting a "flat" message structure.
-* Currently it's not possible to drop deletes and tomb stone events. This requirement is tracked as https://issues.jboss.org/browse/DBZ-563[DBZ-563].
