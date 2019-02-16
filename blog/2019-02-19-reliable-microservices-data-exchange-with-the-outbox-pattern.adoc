@@ -299,6 +299,7 @@ Here is the code of its `apply()` method, which will be invoked by Kafka Connect
 
 [source,java]
 ----
+@Override
 public R apply(R record) {
     // Ignoring tombstones just in case
     if (record.value() == null) {
@@ -317,7 +318,7 @@ public R apply(R record) {
         Struct after = struct.getStruct("after");
 
         String key = after.getString("aggregateid");
-        String topic = after.getString("aggregatetype");
+        String topic = after.getString("aggregatetype") + "Events";
 
         String eventId = after.getString("id");
         String eventType = after.getString("type");
@@ -353,7 +354,8 @@ Such record will be propagated to Apache Kafka.
 
 Debezium's change events have a complex structure, that contain the old (`before`) and new (`after`) state of the represented row.
 The event structure to propagate is obtained from the `after` state.
-The `aggregatetype` value from the captured event record is used as the name of the topic to send the event to.
+The `aggregatetype` value from the captured event record is used to build the name of the topic to send the event to.
+For instance, events with `aggregatetype` set to `Order` will be sent to the `OrderEvents` topic.
 `aggregateid` is used as the message key, making sure all messages of that aggregate will go into the same partition of that topic.
 The message value is a structure comprising the original event payload (encoded as JSON),
 the timestamp indicating when the event was produced and the event type.
@@ -362,7 +364,7 @@ This allows for efficient duplicate detection by consumers, without having to ex
 
 == Events in Apache Kafka
 
-Now let's take a look into the `Order` and `Customer` topics.
+Now let's take a look into the `OrderEvents` and `CustomerEvents` topics.
 
 If you have checked out the example sources and started all the components via Docker Compose
 (see the _README.md_ file in the example project for more details),
@@ -380,26 +382,27 @@ Similarly, specific order lines can be canceled:
 cat resources/data/cancel-order-line-request.json | http PUT http://localhost:8080/order-service/rest/orders/1/lines/2
 ----
 
-When using a tool such as the very practical _kafkacat_ utility, you should now see messages like these in the `Order` topic:
+When using a tool such as the very practical https://github.com/edenhill/kafkacat[kafkacat] utility,
+you should now see messages like these in the `OrderEvents` topic:
 
 [source]
 ----
-kafkacat -b kafka:9092 -C -o beginning -f 'Headers: %h\nKey: %k\nValue: %s\n' -t Order
+kafkacat -b kafka:9092 -C -o beginning -f 'Headers: %h\nKey: %k\nValue: %s\n' -q -t OrderEvents
 ----
 
 [source]
 ----
-Headers: eventId=b2afe4be-6c1a-46fb-b60a-6b232ce70cad
-Key: "1"
-Value: {"eventType":"OrderCreated","ts_ms":1550247797707,"payload":"{\"id\": 1, \"customer\": 123, \"lineItems\": [{\"id\": 1, \"item\": \"Debezium in Action\", \"status\": \"ENTERED\", \"quantity\": 2, \"totalPrice\": 39.98}, {\"id\": 2, \"item\": \"Debezium for Dummies\", \"status\": \"ENTERED\", \"quantity\": 1, \"totalPrice\": 29.99}], \"orderDate\": \"2019-01-31T12:13:01\"}"}
-
-Headers: eventId=cbc6817b-2b3a-42c7-8b33-83b71fa0cbe6
-Key: "1"
-Value: {"eventType":"OrderLineUpdated","ts_ms":1550248411631,"payload":"{\"orderId\": 1, \"newStatus\": \"CANCELLED\", \"oldStatus\": \"ENTERED\", \"orderLineId\": 2}"}
+Headers: eventId=d03dfb18-8af8-464d-890b-09eb8b2dbbdd
+Key: "4"
+Value: {"eventType":"OrderCreated","ts_ms":1550307598558,"payload":"{\"id\": 4, \"lineItems\": [{\"id\": 7, \"item\": \"Debezium in Action\", \"status\": \"ENTERED\", \"quantity\": 2, \"totalPrice\": 39.98}, {\"id\": 8, \"item\": \"Debezium for Dummies\", \"status\": \"ENTERED\", \"quantity\": 1, \"totalPrice\": 29.99}], \"orderDate\": \"2019-01-31T12:13:01\", \"customerId\": 123}"}
+Headers: eventId=49f89ea0-b344-421f-b66f-c635d212f72c
+Key: "4"
+Value: {"eventType":"OrderLineUpdated","ts_ms":1550308226963,"payload":"{\"orderId\": 4, \"newStatus\": \"CANCELLED\", \"oldStatus\": \"ENTERED\", \"orderLineId\": 7}"}
 ----
 
 The `payload` field with the message values is the string-ified JSON representation of the original events.
-The _jq_ utility, and more specifically, its `fromjson` operator comes in handy for displaying the event payload:
+The https://stedolan.github.io/jq/[jq] utility, and more specifically,
+its `fromjson` operator comes in handy for displaying the event payload in a more readable way:
 
 [source]
 ----
@@ -408,38 +411,38 @@ kafkacat -b kafka:9092 -C -o beginning -t Order | jq '.payload | fromjson'
 
 [source,json]
 ----
-{
-  "id": 2,
-  "customer": 0,
+
+  "id": 4,
   "lineItems": [
     {
-      "id": 3,
+      "id": 7,
       "item": "Debezium in Action",
       "status": "ENTERED",
       "quantity": 2,
       "totalPrice": 39.98
     },
     {
-      "id": 4,
+      "id": 8,
       "item": "Debezium for Dummies",
       "status": "ENTERED",
       "quantity": 1,
       "totalPrice": 29.99
     }
   ],
-  "orderDate": "2019-01-31T12:13:01"
+  "orderDate": "2019-01-31T12:13:01",
+  "customerId": 123
 }
 {
-  "orderId": 1,
+  "orderId": 4,
   "newStatus": "CANCELLED",
-  "oldStatus": "CANCELLED",
-  "orderLineId": 2
+  "oldStatus": "ENTERED",
+  "orderLineId": 7
 }
 ----
 
-You can also take a look at the `Customer` topic to inspect the events representing the creation of an invoice when a purchase order is added.
+You can also take a look at the `CustomerEvents` topic to inspect the events representing the creation of an invoice when a purchase order is added.
 
-=== Duplicate Detection in the Consumer
+=== Duplicate Detection in the Consuming Service
 
 At this point, our implementation of the outbox pattern is fully functional;
 when the order service receives a request to place an order
