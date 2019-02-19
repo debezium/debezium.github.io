@@ -1,7 +1,16 @@
 = Reliable Microservices Data Exchange With the Outbox Pattern
 gmorling
-:awestruct-tags: [ discussion, examples ]
+:awestruct-tags: [ discussion, examples, microservices, apache-kafka ]
 :awestruct-layout: blog-post
+
+[role="teaser"]
+--
+As part of their business logic, microservices often do not only have to update their own local data store,
+but they also need to notify other services about data changes that happened.
+The outbox pattern describes an approach for letting services execute these two tasks in a safe and consistent manner;
+it provides source services with instant "read your own writes" semantics,
+while offering reliable, eventually consistent data exchange across service boundaries.
+--
 
 If you've built a couple of microservices,
 you'll probably agree that the https://blog.christianposta.com/microservices/the-hardest-part-about-microservices-data/[hardest part about them is data]:
@@ -24,13 +33,13 @@ this is not the case if a service actually needs to _query_ other services for i
 For instance, when a purchase order is placed, the order service might need to obtain the information how many times the purchased item is on stock from an inventory service.
 
 Another downside of such a synchronous approach is that it lacks re-playability,
-i.e. the possibility for new consumers to arrive long after events have been sent and still be able to consume the entire event stream from the beginning.
+i.e. the possibility for new consumers to arrive after events have been sent and still be able to consume the entire event stream from the beginning.
 
 Both problems can be addressed by using an asynchronous data exchange approach instead:
 i.e having the order, inventory and other services propagate events through a durable message log such as http://kafka.apache.org/[Apache Kafka].
 By subscribing to these event streams, each service will be notified about the data change of other services.
-It can react to these events and, if needed, create a local representation of that data in its own database,
-using a representation specifically tailored towards its own needs.
+It can react to these events and, if needed, create a local representation of that data in its own data store,
+using a representation tailored towards its own needs.
 For instance, such view might be denormalized to efficiently support specific access patterns, or it may only contain a subset of the original data that's relevant to the consuming service.
 
 Durable logs also support re-playability,
@@ -38,20 +47,30 @@ i.e. new consumers can be added as needed, enabling use cases you might not have
 and without touching the source service.
 E.g. consider a data warehouse which should keep information about all the orders ever placed, or some full-text search functionality on purchase orders based on https://www.elastic.co/products/elasticsearch[Elasticsearch].
 Once the purchase order events are in a Kafka topic
-(and depending on the topic's retention policy, they could remain there for an arbitrary long time, or even indefinitely),
+(Kafka's topic's retention policy settings can be used to ensure that events remain in a topic as long as its needed for the given use cases and business requirements),
 new consumers can subscribe, process the topic from the very beginning and materialize a view of all the data in a microservice's database, search index, data warehouse etc.
+
+.Dealing with Topic Growth
+[NOTE]
+===============================
+Depending on the amount of data (number of records, frequency of changes),
+it may or may not be feasible to keep events in Apache Kafka for a long or even indefinite time.
+Very often, some or even all events pertaining to a given data item
+(e.g. a specific purchase order) might be eligible for deletion from a business point of view after a given point in time.
+See the box "Deletion of Events from Kafka Topics" further below for some more thoughts on the deletion of events from Kafka topics in order to keep their size within bounds.
+===============================
 
 == The Issue of Dual Writes
 
-In order to provide their functionality, data-centered microservices will typically have their own local data store.
+In order to provide their functionality, microservices will typically have their own local data store.
 For instance, the order service may use a relational database to persist the information about purchase orders.
-When a new order is placed, this may result in an `INSERT` operation in a table `PurchaseOrder` in the service's own database.
+When a new order is placed, this may result in an `INSERT` operation in a table `PurchaseOrder` in the service's database.
 At the same time, the service may wish to send an event about the new order to Apache Kafka,
 so to propagate that information to other interested services.
 
 Simply issuing these two requests may lead to potential inconsistencies, though.
 The reason being that we cannot have one shared transaction that would span the service's database as well as Apache Kafka,
-as the latter doesn't support to be enlisted in a distributed (XA) transaction.
+as the latter doesn't support to be enlisted in distributed (XA) transactions.
 So in unfortunate circumstances it might happen that we end up with having the new purchase order persisted in the local database,
 but not having sent the corresponding message to Kafka
 (e.g. due to some networking issue).
@@ -61,11 +80,11 @@ this may cause no shipment to be created for a seemingly successfully placed ord
 Or a shipment gets created, but then there'd be no trace about the corresponding purchase order in the order service itself.
 
 So how can this situation be avoided?
-The answer is to only modify _one_ of the two resources (database or Apache Kafka) and drive the update of the second one based on that, in an eventually consistent manner.
+The answer is to only modify _one_ of the two resources (the database _or_ Apache Kafka) and drive the update of the second one based on that, in an eventually consistent manner.
 Let's first consider the case of only writing to Apache Kafka.
 
-When receiving a new purchase order, the order service would not do the `INSERT` into its database synchronously,
-instead it would only send an event describing the new order to a Kafka topic.
+When receiving a new purchase order, the order service would not do the `INSERT` into its database synchronously;
+instead, it would only send an event describing the new order to a Kafka topic.
 So only one resource gets modified at a time, and if something goes wrong with that,
 we'll find out about it instantly and report back to the caller of the order service that the request failed.
 
@@ -78,7 +97,7 @@ it might happen that the purchase order has not yet been persisted in the servic
 That can lead to a very confusing user experience, as users for instance may miss newly placed orders in their shopping history.
 There are ways to deal with this situation, e.g. the service could keep newly placed purchase orders in memory and answer subsequent queries based on that.
 This gets quickly non-trivial though when implementing more complex queries or considering that the order service might also comprise multiple nodes in a clustered set-up,
-which would require propagation if that data within the cluster.
+which would require propagation of that data within the cluster.
 
 Now how would things look like when only writing to the database synchronously and driving the export of a message to Apache Kafka based on that?
 This is where the outbox pattern comes in.
@@ -87,21 +106,21 @@ This is where the outbox pattern comes in.
 
 The idea of this approach is to have an "outbox" table in the service's database.
 When receiving a request for placing a purchase order, not only an `INSERT` into the `PurchaseOrder` table is done,
-but at the same time, as part of the same transaction,
-also a record describing the event to be sent is inserted into that outbox table.
+but, as part of the same transaction,
+also a record representing the event to be sent is inserted into that outbox table.
 
 The record describes an event that happened in the service,
 for instance it could be a JSON structure representing the fact that a new purchase order has been placed,
 comprising data on the order itself, its order lines as well as contextual information such as a use case identifier.
-By explicitly emitting events via the  the records for the outbox table,
-the application code can make sure the events are structured in a way suitable for external consumers
-and ensure to not break those consumers,
-when for instance altering its internal domain model and the `PurchaseOrder` table.
+By explicitly emitting events via records in the outbox table,
+it can be ensured that events are structured in a way suitable for external consumers.
+This also helps to make sure that event consumers won't break
+when for instance altering the internal domain model or the `PurchaseOrder` table.
 
 An asynchronous process monitors that table for new entries.
 If there are any, it propagates the events as messages to Apache Kafka.
 This gives us a very nice balance of characteristics:
-By synchronously writing to the `PurchaseOrder` table, "read your own writes" semantics are ensured.
+By synchronously writing to the `PurchaseOrder` table, the source service benefits from "read your own writes" semantics.
 A subsequent query for purchase orders will return the newly persisted order, as soon as that first transaction has been committed.
 At the same time, we get reliable, asynchronous, eventually consistent data propagation to other services via Apache Kafka.
 
@@ -111,7 +130,7 @@ In fact, even when using JMS-style message brokers, which actually could partici
 it can be a preferable option to avoid any coupling and potential impact by downtimes of remote resources such as a message broker.
 You can also find a description of the pattern on Chris Richardson's excellent https://microservices.io/patterns/data/application-events.html[microservices.io] site.
 
-Nevertheless, the pattern gets much less attention than it deserves and is especially useful in the context of microservices.
+Nevertheless, the pattern gets much less attention than it deserves and it is especially useful in the context of microservices.
 As we'll see, the outbox pattern can be implemented in a very elegant and efficient way using change data capture and Debezium.
 In the following, let's explore how.
 
@@ -126,11 +145,11 @@ You can find the complete https://github.com/debezium/debezium-examples/tree/mas
 Refer to the https://github.com/debezium/debezium-examples/blob/master/outbox/README.md[README.md] for details on building and running the example code.
 The example is centered around two microservices,
 https://github.com/debezium/debezium-examples/tree/master/outbox/order-service[order-service] and https://github.com/debezium/debezium-examples/tree/master/outbox/shipment-service[shipment-service].
-Both are implemented in Java, using CDI as the component model and JPA/Hibernate for accessing their respective databases.
-The order service runs on http://wildfly.org/[WildFly] and exposes a simple REST API for receiving requests to place purchase orders and cancel specific order lines.
+Both are implemented in Java, using http://cdi-spec.org/[CDI] as the component model and JPA/Hibernate for accessing their respective databases.
+The order service runs on http://wildfly.org/[WildFly] and exposes a simple REST API for placing purchase orders and canceling specific order lines.
 It uses a Postgres database as its local data store.
 The shipment service is based on http://thorntail.io/[Thorntail]; via Apache Kafka, it receives events exported by the order service and creates corresponding shipment entries in its own MySQL database.
-Debezium tails the transaction log ("write-ahead log", WAL) of the order service's Postgres database in order to capture any new events in the outbox table and propagate them to Apache Kafka.
+Debezium tails the transaction log ("write-ahead log", WAL) of the order service's Postgres database in order to capture any new events in the outbox table and propagates them to Apache Kafka.
 
 The overall architecture of the solution can be seen in the following picture:
 
@@ -141,7 +160,9 @@ The overall architecture of the solution can be seen in the following picture:
 ++++
 
 Note that the pattern is in no way tied to these specific implementation choices.
-It could be equally well be realized using alternative technologies such as Spring Boot, plain JDBC or other programming languages than Java altogether.
+It could equally well be realized using alternative technologies such as Spring Boot
+(e.g. leveraging Spring Data's https://docs.spring.io/spring-data/commons/docs/current/api/index.html?org/springframework/data/domain/DomainEvents.html[support for domain events]),
+plain JDBC or other programming languages than Java altogether.
 
 Now let's take a closer look at some of the relevant components of the solution.
 
@@ -164,18 +185,27 @@ Its columns are these:
 
 * `id`: unique id of each message; can be used by consumers to detect any duplicate events, e.g. when restarting to read messages after a failure.
 Generated when creating a new event.
-* `aggregatetype`: the type of the aggregate root to which a given event is related; this could for instance be "purchase order" or "customer".
-This value will be used as the name of the corresponding topic in Kafka, so there'd be a topic for all events related to purchase orders,
+* `aggregatetype`: the type of the _aggregate root_ to which a given event is related;
+the idea being, leaning on the same concept of domain-driven design,
+that exported events should refer to an aggregate
+(https://martinfowler.com/bliki/DDD_Aggregate.html["a cluster of domain objects that can be treated as a single unit"]),
+where the aggregate root provides the sole entry point for accessing any of the entities within the aggregate.
+This could for instance be "purchase order" or "customer".
++
+This value will be used to route events to corresponding topics in Kafka,
+so there'd be a topic for all events related to purchase orders,
 one topic for all customer-related events etc.
-Note that also events pertaining to a sub-entity contained within an aggregate should use that same type,
-so e.g. an event representing the cancelation of an individual order line should also use the aggregate type "order",
+Note that also events pertaining to a child entity contained within one such aggregate should use that same type.
+So e.g. an event representing the cancelation of an individual order line
+(which is part of the purchase order aggregate)
+should also use the type of its aggregate root, "order",
 ensuring that also this event will go into the "order" Kafka topic.
-* `aggregateid`: the id of the aggregate root that is affected by a given event; this could for instance be a purchase order id or a customer id;
+* `aggregateid`: the id of the aggregate root that is affected by a given event; this could for instance be the id of a purchase order or a customer id;
 Similar to the aggregate type, events pertaining to a sub-entity contained within an aggregate should use the id of the containing aggregate root,
 e.g. the purchase order id for an order line cancelation event.
-This id will be used as the key for Kafka message later on.
+This id will be used as the key for Kafka messages later on.
 That way, all events pertaining to one aggregate root or any of its contained sub-entities will go into the same partition of that Kafka topic,
-which ensures that consumers of that topic will consume all the events related to one and the same aggregate root in the exact order as they were produced.
+which ensures that consumers of that topic will consume all the events related to one and the same aggregate in the exact order as they were produced.
 * `type`: the type of event, e.g. "Order Created" or "Order Line Canceled". Allows consumers to trigger suitable event handlers.
 * `payload`: a JSON structure with the actual event contents, e.g. containing a purchase order, information about the purchaser, contained order lines, their price etc.
 
@@ -224,16 +254,18 @@ public class OrderService {
     }
 
     @Transactional
-    public PurchaseOrder updateOrderLine(long orderId, long orderLineId, OrderLineStatus newStatus) {
+    public PurchaseOrder updateOrderLine(long orderId, long orderLineId,
+            OrderLineStatus newStatus) {
         // ...
     }
 }
 ----
 
 In the `addOrder()` method, the JPA entity manager is used to persist the incoming order in the database
-and the injected `event` is used to fire a corresponding `OrderCreatedEvent` and a `InvoiceCreatedEvent`.
+and the injected `event` is used to fire a corresponding `OrderCreatedEvent` and an `InvoiceCreatedEvent`.
 Again, keep in mind that, despite the notion of "event", these two things happen within one and the same transaction.
-i.e. within this transaction, three records will be inserted: one in the table with purchase orders and two in the outbox table.
+i.e. within this transaction, three records will be inserted into the database:
+one in the table with purchase orders and two in the outbox table.
 
 Actual event implementations are straight-forward;
 as an example, here's the `OrderCreatedEvent` class:
@@ -310,7 +342,10 @@ public class EventSender {
 
     public void onExportedEvent(@Observes ExportedEvent event) {
         OutboxEvent outboxEvent = new OutboxEvent(
-                event.getAggregateType(), event.getAggregateId(), event.getType(), event.getPayload()
+                event.getAggregateType(),
+                event.getAggregateId(),
+                event.getType(),
+                event.getPayload()
         );
 
         entityManager.persist(outboxEvent);
@@ -326,7 +361,10 @@ This might be surprising at first.
 But it makes sense when remembering how log-based CDC works:
 it doesn't examine the actual contents of the table in the database, but instead it tails the append-only transaction log.
 The calls to `persist()` and `remove()` will create an `INSERT` and a `DELETE` entry in the log once the transaction commits.
-After that, Debezium will process these events (handling the `INSERT` and ignoring the `DELETE`).
+After that, Debezium will process these events:
+for any `INSERT`, a message with the event's payload will be sent to Apache Kafka.
+`DELETE` events on the other hand can be ignored,
+as the removal from the outbox table is a mere technicality that doesn't require any propagation to the message broker.
 So we are able to capture the event added to the outbox table by means of CDC,
 but when looking at the contents of the table itself, it will always be empty.
 This means that no additional disk space is needed for the table
@@ -370,14 +408,26 @@ It also applies a single message transform (SMT) named `EventRouter`.
 [NOTE]
 ===============================
 By setting the `tombstones.on.delete` to `false`, no deletion markers ("tombstones") will be emitted by the connector when an event record gets deleted from the outbox table.
-That makes sense as the deletion from the outbox table shouldn't impact retention of events in the corresponding Kafka topics.
+That makes sense, as the deletion from the outbox table shouldn't affect the retention of events in the corresponding Kafka topics.
 Instead, a specific retention time for the event topics may be configured in Kafka,
 e.g. to retain all purchase order events for 30 days.
 
 Alternatively, one could work with https://kafka.apache.org/documentation/#compaction[compacted topics].
-This would require events from the outbox table to have one more (`boolean`) attribute indicating whether a particular event represents the deletion of the event's aggregate root.
+This would require some changes to the design of events in the outbox table:
+
+* they must describe the entire aggregate;
+so for instance also an event representing the cancelation of a single order line should describe the complete current state of the containing purchase order;
+that way consumers will be able to obtain the entire state of the purchase order also when only seeing the last event pertaining to a given order, after log compaction ran.
+* they must have one more `boolean` attribute indicating whether a particular event represents the deletion of the event's aggregate root.
 Such an event (e.g. of type `OrderDeleted`) could then be used by the event routing SMT described in the next section to produce a deletion marker for that aggregate root.
 Log compaction would then remove all events pertaining to the given purchase order when its `OrderDeleted` event has been written to the topic.
+
+Naturally, when deleting events, the event stream will not be re-playable from its very beginning any longer.
+Depending on the specific business requirements, it might be sufficient to just keep the final state of a given purchase order, customer etc.
+This could be achieved using compacted topics and a sufficiently value for the topic's `delete.retention.ms` setting.
+Another option could be to move historic events to some sort of cold storage (e.g. an Amazon S3 bucket),
+from where they can be retrieved if needed, followed by reading the latest events from the Kafka topics.
+Which approach to follow depends on the specific requirements, expected amount of data and expertise in the team developing and operating the solution.
 ===============================
 
 === Topic Routing
@@ -392,7 +442,7 @@ For instance the shipment service might not be interested in any customer events
 By only subscribing to the `OrderEvents` topic, it will be sure to never receive any customer events.
 
 In order to route the change events captured from the outbox table to different topics, that custom SMT `EventRouter` is used.
-Here is the code of its `apply()` method, which will be invoked by Kafka Connect for reach record emitted by the Debezium connector:
+Here is the code of its `apply()` method, which will be invoked by Kafka Connect for each record emitted by the Debezium connector:
 
 [source,java]
 ----
@@ -438,6 +488,8 @@ public R apply(R record) {
         return record.newRecord(topic, null, Schema.STRING_SCHEMA, key, valueSchema, value,
                 record.timestamp(), headers);
     }
+    // not expecting update events, as the outbox table is "append only",
+    // i.e. event records will never be updated
     else {
         throw new IllegalArgumentException("Record of unexpected op type: " + record);
     }
@@ -445,7 +497,7 @@ public R apply(R record) {
 ----
 
 When receiving a delete event (`op` = `d`), it will discard that event,
-as that deletion of event records from the outbox table is only a technicality not relevant to downstream consumers.
+as that deletion of event records from the outbox table is not relevant to downstream consumers.
 Things get more interesting, when receiving a create event (`op` = `c`).
 Such record will be propagated to Apache Kafka.
 
@@ -502,7 +554,7 @@ The Debezium Postgres connector emits `JSONB` columns as a string
 (using the `io.debezium.data.Json` logical type name),
 which is why the quotes are escaped.
 The https://stedolan.github.io/jq/[jq] utility, and more specifically,
-its `fromjson` operator comes in handy for displaying the event payload in a more readable way:
+its `fromjson` operator, come in handy for displaying the event payload in a more readable way:
 
 [source]
 ----
@@ -511,7 +563,7 @@ kafkacat -b kafka:9092 -C -o beginning -t Order | jq '.payload | fromjson'
 
 [source,json]
 ----
-
+{
   "id": 4,
   "lineItems": [
     {
@@ -553,9 +605,9 @@ The Debezium Postgres connector captures any insertions into that table
 and routes the events into the Kafka topic corresponding to the aggregate type represented by a given event.
 
 To wrap things up, let's explore how another microservice such as the shipment service can consume these messages.
-The entry point into that service is a regular https://github.com/debezium/debezium-examples/blob/master/outbox/shipment-service/src/main/java/io/debezium/examples/outbox/shipment/facade/KafkaEventConsumer.java[Kafka consumer implementation],
+The entry point into that service is a regular Kafka consumer implementation,
 which is not too exciting and hence omitted here for the sake of brevity.
-You can find its source code here in the example repository.
+You can find its https://github.com/debezium/debezium-examples/blob/master/outbox/shipment-service/src/main/java/io/debezium/examples/outbox/shipment/facade/KafkaEventConsumer.java[source code] in the example repository.
 For each incoming message on the `Order` topic, the consumer calls the `OrderEventHandler`:
 
 [source,java]
@@ -610,7 +662,7 @@ For instance it could happen that the Debezium connector or the consuming servic
 before acknowledging the retrieval of a specific event with the source database or the messaging broker, respectively.
 In that case, after a restart of Debezium or the consuming service,
 a few events may be processed a second time.
-Propagating the event UUID as a Kafka message header allows for an efficient detection and exclusion duplicate in the consumer.
+Propagating the event UUID as a Kafka message header allows for an efficient detection and exclusion of duplicates in the consumer.
 
 If a message is received for the first time, the message value is parsed and the business method of the `ShippingService` method corresponding to the specific event type is invoked with the event payload.
 Finally, the message is marked as processed with the message log.
@@ -661,7 +713,7 @@ Apache Kafka acts as a highly scalable and reliable backbone for the messaging a
 Given the right topic retention settings, new consumers may come up long after an event has been originally produced,
 and build up their own local state based on the event history.
 
-Putting Apache Kafka into the middle of the overall architecture also ensures a decoupling of involved services.
+Putting Apache Kafka into the center of the overall architecture also ensures a decoupling of involved services.
 If for instance single components of the solution fail or are not available for some time, e.g. during an update,
 events will simply be processed later on: after a restart,
 the Debezium connector will continue to tail the outbox table from the point where it left off before.
@@ -680,7 +732,7 @@ I.e. when needed, their structure should be adjusted carefully and with compatib
 This is to ensure to not accidentally break any consumers when upgrading the producing service.
 At the same time, consumers should be lenient when handling messages and for instance not fail when encountering unknown attributes within received events.
 
-Many thanks to Jiri Pechanec and René Kerner for their feedback while writing this post!
+_Many thanks to Hans-Peter Grahsl, Jiri Pechanec, Justin Holmes and René Kerner for their feedback while writing this post!_
 
 == About Debezium
 
