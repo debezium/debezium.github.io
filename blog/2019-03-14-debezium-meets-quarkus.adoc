@@ -27,6 +27,22 @@ It provides the same functionality as the `shipment-service` does with few imple
  * JSON-P API is not supported yet, the JSON parser of choice is Jackson. The code has been modified to use Jackson API instead of JSON-P API.
  * Quarkus supports https://github.com/eclipse/microprofile-reactive-messaging[Reactive Messaging for MicroProfile] via http://smallrye.io/[SmallRye] implementation. We no longer need to use Kafka client as the message listener is implemented declaratively.
 
+Kafka message listener now can be likened to a `MessageListener` from JMS API or message-driven bean.
+The difference is that it is just enough to annotate a method with `@Incoming` annotation and it is automatically invoked when an event from Kafka arrives.
+
+[source,java]
+----
+@ApplicationScoped
+public class KafkaEventConsumer {
+...
+
+    @Incoming("orders")
+    public CompletionStage<Void> onMessage(KafkaMessage<String, String> message) throws IOException {
+    ...
+    }
+}
+----
+
 == Build process
 
 The build process is almost the same as was original.
@@ -34,6 +50,61 @@ There are two changes though
 
  * the `native` profile is enabled in Maven build. This implies that the service will use GraalVM and be compiled into a native binary image.
  * `native-image.docker-build` system property is enabled. This means that the native image build is done inside a Docker container and that the developer's machine does not need to have GraalVM installed locally.
+
+All the work behind the scenes is done by Quarkus Maven plugin that is configured in `pom.xml` as
+[source,xml]
+----
+  <build>
+    <finalName>shipment</finalName>
+    <plugins>
+      <plugin>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>${version.surefire}</version>
+        <configuration>
+          <systemProperties>
+            <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
+          </systemProperties>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>io.quarkus</groupId>
+        <artifactId>quarkus-maven-plugin</artifactId>
+        <version>${version.quarkus}</version>
+        <executions>
+          <execution>
+            <goals>
+              <goal>build</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+...
+    <profile>
+      <id>native</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-maven-plugin</artifactId>
+            <version>${version.quarkus}</version>
+            <executions>
+              <execution>
+                <goals>
+                  <goal>native-image</goal>
+                </goals>
+                <configuration>
+                  <enableHttpUrlHandler>true</enableHttpUrlHandler>
+                  <autoServiceLoaderRegistration>false</autoServiceLoaderRegistration>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+----
 
 == Configuration
 
@@ -51,6 +122,9 @@ When an event is created it is processed by both services as they are using dist
 == Performance numbers
 
 The numbers are definitely not scientific but can be seen as an order of magnitude difference between native Quarkus-based application and OpenJDK Thorntail-based.
+
+The memory data were obtained via `htop` utility.
+The startup time was measured till the message about application readiness was printed.
 
 [cols="30%a,35%a,35%a",options="header,footer",role="table table-bordered table-striped"]
 |=======================
