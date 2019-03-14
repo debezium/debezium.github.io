@@ -5,67 +5,83 @@ jpechane
 
 [role="teaser"]
 --
-A new community project for developing cloud-native applications https://quarkus.io/[Quarkus] has been launched.
-We are going to demonstrate how a Quarkus-based application could be used to consume event messages created with link:2019/02/19/reliable-microservices-data-exchange-with-the-outbox-pattern[outbox pattern].
+Last week's announcement of https://quarkus.io/[Quarkus] sparked a great amount of interest in the Java community:
+crafted from the best of breed Java libraries and standards, it allows to build Kubernetes-native applications based on GraalVM & OpenJDK HotSpot.
+In this blog post we are going to demonstrate how a Quarkus-based microservice can consume Debezium's data change events via Apache Kafka.
+For that purpose, we'll see what it takes to convert the shipment microservice from our recent post about the link:2019/02/19/reliable-microservices-data-exchange-with-the-outbox-pattern[outbox pattern] into Quarkus-based service.
 --
 
-== About Quarkus
-https://quarkus.io/[Quarkus] is a Java stack designed for development of cloud-native applications based on Java platform.
-It provides a subset of best-of-breed technologies and libraries that are neatly integrated together.
-It supports a development of both imperative and reactive applications with support for mixing of both approaches together.
-It is designed for significantly reduced memory consumption and improved startup time.
+Quarkus is a Java stack designed for the development of cloud-native applications based on the Java platform.
+It combines and tightly integrates mature libraries such Hibernate ORM, Vert.x, Netty, RESTEasy and Apache Camel as well as the APIs from the https://microprofile.io/[Eclipse MicroProfile] initiative,
+such as https://github.com/eclipse/microprofile-config[Config] or https://github.com/eclipse/microprofile-reactive-messaging[Reactive Messaging].
+Using Quarkus, you can develop applications using both imperative and reactive styles, also combining both approaches as needed.
 
-Last but not least it supports both OpenJDK HotSpot and GraalVM virtual machines.
+It is designed for significantly reduced memory consumption and improved startup time.
+Last but not least, Quarkus supports both OpenJDK HotSpot and GraalVM virtual machines.
 With GraalVM it is possible to compile the application into a native binary and thus reduce the resource consumption and startup time even more.
 
-== Service implementation
+To learn more about Quarkus itself, we recommend to take a look at its excellent https://quarkus.io/get-started/[Getting Started] guide.
 
-We have extended the https://github.com/debezium/debezium-examples/tree/master/outbox[example application] introduced in the link:2019/02/19/reliable-microservices-data-exchange-with-the-outbox-pattern[recent blog post] with a new service named `shipment-service-quarkus`.
-It provides the same functionality as the `shipment-service` does with few implementation differences
+== Consuming Kafka Messages with Quarkus
 
- * Quarkus right now supports only MariaDB database, not MySQL, so we have included an instance on MariaDB database to which the service is writing
- * JSON-P API is not supported yet, the JSON parser of choice is Jackson. The code has been modified to use Jackson API instead of JSON-P API.
- * Quarkus supports https://github.com/eclipse/microprofile-reactive-messaging[Reactive Messaging for MicroProfile] via http://smallrye.io/[SmallRye] implementation. We no longer need to use Kafka client as the message listener is implemented declaratively.
+In the original https://github.com/debezium/debezium-examples/tree/master/outbox[example application] demonstrating the outbox pattern,
+there was a microservice ("shipment") based on Thorntail that consumed the events produced by the Debezium connector.
+We've extended the example with a new service named "shipment-service-quarkus".
+It provides the same functionality as the "shipment-service" but is implemented as a microservice based on Quarkus instead of Thorntail.
 
-Kafka message listener now can be likened to a `MessageListener` from JMS API or message-driven bean.
-The difference is that it is just enough to annotate a method with `@Incoming` annotation and it is automatically invoked when an event from Kafka arrives.
+This makes the overall architecture look like so:
+
+++++
+<div class="imageblock centered-image">
+    <img src="/images/outbox_pattern_quarkus.png" style="max-width:100%; margin-bottom:20px; margin-top:20px;" class="responsive-image" alt="Outbox Pattern Overview">
+</div>
+++++
+
+To retrofit the original service into a Quarkus-based application, only a few changes were needed:
+
+ * Quarkus right now supports only MariaDB but not MySQL; hence we have included an instance of MariaDB to which the service is writing
+ * The https://javaee.github.io/jsonp/[JSON-P API] used do deserialize incoming JSON messages is not supported yet; so the code has been modified to use the Jackson API which is already is supported by Quarkus
+ * Instead of the Kafka consumer API, the https://github.com/eclipse/microprofile-reactive-messaging[Reactive Messaging API] defined by MicroProfile is used to receive messages from Apache Kafka; as an implementation of that API, the one provided by the https://github.com/smallrye/smallrye-reactive-messaging[SmallRye project] is used.
+
+While the first two steps shouldn't be needed eventually, as Quarkus gains support for more technologies and APIs over time,
+the Reactive Messaging API is a nice simplification over the polling loop in the original consumer.
+All that's needed to consume messages from a Kafka topic is to annotate a method with `@Incoming`,
+and will automatically be invoked when a new message arrives:
 
 [source,java]
 ----
 @ApplicationScoped
 public class KafkaEventConsumer {
-...
 
     @Incoming("orders")
-    public CompletionStage<Void> onMessage(KafkaMessage<String, String> message) throws IOException {
-    ...
+    public CompletionStage<Void> onMessage(KafkaMessage<String, String> message)
+            throws IOException {
+        // handle message...
+
+        return message.ack();
     }
 }
 ----
 
-== Build process
+The "orders" message source is configured via the MicroProfile Config API,
+which resolves it to the "OrderEvents" topic already known from the original outbox example.
 
-The build process is almost the same as was original.
-There are two changes though
+== Build Process
 
- * the `native` profile is enabled in Maven build. This implies that the service will use GraalVM and be compiled into a native binary image.
- * `native-image.docker-build` system property is enabled. This means that the native image build is done inside a Docker container and that the developer's machine does not need to have GraalVM installed locally.
+The build process is almost the same as it was before.
+Besides adding the Quarkus Maven plug-in itself, only two changes were needed:
 
-All the work behind the scenes is done by Quarkus Maven plugin that is configured in `pom.xml` as
+ * A new build profile named `native` has been added; this is used to compile the service into a native binary image using the Quarkus Maven plug-in
+ * the `native-image.docker-build` system property is enabled when running the build; this means that the native image build is done inside of a Docker container, so that GraalVM doesn't have to be installed on the developer's machine
+
+All the heavy-lifting is done by the Quarkus Maven plug-in which is configured in _pom.xml_ like so:
+
 [source,xml]
 ----
   <build>
     <finalName>shipment</finalName>
     <plugins>
-      <plugin>
-        <artifactId>maven-surefire-plugin</artifactId>
-        <version>${version.surefire}</version>
-        <configuration>
-          <systemProperties>
-            <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
-          </systemProperties>
-        </configuration>
-      </plugin>
+      ...
       <plugin>
         <groupId>io.quarkus</groupId>
         <artifactId>quarkus-maven-plugin</artifactId>
@@ -80,7 +96,7 @@ All the work behind the scenes is done by Quarkus Maven plugin that is configure
       </plugin>
     </plugins>
   </build>
-...
+  ...
     <profile>
       <id>native</id>
       <build>
@@ -108,23 +124,21 @@ All the work behind the scenes is done by Quarkus Maven plugin that is configure
 
 == Configuration
 
-The application contains two configuration files
+The application contains two configuration files:
 
- * `application.properties` in our case contains the only definition of a datasource to which the service writes its data
- * `META-INF/microprofile-config.properties` in our case contains a definition of Kafka source from which we consume the outbox events
+ * _application.properties_: the default configuration file of Quarkus applications; contains the definition of a datasource (based on MariaDB) to which the shipment service writes its data
+ * _META-INF/microprofile-config.properties_: contains a definition of the Kafka topic from which we consume the outbox events and the Kafka consumer group id
 
 == Execution
 
-The Docker Compose config file has been enriched with two services - MariaDB and the new shipment service.
-So when `docker-compose up` is executed two shipment services are started side-by-side - Thorntail based and Quarkus based.
-When an event is created it is processed by both services as they are using distinct consumer groups.
+The Docker Compose config file has been enriched with two services, MariaDB and the new Quarkus-based shipment service.
+So when `docker-compose up` is executed, two shipment services are started side-by-side: the original Thorntail-based one and the new one using Quarkus.
+When the order services receives a new purchase order and exports a corresponding event to Apache Kafka via the outbox table,
+that message is processed by both shipment services, as they are using distinct consumer group ids.
 
-== Performance numbers
+== Performance Numbers
 
-The numbers are definitely not scientific but can be seen as an order of magnitude difference between native Quarkus-based application and OpenJDK Thorntail-based.
-
-The memory data were obtained via `htop` utility.
-The startup time was measured till the message about application readiness was printed.
+The numbers are definitely not scientific, but provide a good indication of the order-of-magnitude difference between the native Quarkus-based application and the Thorntail service running on the JVM:
 
 [cols="30%a,35%a,35%a",options="header,footer",role="table table-bordered table-striped"]
 |=======================
@@ -146,10 +160,19 @@ The startup time was measured till the message about application readiness was p
 
 |=======================
 
+The memory data were obtained via `htop` utility.
+The startup time was measured till the message about application readiness was printed.
+As with all performance measurements, you should run your own comparisons based on your set-up and workload to gain insight into the actual differences for your specific use cases.
+
 == Summary
 
-We have successfully demonstrated in this blog post that it is possible to consume Debezium-generated events from a Java application written with Quarkus Java stack.
+In this post we have successfully demonstrated that it is possible to consume Debezium-generated events in a Java application written with the Quarkus Java stack.
 We have also shown that it is possible to provide such application as a binary image and provided back-of-the-envelope performance numbers demonstrating significant savings in resources.
+
+If you'd like to see the awesomeness of deploying Java microservices as native images by yourself,
+you can find the complete https://github.com/debezium/debezium-examples/tree/master/outbox/shipment-service-quarkus[source code] of the implementation in the Debezium examples repo.
+If you got any questions or feedback, please let us know in the comments below;
+looking forward to hearing from you!
 
 == About Debezium
 
