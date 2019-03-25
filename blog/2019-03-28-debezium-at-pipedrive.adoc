@@ -5,24 +5,26 @@ ekoplimets
 
 [role="teaser"]
 --
-...
+Intro here
 --
 
 Pipedrive started looking into change data capture solutions for MySQL in the beginning of 2018 and now have most of the production MySQL databases producing real-time CDC events using Debezium. The following blog post describes our setup and various problems we have encountered.
 
-To start of with some numbers to get an idea of scale - we have in production environment *250+ MySQL active-passive server pairs* and one huge *10 node MySQL multi-master xtraDB cluster* spanning multiple data centers. Average incoming messages rate to main kafka cluster is ~1500 msg/sec with peaks up to 10k msg/sec.
+To start of with some numbers to get an idea of scale - we have in production environment *250+ MySQL active-passive server pairs* and one huge *10 node MySQL multi-master xtraDB cluster* spanning multiple data centers. Average incoming messages rate to kafka clusters is around 1500 msg/sec with peaks up to 10k msg/sec.
 
-Our initial goals were to have real-time and 100% consistent data source for service depending on our main data entities like full text search engine, statistics database and data warehouse. It has also helped some services to remove hard dependency on message queues availability (the dual write problem mentioned in the previous link:2019/02/19/reliable-microservices-data-exchange-with-the-outbox-pattern[blog post] is real).
+Our initial goals were to have real-time and 100% consistent data source for services depending on our main data entities, like full text search, statistics database and data warehouse. It has also helped some of our services to remove a hard dependency on message queues availability (the dual write problem mentioned in the previous link:2019/02/19/reliable-microservices-data-exchange-with-the-outbox-pattern[blog post] is real). CDC ability to connect to existing system without any schema nor code changes or even noticeable performance impact is also a big plus.
 
 We chose Debezium over alternative solutions because of its ability to handle MySQL GTID based replication and failovers, ease of writing single message transforms, great documentation and community support from Red Hat over https://gitter.im/debezium/user[gitter chat]. Some other tools had better operational performance, but higher load on the database server as they stored all the internal state (configuration, offsets, schemas) on the source database.
 
 == Architecture
 
-We’ve found that operating Debezium at scale requires quite large management layer. Even through Debezium supports high-available setups, there’s no built in a way to assign multiple servers to one connector - this must be solved externally.
+We use debezium to only capture changes done in database and not entire state.
 
-=== MySQL high available setup
+We’ve found that operating Debezium at scale requires quite large management layer. For example even through Debezium supports high-available setups, there’s no built in a way to assign multiple servers to one connector and this must be solved externally.
 
-We have two types of high available MySQL clusters: a large number of active-passive server pairs and one big multi-master cluster.
+=== MySQL high available
+
+We have two types of high available MySQL clusters: a large number of *active-passive server* pairs and one big *multi-master cluster*.
 
 ++++
 <div class="imageblock centered-image">
@@ -30,7 +32,8 @@ We have two types of high available MySQL clusters: a large number of active-pas
 </div>
 ++++
 
-The cluster fallback mechanisms differ between the two set-ups:
+The cluster fallback mechanism differ between the two set-ups:
+
 * Active-passive cluster: virtual IP in front of master handles automatic failover to slave
 * Multi-master: MySQL MySQL databases use DNS to just route to another master node
 
@@ -41,14 +44,19 @@ The cluster fallback mechanisms differ between the two set-ups:
 ++++
 
 *What exactly happens in case of failover*
-* failover starts when MySQL server crashes / becomes overloaded / is stopped for maintenance
+
+Failover starts when
+
+* MySQL server crashes / becomes overloaded / is stopped for maintenance
 * Debezium binlog connection is interrupted by “broken pipe” or “EOF” exception.
-* Debezium job is set to FAILED state
-* slave MySQL instance is promoted to new master and starts serving live traffic
+* Debezium connector is set to FAILED state
+* Slave MySQL instance is promoted to new master and starts serving live traffic
+
 To automatically reconnect Debezium we’ve scripted small automation that:
-*  detects Debezium job health failed state and restarts the job/task.
-* Debezium tries to connect to MySQL and from the same IP/path in configuration MySQL server responds.
-* Debezium merges existing MySQL offset to what is available on new MySQL server (GTID channels) and continues binlog replication.
+
+* Detects Debezium connector status is in failed state and restarts the task.
+* Debezium tries to connect to MySQL server. Note that from the same ip or uri another MySQL server (with new gtid channel!) will respond.
+* Debezium merges existing MySQL offset to what is available on new MySQL server and continues the binlog tailing.
 
 ++++
 <div class="imageblock centered-image">
@@ -56,13 +64,13 @@ To automatically reconnect Debezium we’ve scripted small automation that:
 </div>
 ++++
 
-=== Debezium clustering - distributed mode, but as 1 node independent clusters
+=== Debezium clustering - distributed mode, 1 node clusters
 
 Having spent much time trying to stabilize Debezium in kafka-connect distributed mode we gave up and started looking alternatives for jobs distribution. The main problem was one failing job could knock out all others in the same cluster. Rebalance event issue is known, but as of know is still open https://issues.apache.org/jira/browse/KAFKA-5505[#5505]. Wise guys at Red Hat recommended looking towards standalone mode...
 
-We ended up using Debezium in the kafka-connect *distributed mode*, but with *“1 node” size independent clusters*. Instead of having few large nodes, sharing 100+ Debezium jobs we have a large number of smaller Debezium docker instances. Each instance has unique group.id +  status/config/offset/history kafka topics so they don’t form one cluster and thereby don’t share anything between themselves. With 1 node cluster we lose distributed mode ability to automatically recover jobs on other node, but for this we rely on docker swarm where we run our containers.
+We ended up using Debezium in the kafka-connect *distributed mode*, but with *“1 node” size independent clusters*. Instead of having few large nodes sharing 100+ connectors, we have a large number of small Debezium instances. Each instance has unique group.id + status/config/offset/history kafka topic so they don’t form one cluster and don’t share anything between themselves. With 1 node cluster we lose kafka connect distributed mode ability to automatically recover task on other node, but for this we can rely on docker orchestrator.
 
-This may sound a lot like running Debezium in standalone mode and it is very similar with slight difference that the “1 node” clustered Debezium containers are still stateless - they still use Kafka broker to store job configurations, offsets and schema history. We don’t need to attach permanent storage to container and can restart job on any host with the correct groupID it will pull configuration and offset from central kafka and continue where the last one left of. Ability to use Debezium official Docker images is also a big plus.
+This may sound a lot like running Debezium in standalone mode and it is very similar, with slight difference. The “1 node” clustered Debezium containers are still stateless in term of storage - they use Kafka broker to store job configurations, offsets and database schema history. We don’t need to attach permanent storage to container and can start the job on any host with the correct groupID. It will pull configuration and offset from central kafka and continue where the last instance left of. Ability to use official Debezium Docker images is also a big plus.
 
 == Management layer
 
@@ -94,20 +102,21 @@ As we use 1 container per 1 job we’ve added Debezium *connector creation funct
 * When the localhost Kafka Connect REST API port is responsive
 * Render template to actual connector configuration
 * Check if the connector exists
-a) If it doesn’t, create it using HTTP POST request
-b) If it does, but existing configuration doesn’t match our rendered one, update existing using PUT request
-c) do nothing if connector exists and has latest configuration.
+** If it doesn’t, create it using HTTP POST request
+** If it does, but existing configuration doesn’t match our rendered one, update existing using PUT request
+** do nothing if connector exists and has latest configuration.
 
 We added these new environment variables to Debezium official container.
-*JOB_AUTO_CREATE* - on startup renders job template and creates or updates connector using localhost REST API.
 
-*JOB_TEMPLATE* - which json file to take load as connector template.
+*JOB_AUTO_CREATE* - on startup renders job template and creates or updates connector using localhost REST API.
 
 *JOB_AUTO_RESTART* - try to restart failed connector on failure
 
-other env variables that can be referenced from the template.
+*JOB_TEMPLATE* - which json file to take load as connector configuration template.
 
-Job templates are stored inside container image on build time. To update you need to rebuild image and redeploy. Different templates allowed us to build the Debezium image once and reuse it on various MySQL server setups. Templating also has conditionals support to enable some parameters only in specific environment. No more manual curl’ing.
++ other env variables that can be referenced from the template.
+
+The job templates are stored inside container image on build time. Templates allowed us to build version of the Debezium image once and reuse it on various MySQL server setups. Templating also has conditionals support to enable some parameters only in specific environment. No more manual curl’ing.
 
 Example connector job template:
 
@@ -163,9 +172,10 @@ Our grafana dashboard looks like this
 == Problems and workarounds
 
 === Databases with super large schemas.
-Debezium recommends 256MB memory for maximum MySQL schema size of 10000 columns,  but largest of our servers have ~1.2 million columns! Debezium does work, but requires huge amount of memory to fit the schema in-memory. Even it it runs some operations that normally take take seconds start to crawl. Initial snapshots runs 15+ minutes and fills history topic with half million “drop table”, “create table” messages. Connector restarts slow down as well because all those alters need to be played back to reconstruct correct state.
+Debezium recommends giving connector 256MB memory for database with schema up to 10000 columns, but some of our servers have ~1.2 million columns! Debezium does work, but requires huge amount of memory to accommodate the in-memory schema. Also some operations that normally take  seconds start to crawl. For example database initial (schema only!) snapshot can run 15+ minutes and fill the history topic with half million “drop table”, “create table” messages. This in turn slows down connector restarts as all those database alters need to be played back to reconstruct correct in memory state.
 
-So what we’ve done so far, to make it perform acceptable level, is used table whitelist for tracking 25% most critical tables and also configured history topic to only contain those whitelisted table DDLs. This plus increasing java heap size to 2GB has so far proven reliable.
+So what we’ve done so far (to make it perform acceptable level) is apply strict table whitelist for tracking 25% of the most critical tables. For large history topic configured connector to only contain whitelisted table DDLs. Also increasing java heap size to ~2GB has so far proven reliable.
+
 [source,json]
 ----
 database.history.store.only.monitored.tables.ddl: "true",
@@ -182,13 +192,15 @@ You can configure connector to use locking.mode=’none’, but it’s dangerous
 
 *Schema / ddl parser problems really hurt*. There’s no easy way out as the alter breaking Debezium ddl parser can come from any database/table (whitelist doesn't apply) and is also written into history topic. Even if you push the debezium offset manually over the failing event you’ll crash again while reading from the history topic. Only thing that works is running schema recovery, but this only when no other alters have been executed.
 
+But once you get it running stable you’ll see uptime for months.
+
 == Future
 
-Change data capture remains a huge part of our system and has proven to produce consistent and reliable data. Setting up and operations hasn’t been the smoothest, but overall once it’s running stable you’ll see uptime for months.
+Change data capture remains a huge part of our system and has proven to produce consistent and reliable data. Setting up and operations hasn’t been the smoothest, but it does work delivering initial goal of zero data loss. We have production services depending on it every day and more being built.
 
-We have live production services depending on it and more being built. There is also a growing need for complex real time data processing and having reliable event stream from database or service becomes essential. CDC ability to connect to existing database without any schema or code changes nor even noticeable performance impact is also a big plus.
+There is also a growing need for real time data processing and having reliable event stream becomes vital.
 
-In the long we see a trend some of our microservices moving to event sourcing patterns, in which database becomes convenient materialized view and the truth is stored in events.
+Some of our microservices moving to event sourcing patterns, in which database becomes convenient materialized view and the truth is stored in events.
 
 == About Pipedrive
 
