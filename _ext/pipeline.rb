@@ -7,6 +7,7 @@ require 'less_config'
 require 'symlinker'
 require 'breadcrumb'
 require 'autotag'
+require 'posts'
 require 'authors_helper'
 require 'canonicals_helper'
 require 'redirect_creator'
@@ -45,6 +46,8 @@ Awestruct::Extensions::Pipeline.new do
   # depend on the release metadata to build the appropriate page navigation for old links that
   # have since been moved or should reference latest [stable] series.
   extension Awestruct::Extensions::ReleaseFileParser.new
+
+  extension Awestruct::Extensions::Paginator.new(:posts, '/archive/index', :per_page => 10)
 
   extension Awestruct::Extensions::RedirectCreator.new("redirects")
   extension Awestruct::Extensions::Disqus.new
