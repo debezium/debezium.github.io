@@ -11,6 +11,7 @@ require 'authors_helper'
 require 'canonicals_helper'
 require 'redirect_creator'
 require 'release_file_parser'
+require 'posts'
 #require 'releases'
 
 Awestruct::Extensions::Pipeline.new do
