@@ -34,7 +34,6 @@ Awestruct::Extensions::Pipeline.new do
 
   # Generate the pages for the blog
   extension Awestruct::Extensions::Paginator.new(:posts, '/blog/index', :per_page => 5)
-  extension Awestruct::Extensions::Paginator.new(:posts, '/archive/index', :per_page => 10)
   extension Awestruct::Extensions::Tagger.new(:posts, '/blog/index', '/blog/tags', :per_page => 5)
   extension Awestruct::Extensions::TagCloud.new(:posts, '/blog/tags/index.html')
 
