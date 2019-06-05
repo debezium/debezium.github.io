@@ -96,7 +96,451 @@ We welcome any feedback from a user to try the plug-in with database in managed 
 
 [[how-the-connector-works]]
 == How the SQL Server connector works
-TBD
+
+=== Snapshots
+
+SQL Server CDC is not designed to store the complete history of database changes.
+It is thus necessary that Debezium establishes the baseline of current database content and streams it to the Kafka.
+This is achieved via a process called snapshotting.
+
+By default (snapshotting mode *initial*) the connector will upon the first startup perform an initial _consistent snapshot_ of the database
+(meaning the structure and data within any tables to be captured as per the connector's filter configuration).
+
+Each snapshot consists of the following steps:
+
+1. Determine the tables to be captured
+2. Obtain a lock on each of the monitored tables to ensure that no structural changes can occur to any of the tables.
+The level of the lock is determined by `snapshot.isolation.mode` configuration option.
+3. Read the maximum LSN ("log sequence number") position in the server's transaction log.
+4. Capture the structure of all relevant tables.
+5. Optionally release the locks obtained in step 2, i.e. the locks are held usually only for a short period of time.
+6. Scan all of the relevant database tables and schemas as valid at the LSN position read in step 3, and generate a `READ` event for each row and write that event to the appropriate table-specific Kafka topic.
+7. Record the successful completion of the snapshot in the connector offsets.
+
+=== Reading the change data tables
+
+Upon first start-up, the connector takes a structural snapshot of the structure of the captured tables
+and persists this information in its internal database history topic.
+Then the connector identifies a change table for each of the source tables and executes the main loop
+
+1. For each change table read all changes that were created between last stored maximum LSN and current maximum LSN
+2. Order the read changes incrementally according to commit LSN and change LSN.
+This assures that the changes are replayed by Debezium in the same order as were made to the database.
+3. Pass commit and change LSNs as offsets to Kafka Connect.
+4. Store the maximum LSN and repeat the loop.
+
+After a restart, the connector will resume from the offset (commit and change LSNs) where it left off before.
+
+The connector is able to detect whether the CDC is enabled or disabled for whitelisted source table during the runtime and modify its behaviour.
+
+=== Topic names
+
+The SQL Server connector writes events for all insert, update, and delete operations on a single table to a single Kafka topic. The name of the Kafka topics always takes the form _serverName_._schemaName_._tableName_, where _serverName_ is the logical name of the connector as specified with the `database.server.name` configuration property, _schemaName_ is the name of the schema where the operation occurred, and _tableName_ is the name of the database table on which the operation occurred.
+
+For example, consider a SQL Server installation with an `inventory` database that contains four tables: `products`, `products_on_hand`, `customers`, and `orders` in schema `dbo`. If the connector monitoring this database were given a logical server name of `fulfillment`, then the connector would produce events on these four Kafka topics:
+
+* `fulfillment.dbo.products`
+* `fulfillment.dbo.products_on_hand`
+* `fulfillment.dbo.customers`
+* `fulfillment.dbo.orders`
+
+=== Schema change topic
+
+The user-facing schema change topic is not implemented yet (see https://issues.jboss.org/browse/DBZ-753[DBZ-753]).
+
+=== Events
+
+All data change events produced by the SQL Server connector have a key and a value, although the structure of the key and value depend on the table from which the change events originated (see link:#topic-names[Topic names]).
+
+[WARNING]
+====
+The Debezium SQL Server connector ensures that all Kafka Connect _schema names_ are http://avro.apache.org/docs/current/spec.html#names[valid Avro schema names].
+This means that the logical server name must start with Latin letters or an underscore (e.g., [a-z,A-Z,\_]),
+and the remaining characters in the logical server name and all characters in the schema and table names must be Latin letters, digits, or an underscore (e.g., [a-z,A-Z,0-9,\_]).
+If not, then all invalid characters will automatically be replaced with an underscore character.
+
+This can lead to unexpected conflicts when the logical server name, schema names, and table names contain other characters, and the only distinguishing characters between table full names are invalid and thus replaced with underscores.
+====
+
+Debezium and Kafka Connect are designed around _continuous streams of event messages_, and the structure of these events may change over time.
+This could be difficult for consumers to deal with, so to make it easy Kafka Connect makes each event self-contained.
+Every message key and value has two parts: a _schema_ and _payload_.
+The schema describes the structure of the payload, while the payload contains the actual data.
+
+[[change-event-keys]]
+==== Change Event Keys
+
+For a given table, the change event's key will have a structure that contains a field for each column in the primary key (or unique key constraint) of the table at the time the event was created.
+
+Consider a `customers` table defined in the `inventory` database's schema `dbo`:
+
+[source,sql,indent=0]
+----
+CREATE TABLE customers (
+  id INTEGER IDENTITY(1001,1) NOT NULL PRIMARY KEY,
+  first_name VARCHAR(255) NOT NULL,
+  last_name VARCHAR(255) NOT NULL,
+  email VARCHAR(255) NOT NULL UNIQUE
+);
+----
+
+If the `database.server.name` configuration property has the value `server1`,
+every change event for the `customers` table while it has this definition will feature the same key structure, which in JSON looks like this:
+
+[source,json,indent=0]
+----
+{
+    "schema": {
+        "type": "struct",
+        "fields": [
+            {
+                "type": "int32",
+                "optional": false,
+                "field": "id"
+            }
+        ],
+        "optional": false,
+        "name": "server1.dbo.customers.Key"
+    },
+    "payload": {
+        "ID": 1004
+    }
+}
+----
+
+The `schema` portion of the key contains a Kafka Connect schema describing what is in the key portion, and in our case that means that the `payload` value is not optional, is a structure defined by a schema named `server1.dbo.customers.Key`, and has one required field named `id` of type `int32`.
+If we look at the value of the key's `payload` field, we'll see that it is indeed a structure (which in JSON is just an object) with a single `id` field, whose value is `1004`.
+
+Therefore, we interpret this key as describing the row in the `dbo.customers` table (output from the connector named `server1`) whose `id` primary key column had a value of `1004`.
+
+////
+[NOTE]
+====
+Although the `column.blacklist` configuration property allows you to remove columns from the event values, all columns in a primary or unique key are always included in the event's key.
+====
+
+[WARNING]
+====
+If the table does not have a primary or unique key, then the change event's key will be null. This makes sense since the rows in a table without a primary or unique key constraint cannot be uniquely identified.
+====
+////
+
+[[change-event-values]]
+==== Change Event Values
+
+Like the message key, the value of a change event message has a _schema_ section and _payload_ section.
+The payload section of every change event value produced by the SQL Server connector has an _envelope_ structure with the following fields:
+
+* `op` is a mandatory field that contains a string value describing the type of operation. Values for the SQL Server connector are `c` for create (or insert), `u` for update, `d` for delete, and `r` for read (in the case of a snapshot).
+* `before` is an optional field that if present contains the state of the row _before_ the event occurred. The structure will be described by the `server1.dbo.customers.Value` Kafka Connect schema, which the `server1` connector uses for all rows in the `dbo.customers` table.
+
+* `after` is an optional field that if present contains the state of the row _after_ the event occurred. The structure is describe by the same `server1.dbo.customers.Value` Kafka Connect schema used in `before`.
+* `source` is a mandatory field that contains a structure describing the source metadata for the event, which in the case of SQL Server contains these fields: the Debezium version, the connector name, whether the event is part of an ongoing snapshot or not, the commit LSN (not while snapshotting), the LSN of the change, database, schema and table where the change happened, and a timestamp representing the point in time when the record was changed in the source database (during snapshotting, it'll be the point in time of snapshotting)
+* `ts_ms` is optional and if present contains the time (using the system clock in the JVM running the Kafka Connect task) at which the connector processed the event.
+
+And of course, the _schema_ portion of the event message's value contains a schema that describes this envelope structure and the nested fields within it.
+
+[[create-events]]
+===== Create events
+
+Let's look at what a _create_ event value might look like for our `customers` table:
+
+[source,json,indent=0,subs="attributes"]
+----
+{
+  "schema": {
+    "type": "struct",
+    "fields": [
+      {
+        "type": "struct",
+        "fields": [
+          {
+            "type": "int32",
+            "optional": false,
+            "field": "id"
+          },
+          {
+            "type": "string",
+            "optional": false,
+            "field": "first_name"
+          },
+          {
+            "type": "string",
+            "optional": false,
+            "field": "last_name"
+          },
+          {
+            "type": "string",
+            "optional": false,
+            "field": "email"
+          }
+        ],
+        "optional": true,
+        "name": "server1.dbo.customers.Value",
+        "field": "before"
+      },
+      {
+        "type": "struct",
+        "fields": [
+          {
+            "type": "int32",
+            "optional": false,
+            "field": "id"
+          },
+          {
+            "type": "string",
+            "optional": false,
+            "field": "first_name"
+          },
+          {
+            "type": "string",
+            "optional": false,
+            "field": "last_name"
+          },
+          {
+            "type": "string",
+            "optional": false,
+            "field": "email"
+          }
+        ],
+        "optional": true,
+        "name": "server1.dbo.customers.Value",
+        "field": "after"
+      },
+      {
+        "type": "struct",
+        "fields": [
+          {
+            "type": "string",
+            "optional": false,
+            "field": "version"
+          },
+          {
+            "type": "string",
+            "optional": false,
+            "field": "connector"
+          },
+          {
+            "type": "string",
+            "optional": false,
+            "field": "name"
+          },
+          {
+            "type": "int64",
+            "optional": false,
+            "field": "ts_ms"
+          },
+          {
+            "type": "boolean",
+            "optional": true,
+            "default": false,
+            "field": "snapshot"
+          },
+          {
+            "type": "string",
+            "optional": false,
+            "field": "db"
+          },
+          {
+            "type": "string",
+            "optional": false,
+            "field": "schema"
+          },
+          {
+            "type": "string",
+            "optional": false,
+            "field": "table"
+          },
+          {
+            "type": "string",
+            "optional": true,
+            "field": "change_lsn"
+          },
+          {
+            "type": "string",
+            "optional": true,
+            "field": "commit_lsn"
+          }
+        ],
+        "optional": false,
+        "name": "io.debezium.connector.sqlserver.Source",
+        "field": "source"
+      },
+      {
+        "type": "string",
+        "optional": false,
+        "field": "op"
+      },
+      {
+        "type": "int64",
+        "optional": true,
+        "field": "ts_ms"
+      }
+    ],
+    "optional": false,
+    "name": "server1.dbo.customers.Envelope"
+  },
+  "payload": {
+    "before": null,
+    "after": {
+      "id": 1005,
+      "first_name": "john",
+      "last_name": "doe",
+      "email": "john.doe@example.org"
+    },
+    "source": {
+      "version": "0.10.0.Alpha1",
+      "connector": "sqlserver",
+      "name": "server1",
+      "ts_ms": 1559729468470,
+      "snapshot": false,
+      "db": "testDB",
+      "schema": "dbo",
+      "table": "customers",
+      "change_lsn": "00000027:00000758:0003",
+      "commit_lsn": "00000027:00000758:0005"
+    },
+    "op": "c",
+    "ts_ms": 1559729471739
+  }
+}
+----
+
+If we look at the `schema` portion of this event's _value_, we can see the schema for the _envelope_, the schema for the `source` structure (which is specific to the SQL Server connector and reused across all events), and the table-specific schemas for the `before` and `after` fields.
+
+[TIP]
+====
+The names of the schemas for the `before` and `after` fields are of the form _logicalName_._schemaName_._tableName_.Value, and thus are entirely independent from all other schemas for all other tables.
+This means that when using the link:/docs/faq/#avro-converter[Avro Converter], the resulting Avro schems for _each table_ in each _logical source_ have their own evolution and history.
+====
+
+If we look at the `payload` portion of this event's _value_, we can see the information in the event, namely that it is describing that the row was created (since `op=c`), and that the `after` field value contains the values of the new inserted row's' `id`, `first_name`, `last_name`, and `email` columns.
+
+[TIP]
+====
+It may appear that the JSON representations of the events are much larger than the rows they describe.
+This is true, because the JSON representation must include the _schema_ and the _payload_ portions of the message.
+It is possible and even recommended to use the link:/docs/faq/#avro-converter[Avro Converter] to dramatically decrease the size of the actual messages written to the Kafka topics.
+====
+
+[[update-events]]
+===== Update events
+The value of an _update_ change event on this table will actually have the exact same _schema_, and its payload will be structured the same but will hold different values.
+Here's an example:
+
+[source,json,indent=0,subs="attributes"]
+----
+{
+  "schema": { ... },
+  "payload": {
+    "before": {
+      "id": 1005,
+      "first_name": "john",
+      "last_name": "doe",
+      "email": "john.doe@example.org"
+    },
+    "after": {
+      "id": 1005,
+      "first_name": "john",
+      "last_name": "doe",
+      "email": "noreply@example.org"
+    },
+    "source": {
+      "version": "0.10.0.Alpha1",
+      "connector": "sqlserver",
+      "name": "server1",
+      "ts_ms": 1559729995937,
+      "snapshot": false,
+      "db": "testDB",
+      "schema": "dbo",
+      "table": "customers",
+      "change_lsn": "00000027:00000ac0:0002",
+      "commit_lsn": "00000027:00000ac0:0007"
+    },
+    "op": "u",
+    "ts_ms": 1559729998706
+  }
+}
+----
+
+When we compare this to the value in the _insert_ event, we see a couple of differences in the `payload` section:
+
+* The `op` field value is now `u`, signifying that this row changed because of an update
+* The `before` field now has the state of the row with the values before the database commit
+* The `after` field now has the updated state of the row, and here was can see that the `email` value is now `noreply@example.org`.
+* The `source` field structure has the same fields as before, but the values are different since this event is from a different position in the transaction log.
+* The `ts_ms` shows the timestamp that Debezium processed this event.
+
+There are several things we can learn by just looking at this `payload` section. We can compare the `before` and `after` structures to determine what actually changed in this row because of the commit.
+The `source` structure tells us information about SQL Server's record of this change (providing traceability), but more importantly this has information we can compare to other events in this and other topics to know whether this event occurred before, after, or as part of the same SQL Server commit as other events.
+
+[NOTE]
+====
+When the columns for a row's primary/unique key are updated, the value of the row's key has changed so Debezium will output _three_ events: a `DELETE` event and a link:#tombstone-events[tombstone event] with the old key for the row, followed by an `INSERT` event with the new key for the row.
+====
+
+[[delete-events]]
+===== Delete events
+
+So far we've seen samples of _create_ and _update_ events.
+Now, let's look at the value of a _delete_ event for the same table. Once again, the `schema` portion of the value will be exactly the same as with the _create_ and _update_ events:
+
+[source,json,indent=0,subs="attributes"]
+----
+{
+  "schema": { ... },
+  },
+  "payload": {
+    "before": {
+      "id": 1005,
+      "first_name": "john",
+      "last_name": "doe",
+      "email": "noreply@example.org"
+    },
+    "after": null,
+    "source": {
+      "version": "0.10.0.Alpha1",
+      "connector": "sqlserver",
+      "name": "server1",
+      "ts_ms": 1559730445243,
+      "snapshot": false,
+      "db": "testDB",
+      "schema": "dbo",
+      "table": "customers",
+      "change_lsn": "00000027:00000db0:0005",
+      "commit_lsn": "00000027:00000db0:0007"
+    },
+    "op": "d",
+    "ts_ms": 1559730450205
+  }
+}
+----
+
+If we look at the `payload` portion, we see a number of differences compared with the _create_ or _update_ event payloads:
+
+* The `op` field value is now `d`, signifying that this row was deleted
+* The `before` field now has the state of the row that was deleted with the database commit.
+* The `after` field is null, signifying that the row no longer exists
+* The `source` field structure has many of the same values as before, except the `ts_ms`, `commit_lsn` and `change_lsn` fields have changed
+* The `ts_ms` shows the timestamp that Debezium processed this event.
+
+This event gives a consumer all kinds of information that it can use to process the removal of this row.
+
+The SQL Server connector's events are designed to work with https://cwiki.apache.org/confluence/display/KAFKA/Log+Compaction[Kafka log compaction],
+which allows for the removal of some older messages as long as at least the most recent message for every key is kept.
+This allows Kafka to reclaim storage space while ensuring the topic contains a complete dataset and can be used for reloading key-based state.
+
+[[tombstone-events]]
+When a row is deleted, the _delete_ event value listed above still works with log compaction, since Kafka can still remove all earlier messages with that same key.
+But only if the message value is `null` will Kafka know that it can remove _all messages_ with that same key.
+To make this possible, Debezium's SQL Server connector always follows the _delete_ event with a special _tombstone_ event that has the same key but `null` value.
+
+[NOTE]
+====
+As of Kafka 0.10, the JSON converter provided by Kafka Connect never results in a null value for the message (https://issues.apache.org/jira/browse/KAFKA-3832[KAFKA-3832]). Therefore, Kafka's log compaction will always retain the last message, even when the tombstone event is supplied, though it will be free to remove all prior messages with the same key. In other words, until this is fixed using the JSON Converter will reduce the effectiveness of Kafka's log compaction.
+
+In the meantime, consider using the link:/docs/faq/#avro-converter[Avro Converter], which does properly return a null value and will thus take full advantage of Kafka log compaction.
+====
 
 [[schema-evolution]]
 === Database schema evolution
