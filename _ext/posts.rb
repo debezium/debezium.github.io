@@ -86,17 +86,66 @@ module Awestruct
 
       end
 
-      def extract_summary(post_content)
-        summary = post_content
-        # If the excerpt marker is present, we use it
-        if post_content.include?('<!--more-->')
-          summary = post_content.split('<!--more-->').take(1).join()
-        end
+      def extract_summary( post_content )
+        post_document_fragment = Nokogiri::HTML::fragment(post_content)
 
-        # Use preamble if present
-        preamble = Nokogiri::HTML::Document.parse(post_content).at("div#preamble")
-        if preamble != nil
-          summary = preamble
+        manual_cut = post_content.include? '<!-- more -->'
+        puts "Manual Cut"
+        puts post_content
+        puts manual_cut
+        summary = ''
+
+        i = 0
+        post_document_fragment.children.each do |html_node|
+          if html_node.is_a?(Nokogiri::XML::Text) || html_node.is_a?(Nokogiri::XML::Comment)
+            next
+          end
+          if html_node.name == 'div' && html_node.attribute('id') && html_node.attribute('id').value == 'preamble'
+            section_body = html_node.xpath('div[@class="sectionbody"]').first
+            if section_body
+              section_body_children = section_body.xpath('div')
+              break unless section_body_children.each do |element|
+                if manual_cut
+                  element_xhtml = element.to_xhtml
+                  if element_xhtml.include? '<!-- more -->'
+                    break
+                  else
+                    summary = summary << element_xhtml
+                  end
+                else
+                  if element.attribute('class').value == 'paragraph' || element.attribute('class').value == 'ulist'
+                    summary = summary << element.to_xhtml
+                  else
+                    break
+                  end
+                  i += 1
+                  if section_body_children.length > 5 && i > 2
+                    break
+                  end
+                end
+              end
+            else
+              summary = summary << html_node.to_xhtml
+            end
+            break
+          elsif html_node.name == 'div' && html_node.attribute('class') && (html_node.attribute('class').value == 'paragraph' || html_node.attribute('class').value == 'ulist')
+            if manual_cut
+              element_xhtml = html_node.to_xhtml
+              if element_xhtml.include? '<!-- more -->'
+                break
+              else
+                summary = summary << element_xhtml
+              end
+            else
+              summary = summary << html_node.to_xhtml
+              i += 1
+              if i > 2
+                break
+              end
+            end
+          else
+            break
+          end
         end
         summary
       end
@@ -118,7 +167,7 @@ module Awestruct
         def generate_pages( engine, template, output_path )
           pages = []
           posts.keys.sort.each do |year|
-            posts[year].keys.sort.each do |month| 
+            posts[year].keys.sort.each do |month|
               posts[year][month].keys.sort.each do |day|
                 archive_page = engine.find_and_load_site_page( template )
                 archive_page.send( "archive=", posts[year][month][day] )
@@ -134,4 +183,3 @@ module Awestruct
     end
   end
 end
-
