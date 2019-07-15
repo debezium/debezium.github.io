@@ -6,6 +6,7 @@ joygao
 Historically, MySQL had been the de-facto database of choice for microservices at WePay. As WePay scales, the sheer volume of data written into some of our microservice databases demanded us to make a scaling decision between sharded MySQL (i.e. link:https://vitess.io[Vitess]) and switching to a natively sharded NoSQL database. After a series of evaluations, we picked Cassandra, a NoSQL database, primarily because of its high availability, horizontal scalability, and ability to handle high write throughput.
 
 == Batch ETL Options
+
 After introducing Cassandra to our infrastructure, our next challenge was to figure out a way to expose data in Cassandra to link:https://cloud.google.com/bigquery/[BigQuery], our data warehouse, for analytics and reporting. We quickly built an Airflow link:https://github.com/apache/airflow/blob/master/airflow/contrib/hooks/cassandra_hook.py[hook] and link:https://github.com/apache/airflow/blob/master/airflow/contrib/operators/cassandra_to_gcs.py[operator] to execute full loads. This obviously doesn’t scale, as it rewrites the entire database on each load. To scale the pipeline, we evaluated two incremental load approaches, but both have their shortcomings:
 
 . Range query. This is a common ETL approach where data is extracted via a range query at regular intervals, such as hourly or daily. Anyone familiar with link:https://www.datastax.com/dev/blog/the-most-important-thing-to-know-in-cassandra-data-modeling-the-primary-key[Cassandra data modelling] would quickly realize how unrealistic this approach is. Cassandra tables need to be modeled to optimize query patterns used in production. Adding this query pattern for analytics in most cases means cloning the table with different clustering keys. RDBMS folks might suggest secondary index to support this query pattern, but link:https://pantheon.io/blog/cassandra-scale-problem-secondary-indexes[secondary index in Cassandra are local], therefore this approach would pose performance and scaling issues of its own.
@@ -17,13 +18,31 @@ Given these challenges, and having built and operated a link:https://wecode.wepa
 
 === Double-Writing
 
+++++
+<div class="imageblock centered-image">
+    <img src="/images/cassandra/double-write.png" style="max-width:100%; margin-bottom:20px; margin-top:20px;" class="responsive-image" alt="Image showing writer send two distinct writes">
+</div>
+++++
+
 The idea is to publish to Kafka every time a write is performed on Cassandra. This double-writing could be performed via the built-in trigger or a custom wrapper around the client. There are performance problems with this approach. First, due to the fact that we now need to write to two systems instead of one, write latency is increased. More importantly, when a write to one system fails due to a timeout, whether the write is successful or not is indeterministic. To guarantee data consistency on both systems, we would have to implement link:https://en.wikipedia.org/wiki/Distributed_transaction[distributed transactions], but multiple roundtrips for consensus will increase latency and reduce throughput further. This defeats the purpose of a high write-throughput database.
 
 === Kafka as Event Source
 
+++++
+<div class="imageblock centered-image">
+    <img src="/images/cassandra/event-source.png" style="max-width:100%; margin-bottom:20px; margin-top:20px;" class="responsive-image" alt="Image showing writes sent to Kafka and then downstream DB">
+</div>
+++++
+
 The idea is to write to Kafka rather than directly writing to Cassandra; and then apply the writes to Cassandra by consuming events from Kafka. Event sourcing is a pretty popular approach these days. However, if you already have existing services directly writing to Cassandra, it would require a change in application code and a nontrivial migration. This approach also violates link:https://docs.oracle.com/cd/E17076_05/html/gsg_db_rep/C/rywc.html[read-your-writes consistency]: the requirement that if a process performs a write, then the same process performing a subsequent read must observe the write’s effects. Since writes are routed through Kafka, there will be a lag between when the write is issued and when it is applied; during this time, reads to Cassandra will result in stale data. This may cause unforeseeable production issues.
 
 === Parsing Commit Logs
+
+++++
+<div class="imageblock centered-image">
+    <img src="/images/cassandra/commit-log.png" style="max-width:100%; margin-bottom:20px; margin-top:20px;" class="responsive-image" alt="Image showing commit logs sent to Kafka">
+</div>
+++++
 
 Cassandra introduced a link:http://cassandra.apache.org/doc/3.11.3/operating/cdc.html[change data capture (CDC) feature] in 3.0 to expose its commit logs. Commit logs are write-ahead logs in Cassandra designed to provide durability in case of machine crashes. They are typically discarded upon flush. With CDC enabled, they are instead transferred to a local CDC directory upon flush, which is then readable by other processes on the Cassandra node. This allows us to use the same CDC mechanism as in our MySQL streaming pipeline. It decouples production operations from analytics, and thus does not require additional work from application engineers.
 
