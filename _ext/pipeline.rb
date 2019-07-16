@@ -8,6 +8,7 @@ require 'symlinker'
 require 'breadcrumb'
 require 'autotag'
 require 'authors_helper'
+require 'canonicals_helper'
 require 'redirect_creator'
 #require 'releases'
 
@@ -15,6 +16,7 @@ Awestruct::Extensions::Pipeline.new do
   helper Awestruct::Extensions::Partial
   helper Awestruct::Extensions::Breadcrumb
   helper Awestruct::Extensions::AuthorsHelper
+  helper Awestruct::Extensions::CanonicalsHelper
   helper Awestruct::Extensions::GoogleAnalytics
   extension Awestruct::Extensions::WgetWrapper.new
   transformer Awestruct::Extensions::JsMinifier.new
