@@ -2,13 +2,388 @@
 <feed xml:lang="en-US" xmlns="http://www.w3.org/2005/Atom">
   <id>http://debezium.io/</id>
   <title>Debezium Blog</title>
-  <updated>2019-07-12T09:05:56+00:00</updated>
+  <updated>2019-07-16T17:15:03+00:00</updated>
   <link href="http://debezium.io/blog.atom" rel="self" type="application/atom+xml" />
   <link href="http://debezium.io/" rel="alternate" type="text/html" />
   <entry>
+    <id>http://debezium.io/blog/2019/07/15/streaming-cassandra-at-wepay-part-2/</id>
+    <title>Streaming Cassandra at WePay - Part 2</title>
+    <updated>2019-07-16T17:15:03+00:00</updated>
+    <published>2019-07-15T00:00:00+00:00</published>
+    <link href="http://debezium.io/blog/2019/07/15/streaming-cassandra-at-wepay-part-2/" rel="alternate" type="text/html" />
+    <author>
+      <name>Joy Gao</name>
+    </author>
+    <category term="cassandra"></category>
+    <summary>
+      
+      
+      
+      This post originally appeared on the WePay Engineering blog.
+      
+      
+      In the first half of this blog post series, we explained our decision-making process of designing a streaming data pipeline for Cassandra at WePay. In this post, we will break down the pipeline into three sections and discuss each of them in more detail:
+      
+      
+      
+      
+      Cassandra to Kafka with CDC agent
+      
+      
+      Kafka with BigQuery with KCBQ
+      
+      
+      Transformation with BigQuery view
+      
+      
+      
+      
+      
+      
+      Cassandra to Kafka with CDC Agent
+      
+      
+      The Cassandra CDC agent is a JVM process that is intended to be deployed on each node in a Cassandra cluster. The agent is comprised of several interdependent processors, running concurrently and...
+    </summary>
+    <content type="html">
+      &lt;div id=&quot;preamble&quot;&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;&lt;strong&gt;&lt;em&gt;This post originally appeared on the &lt;a href=&quot;https://wecode.wepay.com/posts/streaming-cassandra-at-wepay-part-2&quot;&gt;WePay Engineering blog&lt;/a&gt;.&lt;/em&gt;&lt;/strong&gt;&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;In the first half of this blog post series, we explained our decision-making process of designing a streaming data pipeline for Cassandra at WePay. In this post, we will break down the pipeline into three sections and discuss each of them in more detail:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;olist arabic&quot;&gt;
+      &lt;ol class=&quot;arabic&quot;&gt;
+      &lt;li&gt;
+      &lt;p&gt;Cassandra to Kafka with CDC agent&lt;/p&gt;
+      &lt;/li&gt;
+      &lt;li&gt;
+      &lt;p&gt;Kafka with BigQuery with KCBQ&lt;/p&gt;
+      &lt;/li&gt;
+      &lt;li&gt;
+      &lt;p&gt;Transformation with BigQuery view&lt;/p&gt;
+      &lt;/li&gt;
+      &lt;/ol&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect1&quot;&gt;
+      &lt;h2 id=&quot;cassandra_to_kafka_with_cdc_agent&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#cassandra_to_kafka_with_cdc_agent&quot;&gt;&lt;/a&gt;Cassandra to Kafka with CDC Agent&lt;/h2&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;The Cassandra CDC agent is a JVM process that is intended to be deployed on each node in a Cassandra cluster. The agent is comprised of several interdependent processors, running concurrently and working together to publish change events to Kafka.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect2&quot;&gt;
+      &lt;h3 id=&quot;snapshot_processor&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#snapshot_processor&quot;&gt;&lt;/a&gt;Snapshot Processor&lt;/h3&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;This processor is responsible for bootstrapping new tables. It looks up the CDC configuration to determine the snapshot mode, and performs snapshot on CDC-enabled tables if needed. To snapshot a table, the agent performs a full table scan and converts each row in the result set into an individual create event, and then sequentially enqueues them to an in-memory &lt;a href=&quot;https://docs.oracle.com/javase/7/docs/api/java/util/concurrent/BlockingQueue.html&quot;&gt;BlockingQueue&lt;/a&gt;.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect2&quot;&gt;
+      &lt;h3 id=&quot;commit_log_processor&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#commit_log_processor&quot;&gt;&lt;/a&gt;Commit Log Processor&lt;/h3&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;This processor is responsible for watching the CDC directory for new commit logs, parsing the commit log files via Cassandra’s &lt;a href=&quot;https://github.com/apache/cassandra/blob/trunk/src/java/org/apache/cassandra/db/commitlog/CommitLogReader.java&quot;&gt;&lt;code&gt;CommitLogReader&lt;/code&gt;&lt;/a&gt;, transforming deserialized mutations into standardized change events, and finally enqueuing them to the same queue as the snapshot processor.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;At this point, some readers may have concerns in regard to running Snapshot Processor and Commit Log Processors concurrently rather than serially. The reason is that Cassandra uses a &lt;a href=&quot;https://datastax.github.io/cpp-driver/topics/basics/client_side_timestamps/&quot;&gt;client-side timestamp&lt;/a&gt; to determine event order, and resolves conflicts with last write wins. This client-side timestamp is deliberately stored in each change event. This is why snapshotting doesn’t have to proceed commit log processing – the ordering is determined later on when the data is queried in the data warehouse.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect2&quot;&gt;
+      &lt;h3 id=&quot;queue_processor&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#queue_processor&quot;&gt;&lt;/a&gt;Queue Processor&lt;/h3&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;This processor is responsible for dequeuing change events, transforming them into &lt;a href=&quot;https://avro.apache.org/docs/1.8.1/spec.html&quot;&gt;Avro&lt;/a&gt; records, and sending them to Kafka via a Kafka producer. It also tracks the position of the most recently sent event, so that on restart it is able to pick up from where it left off.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Implementing an in-memory queue in the CDC agent seems like overkill at first. Given there is only a single thread doing the enqueue and another thread doing the dequeue, the performance boost is negligible. The motivation here is to decouple the work of parsing commit logs, which should be done serially in the right order, from the work of serializing and publishing Kafka events, which can be parallelized by multiple threads for different tables. Although such parallelization is not implemented at the moment, we want the flexibility of adding this feature in the near future.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Some may also wonder why &lt;a href=&quot;https://docs.confluent.io/current/connect/index.html&quot;&gt;Kafka Connect&lt;/a&gt; is not used here as it seems like a natural fit for streaming. It is a great option if we wanted distributed parallel processing with fault tolerance. However, it is more complicated to deploy, monitor, and debug than a Kafka producer. For the purpose of building a minimum viable infrastructure, we chose Kafka producer at the time.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect2&quot;&gt;
+      &lt;h3 id=&quot;schema_processor&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#schema_processor&quot;&gt;&lt;/a&gt;Schema Processor&lt;/h3&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;In order to support automatic schema evolution, this processor periodically polls the database for the latest table schema, and updates the in-memory schema cache if a change is detected. Snapshot Processor and Commit Log Processor both look up table schema from this cache and attach it as part of the change event prior to enqueue. Then upon dequeue, the Queue Processor transforms the attached table schema into an Avro schema for record serialization.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect2&quot;&gt;
+      &lt;h3 id=&quot;commit_log_post_processor&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#commit_log_post_processor&quot;&gt;&lt;/a&gt;Commit Log Post Processor&lt;/h3&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;This processor is responsible for cleaning up commit logs after they have been processed. The default Commit Log Post Processor implementation will simply perform deletion. A custom Commit Log Post Processor can be configured for use case such as archiving commit log files to &lt;a href=&quot;https://aws.amazon.com/s3/&quot;&gt;S3&lt;/a&gt; or &lt;a href=&quot;https://cloud.google.com/storage/&quot;&gt;GCS&lt;/a&gt;.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect1&quot;&gt;
+      &lt;h2 id=&quot;kafka_to_bigquery_with_kcbq&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#kafka_to_bigquery_with_kcbq&quot;&gt;&lt;/a&gt;Kafka to BigQuery with KCBQ&lt;/h2&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Once the events arrive in Kafka, we use KCBQ to send the events data to BigQuery without performing special transformations, just like in our &lt;a href=&quot;https://wecode.wepay.com/posts/streaming-databases-in-realtime-with-mysql-debezium-kafka&quot;&gt;MySQL streaming data pipeline&lt;/a&gt;. We have written a previous &lt;a href=&quot;https://wecode.wepay.com/posts/kafka-bigquery-connector&quot;&gt;blog post&lt;/a&gt; explaining this connector in more details.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect1&quot;&gt;
+      &lt;h2 id=&quot;transformation_with_bigquery_view&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#transformation_with_bigquery_view&quot;&gt;&lt;/a&gt;Transformation with BigQuery View&lt;/h2&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Once the events are in BigQuery, this is where the heavy-lifting is being done. We create &lt;a href=&quot;https://cloud.google.com/bigquery/docs/views-intro&quot;&gt;virtual views&lt;/a&gt; on top of the raw tables to merge the data in a way that mirrors the source table in Cassandra. Note that each row in the raw tables contains limited data – only columns that have been modified have states. This means selecting the latest row for each primary key will not provide us with data that is consistent with source. Instead, the query must identify the latest cell in each column for each primary key. This can be achieved with self-joins on the primary key for each column in the table. Although joins are slow in MySQL, BigQuery’s parallel execution engine and columnar storage makes this possible. A view on top of a 1TB Cassandra table in BigQuery takes about 100 seconds to query.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect2&quot;&gt;
+      &lt;h3 id=&quot;compaction&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#compaction&quot;&gt;&lt;/a&gt;Compaction&lt;/h3&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;The fact that the BigQuery view is virtual implies each time the view is queried essentially triggers a full compaction of the raw data. This means the cost will go up with the number of queries, not to mention the duplicated events amplifies the amount of data that needs to be processed by a factor of N, where N is the replication factor. To save cost and improve performance, periodic compaction by materializing the view is necessary.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect1&quot;&gt;
+      &lt;h2 id=&quot;future_development_work&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#future_development_work&quot;&gt;&lt;/a&gt;Future Development Work&lt;/h2&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;sect2&quot;&gt;
+      &lt;h3 id=&quot;support_for_cassandra_4_0&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#support_for_cassandra_4_0&quot;&gt;&lt;/a&gt;Support for Cassandra 4.0&lt;/h3&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;In Cassandra 4.0, the improved CDC feature allows the connector to be able to parse events in real-time as they are written rather than in micro-batches on each commit log flush. This reduces latency substantially.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect2&quot;&gt;
+      &lt;h3 id=&quot;performance_optimization&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#performance_optimization&quot;&gt;&lt;/a&gt;Performance Optimization&lt;/h3&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;As mentioned earlier, there is a single thread responsible for dequeuing, serializing, and publishing Kafka records. However, as the write throughput increases, if the performance of the agent does not keep up, it would result in a backlog of unprocessed commit logs which could potentially impact the health of our production database. The next step is to leverage parallel processing of events to optimize performance.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect2&quot;&gt;
+      &lt;h3 id=&quot;streamline_with_debezium_and_kafka_connect&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#streamline_with_debezium_and_kafka_connect&quot;&gt;&lt;/a&gt;Streamline with Debezium and Kafka Connect&lt;/h3&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;We initially built the Cassandra CDC agent as a standalone project. Now that it is open-sourced as a &lt;a href=&quot;https://debezium.io/&quot;&gt;Debezium&lt;/a&gt; connector, we can replace some of our custom classes with existing ones in Debezium. Another improvement is to support common features that all Debezium connectors have, such as support for multiple serialization formats. Finally, the CDC agent is not fault tolerant; robust alert and monitoring are required as part of deployment. One area to explore in the future is to build the CDC agent on top of Kafka Connect as a source connector, this further streamlines the Cassandra connector with other Debezium connectors, and provides scalability and fault tolerance for free.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect1&quot;&gt;
+      &lt;h2 id=&quot;closing_remarks&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#closing_remarks&quot;&gt;&lt;/a&gt;Closing Remarks&lt;/h2&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Cassandra being a peer-to-peer distributed database poses some really interesting challenges for CDC that do not exist in relational databases like MySQL and Postgres, or even a single-master NoSQL database like MongoDB. Note that it is worth evaluating the limitations before rolling out your own real-time data pipeline for Cassandra.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Besides understanding Cassandra internals, we learned a few lessons on engineering productivity along the way:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect2&quot;&gt;
+      &lt;h3 id=&quot;minimum_viable_product_philosophy&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#minimum_viable_product_philosophy&quot;&gt;&lt;/a&gt;Minimum Viable Product Philosophy&lt;/h3&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;By stripping away all features except for the essentials, we were able to build, test, and deploy a working solution in a reasonable time with limited resources. Had we aimed to design a pipeline that encompasses all features upfront, it would have taken a lot longer and required much more resources.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect2&quot;&gt;
+      &lt;h3 id=&quot;community_involvement&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#community_involvement&quot;&gt;&lt;/a&gt;Community Involvement&lt;/h3&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Cassandra is an open-source project. Rather than tackling the problem solo, we were engaged with the Cassandra community from the very start (i.e. sharing experiences with committers and users via &lt;a href=&quot;https://www.meetup.com/Apache-Cassandra-Bay-Area/&quot;&gt;meetups&lt;/a&gt;, &lt;a href=&quot;https://user.cassandra.apache.narkive.com/njOxVaxP/using-cdc-feature-to-stream-c-to-kafka-design-proposal&quot;&gt;discussing proposals in mailing list&lt;/a&gt;, &lt;a href=&quot;https://www.youtube.com/watch?v=0K0fYHsFBZg&quot;&gt;presenting proof-of-concept in conferences&lt;/a&gt;, etc.); all of which provided us with valuable feedback throughout the design and implementation stages.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+    </content>
+  </entry>
+  <entry>
+    <id>http://debezium.io/blog/2019/07/12/streaming-cassandra-at-wepay-part-1/</id>
+    <title>Streaming Cassandra at WePay - Part 1</title>
+    <updated>2019-07-16T17:15:03+00:00</updated>
+    <published>2019-07-12T00:00:00+00:00</published>
+    <link href="http://debezium.io/blog/2019/07/12/streaming-cassandra-at-wepay-part-1/" rel="alternate" type="text/html" />
+    <author>
+      <name>Joy Gao</name>
+    </author>
+    <category term="cassandra"></category>
+    <summary>
+      
+      
+      
+      This post originally appeared on the WePay Engineering blog.
+      
+      
+      Historically, MySQL had been the de-facto database of choice for microservices at WePay. As WePay scales, the sheer volume of data written into some of our microservice databases demanded us to make a scaling decision between sharded MySQL (i.e. Vitess) and switching to a natively sharded NoSQL database. After a series of evaluations, we picked Cassandra, a NoSQL database, primarily because of its high availability, horizontal scalability, and ability to handle high write throughput.
+      
+      
+      
+      
+      Batch ETL Options
+      
+      
+      After introducing Cassandra to our infrastructure, our next challenge was to figure out a way to expose...
+    </summary>
+    <content type="html">
+      &lt;div id=&quot;preamble&quot;&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;&lt;strong&gt;&lt;em&gt;This post originally appeared on the &lt;a href=&quot;https://wecode.wepay.com/posts/streaming-cassandra-at-wepay-part-1&quot;&gt;WePay Engineering blog&lt;/a&gt;.&lt;/em&gt;&lt;/strong&gt;&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Historically, MySQL had been the de-facto database of choice for microservices at WePay. As WePay scales, the sheer volume of data written into some of our microservice databases demanded us to make a scaling decision between sharded MySQL (i.e. &lt;a href=&quot;https://vitess.io&quot;&gt;Vitess&lt;/a&gt;) and switching to a natively sharded NoSQL database. After a series of evaluations, we picked Cassandra, a NoSQL database, primarily because of its high availability, horizontal scalability, and ability to handle high write throughput.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect1&quot;&gt;
+      &lt;h2 id=&quot;batch_etl_options&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#batch_etl_options&quot;&gt;&lt;/a&gt;Batch ETL Options&lt;/h2&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;After introducing Cassandra to our infrastructure, our next challenge was to figure out a way to expose data in Cassandra to &lt;a href=&quot;https://cloud.google.com/bigquery/&quot;&gt;BigQuery&lt;/a&gt;, our data warehouse, for analytics and reporting. We quickly built an Airflow &lt;a href=&quot;https://github.com/apache/airflow/blob/master/airflow/contrib/hooks/cassandra_hook.py&quot;&gt;hook&lt;/a&gt; and &lt;a href=&quot;https://github.com/apache/airflow/blob/master/airflow/contrib/operators/cassandra_to_gcs.py&quot;&gt;operator&lt;/a&gt; to execute full loads. This obviously doesn’t scale, as it rewrites the entire database on each load. To scale the pipeline, we evaluated two incremental load approaches, but both have their shortcomings:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;olist arabic&quot;&gt;
+      &lt;ol class=&quot;arabic&quot;&gt;
+      &lt;li&gt;
+      &lt;p&gt;Range query. This is a common ETL approach where data is extracted via a range query at regular intervals, such as hourly or daily. Anyone familiar with &lt;a href=&quot;https://www.datastax.com/dev/blog/the-most-important-thing-to-know-in-cassandra-data-modeling-the-primary-key&quot;&gt;Cassandra data modelling&lt;/a&gt; would quickly realize how unrealistic this approach is. Cassandra tables need to be modeled to optimize query patterns used in production. Adding this query pattern for analytics in most cases means cloning the table with different clustering keys. RDBMS folks might suggest secondary index to support this query pattern, but &lt;a href=&quot;https://pantheon.io/blog/cassandra-scale-problem-secondary-indexes&quot;&gt;secondary index in Cassandra are local&lt;/a&gt;, therefore this approach would pose performance and scaling issues of its own.&lt;/p&gt;
+      &lt;/li&gt;
+      &lt;li&gt;
+      &lt;p&gt;Process unmerged SSTables. SSTables are Cassandra’s immutable storage files. Cassandra offers a &lt;a href=&quot;https://docs.datastax.com/en/archived/cassandra/3.0/cassandra/tools/ToolsSSTabledump.html&quot;&gt;sstabledump&lt;/a&gt; CLI command that converts SSTable content into human-readable JSON. However, Cassandra is built on top of the concept of &lt;a href=&quot;https://en.wikipedia.org/wiki/Log-structured_merge-tree&quot;&gt;Log-Structured Merge (LSM) Tree&lt;/a&gt;, meaning SSTables merge periodically into new compacted files. Depending on the compaction strategy, detecting unmerged SSTable files out-of-band may be challenging (we later learned about the &lt;a href=&quot;https://docs.datastax.com/en/archived/cassandra/3.0/cassandra/operations/opsBackupIncremental.html&quot;&gt;incremental backup&lt;/a&gt; feature in Cassandra which only backs up uncompacted SSTables; so this approach would have worked as well.)&lt;/p&gt;
+      &lt;/li&gt;
+      &lt;/ol&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Given these challenges, and having built and operated a &lt;a href=&quot;https://wecode.wepay.com/posts/streaming-databases-in-realtime-with-mysql-debezium-kafka&quot;&gt;streaming data pipeline for MySQL&lt;/a&gt;, we began to explore streaming options for Cassandra.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect1&quot;&gt;
+      &lt;h2 id=&quot;streaming_options&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#streaming_options&quot;&gt;&lt;/a&gt;Streaming Options&lt;/h2&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;sect2&quot;&gt;
+      &lt;h3 id=&quot;double_writing&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#double_writing&quot;&gt;&lt;/a&gt;Double-Writing&lt;/h3&gt;
+      &lt;div class=&quot;imageblock centered-image&quot;&gt;
+          &lt;img src=&quot;http://debezium.io/images/cassandra/double-write.png&quot; style=&quot;max-width:100%; margin-bottom:20px; margin-top:20px;&quot; class=&quot;responsive-image&quot; alt=&quot;Image showing writer send two distinct writes&quot; /&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;The idea is to publish to Kafka every time a write is performed on Cassandra. This double-writing could be performed via the built-in trigger or a custom wrapper around the client. There are performance problems with this approach. First, due to the fact that we now need to write to two systems instead of one, write latency is increased. More importantly, when a write to one system fails due to a timeout, whether the write is successful or not is indeterministic. To guarantee data consistency on both systems, we would have to implement &lt;a href=&quot;https://en.wikipedia.org/wiki/Distributed_transaction&quot;&gt;distributed transactions&lt;/a&gt;, but multiple roundtrips for consensus will increase latency and reduce throughput further. This defeats the purpose of a high write-throughput database.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect2&quot;&gt;
+      &lt;h3 id=&quot;kafka_as_event_source&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#kafka_as_event_source&quot;&gt;&lt;/a&gt;Kafka as Event Source&lt;/h3&gt;
+      &lt;div class=&quot;imageblock centered-image&quot;&gt;
+          &lt;img src=&quot;http://debezium.io/images/cassandra/event-source.png&quot; style=&quot;max-width:100%; margin-bottom:20px; margin-top:20px;&quot; class=&quot;responsive-image&quot; alt=&quot;Image showing writes sent to Kafka and then downstream DB&quot; /&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;The idea is to write to Kafka rather than directly writing to Cassandra; and then apply the writes to Cassandra by consuming events from Kafka. Event sourcing is a pretty popular approach these days. However, if you already have existing services directly writing to Cassandra, it would require a change in application code and a nontrivial migration. This approach also violates &lt;a href=&quot;https://docs.oracle.com/cd/E17076_05/html/gsg_db_rep/C/rywc.html&quot;&gt;read-your-writes consistency&lt;/a&gt;: the requirement that if a process performs a write, then the same process performing a subsequent read must observe the write’s effects. Since writes are routed through Kafka, there will be a lag between when the write is issued and when it is applied; during this time, reads to Cassandra will result in stale data. This may cause unforeseeable production issues.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect2&quot;&gt;
+      &lt;h3 id=&quot;parsing_commit_logs&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#parsing_commit_logs&quot;&gt;&lt;/a&gt;Parsing Commit Logs&lt;/h3&gt;
+      &lt;div class=&quot;imageblock centered-image&quot;&gt;
+          &lt;img src=&quot;http://debezium.io/images/cassandra/commit-log.png&quot; style=&quot;max-width:100%; margin-bottom:20px; margin-top:20px;&quot; class=&quot;responsive-image&quot; alt=&quot;Image showing commit logs sent to Kafka&quot; /&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Cassandra introduced a &lt;a href=&quot;http://cassandra.apache.org/doc/3.11.3/operating/cdc.html&quot;&gt;change data capture (CDC) feature&lt;/a&gt; in 3.0 to expose its commit logs. Commit logs are write-ahead logs in Cassandra designed to provide durability in case of machine crashes. They are typically discarded upon flush. With CDC enabled, they are instead transferred to a local CDC directory upon flush, which is then readable by other processes on the Cassandra node. This allows us to use the same CDC mechanism as in our MySQL streaming pipeline. It decouples production operations from analytics, and thus does not require additional work from application engineers.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Ultimately, after considering throughput, consistency, and separation of concerns, the final option – parsing commit logs – became the top contender.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect1&quot;&gt;
+      &lt;h2 id=&quot;commit_log_deep_dive&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#commit_log_deep_dive&quot;&gt;&lt;/a&gt;Commit Log Deep Dive&lt;/h2&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Aside from exposing commit logs, Cassandra also provides &lt;code&gt;CommitLogReader&lt;/code&gt; and &lt;code&gt;CommitLogReadHandler&lt;/code&gt; classes to help with the deserialization of logs. It seems like the hard work has been done, and what’s left is applying transformations – converting deserialized representations into Avro records and publish them to Kafka. However, as we dug further into the implementation of the CDC feature and of Cassandra itself, we realized that there are many new challenges.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect2&quot;&gt;
+      &lt;h3 id=&quot;delayed_processing&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#delayed_processing&quot;&gt;&lt;/a&gt;Delayed Processing&lt;/h3&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Commit logs only arrive in the CDC directory when it is full, in which case it would be flushed/discarded. This implies there is a delay between when the event is logged and when the event is captured. If little to no writes are executed, then the delay in event capturing could be arbitrarily long.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect2&quot;&gt;
+      &lt;h3 id=&quot;space_management&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#space_management&quot;&gt;&lt;/a&gt;Space Management&lt;/h3&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;In MySQL you can set binlog retention such that the logs will be automatically deleted after the configured retention period. However in Cassandra there is no such option. Once the commit logs are transferred to CDC directory, consumption must be in place to clean up commit logs after processing. If the available disk space for CDC directory exceeds a given threshold, further writes to the database will be rejected.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect2&quot;&gt;
+      &lt;h3 id=&quot;duplicated_events&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#duplicated_events&quot;&gt;&lt;/a&gt;Duplicated Events&lt;/h3&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Commit logs on an individual Cassandra node do not reflect all writes to the cluster; they only reflect writes to the node. This makes it necessary to process commit logs on all nodes. But with a replication factor of N, N copies of each event are sent downstream.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect2&quot;&gt;
+      &lt;h3 id=&quot;out_of_order_events&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#out_of_order_events&quot;&gt;&lt;/a&gt;Out-of-Order Events&lt;/h3&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Writes to an individual Cassandra node are logged serially as they arrive. However, these events may arrive out-of-order from when they are issued. Downstream consumers of these events must understand the event time and implement last write wins logic similar to &lt;a href=&quot;https://docs.datastax.com/en/archived/cassandra/3.0/cassandra/dml/dmlAboutReads.html&quot;&gt;Cassandra’s read path&lt;/a&gt; to get the correct result.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect2&quot;&gt;
+      &lt;h3 id=&quot;out_of_band_schema_change&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#out_of_band_schema_change&quot;&gt;&lt;/a&gt;Out-of-Band Schema Change&lt;/h3&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Schema changes of tables are communicated via a &lt;a href=&quot;https://en.wikipedia.org/wiki/Gossip_protocol&quot;&gt;gossip protocol&lt;/a&gt; and are not recorded in commit logs. Therefore changes in schema could only be detected on a best-effort basis.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect2&quot;&gt;
+      &lt;h3 id=&quot;incomplete_row_data&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#incomplete_row_data&quot;&gt;&lt;/a&gt;Incomplete Row Data&lt;/h3&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Cassandra does not perform read before write, as a result change events do not capture the state of every column, they only capture the state of modified columns. This makes the change event less useful than if the full row is available.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Once we acquired a deep understanding of Cassandra commit logs, we re-assessed our requirements against the given constraints in order to design a &lt;a href=&quot;https://riccomini.name/minimum-viable-infrastructure&quot;&gt;minimum viable infrastructure&lt;/a&gt;.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect1&quot;&gt;
+      &lt;h2 id=&quot;minimum_viable_infrastructure&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#minimum_viable_infrastructure&quot;&gt;&lt;/a&gt;Minimum Viable Infrastructure&lt;/h2&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Borrowing from the &lt;a href=&quot;https://en.wikipedia.org/wiki/Minimum_viable_product&quot;&gt;minimum viable product&lt;/a&gt; philosophy, we want to design a data pipeline with a minimum set of features and requirements to satisfy our immediate customers. For Cassandra CDC, this means:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;ulist&quot;&gt;
+      &lt;ul&gt;
+      &lt;li&gt;
+      &lt;p&gt;Production database’s health and performance should not be negatively impacted by introducing CDC; slowed operations and system downtimes are much costlier than a delay in the analytics pipeline&lt;/p&gt;
+      &lt;/li&gt;
+      &lt;li&gt;
+      &lt;p&gt;Querying Cassandra tables in our data warehouse should match the results of querying the production database (barring delays); having duplicate and/or incomplete rows amplifies post-processing workload for every end user
+      With these criteria in front of us, we began to brainstorm for solutions, and ultimately came up with three approaches:&lt;/p&gt;
+      &lt;/li&gt;
+      &lt;/ul&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect2&quot;&gt;
+      &lt;h3 id=&quot;stateless_stream_processing&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#stateless_stream_processing&quot;&gt;&lt;/a&gt;Stateless Stream Processing&lt;/h3&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;This solution is inspired by Datastax’s &lt;a href=&quot;https://www.datastax.com/dev/blog/advanced-replication-in-dse-5-1&quot;&gt;advanced replication blog post&lt;/a&gt;. The idea is to deploy an agent on each Cassandra node to process local commit logs. Each agent is considered as “primary” for a subset of writes based on partition keys, such that every event has exactly one primary agent. Then during CDC, in order to avoid duplicate events, each agent only sends an event to Kafka if it is the primary agent for the event. To handle eventual consistency, each agent would sort events into per-table time-sliced windows as they arrive (but doesn’t publish them right away); when a window expires, events in that window are hashed, and the hash is compared against other nodes. If they don’t match, data is fetched from the inconsistent node so the correct value could be resolved by last write wins. Finally the corrected events in that window will be sent to Kafka. Any out-of-order event beyond the time-sliced windows would have to be logged into an out-of-sequence file and handled separately. Since deduplication and ordering are done in-memory, concerns with agent failover causing data loss, OOM issues impacting production database, and the overall complexity of this implementation stopped us from exploring it further.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect2&quot;&gt;
+      &lt;h3 id=&quot;stateful_stream_processing&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#stateful_stream_processing&quot;&gt;&lt;/a&gt;Stateful Stream Processing&lt;/h3&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;This solution is the most feature rich. The idea is that the agent on each Cassandra node will process commit logs and publish events to Kafka without deduplication and ordering. Then a stream processing engine will consume these raw events and do the heavy lifting (such as filtering out duplicate events with a cache, managing event orders with event-time windowing, and capturing state of unmodified columns by performing read before write on a state store), and then publish these derived events to a separate Kafka topic. Finally, &lt;a href=&quot;https://github.com/wepay/kafka-connect-bigquery&quot;&gt;KCBQ&lt;/a&gt; will be used to consume events from this topic and upload them to BigQuery. This approach is appealing because it solves the problem generically – anyone can subscribe to the latter Kafka topic without needing to handle deduplication and ordering on their own. However, this approach introduces a nontrivial amount of operational overhead; we would have to maintain a stream processing engine, a database, and a cache.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect2&quot;&gt;
+      &lt;h3 id=&quot;processing_on_read&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#processing_on_read&quot;&gt;&lt;/a&gt;Processing-On-Read&lt;/h3&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Similar to the previous approach, the idea is to process commit logs on each Cassandra node and send events to Kafka without deduplication and ordering. Unlike the previous approach, the stream processing portion is completely eliminated. Instead the raw events will be directly uploaded to BigQuery via KCBQ. &lt;a href=&quot;https://cloud.google.com/bigquery/docs/views-intro&quot;&gt;Views&lt;/a&gt; are created on top of the raw tables to handle deduplication, ordering, and merging of columns to form complete rows. Because BigQuery views are virtual tables, the processing is done lazily each time the view is queried. To prevent the view query from getting too expensive, the views would be materialized periodically. This approach removes both operational complexity and code complexity by leveraging BigQuery’s &lt;a href=&quot;https://cloud.google.com/blog/products/gcp/bigquery-under-the-hood&quot;&gt;massively parallel query engine&lt;/a&gt;. However, the drawback is that non-KCBQ downstream consumers must do all the work on their own.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Given that our main purpose of streaming Cassandra is data warehousing, we ultimately decided to implement &lt;em&gt;processing-on-read&lt;/em&gt;. It provides the essential features for our existing use case, and offers the flexibility to expand into the other two more generic solutions mentioned above in the future.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect1&quot;&gt;
+      &lt;h2 id=&quot;open_source&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#open_source&quot;&gt;&lt;/a&gt;Open Source&lt;/h2&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;During this process of building a real-time data pipeline for Cassandra, we have received a substantial amount of interest on this project. As a result, we have decided to open-source the Cassandra CDC agent under the &lt;a href=&quot;https://debezium.io&quot;&gt;Debezium&lt;/a&gt; umbrella as an &lt;a href=&quot;https://github.com/debezium/debezium-incubator&quot;&gt;incubating connector&lt;/a&gt;. If you would like to learn more or contribute, check out the work-in-progress pull request for &lt;a href=&quot;https://github.com/debezium/debezium-incubator/pull/98&quot;&gt;source code&lt;/a&gt; and &lt;a href=&quot;https://github.com/debezium/debezium.github.io/pull/325&quot;&gt;documentation&lt;/a&gt;.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;In the second half of this blog post series, we will elaborate on the CDC implementation itself in more details. Stay tuned!&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+    </content>
+  </entry>
+  <entry>
     <id>http://debezium.io/blog/2019/07/08/tutorial-sentry-debezium-container-images/</id>
     <title>Tutorial for Adding Sentry into Debezium Container Images</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2019-07-08T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2019/07/08/tutorial-sentry-debezium-container-images/" rel="alternate" type="text/html" />
     <author>
@@ -255,7 +630,7 @@
   <entry>
     <id>http://debezium.io/blog/2019/06/28/debezium-0-10-0-beta2-released/</id>
     <title>Debezium 0.10.0.Beta2 Released</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2019-06-28T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2019/06/28/debezium-0-10-0-beta2-released/" rel="alternate" type="text/html" />
     <author>
@@ -370,7 +745,7 @@
   <entry>
     <id>http://debezium.io/blog/2019/06/19/debezium-wears-fedora/</id>
     <title>Debezium Wears Fedora</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2019-06-19T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2019/06/19/debezium-wears-fedora/" rel="alternate" type="text/html" />
     <author>
@@ -633,7 +1008,7 @@
   <entry>
     <id>http://debezium.io/blog/2019/06/12/debezium-0-10-0-beta1-released/</id>
     <title>Debezium 0.10.0.Beta1 Released</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2019-06-12T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2019/06/12/debezium-0-10-0-beta1-released/" rel="alternate" type="text/html" />
     <author>
@@ -725,7 +1100,7 @@
   <entry>
     <id>http://debezium.io/blog/2019/06/05/debezium-newsletter-01-2019/</id>
     <title>Debezium&#8217;s Newsletter 01/2019</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2019-06-05T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2019/06/05/debezium-newsletter-01-2019/" rel="alternate" type="text/html" />
     <author>
@@ -882,7 +1257,7 @@
   <entry>
     <id>http://debezium.io/blog/2019/06/03/debezium-0-10-0-alpha2-released/</id>
     <title>Debezium 0.10.0.Alpha2 Released</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2019-06-03T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2019/06/03/debezium-0-10-0-alpha2-released/" rel="alternate" type="text/html" />
     <author>
@@ -983,7 +1358,7 @@
   <entry>
     <id>http://debezium.io/blog/2019/05/29/debezium-0-10-0-alpha1-released/</id>
     <title>Debezium 0.10.0.Alpha1 &quot;Spring Clean-Up&quot; Edition Released</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2019-05-29T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2019/05/29/debezium-0-10-0-alpha1-released/" rel="alternate" type="text/html" />
     <author>
@@ -1199,7 +1574,7 @@
   <entry>
     <id>http://debezium.io/blog/2019/05/23/tutorial-using-debezium-connectors-with-apache-pulsar/</id>
     <title>Tutorial for Using Debezium Connectors With Apache Pulsar</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2019-05-23T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2019/05/23/tutorial-using-debezium-connectors-with-apache-pulsar/" rel="alternate" type="text/html" />
     <author>
@@ -1507,7 +1882,7 @@
   <entry>
     <id>http://debezium.io/blog/2019/05/06/debezium-0-9-5-final-released/</id>
     <title>Debezium 0.9.5.Final Released</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2019-05-06T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2019/05/06/debezium-0-9-5-final-released/" rel="alternate" type="text/html" />
     <author>
@@ -1663,7 +2038,7 @@
   <entry>
     <id>http://debezium.io/blog/2019/04/18/hello-debezium/</id>
     <title>Debezium&#8217;s Team Grows</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2019-04-18T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2019/04/18/hello-debezium/" rel="alternate" type="text/html" />
     <author>
@@ -1726,7 +2101,7 @@
   <entry>
     <id>http://debezium.io/blog/2019/04/11/debezium-0-9-4-final-released/</id>
     <title>Debezium 0.9.4.Final Released</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2019-04-11T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2019/04/11/debezium-0-9-4-final-released/" rel="alternate" type="text/html" />
     <author>
@@ -1899,7 +2274,7 @@
   <entry>
     <id>http://debezium.io/blog/2019/03/26/debezium-0-9-3-final-released/</id>
     <title>Debezium 0.9.3.Final Released</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2019-03-26T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2019/03/26/debezium-0-9-3-final-released/" rel="alternate" type="text/html" />
     <author>
@@ -2079,7 +2454,7 @@
   <entry>
     <id>http://debezium.io/blog/2019/03/14/debezium-meets-quarkus/</id>
     <title>Debezium meets Quarkus</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2019-03-14T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2019/03/14/debezium-meets-quarkus/" rel="alternate" type="text/html" />
     <author>
@@ -2445,7 +2820,7 @@
   <entry>
     <id>http://debezium.io/blog/2019/02/25/debezium-0-9-2-final-released/</id>
     <title>Debezium 0.9.2.Final Released</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2019-02-25T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2019/02/25/debezium-0-9-2-final-released/" rel="alternate" type="text/html" />
     <author>
@@ -2610,7 +2985,7 @@
   <entry>
     <id>http://debezium.io/blog/2019/02/19/reliable-microservices-data-exchange-with-the-outbox-pattern/</id>
     <title>Reliable Microservices Data Exchange With the Outbox Pattern</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2019-02-19T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2019/02/19/reliable-microservices-data-exchange-with-the-outbox-pattern/" rel="alternate" type="text/html" />
     <author>
@@ -3527,7 +3902,7 @@
   <entry>
     <id>http://debezium.io/blog/2019/02/13/debezium-webinar-at-devnation-live/</id>
     <title>Debezium at DevNation Live</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2019-02-13T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2019/02/13/debezium-webinar-at-devnation-live/" rel="alternate" type="text/html" />
     <author>
@@ -3633,7 +4008,7 @@
   <entry>
     <id>http://debezium.io/blog/2019/02/13/debezium-0-9-1-final-released/</id>
     <title>Debezium 0.9.1.Final Released</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2019-02-13T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2019/02/13/debezium-0-9-1-final-released/" rel="alternate" type="text/html" />
     <author>
@@ -3730,7 +4105,7 @@
   <entry>
     <id>http://debezium.io/blog/2019/02/05/debezium-0-9-0-final-released/</id>
     <title>Debezium 0.9.0.Final Released</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2019-02-05T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2019/02/05/debezium-0-9-0-final-released/" rel="alternate" type="text/html" />
     <author>
@@ -3936,7 +4311,7 @@
   <entry>
     <id>http://debezium.io/blog/2019/01/28/debezium-0-9-0-cr1-released/</id>
     <title>Debezium 0.9.0.CR1 Released</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2019-01-28T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2019/01/28/debezium-0-9-0-cr1-released/" rel="alternate" type="text/html" />
     <author>
@@ -4109,7 +4484,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/12/19/debezium-0-9-0-beta2-released/</id>
     <title>Debezium 0.9.0.Beta2 Released</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2018-12-19T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/12/19/debezium-0-9-0-beta2-released/" rel="alternate" type="text/html" />
     <author>
@@ -4317,7 +4692,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/12/05/automating-cache-invalidation-with-change-data-capture/</id>
     <title>Automating Cache Invalidation With Change Data Capture</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2018-12-05T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/12/05/automating-cache-invalidation-with-change-data-capture/" rel="alternate" type="text/html" />
     <author>
@@ -4943,7 +5318,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/11/22/debezium-0-9-0-beta1-released/</id>
     <title>Debezium 0.9.0.Beta1 Released</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2018-11-22T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/11/22/debezium-0-9-0-beta1-released/" rel="alternate" type="text/html" />
     <author>
@@ -5080,7 +5455,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/10/04/debezium-0-9-0-alpha2-released/</id>
     <title>Debezium 0.9.0.Alpha2 Released</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2018-10-04T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/10/04/debezium-0-9-0-alpha2-released/" rel="alternate" type="text/html" />
     <author>
@@ -5302,7 +5677,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/09/20/materializing-aggregate-views-with-hibernate-and-debezium/</id>
     <title>Materializing Aggregate Views With Hibernate and Debezium</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2018-09-20T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/09/20/materializing-aggregate-views-with-hibernate-and-debezium/" rel="alternate" type="text/html" />
     <author>
@@ -5867,7 +6242,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/09/19/debezium-0-8-3-final-released/</id>
     <title>Debezium 0.8.3.Final Released</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2018-09-19T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/09/19/debezium-0-8-3-final-released/" rel="alternate" type="text/html" />
     <author>
@@ -6023,7 +6398,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/08/30/streaming-mysql-data-changes-into-kinesis/</id>
     <title>Streaming MySQL Data Changes to Amazon Kinesis</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2018-08-30T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/08/30/streaming-mysql-data-changes-into-kinesis/" rel="alternate" type="text/html" />
     <author>
@@ -6544,7 +6919,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/08/30/debezium-0-8-2-released/</id>
     <title>Debezium 0.8.2 Released</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2018-08-30T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/08/30/debezium-0-8-2-released/" rel="alternate" type="text/html" />
     <author>
@@ -6649,7 +7024,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/07/26/debezium-0-9-0-alpha1-released/</id>
     <title>Debezium 0.9 Alpha1 and 0.8.1 Released</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2018-07-26T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/07/26/debezium-0-9-0-alpha1-released/" rel="alternate" type="text/html" />
     <author>
@@ -6814,7 +7189,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/07/19/advantages-of-log-based-change-data-capture/</id>
     <title>Five Advantages of Log-Based Change Data Capture</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2018-07-19T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/07/19/advantages-of-log-based-change-data-capture/" rel="alternate" type="text/html" />
     <author>
@@ -6951,7 +7326,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/07/12/debezium-0-8-0-final-released/</id>
     <title>Debezium 0.8 Final Is Released</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2018-07-12T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/07/12/debezium-0-8-0-final-released/" rel="alternate" type="text/html" />
     <author>
@@ -7062,7 +7437,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/07/04/debezium-0-8-0-cr1-released/</id>
     <title>Debezium 0.8.0.CR1 Is Released</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2018-07-04T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/07/04/debezium-0-8-0-cr1-released/" rel="alternate" type="text/html" />
     <author>
@@ -7178,7 +7553,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/06/21/debezium-0-8-0-beta1-released/</id>
     <title>Debezium 0.8.0.Beta1 Is Released</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2018-06-21T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/06/21/debezium-0-8-0-beta1-released/" rel="alternate" type="text/html" />
     <author>
@@ -7435,7 +7810,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/05/24/querying-debezium-change-data-eEvents-with-ksql/</id>
     <title>Querying Debezium Change Data Events With KSQL</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2018-05-24T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/05/24/querying-debezium-change-data-eEvents-with-ksql/" rel="alternate" type="text/html" />
     <author>
@@ -7870,7 +8245,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/03/20/debezium-0-7-5-released/</id>
     <title>Debezium 0.7.5 Is Released</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2018-03-20T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/03/20/debezium-0-7-5-released/" rel="alternate" type="text/html" />
     <author>
@@ -7969,7 +8344,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/03/16/note-on-database-history-topic-configuration/</id>
     <title>A Note On Database History Topic Configuration</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2018-03-16T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/03/16/note-on-database-history-topic-configuration/" rel="alternate" type="text/html" />
     <author>
@@ -8099,7 +8474,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/03/08/creating-ddd-aggregates-with-debezium-and-kafka-streams/</id>
     <title>Creating DDD aggregates with Debezium and Kafka Streams</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2018-03-08T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/03/08/creating-ddd-aggregates-with-debezium-and-kafka-streams/" rel="alternate" type="text/html" />
     <author>
@@ -8694,7 +9069,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/03/07/debezium-0-7-4-released/</id>
     <title>Debezium 0.7.4 Is Released</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2018-03-07T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/03/07/debezium-0-7-4-released/" rel="alternate" type="text/html" />
     <author>
@@ -8847,7 +9222,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/02/15/debezium-0-7-3-released/</id>
     <title>Debezium 0.7.3 Is Released</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2018-02-15T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/02/15/debezium-0-7-3-released/" rel="alternate" type="text/html" />
     <author>
@@ -9019,7 +9394,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/01/25/debezium-0-7-2-released/</id>
     <title>Debezium 0.7.2 Is Released</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2018-01-25T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/01/25/debezium-0-7-2-released/" rel="alternate" type="text/html" />
     <author>
@@ -9218,7 +9593,7 @@
   <entry>
     <id>http://debezium.io/blog/2018/01/17/streaming-to-elasticsearch/</id>
     <title>Streaming Data Changes from Your Database to Elasticsearch</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2018-01-17T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2018/01/17/streaming-to-elasticsearch/" rel="alternate" type="text/html" />
     <author>
@@ -9617,7 +9992,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/12/20/debezium-0-7-1-released/</id>
     <title>Debezium 0.7.1 Is Released</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2017-12-20T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/12/20/debezium-0-7-1-released/" rel="alternate" type="text/html" />
     <author>
@@ -9694,7 +10069,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/12/15/debezium-0-7-0-released/</id>
     <title>Debezium 0.7.0 Is Released</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2017-12-15T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/12/15/debezium-0-7-0-released/" rel="alternate" type="text/html" />
     <author>
@@ -9876,7 +10251,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/11/15/debezium-0-6-2-released/</id>
     <title>Debezium 0.6.2 Is Released</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2017-11-15T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/11/15/debezium-0-6-2-released/" rel="alternate" type="text/html" />
     <author>
@@ -10035,7 +10410,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/11/11/debezium-at-devoxx-belgium/</id>
     <title>Debezium at Devoxx Belgium</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2017-11-11T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/11/11/debezium-at-devoxx-belgium/" rel="alternate" type="text/html" />
     <author>
@@ -10126,7 +10501,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/10/26/debezium-0-6-1-released/</id>
     <title>Debezium 0.6.1 Is Released</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2017-10-26T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/10/26/debezium-0-6-1-released/" rel="alternate" type="text/html" />
     <author>
@@ -10282,7 +10657,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/09/25/streaming-to-another-database/</id>
     <title>Streaming data to a downstream database</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2017-09-25T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/09/25/streaming-to-another-database/" rel="alternate" type="text/html" />
     <author>
@@ -10691,7 +11066,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/09/21/debezium-0-6-0-released/</id>
     <title>Debezium 0.6 Is Out</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2017-09-21T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/09/21/debezium-0-6-0-released/" rel="alternate" type="text/html" />
     <author>
@@ -10859,7 +11234,7 @@
   <entry>
     <id>http://debezium.io/blog/2017/08/17/debezium-0-5-2-is-out/</id>
     <title>Debezium 0.5.2 Is Out</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
+    <updated>2019-07-16T17:15:03+00:00</updated>
     <published>2017-08-17T00:00:00+00:00</published>
     <link href="http://debezium.io/blog/2017/08/17/debezium-0-5-2-is-out/" rel="alternate" type="text/html" />
     <author>
@@ -10997,182 +11372,6 @@
       If you find problems or have ideas how we can improve Debezium, please let us know or &lt;a href=&quot;https://issues.jboss.org/projects/DBZ/issues/&quot;&gt;log an issue&lt;/a&gt;.&lt;/p&gt;
       &lt;/div&gt;
       &lt;/div&gt;
-      &lt;/div&gt;
-    </content>
-  </entry>
-  <entry>
-    <id>http://debezium.io/blog/2017/06/12/debezium-0-5-1-released/</id>
-    <title>Debezium 0.5.1 Released</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
-    <published>2017-06-12T00:00:00+00:00</published>
-    <link href="http://debezium.io/blog/2017/06/12/debezium-0-5-1-released/" rel="alternate" type="text/html" />
-    <author>
-      <name>Gunnar Morling</name>
-    </author>
-    <category term="releases"></category>
-    <category term="mysql"></category>
-    <category term="mongodb"></category>
-    <category term="postgres"></category>
-    <category term="docker"></category>
-    <summary>
-      
-      
-      
-      It&#8217;s my pleasure to announce the release of Debezium 0.5.1!
-      
-      
-      This release fixes several bugs in the MySQL, Postgres and MongoDB connectors.
-      There&#8217;s also support for some new datatypes: POINT on MySQL (DBZ-222) and TSTZRANGE on Postgres (DBZ-280).
-      This release is a drop-in replacement for 0.5.0, upgrading is recommended to all users.
-      
-      
-      Note that in the&#8201;&#8212;&#8201;rather unlikely&#8201;&#8212;&#8201;case that you happened to enable Debezium for all the system tables of MySQL,
-      any configured table filters will be applied to these system tables now, too (DBZ-242).
-      This may require an adjustment of your filters if you indeed wanted to capture all system tables but only selected non-system tables.
-      
-      
-      Please...
-    </summary>
-    <content type="html">
-      &lt;div id=&quot;preamble&quot;&gt;
-      &lt;div class=&quot;sectionbody&quot;&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;It’s my pleasure to announce the release of &lt;strong&gt;Debezium 0.5.1&lt;/strong&gt;!&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;This release fixes several bugs in the &lt;a href=&quot;http://debezium.io/docs/connectors/mysql/&quot;&gt;MySQL&lt;/a&gt;, &lt;a href=&quot;http://debezium.io/docs/connectors/postgresql/&quot;&gt;Postgres&lt;/a&gt; and &lt;a href=&quot;http://debezium.io/docs/connectors/mongodb/&quot;&gt;MongoDB&lt;/a&gt; connectors.
-      There’s also support for some new datatypes: &lt;code&gt;POINT&lt;/code&gt; on MySQL (&lt;a href=&quot;https://issues.jboss.org/browse/DBZ-222&quot;&gt;DBZ-222&lt;/a&gt;) and &lt;code&gt;TSTZRANGE&lt;/code&gt; on Postgres (&lt;a href=&quot;https://issues.jboss.org/browse/DBZ-280&quot;&gt;DBZ-280&lt;/a&gt;).
-      This release is a drop-in replacement for 0.5.0, upgrading is recommended to all users.&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;Note that in the — rather unlikely — case that you happened to enable Debezium for all the system tables of MySQL,
-      any configured table filters will be applied to these system tables now, too (&lt;a href=&quot;https://issues.jboss.org/browse/DBZ-242&quot;&gt;DBZ-242&lt;/a&gt;).
-      This may require an adjustment of your filters if you indeed wanted to capture all system tables but only selected non-system tables.&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;Please refer to the &lt;a href=&quot;https://github.com/debezium/debezium/blob/master/CHANGELOG.md#051&quot;&gt;changelog&lt;/a&gt; for an overview of all the 29 issues fixed in Debezium 0.5.1.&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;The Docker image containing &lt;a href=&quot;https://hub.docker.com/r/debezium/connect/&quot;&gt;Kafka Connect and all the Debezium 0.5.x connectors&lt;/a&gt;
-      as well as the image containing &lt;a href=&quot;https://hub.docker.com/r/debezium/postgres/&quot;&gt;Postgres and the Debezium logical decoding plug-in&lt;/a&gt; have been updated to 0.5.1, too.&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;As Debezium continues to evolve and grow, the number of people contributing to the project is also going up.
-      The following people have sent in pull requests for this release:
-      &lt;a href=&quot;https://github.com/arosenber&quot;&gt;Aaron Rosenberg&lt;/a&gt;, &lt;a href=&quot;https://github.com/CyberDem0n&quot;&gt;Alexander Kukushkin&lt;/a&gt;, &lt;a href=&quot;https://github.com/brendanmaguire&quot;&gt;Brendan Maguire&lt;/a&gt;, &lt;a href=&quot;https://github.com/DuncanSands&quot;&gt;Duncan Sands&lt;/a&gt;, &lt;a href=&quot;https://github.com/dasl-&quot;&gt;David Leibovic&lt;/a&gt;, &lt;a href=&quot;https://github.com/jpechane&quot;&gt;Jiri Pechanec&lt;/a&gt;, &lt;a href=&quot;https://github.com/nacivida&quot;&gt;nacivida&lt;/a&gt;, &lt;a href=&quot;https://github.com/omarsmak&quot;&gt;Omar Al-Safi&lt;/a&gt;, &lt;a href=&quot;https://github.com/rhauch&quot;&gt;Randall Hauch&lt;/a&gt; and &lt;a href=&quot;https://github.com/tombentley&quot;&gt;Tom Bentley&lt;/a&gt;.&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;Thanks a lot to you and everyone else in the community contributing via feature requests, bug reports, discussions and questions!&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;/div&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;sect1&quot;&gt;
-      &lt;h2 id=&quot;what_s_next&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#what_s_next&quot;&gt;&lt;/a&gt;What’s next&lt;/h2&gt;
-      &lt;div class=&quot;sectionbody&quot;&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;We’ve planned to do further bug fix releases for the 0.5.x line.
-      Specifically, we’ll release a fix for &lt;a href=&quot;https://issues.jboss.org/browse/DBZ-217&quot;&gt;DBZ-217&lt;/a&gt; shortly,
-      which is about the MySQL connector stumbling when getting across a corrupt event in the binlog.&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;In parallel we’re looking into Debezium connectors for &lt;a href=&quot;https://issues.jboss.org/browse/DBZ-40&quot;&gt;SQL Server&lt;/a&gt; and &lt;a href=&quot;https://issues.jboss.org/browse/DBZ-137&quot;&gt;Oracle&lt;/a&gt;.
-      While we cannot promise anything yet in terms of when these will be ready to be published, we hope to have at least one of them ready some time soon.
-      Stay tuned and get involved!&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;/div&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;sect1&quot;&gt;
-      &lt;h2 id=&quot;about_debezium&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#about_debezium&quot;&gt;&lt;/a&gt;About Debezium&lt;/h2&gt;
-      &lt;div class=&quot;sectionbody&quot;&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;Debezium is an open source distributed platform that turns your existing databases into event streams,
-      so applications can see and respond almost instantly to each committed row-level change in the databases.
-      Debezium is built on top of &lt;a href=&quot;http://kafka.apache.org/&quot;&gt;Kafka&lt;/a&gt; and provides &lt;a href=&quot;http://kafka.apache.org/documentation.html#connect&quot;&gt;Kafka Connect&lt;/a&gt; compatible connectors that monitor specific database management systems.
-      Debezium records the history of data changes in Kafka logs, so your application can be stopped and restarted at any time and can easily consume all of the events it missed while it was not running,
-      ensuring that all events are processed correctly and completely.
-      Debezium is &lt;a href=&quot;http://debezium.io/license/&quot;&gt;open source&lt;/a&gt; under the &lt;a href=&quot;http://www.apache.org/licenses/LICENSE-2.0.html&quot;&gt;Apache License, Version 2.0&lt;/a&gt;.&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;/div&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;sect1&quot;&gt;
-      &lt;h2 id=&quot;get_involved&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#get_involved&quot;&gt;&lt;/a&gt;Get involved&lt;/h2&gt;
-      &lt;div class=&quot;sectionbody&quot;&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;We hope you find Debezium interesting and useful, and want to give it a try.
-      Follow us on Twitter &lt;a href=&quot;https://twitter.com/debezium&quot;&gt;@debezium&lt;/a&gt;, &lt;a href=&quot;https://gitter.im/debezium/user&quot;&gt;chat with us on Gitter&lt;/a&gt;,
-      or join our &lt;a href=&quot;https://groups.google.com/forum/#!forum/debezium&quot;&gt;mailing list&lt;/a&gt; to talk with the community.
-      All of the code is open source &lt;a href=&quot;https://github.com/debezium/&quot;&gt;on GitHub&lt;/a&gt;,
-      so build the code locally and help us improve ours existing connectors and add even more connectors.
-      If you find problems or have ideas how we can improve Debezium, please let us know or &lt;a href=&quot;https://issues.jboss.org/projects/DBZ/issues/&quot;&gt;log an issue&lt;/a&gt;.&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;/div&gt;
-      &lt;/div&gt;
-    </content>
-  </entry>
-  <entry>
-    <id>http://debezium.io/blog/2017/04/27/hello-debezium/</id>
-    <title>Hello Debezium!</title>
-    <updated>2019-07-12T09:05:56+00:00</updated>
-    <published>2017-04-27T00:00:00+00:00</published>
-    <link href="http://debezium.io/blog/2017/04/27/hello-debezium/" rel="alternate" type="text/html" />
-    <author>
-      <name>Gunnar Morling</name>
-    </author>
-    <category term="community"></category>
-    <category term="news"></category>
-    <summary>
-      
-      When I first learned about the Debezium project last year, I was very excited about it right away.
-      
-      
-      I could see how this project would be very useful for many people out there and I was very impressed by the professional way it was set up:
-      a solid architecture for change data capture based on Apache Kafka, a strong focus on robustness and correctness also in the case of failures, the overall idea of creating a diverse eco-system of CDC connectors.
-      All that based on the principles of open source, combined with extensive documentation from day one, a friendly and welcoming web site...
-    </summary>
-    <content type="html">
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;When I first learned about the Debezium project last year, I was very excited about it right away.&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;I could see how this project would be very useful for many people out there and I was very impressed by the professional way it was set up:
-      a solid architecture for change data capture based on Apache Kafka, a strong focus on robustness and correctness also in the case of failures, the overall idea of creating a diverse eco-system of CDC connectors.
-      All that based on the principles of open source, combined with extensive documentation from day one, a friendly and welcoming web site and a great getting-started experience.&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;So you can imagine that I was more than enthusiastic about the opportunity to take over the role of Debezium’s project lead.
-      Debezium and CDC have close links to some data-centric projects I’ve been previously working on and also tie in with ideas I’ve been pursuing around CQRS, even sourcing and denormalization.
-      As core member of the &lt;a href=&quot;http://hibernate.org/&quot;&gt;Hibernate team&lt;/a&gt; at Red Hat, I’ve implemented the initial Elasticsearch support for &lt;a href=&quot;http://hibernate.org/search/&quot;&gt;Hibernate Search&lt;/a&gt;
-      (which deals with full-text index updates via JPA/Hibernate).
-      I’ve also contributed to &lt;a href=&quot;http://hibernate.org/ogm/&quot;&gt;Hibernate OGM&lt;/a&gt; - a project which connects JPA and the world of NoSQL.
-      One of the plans for OGM is to create a declarative denormalization engine for creating read models optimized for specific use cases.
-      It will be very interesting to see how this plays together with the capabilities provided by Debezium.&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;Currently I am serving as the lead of the &lt;a href=&quot;http://beanvalidation.org/&quot;&gt;Bean Validation 2.0&lt;/a&gt; specification (JSR 380) as well as its reference implementation &lt;a href=&quot;http://hibernate.org/validator/&quot;&gt;Hibernate Validator&lt;/a&gt;.
-      Two other projects close to my heart are &lt;a href=&quot;http://mapstruct.org/&quot;&gt;MapStruct&lt;/a&gt; - a code generator for bean-to-bean mappings - and &lt;a href=&quot;https://github.com/moditect/moditect&quot;&gt;ModiTect&lt;/a&gt;, which is tooling for Java 9 modules and their descriptors.
-      In general, I’m a strong believer into the idea of open source and I just love it to work with folks from all over the world to create useful tools and libraries.&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;Joining the Debezium community and working on change data capture is a great next step.
-      There are so many things to do: connectors for Oracle, SQL Server and Cassandra,
-      but also things like an entity join processor which would allow to step from row-level events to more aggregated business-level events (e.g. for updating a combined search index for an order and its order lines) or tooling for managing and visualizing histories of event schema changes.&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;One thing I’d like to emphasize is that the project’s direction generally isn’t going to change very much.
-      Red Hat is fully committed to maintaining and evolving the project together with you, the Debezium community.
-      The ride really has just begun!&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;Finally, let me say a huge thank you to Randall for his excellent work!
-      You’ve been a true role model for going from an idea over pitching it - within Red Hat as well as within the wider community - to building a steadily growing and evolving project.
-      It’s stating the obvious, but it wouldn’t be for Debezium without you.
-      Thanks for everything and looking forward very much to working with you and the community on this great project!&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;Onwards,&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;--Gunnar&lt;/p&gt;
       &lt;/div&gt;
     </content>
   </entry>
