@@ -18,7 +18,13 @@ module Awestruct
       def execute(site)
         @redirect_configs.each { |config|
           if !site[config].nil?
-            site[config].each do |requested_url, target_url|
+            site[config].each do |requested_url, target|
+              target_url = parse_target( target.redirect, site )
+              # if the site supports canonicals by having a canonical.yml file in _config, the redirect creator will
+              # allow the data-driven redirect yaml definition to append itself to that array.
+              if target.canonical && !site.canonicals.nil?
+                site.canonicals[target_url + "/"] = requested_url
+              end
               redirect_page = Page.new(site, Handlers::RedirectCreationHandler.new( site, requested_url, target_url ))
               # make sure indexifier is ignoring redirect pages
               redirect_page.inhibit_indexifier = true
@@ -27,6 +33,13 @@ module Awestruct
           end
         }
       end
+
+      def parse_target(target_url, site)
+        target_url = target_url.sub( /\${latest_stable_series}/, site.latest_stable_series.version )
+        target_url = target_url.sub( /\${latest_series}/, site.latest_series.version )
+        return target_url
+      end
+
     end
   end
 
