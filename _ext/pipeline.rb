@@ -10,6 +10,7 @@ require 'autotag'
 require 'authors_helper'
 require 'canonicals_helper'
 require 'redirect_creator'
+require 'release_file_parser'
 #require 'releases'
 
 Awestruct::Extensions::Pipeline.new do
@@ -39,6 +40,11 @@ Awestruct::Extensions::Pipeline.new do
   extension Awestruct::Extensions::Indexifier.new([/\/404.html/]) # don't indexify 404 page
 
   extension Awestruct::Extensions::Atomizer.new(:posts, '/blog.atom', {:feed_title=>'Debezium Blog', :template=>'_layouts/atom.xml.haml'})
+
+  # We must interpret the release data prior to the RedirectCreator as there are redirects that
+  # depend on the release metadata to build the appropriate page navigation for old links that
+  # have since been moved or should reference latest [stable] series.
+  extension Awestruct::Extensions::ReleaseFileParser.new
 
   extension Awestruct::Extensions::RedirectCreator.new("redirects")
   extension Awestruct::Extensions::Disqus.new

@@ -167,8 +167,21 @@ task :check => :init do
   system 'sed -i "/.LOG.debug .inherit_front_matter_from for/d" vendor/bundle/ruby/2.3.0/gems/awestruct-0.5.7/lib/awestruct/page.rb'
 end
 
+# Execute Antora
+def run_antora(args)
+  if system "antora playbook.yml"
+    puts "Antora documentation created"
+  else
+    puts "Antora failed"
+    exit -1
+  end
+end
+
 # Execute Awestruct
 def run_awestruct(args)
+  # kick off antora before awestruct
+  run_antora(args)
+
   # used to bind Awestruct to 0.0.0.0
   # do export BIND="-b 0.0.0.0"
   if ENV['BIND'] && ENV['BIND'] != ''
