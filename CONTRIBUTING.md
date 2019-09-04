@@ -255,6 +255,10 @@ The `summary` describes a brief overview of the changes in this specific release
 
 The `annoncement_url` is the fully qualified URL to the blog post about the release.
 
+##### Updating docs hierarchy
+
+Be sure when a new major/minor release is added that a new `docs/<major>.</minor>` directory is created and contains an `index.asciidoc` and `release-notes.asciidoc`.  See prior version directories for examples.
+
 #### Edit documentation
 
 Documentation for Debezium is now split between this repository and the [main codebase](https://www.github.com/debezium/debezium.git) repository.  
