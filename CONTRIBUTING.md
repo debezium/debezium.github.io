@@ -195,11 +195,73 @@ Then, rebuild the site and make sure your post is formatted correctly and appear
 
 #### Releasing software
 
-When a release is made, write a blog post and update the `_config/releases.yml` file. The site will use that file to automatically generate the information for the releases.
+When a release is made, write a blog post and add a new yaml file in `_data\releases` that describes the release. The site will use this information to drive certain dynamic content in a data-driven way.
+
+When releasing a new major or minor version, a new directory should be added under `_data\releases`.  For example, when releasing version `1.0`, there should be a directory added at `_data\releases\1.0`.  
+
+Inside the major/minor directory, a set of YAML should exist that describe both the version series and the specific fully qualified version being released.  For example, when releasing `1.0.0.Alpha1`, make sure that a directory `_data\releases\1.0` exists, creating it if it does not.  Inside that directory, create a `series.yml` file as well as a `1.0.0.Alpha1.yml` file.
+
+##### Series YAML
+
+This file describes an overview of the series.  For `1.0.0.Alpha1` the `series.yml` would look like:
+
+```yaml
+summary: Version 1.0
+displayed: true
+hidden: false
+compatibility:
+  java:
+    version: 8+
+  connect:
+    version: 1.x, 2.x
+  mysql:
+    version: 8.0.13
+  mongodb:
+    version: 3.2, 3.4, 4.0
+  postgresql:
+    version: 9.6, 10, 11
+  sqlserver:
+    veresion: 2017
+  oracle:
+    version: 11g, 12c   
+```  
+
+The `summary` attribute describes a brief overview/highlight of changes in this series.
+
+The contents under _compatibility_ are meant to reflect what this version was tested with.  If new compatibility types are added, be sure to update the `_config/site.yml` file accordingly.
+
+The _hidden_ attribute describes whether or not the series should be exposed on the website at all.   In general, when a series is considered legacy/old and no longer relevant, this attribute can be set to _true_ and no reference to this version will be included in the awestruct output.
+
+The _displayed_ attribute describes whether or not the series is considered _active_.  On the Releases Overview, we render boxes for all displayed (e.g. active) series.  There is a subsection that is hidden initially for older releases.  If _hidden=false_ and _displayed=false_, then that series will show up under the "Show Older Series" button.
+
+_As new series are added, the older `series.yml` files may need to be updated and their `hidden=true` set to keep the rendered content appropriate for the release-based views._
+
+##### Version-specific YAML
+
+This file describes a specific version.  For `1.0.0.Alpha1` the file would be called `_data\releases\1.0\1.0.0.Alpha1.yml` and would look like:
+
+```yaml
+date: 2019-05-29
+stable: false
+summary: First alpha release for 0.10 - Code cleanup
+announcement_url: https://debezium.io/blog/2019/05/29/debezium-0-10-0-alpha1-released/
+```
+
+The `date` attribute is written in a `yyyy-mm-dd` format and should be the date when the release was published.
+
+The `stable` attribute describes whether or not the version is considered stable.  This is generally set to `true` for example when releasing the _Final_ equivalent of a release.
+
+The `summary` describes a brief overview of the changes in this specific release.
+
+The `annoncement_url` is the fully qualified URL to the blog post about the release.
 
 #### Edit documentation
 
+Documentation for Debezium is now split between this repository and the [main codebase](https://www.github.com/debezium/debezium.git) repository.  
+
 All of the source files for the site's [docs](http://debezium.io/docs/) are in the `docs` directory, which is structured identically to the URLs of the site (although the source files are _indexified_ as described above). Most of the time you will simply edit one of the existing files. If you want to add a new file, however, be sure that it is referenced in the [docs](http://debezium.io/docs/) table of contents defined in the `_partials/leftcol-doc.html.haml` file.
+
+All of the source files for the site's [version-specific documentation](http://debezium.io/documentation/debezium) are in the main codebase repository.  Please see [DOCUMENTATION.md](http://www.github.com/debezium/debezium/tree/master/DOCUMENTATION.md) in the main codebase repository for details about Antora and how the documentation should be updated.
 
 #### Update the front page
 

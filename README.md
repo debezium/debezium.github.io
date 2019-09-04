@@ -48,20 +48,22 @@ This should only need to be performed once. After the libraries are installed, w
 
     awestruct@49d06009e1fa:/site$ rake clean preview
     
-### 4. View the site
+With the integration with Antora, the above command will now also fetch the main codebase repository and will invoke the Antora build process to build the version-specific documentation prior to invoking Awestruct.  For information on Antora and how we've integrated it into the build process, please see ANTORA.md.
+
+### 3. View the site
 
 Point your browser to [http://localhost:4242](http://localhost:4242) to view the site. You may notice some delay during development, since the site is generated somewhat lazily.
 
-### 5. Edit the site
+### 4. Edit the site
 
 Use any development tools on your local machine to edit the source files for the site. For very minor modifications, Awestruct will detect the changes and may regenerate the corresponding static file(s). However, we generally recommend that you use CNTRL-C in the container shell to stop the preview server, re-run the `rake clean preview` command, and refresh your browser.
 
 If you have to change the Gemfile to use different libraries, you will need to let the container download the new versions. The simplest way to do this is to stop the container (using CTRL-C), use `rm -rf bundler` to remove the directory where the gem files are stored, and then restart the container. This ensures that you're always using the exact files that are specified in the Gemfile.lock file.
 
-### 6. Commit changes
+### 5. Commit changes
 
 Use Git on your local machine to commit the changes to the site's codebase to your topic branch, and then create a pull request.
 
-### 7. Publish the website
+### 6. Publish the website
 
 Review the pull request and merge onto the `develop` branch. The [Travis-CI build](https://travis-ci.org/debezium/debezium.github.io) will then build the `develop` branch and, if successful, store the generated site in the `master` branch and publish to the GitHub Pages.
