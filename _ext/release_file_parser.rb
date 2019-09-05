@@ -123,7 +123,6 @@ module Awestruct
       def sortReleaseHashes( releases_hash, release_series_hash )
         unless release_series_hash == nil
           release_series_hash = Hash[release_series_hash.sort_by { |key,value| Version.new(key) }.reverse]
-          @site[:release_series] = release_series_hash
 
           found_series = false
           found_stable_series = false
@@ -166,6 +165,9 @@ module Awestruct
               @site[:latest_stable_series] = series
             end
           end
+
+          release_series_hash = Hash[release_series_hash.sort_by { |key,value| Version.new(key) }]
+          @site[:release_series] = release_series_hash
         end
         unless releases_hash == nil
           releases_hash = Hash[releases_hash.sort_by { |key,value| Version.new(key) }.reverse]
