@@ -65,11 +65,13 @@ end
 
 desc 'Build and preview the site locally in development mode'
 task :preview => :check do
+  run_antora
   run_awestruct '-d'
 end
 
 desc 'Generate the site using the development profile'
 task :gen => :check do
+  run_antora
   run_awestruct '-P development -g --force'
 end
 
@@ -80,10 +82,11 @@ end
 
 desc 'Generate the site and deploy to production branch using local dev environment'
 task :deploy => [:check, :push] do
+  run_antora
   run_awestruct '-P production -g --force --deploy'
 end
 
-desc 'Generate site using Travis CI and, if not a pull request, publish site to production (GitHub Pages)'
+desc 'Generate site using Travis CI and, if not a pull request, publish site to production (GitHub Pages).  Antora content will be built by Travis directly rather than this task.'
 task :travis => :check do
   # if this is a pull request, do a simple build of the site and stop
   if ENV['TRAVIS_PULL_REQUEST'].to_s.to_i > 0
@@ -168,7 +171,7 @@ task :check => :init do
 end
 
 # Execute Antora
-def run_antora(args)
+def run_antora()
   if system "antora playbook.yml"
     puts "Antora documentation created"
   else
@@ -179,9 +182,6 @@ end
 
 # Execute Awestruct
 def run_awestruct(args)
-  # kick off antora before awestruct
-  run_antora(args)
-
   # used to bind Awestruct to 0.0.0.0
   # do export BIND="-b 0.0.0.0"
   if ENV['BIND'] && ENV['BIND'] != ''
