@@ -90,9 +90,9 @@ module Awestruct
         post_document_fragment = Nokogiri::HTML::fragment(post_content)
 
         manual_cut = post_content.include? '<!-- more -->'
-        puts "Manual Cut"
-        puts post_content
-        puts manual_cut
+        # puts "Manual Cut"
+        # puts post_content
+        # puts manual_cut
         summary = ''
 
         i = 0
