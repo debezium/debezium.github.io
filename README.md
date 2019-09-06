@@ -5,7 +5,7 @@
 
 # Introduction
 
-This is the source code for the [Debezium website](http://debezium.io). This is based on [templates](https://github.com/jbossorg/bootstrap-community) created by the JBoss Community using [Awestruct](http://awestruct.org/) and [Bootstrap](http://twitter.github.com/bootstrap).
+This is the source code for the [Debezium website](https://debezium.io/). This is based on [templates](https://github.com/jbossorg/bootstrap-community) created by the JBoss Community using [Awestruct](http://awestruct.org/) and [Bootstrap](http://twitter.github.com/bootstrap).
 
 # License
 
