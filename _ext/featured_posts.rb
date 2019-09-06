@@ -40,7 +40,6 @@ module Awestruct
               month = $2
               day   = $3
               slug  = $4
-              puts p.relative_source_path, p.date, year, month, day, slug, p.sequence, File.mtime( p.source_path )
               p.date = DateTime.new( year.to_i, month.to_i, day.to_i )
             end
           end
