@@ -32,9 +32,22 @@ module Awestruct
           end
         end
 
-        # Sort the blog posts most recent to oldest
-        featured = featured.sort_by{|each| [each.date, each.sequence || 0, File.mtime( each.source_path ), each.slug ]}
+        # Guarantee that each page has a date value for sorting purposes
+        featured.each do |p|
+          if p.date.nil?
+            if ( p.relative_source_path =~ /^#{@path_prefix}\/(20[01][0-9])-([01][0-9])-([0123][0-9])-([^.]+)\..*$/ )
+              year  = $1
+              month = $2
+              day   = $3
+              slug  = $4
+              puts p.relative_source_path, p.date, year, month, day, slug, p.sequence, File.mtime( p.source_path )
+              p.date = DateTime.new( year.to_i, month.to_i, day.to_i )
+            end
+          end
+        end
 
+        # Sort the blog posts most recent to oldest
+        featured = featured.sort_by{|each| [each.date, each.sequence || 0, File.mtime( each.source_path ), each.slug ]}.reverse
         site[:featured_posts] = featured
       end
 
