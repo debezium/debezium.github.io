@@ -9,4 +9,24 @@ module Awestruct::Extensions::AuthorsHelper
 
     names.join(", ")
   end
+
+  def lookup_avatar(nick)
+    avatar = "color_debezium_64px.png"
+
+    author = lookup_author(nick)
+    if author.nil?
+      return "/images/" + avatar
+    else
+      user_avatar = author["avatar"]
+      if user_avatar.nil?
+        return "/images/" + avatar
+      end
+      return "/images/" + user_avatar
+    end
+  end
+
+  def lookup_author(nick)
+    return site.authors[nick]
+  end
+
 end

@@ -12,6 +12,7 @@ require 'canonicals_helper'
 require 'redirect_creator'
 require 'release_file_parser'
 require 'posts'
+require 'featured_posts'
 #require 'releases'
 
 Awestruct::Extensions::Pipeline.new do
@@ -27,6 +28,10 @@ Awestruct::Extensions::Pipeline.new do
   extension Awestruct::Extensions::FileMerger.new
   extension Awestruct::Extensions::LessConfig.new
   extension Awestruct::Extensions::Symlinker.new
+
+  # Process the blog posts and generate a site level collection of posts with tag 'featured'
+  # Used by the blog UI to display featured posts
+  extension Awestruct::Extensions::FeaturedPosts.new('/blog')
 
   # Process the blog posts and ensure each has an array of (possibly empty) tags ...
   extension Awestruct::Extensions::Posts.new('/blog', :posts)
@@ -46,8 +51,6 @@ Awestruct::Extensions::Pipeline.new do
   # depend on the release metadata to build the appropriate page navigation for old links that
   # have since been moved or should reference latest [stable] series.
   extension Awestruct::Extensions::ReleaseFileParser.new
-
-  extension Awestruct::Extensions::Paginator.new(:posts, '/archive/index', :per_page => 10)
 
   extension Awestruct::Extensions::RedirectCreator.new("redirects")
   extension Awestruct::Extensions::Disqus.new
