@@ -90,7 +90,7 @@ Next, at the command line of that container run the following command:
 
 This cleans up any previously-generated files in the `_site` directory, (re)generates the files for the website, and runs a local webserver to access the site by pointing your browser to [http://localhost:4242]().
 
-Note: If you're running Docker on Windows or OS X, you must use [port forwarding](http://debezium.io/docs/docker#port-forwarding) so that requests get forwarded properly to the Docker host virtual machine. For example, to port forward when using a Vagrant based VM (virtualbox, etc), you can port forward the `4242` port easily like this:
+Note: If you're running Docker on Windows or OS X, you must use [port forwarding](https://debezium.io/docs/docker#port-forwarding) so that requests get forwarded properly to the Docker host virtual machine. For example, to port forward when using a Vagrant based VM (virtualbox, etc), you can port forward the `4242` port easily like this:
 
 
     vagrant ssh -- -vnNTL *:4242:$DOCKER_HOST_IP:4242
@@ -174,7 +174,7 @@ and in your fork:
 
 When you build the site, the Awestruct tools will generate all of the static files for the site and place them into a local `_site` directory. These are the only files that will appear on the public website.
 
-We want the site to have nice URLs, so Awestruct has an _indexer_ that will transform each file into a folder with the same root name as the file and placing the content into an `index.hmtl` inside that folder. For example, the content from the `/community.html.haml` source file is placed into the `_site/community/index.html` file, which can be viewed on the website with the URL `http://debezium.io/community`.
+We want the site to have nice URLs, so Awestruct has an _indexer_ that will transform each file into a folder with the same root name as the file and placing the content into an `index.hmtl` inside that folder. For example, the content from the `/community.html.haml` source file is placed into the `_site/community/index.html` file, which can be viewed on the website with the URL `https://debezium.io/community`.
 
 ### Common changes
 
@@ -191,7 +191,7 @@ Anyone can write a blog post that is related to Debezium. Simply add a new Ascii
 
 The second line is the key to an entry in the `_config/authors.yml` file, so the first time be sure to add an entry for yourself (avatar images go in the `images` directory). Specify the appropriate lowercase tags, surrounding multi-word tags with double quotes. The `:awestruct-layout` line should remain the same.
 
-Then, rebuild the site and make sure your post is formatted correctly and appears in the [blog](http://debezium.io/blog/).
+Then, rebuild the site and make sure your post is formatted correctly and appears in the [blog](https://debezium.io/blog/).
 
 #### Releasing software
 
@@ -263,9 +263,9 @@ Be sure when a new major/minor release is added that a new `docs/<major>.</minor
 
 Documentation for Debezium is now split between this repository and the [main codebase](https://www.github.com/debezium/debezium.git) repository.  
 
-All of the source files for the site's [docs](http://debezium.io/docs/) are in the `docs` directory, which is structured identically to the URLs of the site (although the source files are _indexified_ as described above). Most of the time you will simply edit one of the existing files. If you want to add a new file, however, be sure that it is referenced in the [docs](http://debezium.io/docs/) table of contents defined in the `_partials/leftcol-doc.html.haml` file.
+All of the source files for the site's [docs](https://debezium.io/docs/) are in the `docs` directory, which is structured identically to the URLs of the site (although the source files are _indexified_ as described above). Most of the time you will simply edit one of the existing files. If you want to add a new file, however, be sure that it is referenced in the [docs](https://debezium.io/docs/) table of contents defined in the `_partials/leftcol-doc.html.haml` file.
 
-All of the source files for the site's [version-specific documentation](http://debezium.io/documentation/debezium) are in the main codebase repository.  Please see [DOCUMENTATION.md](http://www.github.com/debezium/debezium/tree/master/DOCUMENTATION.md) in the main codebase repository for details about Antora and how the documentation should be updated.
+All of the source files for the site's [version-specific documentation](https://debezium.io/documentation/debezium) are in the main codebase repository.  Please see [DOCUMENTATION.md](http://www.github.com/debezium/debezium/tree/master/DOCUMENTATION.md) in the main codebase repository for details about Antora and how the documentation should be updated.
 
 #### Update the front page
 
