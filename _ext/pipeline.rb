@@ -13,6 +13,7 @@ require 'redirect_creator'
 require 'release_file_parser'
 require 'posts'
 require 'featured_posts'
+require 'releases_helper'
 #require 'releases'
 
 Awestruct::Extensions::Pipeline.new do
@@ -21,6 +22,7 @@ Awestruct::Extensions::Pipeline.new do
   helper Awestruct::Extensions::AuthorsHelper
   helper Awestruct::Extensions::CanonicalsHelper
   helper Awestruct::Extensions::GoogleAnalytics
+  helper Awestruct::Extensions::ReleasesHelper
   extension Awestruct::Extensions::WgetWrapper.new
   transformer Awestruct::Extensions::JsMinifier.new
   transformer Awestruct::Extensions::CssMinifier.new
