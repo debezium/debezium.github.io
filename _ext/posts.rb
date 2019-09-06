@@ -115,6 +115,14 @@ module Awestruct
                 else
                   if element.attribute('class').value == 'paragraph' || element.attribute('class').value == 'ulist'
                     summary = summary << element.to_xhtml
+                  elsif element.attribute('class').value == 'openblock teaser'
+                    if element.attribute('style').nil?
+                      element['style'] = "font-weight: 1;";
+                    else
+                      element['style'] += "font-weight: 1 !important;";
+                    end
+                    summary = summary << element.to_xhtml
+                    break
                   else
                     break
                   end
