@@ -553,7 +553,25 @@ The payload section of every change event value produced by the SQL Server conne
 <p><code>after</code> is an optional field that if present contains the state of the row <em>after</em> the event occurred. The structure is described by the same <code>server1.dbo.customers.Value</code> Kafka Connect schema used in <code>before</code>.</p>
 </li>
 <li>
-<p><code>source</code> is a mandatory field that contains a structure describing the source metadata for the event, which in the case of SQL Server contains these fields: the Debezium version, the connector name, whether the event is part of an ongoing snapshot or not, the commit LSN (not while snapshotting), the LSN of the change, database, schema and table where the change happened, and a timestamp representing the point in time when the record was changed in the source database (during snapshotting, it&#8217;ll be the point in time of snapshotting)</p>
+<p><code>source</code> is a mandatory field that contains a structure describing the source metadata for the event, which in the case of SQL Server contains these fields: the Debezium version, the connector name, whether the event is part of an ongoing snapshot or not, the commit LSN (not while snapshotting), the LSN of the change, database, schema and table where the change happened, and a timestamp representing the point in time when the record was changed in the source database (during snapshotting, it&#8217;ll be the point in time of snapshotting).</p>
+<div class="paragraph">
+<p>Also a field <code>event_serial_no</code> is present during streaming.
+This is used to differentiate among events that have the same commit and change LSN.
+There are mostly two situations when you can see it present with value different from <code>1</code>:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>update events will have the value set to <code>2</code>, this is because the update generates two events in the CDC change table of SQL Server (<a href="https://docs.microsoft.com/en-us/sql/relational-databases/system-tables/cdc-capture-instance-ct-transact-sql?view=sql-server-2017">source documentation</a>).
+The first one contains the old values and the second one contains new values.
+So the first one is dropped and the values from it are used with the second one to create the Debezium change event.</p>
+</li>
+<li>
+<p>when a primary key is updated, then SQL Server emits two records - <code>delete</code> to remove the record with the old primary key value and <code>insert</code> to create the record with the new primary key.
+Both operations share the same commit and change LSN and their event numbers are <code>1</code> and <code>2</code>.</p>
+</li>
+</ul>
+</div>
 </li>
 <li>
 <p><code>ts_ms</code> is optional and if present contains the time (using the system clock in the JVM running the Kafka Connect task) at which the connector processed the event.</p>
@@ -683,6 +701,11 @@ The payload section of every change event value produced by the SQL Server conne
             "type": "string",
             "optional": true,
             "field": "commit_lsn"
+          },
+          {
+            "type": "int64",
+            "optional": true,
+            "field": "event_serial_no"
           }
         ],
         "optional": false,
@@ -721,7 +744,8 @@ The payload section of every change event value produced by the SQL Server conne
       "schema": "dbo",
       "table": "customers",
       "change_lsn": "00000027:00000758:0003",
-      "commit_lsn": "00000027:00000758:0005"
+      "commit_lsn": "00000027:00000758:0005",
+      "event_serial_no": "1"
     },
     "op": "c",
     "ts_ms": 1559729471739
@@ -800,7 +824,8 @@ Here&#8217;s an example:</p>
       "schema": "dbo",
       "table": "customers",
       "change_lsn": "00000027:00000ac0:0002",
-      "commit_lsn": "00000027:00000ac0:0007"
+      "commit_lsn": "00000027:00000ac0:0007",
+      "event_serial_no": "2"
     },
     "op": "u",
     "ts_ms": 1559729998706
@@ -824,6 +849,11 @@ Here&#8217;s an example:</p>
 </li>
 <li>
 <p>The <code>source</code> field structure has the same fields as before, but the values are different since this event is from a different position in the transaction log.</p>
+</li>
+<li>
+<p>The <code>event_serial_no</code> field has value <code>2</code>.
+That is due to the update event composed of two events behind the scenes and we are exposing only the second one.
+If you are interested in details please check the <a href="https://docs.microsoft.com/en-us/sql/relational-databases/system-tables/cdc-capture-instance-ct-transact-sql?view=sql-server-2017">source documentation</a> and refer to the field <code>$operation</code>.</p>
 </li>
 <li>
 <p>The <code>ts_ms</code> shows the timestamp that Debezium processed this event.</p>
@@ -878,7 +908,8 @@ Now, let&#8217;s look at the value of a <em>delete</em> event for the same table
       "schema": "dbo",
       "table": "customers",
       "change_lsn": "00000027:00000db0:0005",
-      "commit_lsn": "00000027:00000db0:0007"
+      "commit_lsn": "00000027:00000db0:0007",
+      "event_serial_no": "1"
     },
     "op": "d",
     "ts_ms": 1559730450205
@@ -2431,8 +2462,6 @@ When <code>true</code> the delete operations are represented by a delete event a
 Emitting the tombstone event (the default behavior) allows Kafka to completely delete all events pertaining to the given key once the source record got deleted.</p>
 </div></div></td>
 </tr>
-</tbody>
-<tfoot>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>column.propagate.source.type</code></p>
@@ -2445,6 +2474,21 @@ Emitting the tombstone event (the default behavior) allows Kafka to completely d
 The schema parameters <code>__debezium.source.column.type</code>, <code>__debezium.source.column.length</code> and <code>__debezium.source.column.scale</code> will be used to propagate the original type name and length (for variable-width types), respectively.
 Useful to properly size corresponding columns in sink databases.
 Fully-qualified names for columns are of the form <em>schemaName</em>.<em>tableName</em>.<em>columnName</em>.</p>
+</div></div></td>
+</tr>
+</tbody>
+<tfoot>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>message.key.columns</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><em>empty string</em></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>A semi-colon list of regular expressions that match fully-qualified tables and columns to map a primary key.<br>
+Each item (regular expression) must match the fully-qualified <code>&lt;fully-qualified table&gt;:&lt;a comma-separated list of columns&gt;</code> representing the custom key.<br>
+Fully-qualified tables could be defined as <code>DB_NAME.TABLE_NAME</code> or <code>SCHEMA_NAME.TABLE_NAME</code>, depending on the specific connector.</p>
 </div></div></td>
 </tr>
 </tfoot>
