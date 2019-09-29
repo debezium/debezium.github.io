@@ -19,11 +19,11 @@ when a data record is inserted, updated or deleted, they'd maintain specific col
 This comes with some disadvantages, though:
 
 * metadata columns and triggers add bloat to the model in the database and the corresponding application domain model
-* writing records in history tables as part of OLTP transactions increases the load on the database and may cause longer response times of the application
+* writing records in history tables as part of OLTP transactions increases the number of executed statements within the transaction and thus may cause longer response times of the application
 
 Library-based solutions also oftentimes cannot provide metadata in case of bulk UPDATEs and DELETEs,
 as the listeners used to hook them into the persistence framework are not aware of all the affected records.
-Also, by definition, any approach based on an application-side library is prone to miss any data changes done directly in the database, e.g. when running a data load or emergency-patching data bypassing the application.
+Also, by definition, any approach based on an application-side library is prone to miss any data changes done directly in the database, e.g. when running a data load or bypassing the application during an emergency data patch.
 
 These problems don't exist when leveraging the transaction log as the source for an audit trail and using change data capture for retrieving the change information and sending it into a message broker or log such as Apache Kafka.
 Running asynchronously, the CDC process can extract the change data without impacting OLTP transactions, not missing any event, no matter whether what its origin is and whether it was caused by a bulk operation.
@@ -228,6 +228,10 @@ providing operators that let you filter, transform, aggregate and join Kafka mes
 
 As foundation for our stream processing application we're going to use https://quarkus.io/[Quarkus],
 which is "a Kubernetes Native Java stack tailored for GraalVM & OpenJDK HotSpot, crafted from the best of breed Java libraries and standards".
+
+.Building Kafka Streams with Quarkus
+[NOTE]
+===============================
 Amongst many others, Quarkus comes with an https://quarkus.io/guides/kafka-streams-guide[extension for Kafka Streams],
 which allows to build stream processing applications running on the JVM and as native code compiled ahead-of-time.
 It takes care of the lifecycle of the streaming topology,
@@ -236,9 +240,12 @@ awaiting the creation of all input topics and more.
 The extension also comes with "live development" support,
 which automatically reloads the stream processing application while you're working on it,
 allowing for very fast turnaround cycles during development.
+===============================
+
+=== Joining Logic
 
 When thinking about the actual implementation of the enrichment logic,
-a stream join might appear as a suitable solution.
+a https://kafka.apache.org/23/documentation/streams/developer-guide/dsl-api.html#kstream-kstream-join[stream-to-stream] join might appear as a suitable solution.
 By creating ``KStream``s for the two topics, we may try and implement the joining functionality.
 This creates a problem though in regards to ordering guarantees of the change events.
 By default, Debezium will use a table's primary key as the message key for the corresponding Kafka messages.
@@ -263,6 +270,8 @@ as the messages are consumed from multiple topics, it may happen that at the poi
 So depending on whether we'd be using an inner join or a left join,
 we'd in this case either skip change events or propagate them without having enriched them with the transaction metadata.
 Both outcomes are not desirable.
+
+=== Customized Joins With Buffering
 
 The combination of `KStream` and `GlobalKTable` still hints into the right direction.
 Instead of relying on the built-in join operators we'll have to implement a custom joining logic, though.
@@ -332,7 +341,7 @@ The transaction metadata topic on the other hand can be fairly short-lived, as i
 It may be a good idea to set up some monitoring of the end-to-end lag in order to make sure the log enricher stream application keeps up with the incoming messages and doesn't fall behind that far so it is at risk of transaction messages being discarded before processing the corresponding change events.
 ===============================
 
-The topic names are injected using the MicroProfile Config API, with the values being provided in Quarkus _application.properties_ configuration file.
+The topic names are injected using the https://microprofile.io/project/eclipse/microprofile-config[MicroProfile Config API], with the values being provided in Quarkus _application.properties_ configuration file.
 Besides the topic names, this file also has the information about the Kafka bootstrap server, default serdes any more:
 
 [source]
@@ -523,65 +532,10 @@ To maintain the order of events, the buffered must be processed in order of inse
 beginning with the event inserted first.
 As there's guaranteed traversing order when getting all the entries from a `KeyValueStore`,
 this is implemented by using the values of a strictly increasing sequence as the keys.
-A special entry in the key value store is used to store the information about the current "oldest" index in the buffer and the next sequence value, via the `BufferOffsets` structure:
+A https://github.com/debezium/debezium-examples/blob/master/auditlog/log-enricher/src/main/java/io/debezium/demos/auditing/enricher/BufferOffsets.java[special entry] in the key value store is used to store the information about the current "oldest" index in the buffer and the next sequence value.
 
-[source,java]
-----
-class BufferOffsets {
-
-    private long firstValue;
-    private long nextValue;
-
-    private BufferOffsets(long firstValue, long nextValue) {
-        this.firstValue = firstValue;
-        this.nextValue = nextValue;
-    }
-
-    public static BufferOffsets initial() {
-        return new BufferOffsets(1, 1);
-    }
-
-    static BufferOffsets fromJson(JsonObject json) {
-        return new BufferOffsets(
-                json.getJsonNumber("firstValue").longValue(),
-                json.getJsonNumber("nextValue").longValue()
-        );
-    }
-
-    public JsonObject toJson() {
-        return Json.createObjectBuilder()
-                .add("firstValue", firstValue)
-                .add("nextValue", nextValue)
-                .build();
-    }
-
-    public long getNextValue() {
-        return nextValue;
-    }
-
-    long getFirstValue() {
-        return firstValue;
-    }
-
-    long getNextValueAndIncrement() {
-        return nextValue++;
-    }
-
-    void incrementFirstValue() {
-        firstValue++;
-    }
-
-    @Override
-    public String toString() {
-        return "BufferOffsets [firstValue=" + firstValue + ", nextValue=" + nextValue + "]";
-    }
-}
-----
-
-Of course one could think of alternative implementations for such buffer, e.g. based on a Kafka topic or a custom `KeyValueStore` implementation that ensures iteration order from oldest to newest entry.
-Also the buffer processing logic itself may be adjusted as per your specific requirements;
-for instance instead of indefinitely waiting for corresponding transaction metadata,
-we may also decide that it makes more sense to propagate change events unenriched after some waiting time or to raise an exception indicating the missing metadata.
+One could also think of alternative implementations for such buffer, e.g. based on a Kafka topic or a custom `KeyValueStore` implementation that ensures iteration order from oldest to newest entry.
+Ultimately, it could also be useful if Kafka Streams came with built-in means of retrying a stream element that cannot be joined yet; this would avoid any custom buffering implementation.
 
 With the custom transformer logic in place, we can build the Quarkus project and run the stream processing application.
 You should see messages like this in the `dbserver1.inventory.vegetable.enriched` topic:
@@ -623,13 +577,17 @@ You should see messages like this in the `dbserver1.inventory.vegetable.enriched
 }
 ----
 
-== Misc.
-
-Queries: materialize to table again
-Don't have to enrich could also leave for read
-
+Of course, the buffer processing logic may be adjusted as per your specific requirements;
+for instance instead of indefinitely waiting for corresponding transaction metadata,
+we may also decide that it makes more sense to propagate change events unenriched after some waiting time or to raise an exception indicating the missing metadata.
 
 == Summary
+
+Queries: materialize to table again
+
+Don't have to enrich could also leave for read
+
+...
 
 _Many thanks to Hans-Peter Grahsl, Jiri Pechanec, Justin Holmes and René Kerner for their feedback while writing this post!_
 
