@@ -1,6 +1,6 @@
 = Building Audit Logs with Change Data Capture and Stream Processing
 gmorling
-:awestruct-tags: [ discussion, examples, microservices, apache-kafka, featured ]
+:awestruct-tags: [ discussion, examples, apache-kafka, kafka-streams, featured ]
 :awestruct-layout: blog-post
 
 It is a common requirement for business applications to maintain some form of audit log,
@@ -21,7 +21,7 @@ This comes with some disadvantages, though:
 * metadata columns and triggers add bloat to the model in the database and the corresponding application domain model
 * writing records in history tables as part of OLTP transactions increases the number of executed statements within the transaction and thus may cause longer response times of the application
 
-Library-based solutions also oftentimes cannot provide metadata in case of bulk UPDATEs and DELETEs,
+Library-based solutions also oftentimes cannot provide metadata in case of bulk updates and deletes (`UPDATE mytable WHERE ...`),
 as the listeners used to hook them into the persistence framework are not aware of all the affected records.
 Also, by definition, any approach based on an application-side library is prone to miss any data changes done directly in the database, e.g. when running a data load or bypassing the application during an emergency data patch.
 
@@ -71,7 +71,7 @@ As an example, the following metadata should be made available for auditing purp
 * The request timestamp, as represented by the `Date` HTTP header
 * A use case identifier, as provided via a custom Java annotation on the invoked REST resource method
 
-Here is a basic implementation of a REST resource for persisting a new vegetable using the JAX-RS API:
+Here is a basic implementation of a REST resource for persisting a new vegetable using the https://jcp.org/en/jsr/detail?id=370[JAX-RS API]:
 
 [source,java]
 ----
@@ -105,12 +105,13 @@ public class VegetableResource {
 Not too exciting, if you've ever built REST services with JAX-RS before:
 a resource method annotated with `@POST` takes the incoming request payload and passes it to a service bean which is injected via CDI.
 The `@Audited` annotation is special, though.
-It is a custom annotation which serves two purposes:
+It is a custom annotation type which serves two purposes:
 
 * Specifying the use case that should be referenced in the audit log ("CREATE VEGETABLE")
-* Binding an interceptor which will be triggered for each invocation of a method annotated with `@Audited`
+* Binding an https://jcp.org/en/jsr/detail?id=318[interceptor] which will be triggered for each invocation of a method annotated with `@Audited`
 
-That interceptor implements the logic for writing the transaction-scoped audit metadata and is defined like this:
+That interceptor kicks in whenever a method annotated with `@Audited` is invoked and implements the logic for writing the transaction-scoped audit metadata.
+It looks like this:
 
 [source,java]
 ----
@@ -130,7 +131,9 @@ public class TransactionInterceptor {
 
     @AroundInvoke
     public Object manageTransaction(InvocationContext ctx) throws Exception {
-        BigInteger txtId = (BigInteger) entityManager.createNativeQuery("SELECT txid_current()").getSingleResult();
+        BigInteger txtId = (BigInteger) entityManager
+            .createNativeQuery("SELECT txid_current()")
+            .getSingleResult();
         String useCase = ctx.getMethod().getAnnotation(Audited.class).useCase();
 
         TransactionContextData context = new TransactionContextData();
@@ -147,7 +150,9 @@ public class TransactionInterceptor {
 
     private ZonedDateTime getRequestDate() {
         String requestDate = request.getHeader(HttpHeaders.DATE);
-        return requestDate != null ? ZonedDateTime.parse(requestDate, DateTimeFormatter.RFC_1123_DATE_TIME) : null;
+        return requestDate != null ?
+            ZonedDateTime.parse(requestDate, DateTimeFormatter.RFC_1123_DATE_TIME) :
+            null;
     }
 }
 ----
@@ -155,19 +160,19 @@ public class TransactionInterceptor {
 `@Interceptor` and `@Audited` mark this as an interceptor bound to our custom `@Audited` annotion.
 The `@Priority` annotation controls at which point in the interceptor stack the auditing interceptor should be invoked.
 Any application-provided interceptors should have a priority larger than `Priority.APPLICATION` (2000);
-in particular, this ensures that a transaction will have been started before by means of the `@Transactional` annotation and its accompanying interceptor which run in the `Priority.PLATFORM_BEFORE` range (0).
+in particular, this ensures that a transaction will have been started before by means of the `@Transactional` annotation and its accompanying interceptor which run in the `Priority.PLATFORM_BEFORE` range (< 1000).
 
-Whenever a method annotated with `@Audited` is invoked, the interceptor will kick in and
+For each audited method the interceptor fires and will
 
 * obtain the current transaction id (the exact way for doing so is database-specific, in the example the `txid_current()` function from Postgres can be called)
-* persist a `TransactionContextData` record via JPA, whose primary key value is the transaction id, and which has attributes for the user name (obtained from the injected JWT token), the request date (obtained from the `DATE` HTTP request header) and the use case identifier (obtained from the `@Audited` annotation of the invoked method)
+* persist a `TransactionContextData` record via JPA; its primary key value is the transaction id selected before, and it has attributes for the user name (obtained from the injected JWT token), the request date (obtained from the `DATE` HTTP request header) and the use case identifier (obtained from the `@Audited` annotation of the invoked method)
 * continue the call flow of the invoked method
 
 When invoking the REST service to create and update a few vegetables,
 the following records should be created in the database
 (refer to the README in the provided example for instructions on building the example code and https://github.com/debezium/debezium-examples/tree/master/auditlog#inserting-some-data-and-observing-the-audit-log[invoking the vegetable service] with a suitable JWT token):
 
-[source]
+[source,sql]
 ----
 vegetablesdb> select * from inventory.vegetable;
 +------+---------------+---------+
@@ -181,7 +186,7 @@ SELECT 3
 Time: 0.019s
 ----
 
-[source]
+[source,sql]
 ----
 vegetablesdb> select * from inventory.transaction_context_data;
 +------------------+---------------------+------------------+-------------+
@@ -237,12 +242,13 @@ which allows to build stream processing applications running on the JVM and as n
 It takes care of the lifecycle of the streaming topology,
 so you don't have to deal with details like registering JVM shutdown hooks,
 awaiting the creation of all input topics and more.
+
 The extension also comes with "live development" support,
 which automatically reloads the stream processing application while you're working on it,
 allowing for very fast turnaround cycles during development.
 ===============================
 
-=== Joining Logic
+=== The Joining Logic
 
 When thinking about the actual implementation of the enrichment logic,
 a https://kafka.apache.org/23/documentation/streams/developer-guide/dsl-api.html#kstream-kstream-join[stream-to-stream] join might appear as a suitable solution.
@@ -261,11 +267,13 @@ and its change events may end up in different partitions of the re-keyed topic,
 which may cause a consumer to receive the second change event before the first one.
 
 If a `KStream`-`KStream` join isn't feasible, what else could be done?
-A `KStream`-`GlobalKTable` join looks promising, too.
-It doesn't have the co-partitioning requirements of stream-to-stream joins,
+https://kafka.apache.org/23/documentation/streams/developer-guide/dsl-api.html#streams-developer-guide-dsl-joins-kstream-globalktable[A join] between a `KStream` and `GlobalKTable` looks promising, too.
+It doesn't have the https://kafka.apache.org/23/documentation/streams/developer-guide/dsl-api.html#streams-developer-guide-dsl-joins-co-partitioning[co-partitioning requirements] of stream-to-stream joins,
 as all partitions of the `GlobalKTable` are present on all nodes of a distributed Kafka Streams application.
+This seems like an acceptable trade-off, because the messages from the transaction metadata topic can be discarded rather quickly and the size of the corresponding table should be within reasonable bounds.
 So we could have a `KStream` sourced from the vegetables topic and a `GlobalKTable` based on the transaction metadata topic.
-Unfortunately, there is a timing issue:
+
+But unfortunately, there is a timing issue:
 as the messages are consumed from multiple topics, it may happen that at the point in time when an element from the vegetables stream is processed, the corresponding transaction metadata message isn't available yet.
 So depending on whether we'd be using an inner join or a left join,
 we'd in this case either skip change events or propagate them without having enriched them with the transaction metadata.
@@ -274,9 +282,9 @@ Both outcomes are not desirable.
 === Customized Joins With Buffering
 
 The combination of `KStream` and `GlobalKTable` still hints into the right direction.
-Instead of relying on the built-in join operators we'll have to implement a custom joining logic, though.
-The basic idea is to buffer messages arriving on the vegetable `KStream` until the corresponding metadata message is available from the ``GlobalKTable``s state store.
-This can be achieved by creating a custom `Transformer` which implements the required buffering logic and is applied to the vegetable `KStream`.
+Only that instead of relying on the built-in join operators we'll have to implement a custom joining logic.
+The basic idea is to buffer messages arriving on the vegetable `KStream` until the corresponding transaction metadata message is available from the ``GlobalKTable``s state store.
+This can be achieved by creating a custom https://kafka.apache.org/23/javadoc/org/apache/kafka/streams/kstream/KStream.html#transform-org.apache.kafka.streams.kstream.TransformerSupplier-java.lang.String...-[transformer] which implements the required buffering logic and is applied to the vegetable `KStream`.
 
 Let's begin with the streaming topology itself.
 Thanks to the Quarkus Kafka Streams extension,
@@ -330,7 +338,9 @@ The `StreamsBuilder` from Kafka Streams is used here to
 
 * set up a state store which will serve as the buffer for change events that cannot be processed yet
 * define a `GlobalKTable` based on the transaction metadata topic and
-* define a `KStream` based on the vegetables topic; on this stream, any incoming tombstone markers are filtered, the reasoning being that the retention policy for an audit trail topic typically should be time-based than based on log compaction; similarly, snapshot events are filtered, assuming they are not relevant for an audit trail and there wouldn't be any corresponding metadata provided by the application for the snapshot transaction initiated by the Debezium connector; any other messages are enriched with the corresponding transaction metadata via a custom `Transformer` (see below) and finally are written to an output topic
+* define a `KStream` based on the vegetables topic; on this stream, any incoming tombstone markers are filtered, the reasoning being that the retention policy for an audit trail topic typically should be time-based than based on log compaction; similarly, snapshot events are filtered, assuming they are not relevant for an audit trail and there wouldn't be any corresponding metadata provided by the application for the snapshot transaction initiated by the Debezium connector
++
+Any other messages are enriched with the corresponding transaction metadata via a custom `Transformer` (see below) and finally are written to an output topic
 
 .Topic Retention
 [NOTE]
@@ -528,9 +538,9 @@ transaction topic's `GlobalKTable`, using the transaction id from the `source` b
 * In order to emit buffered events also if no new change event is coming in, the `punctuate()` method is used to periodically process the buffer
 
 The key piece is the buffer for unprocesseable change events.
-To maintain the order of events, the buffered must be processed in order of insertion,
+To maintain the order of events, the buffer must be processed in order of insertion,
 beginning with the event inserted first.
-As there's guaranteed traversing order when getting all the entries from a `KeyValueStore`,
+As there's no guaranteed traversing order when getting all the entries from a `KeyValueStore`,
 this is implemented by using the values of a strictly increasing sequence as the keys.
 A https://github.com/debezium/debezium-examples/blob/master/auditlog/log-enricher/src/main/java/io/debezium/demos/auditing/enricher/BufferOffsets.java[special entry] in the key value store is used to store the information about the current "oldest" index in the buffer and the next sequence value.
 
@@ -581,15 +591,42 @@ Of course, the buffer processing logic may be adjusted as per your specific requ
 for instance instead of indefinitely waiting for corresponding transaction metadata,
 we may also decide that it makes more sense to propagate change events unenriched after some waiting time or to raise an exception indicating the missing metadata.
 
+In order to see whether the buffering works as expected, you could do a small experiment:
+modify a vegetable record using SQL directly in the database.
+Debezium will capture the event, but as there's no corresponding transaction metadata provided,
+the event will not be forwarded to the enriched vegetables topic.
+If you add another vegetable using the REST API,
+this one also will not be propagated;
+Altough there is a metadata record for it, it's blocked by the other change event.
+Only once you have inserted a metadata record for the first change's transaction into the `transaction_context_data` table,
+both change events will be processed and sent to the output topic.
+
 == Summary
 
-Queries: materialize to table again
+In this blog post we've discussed how change data capture in combination with stream processing can be used to build audit logs in an efficient, low-overhead way.
+In contrast to library and trigger-based approaches, the events that form the audit trail are retrieved via CDC from the database's transaction logs,
+and thus no overhead to OLTP transactions is incurred.
+Also audit log entries can be obtained when data records are subject to bulk updates or deletes,
+something typically not possible with library-based auditing solutions.
 
-Don't have to enrich could also leave for read
+Additional metadata that typically should be part of an audit log,
+can be provided by the application via a separate table,
+which also is captured via Debezium.
+With the help of Kafka Streams the actual data change events can be enriched with the data from that metadata table.
 
-...
+One aspect we haven't discussed yet is querying the audit trail entries,
+e.g. to examine specific earlier versions of the data.
+To do so, the enriched change data events typically would be stored in a queryable database.
+Unlike a basic data replication pipeline, not only the latest version of each record would be stored in the database in that case, but all the versions, i.e. the primary keys typically would be amended with the transaction id of each change.
+This would all to select single data records or even joins of multiple tables to get the data valid as per a given transaction id.
+How this could be implemented in detail, may be discussed in a future post.
 
-_Many thanks to Hans-Peter Grahsl, Jiri Pechanec, Justin Holmes and René Kerner for their feedback while writing this post!_
+Your feedback on this approach for building audit logs is very welcomed,
+just post a comment below.
+To get started with your own implementation,
+you can check out https://github.com/debezium/debezium-examples/tree/master/auditlog[the code] in the Debezium examples repository on GitHub.
+
+_Many thanks to Hans-Peter Grahsl, Ashhar Hasan, Jiri Pechanec and Chris Cranford for their feedback while working on this post and the accompanying example code!_
 
 == About Debezium
 
