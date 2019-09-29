@@ -51,16 +51,16 @@ The following image shows the overall solution design, based on the example of a
 </div>
 ++++
 
-The architecture is made up of these components:
+There are two services involved:
 
 * _vegetables-service_: a simple REST service for inserting and updating vegetable data into a Postgres database;
 as part of its processing, it will not only update its actual "business table" `vegetable`,
 but also insert some auditing metadata into a dedicated metadata table `transaction_context_data`;
 Debezium is used to stream change events from the two tables into corresponding topics in Apache Kafka
-* _log-enricher_: a stream processing based on Kafka Streams,
-which enriches the messages from the CDC topic containing the `vegetable` change events (`dbserver1.inventory.vegetable`) with the corresponding metadata in the `dbserver1.inventory.transaction_context_data` topic sourced from the `transaction_context_data` table and writes the enriched vegetable change event back to Kafka into the `dbserver1.inventory.vegetable.enriched` topic.
+* _log-enricher_: a stream processing application built with Kafka Streams and Quarkus,
+which enriches the messages from the CDC topic containing the vegetable change events (`dbserver1.inventory.vegetable`) with the corresponding metadata in the `dbserver1.inventory.transaction_context_data` topic and writes the enriched vegetable change event back to Kafka into the `dbserver1.inventory.vegetable.enriched` topic.
 
-You can find a https://github.com/debezium/debezium-examples/tree/master/auditlog[complete example] with all the components on GitHub.
+You can find a https://github.com/debezium/debezium-examples/tree/master/auditlog[complete example] with all the components and instruction for running them on GitHub.
 
 == Providing Auditing Metadata
 
@@ -115,13 +115,13 @@ It looks like this:
 
 [source,java]
 ----
-@Interceptor
-@Priority(value = Interceptor.Priority.APPLICATION + 100)
+@Interceptor // <1>
 @Audited(useCase = "")
+@Priority(value = Interceptor.Priority.APPLICATION + 100) // <2>
 public class TransactionInterceptor {
 
     @Inject
-    JsonWebToken jwt;
+    JsonWebToken jwt; // <3>
 
     @Inject
     EntityManager entityManager;
@@ -131,12 +131,12 @@ public class TransactionInterceptor {
 
     @AroundInvoke
     public Object manageTransaction(InvocationContext ctx) throws Exception {
-        BigInteger txtId = (BigInteger) entityManager
+        BigInteger txtId = (BigInteger) entityManager // <4>
             .createNativeQuery("SELECT txid_current()")
             .getSingleResult();
         String useCase = ctx.getMethod().getAnnotation(Audited.class).useCase();
 
-        TransactionContextData context = new TransactionContextData();
+        TransactionContextData context = new TransactionContextData(); // <5>
 
         context.transactionId = txtId.longValueExact();
         context.userName = jwt.<String>claim("sub").orElse("anonymous");
@@ -145,7 +145,7 @@ public class TransactionInterceptor {
 
         entityManager.persist(context);
 
-        return ctx.proceed();
+        return ctx.proceed(); // <6>
     }
 
     private ZonedDateTime getRequestDate() {
@@ -156,17 +156,18 @@ public class TransactionInterceptor {
     }
 }
 ----
-
-`@Interceptor` and `@Audited` mark this as an interceptor bound to our custom `@Audited` annotion.
-The `@Priority` annotation controls at which point in the interceptor stack the auditing interceptor should be invoked.
+<1> `@Interceptor` and `@Audited` mark this as an interceptor bound to our custom `@Audited` annotion.
+<2> The `@Priority` annotation controls at which point in the interceptor stack the auditing interceptor should be invoked.
 Any application-provided interceptors should have a priority larger than `Priority.APPLICATION` (2000);
 in particular, this ensures that a transaction will have been started before by means of the `@Transactional` annotation and its accompanying interceptor which run in the `Priority.PLATFORM_BEFORE` range (< 1000).
+<3> The caller's JWT token injected via the https://microprofile.io/project/eclipse/microprofile-jwt-auth[MicroProfile JWT RBAC] API
 
 For each audited method the interceptor fires and will
 
-* obtain the current transaction id (the exact way for doing so is database-specific, in the example the `txid_current()` function from Postgres can be called)
-* persist a `TransactionContextData` record via JPA; its primary key value is the transaction id selected before, and it has attributes for the user name (obtained from the injected JWT token), the request date (obtained from the `DATE` HTTP request header) and the use case identifier (obtained from the `@Audited` annotation of the invoked method)
-* continue the call flow of the invoked method
+* obtain the current transaction id (the exact way for doing so is database-specific, in the example the `txid_current()` function from Postgres is called) pass:[<i class="conum" data-value="4"></i>]
+* persist a `TransactionContextData` entity via JPA; its primary key value is the transaction id selected before, and it has attributes for the user name (obtained from the JWT token),
+the request date (obtained from the `DATE` HTTP request header) and the use case identifier (obtained from the `@Audited` annotation of the invoked method) pass:[<i class="conum" data-value="5"></i>]
+* continue the call flow of the invoked method pass:[<i class="conum" data-value="6"></i>]
 
 When invoking the REST service to create and update a few vegetables,
 the following records should be created in the database
@@ -208,7 +209,18 @@ Again refer to the example README file for the details of https://github.com/deb
 
 The `dbserver1.inventory.vegetable` topic should contain contain change events for created, updated and deleted vegetable records, whereas the `dbserver1.inventory.transaction_context_data` topic should only contain create messages for each inserted metadata record.
 
-Now, if we look at messages from the two topics, we can see that they can be correlated based on the transaction id:
+.Topic Retention
+[NOTE]
+===============================
+In order to manage the growth of involved topics, the retention policy for each topic should be well-defined.
+For instance for the actual audit log topic with the enriched change events, a time based retention policy might be suitable, keeping each log event for as long as needed as per your requirements.
+The transaction metadata topic on the other hand can be fairly short-lived, as its entries are not needed any longer, once all corresponding data change events have been processed.
+It may be a good idea to set up some monitoring of the end-to-end lag in order to make sure the log enricher stream application keeps up with the incoming messages and doesn't fall behind that far so it is at risk of transaction messages being discarded before processing the corresponding change events.
+===============================
+
+Now, if we look at messages from the two topics, we can see that they can be correlated based on the transaction id.
+It is part of the `source` structure of vegetable change events,
+and it is the message key of transaction metadata events:
 
 ++++
 <div class="imageblock centered-image">
@@ -216,9 +228,7 @@ Now, if we look at messages from the two topics, we can see that they can be cor
 </div>
 ++++
 
-The transaction id is part of the `source` structure of vegetable change events,
-and it is the message key of metadata events.
-Once we've found the corresponding transaction event for a given data change event,
+Once we've found the corresponding transaction event for a given vegetable change event,
 the `client_date`, `usecase` and `user_name` attributes from the former can be added to the latter:
 
 ++++
@@ -319,11 +329,11 @@ public class TopologyProducer {
                         new JsonObjectSerde()
                     )
                     .withCachingDisabled();
-            builder.addStateStore(streamBufferStateStore);
+            builder.addStateStore(streamBufferStateStore); // <1>
 
-        builder.globalTable(txContextDataTopic, Materialized.as(STORE_NAME));
+        builder.globalTable(txContextDataTopic, Materialized.as(STORE_NAME)); // <2>
 
-        builder.<JsonObject, JsonObject>stream(vegetablesTopic)
+        builder.<JsonObject, JsonObject>stream(vegetablesTopic) // <3>
                 .filter((id, changeEvent) -> changeEvent != null)
                 .filter((id, changeEvent) -> !changeEvent.getString("op").equals("r"))
                 .transform(() -> new ChangeEventEnricher(), STREAM_BUFFER_NAME)
@@ -333,23 +343,13 @@ public class TopologyProducer {
     }
 }
 ----
-
-The `StreamsBuilder` from Kafka Streams is used here to
-
-* set up a state store which will serve as the buffer for change events that cannot be processed yet
-* define a `GlobalKTable` based on the transaction metadata topic and
-* define a `KStream` based on the vegetables topic; on this stream, any incoming tombstone markers are filtered, the reasoning being that the retention policy for an audit trail topic typically should be time-based than based on log compaction; similarly, snapshot events are filtered, assuming they are not relevant for an audit trail and there wouldn't be any corresponding metadata provided by the application for the snapshot transaction initiated by the Debezium connector
+<1> State store which will serve as the buffer for change events that cannot be processed yet
+<2> `GlobalKTable` based on the transaction metadata topic
+<3> `KStream` based on the vegetables topic; on this stream, any incoming tombstone markers are filtered, the reasoning being that the retention policy for an audit trail topic typically should be time-based than based on log compaction;
++
+similarly, snapshot events are filtered, assuming they are not relevant for an audit trail and there wouldn't be any corresponding metadata provided by the application for the snapshot transaction initiated by the Debezium connector
 +
 Any other messages are enriched with the corresponding transaction metadata via a custom `Transformer` (see below) and finally are written to an output topic
-
-.Topic Retention
-[NOTE]
-===============================
-In order to manage the growth of involved topics, the retention policy for each topic should be well-defined.
-For instance for the actual audit log topic with the enriched change events, a time based retention policy might be suitable, keeping each log event for as long as needed as per your requirements.
-The transaction metadata topic on the other hand can be fairly short-lived, as its entries are not needed any longer, once all corresponding data change events have been processed.
-It may be a good idea to set up some monitoring of the end-to-end lag in order to make sure the log enricher stream application keeps up with the incoming messages and doesn't fall behind that far so it is at risk of transaction messages being discarded before processing the corresponding change events.
-===============================
 
 The topic names are injected using the https://microprofile.io/project/eclipse/microprofile-config[MicroProfile Config API], with the values being provided in Quarkus _application.properties_ configuration file.
 Besides the topic names, this file also has the information about the Kafka bootstrap server, default serdes any more:
@@ -392,7 +392,7 @@ class ChangeEventEnricher implements Transformer<JsonObject, JsonObject, KeyValu
 
     private ProcessorContext context;
     private KeyValueStore<JsonObject, JsonObject> txMetaDataStore;
-    private KeyValueStore<Long, JsonObject> streamBuffer;
+    private KeyValueStore<Long, JsonObject> streamBuffer; // <5>
 
     @Override
     @SuppressWarnings("unchecked")
@@ -401,20 +401,20 @@ class ChangeEventEnricher implements Transformer<JsonObject, JsonObject, KeyValu
         streamBuffer = (KeyValueStore<Long, JsonObject>) context.getStateStore(TopologyProducer.STREAM_BUFFER_NAME);
         txMetaDataStore = (KeyValueStore<JsonObject, JsonObject>) context.getStateStore(TopologyProducer.STORE_NAME);
 
-        context.schedule(Duration.ofSeconds(1), PunctuationType.WALL_CLOCK_TIME, ts -> enrichAndEmitBufferedEvents());
+        context.schedule(Duration.ofSeconds(1), PunctuationType.WALL_CLOCK_TIME, ts -> enrichAndEmitBufferedEvents()); // <4>
     }
 
     @Override
     public KeyValue<JsonObject, JsonObject> transform(JsonObject key, JsonObject value) {
-        boolean enrichedAllBufferedEvents = enrichAndEmitBufferedEvents();
+        boolean enrichedAllBufferedEvents = enrichAndEmitBufferedEvents(); // <3>
 
         if (!enrichedAllBufferedEvents) {
             bufferChangeEvent(key, value);
             return null;
         }
 
-        KeyValue<JsonObject, JsonObject> enriched = enrichWithTxMetaData(key, value);
-        if (enriched == null) {
+        KeyValue<JsonObject, JsonObject> enriched = enrichWithTxMetaData(key, value); // <1>
+        if (enriched == null) { // <2>
             bufferChangeEvent(key, value);
         }
 
@@ -428,7 +428,7 @@ class ChangeEventEnricher implements Transformer<JsonObject, JsonObject, KeyValu
      * @return {@code true}, if all buffered events were enriched and forwarded,
      *         {@code false} otherwise.
      */
-    private boolean enrichAndEmitBufferedEvents() {
+    private boolean enrichAndEmitBufferedEvents() { // <3>
         Optional<BufferOffsets> seq = bufferOffsets();
 
         if (!seq.isPresent()) {
@@ -463,7 +463,7 @@ class ChangeEventEnricher implements Transformer<JsonObject, JsonObject, KeyValu
     /**
      * Adds the given change event to the stream-side buffer.
      */
-    private void bufferChangeEvent(JsonObject key, JsonObject changeEvent) {
+    private void bufferChangeEvent(JsonObject key, JsonObject changeEvent) { // <2>
         LOG.info("Buffering change event for key {}", key);
 
         BufferOffsets sequence = bufferOffsets().orElseGet(BufferOffsets::initial);
@@ -486,7 +486,7 @@ class ChangeEventEnricher implements Transformer<JsonObject, JsonObject, KeyValu
      * @return The enriched change event or {@code null} if no metadata for the
      *         associated transaction was found.
      */
-    private KeyValue<JsonObject, JsonObject> enrichWithTxMetaData(JsonObject key, JsonObject changeEvent) {
+    private KeyValue<JsonObject, JsonObject> enrichWithTxMetaData(JsonObject key, JsonObject changeEvent) { // <1>
         JsonObject txId = Json.createObjectBuilder()
                 .add("transaction_id", changeEvent.get("source").asJsonObject().getJsonNumber("txId").longValue())
                 .build();
@@ -527,15 +527,14 @@ class ChangeEventEnricher implements Transformer<JsonObject, JsonObject, KeyValu
     }
 }
 ----
-
-The basic logic of the transformer is this:
-
-* When a vegetables change event arrives, look up the corresponding metadata in the statestore of the 
-transaction topic's `GlobalKTable`, using the transaction id from the `source` block of the change event as the key
-* If the metadata could be found, add the metadata to change event (under the `audit` field) and return that enriched event
-* If the metadata could not be found, add the incoming event into the buffer of change events and return
-* Before actually getting to the incoming event, all buffered events are processed; only if all could be enriched, the incoming event will be processed, too
-* In order to emit buffered events also if no new change event is coming in, the `punctuate()` method is used to periodically process the buffer
+<1> When a vegetables change event arrives, look up the corresponding metadata in the statestore of the
+transaction topic's `GlobalKTable`, using the transaction id from the `source` block of the change event as the key;
+if the metadata could be found, add the metadata to change event (under the `audit` field) and return that enriched event
+<2> If the metadata could not be found, add the incoming event into the buffer of change events and return
+<3> Before actually getting to the incoming event, all buffered events are processed; only if all could be enriched, the incoming event will be processed, too
+<4> In order to emit buffered events also if no new change event is coming in,
+a punctuation is scheduled that periodically processes the buffer
+<5> A buffer for vegetable events whose corresponding metadata hasn't arrived yet
 
 The key piece is the buffer for unprocesseable change events.
 To maintain the order of events, the buffer must be processed in order of insertion,
@@ -626,7 +625,7 @@ just post a comment below.
 To get started with your own implementation,
 you can check out https://github.com/debezium/debezium-examples/tree/master/auditlog[the code] in the Debezium examples repository on GitHub.
 
-_Many thanks to Hans-Peter Grahsl, Ashhar Hasan, Jiri Pechanec and Chris Cranford for their feedback while working on this post and the accompanying example code!_
+_Many thanks to https://twitter.com/hpgrahsl[Hans-Peter Grahsl], https://twitter.com/hashhar[Ashhar Hasan], Jiri Pechanec and https://twitter.com/crancran77[Chris Cranford] for their feedback while working on this post and the accompanying example code!_
 
 == About Debezium
 
