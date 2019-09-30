@@ -117,9 +117,9 @@ module Awestruct
                     summary = summary << element.to_xhtml
                   elsif element.attribute('class').value == 'openblock teaser'
                     if element.attribute('style').nil?
-                      element['style'] = "font-weight: 1;";
+                      element['style'] = "font-weight: 400; color: #656565; text-align: start;";
                     else
-                      element['style'] += "font-weight: 1 !important;";
+                      element['style'] += "font-weight: 400 !important; color: #656565 !important; text-align: start !important;";
                     end
                     summary = summary << element.to_xhtml
                     break
