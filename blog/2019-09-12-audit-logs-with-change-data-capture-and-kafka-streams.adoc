@@ -12,23 +12,38 @@ In this post we're going to explore how that metadata can be provided and expose
 
 Reasons for maintaining data audit trails are manifold:
 e.g. regulatory requirements may mandate businesses to keep complete historic information of their customer, purchase order, invoice or other data.
-Also for an enterprise's own purposes it can be very useful to be able to analyze why and how certain data has changed, e.g. allowing to improve business processes and analyze errors.
+Also for an enterprise's own purposes it can be very useful to have insight into why and how certain data has changed, e.g. allowing to improve business processes or analyze errors.
 
-Traditionally, application-side libraries and database triggers have been common means for creating audit trails:
-when a data record is inserted, updated or deleted, they'd maintain specific column(s) in the data tables ("createdBy", "lastUpdated" etc.) and/or copy earlier record versions into some form of history tables.
-This comes with some disadvantages, though:
+One common approach for creating audit trails are application-side libraries.
+Hooked into the chosen persistence library,
+they'd maintain specific column(s) in the data tables ("createdBy", "lastUpdated" etc.),
+and/or copy earlier record versions into some form of history tables.
 
-* metadata columns and triggers add bloat to the model in the database and the corresponding application domain model
+There are some disadvantages to this, though:
+
 * writing records in history tables as part of OLTP transactions increases the number of executed statements within the transaction (for each update or delete, also an insert must be written into the corresponding history table) and thus may cause longer response times of the application
+* oftentimes no audit events can be provided in case of bulk updates and deletes (e.g. `DELETE from purchaseorders where status = 'SHIPPED'`),
+as the listeners used to hook the library into the persistence framework are not aware of all the affected records
+* changes done directly in the database cannot be tracked, e.g. when running a data load or bypassing the application during an emergency data patch
 
-Library-based solutions also oftentimes cannot provide metadata in case of bulk updates and deletes (`UPDATE mytable WHERE ...`),
-as the listeners used to hook them into the persistence framework are not aware of all the affected records.
-Also, by definition, any approach based on an application-side library is prone to miss any data changes done directly in the database, e.g. when running a data load or bypassing the application during an emergency data patch.
+Another technique are database triggers.
+They won't miss any operations, no matter whether issued from the application or the database itself.
+They'll also be able to process each record affected by a bulk statement.
+On the downside, there's still is the problem of increased latency when executing triggers as part of OLTP transactions.
+Also, a process must be in place for installing and updating the triggers for each table.
 
-These problems don't exist when leveraging the transaction log as the source for an audit trail and using change data capture for retrieving the change information and sending it into a message broker or log such as Apache Kafka.
-Running asynchronously, the CDC process can extract the change data without impacting OLTP transactions, not missing any event, no matter what its origin is and whether it was caused by a bulk operation.
+== Audit Logs Based on Change Data Capture
 
-How can CDC access the aforementioned metadata, though?
+The aforementioned problems don't exist when leveraging the transaction log as the source for an audit trail and using change data capture for retrieving the change information and sending it into a message broker or log such as Apache Kafka.
+
+Running asynchronously, the CDC process can extract the change data without impacting OLTP transactions.
+The transaction logs contain one entry whenever there's a data change,
+be it issued from the application or directly executed in the database.
+There'll be a log entry for each record updated or deleted in a bulk operation,
+so a change event for each of them can be produced.
+Also there is no impact on the data model, i.e. no special columns or history tables must be created.
+
+But how can CDC access the metadata we'd discussed initially?
 This could for instance be data such as the application user that performed a data change,
 their IP address and device configuration, a tracing span id, or an identifier for the application use case.
 
@@ -39,7 +54,7 @@ When running manual data changes, it is easy to also provide the metadata record
 As Debezium's data change events contain the id of the transaction causing the specific change,
 the data change events and the metadata records can be correlated.
 
-In the remainder of this post we're going to take a closer look at how a business application can provide the transaction-scoped metadata and how data change events can be enriched with that metadata using the Kafka Streams API.
+In the remainder of this post we're going to take a closer look at how a business application can provide the transaction-scoped metadata and how data change events can be enriched with the corresponding metadata using the Kafka Streams API.
 
 == Solution Overview
 
@@ -179,22 +194,22 @@ vegetablesdb> select * from inventory.vegetable;
 +------+---------------+---------+
 | id   | description   | name    |
 |------+---------------+---------|
-| 1    | Spicy         | Potatoe |
-| 11   | Delicious!    | Banana  |
-| 10   | tasty         | Pear    |
+| 1    | Spicy!        | Potatoe |
+| 11   | Delicious!    | Pumpkin |
+| 10   | Tasty!        | Tomatoe |
 +------+---------------+---------+
 ----
 
 [source,sql]
 ----
 vegetablesdb> select * from inventory.transaction_context_data;
-+------------------+---------------------+------------------+-------------+
-| transaction_id   | client_date         | usecase          | user_name   |
-|------------------+---------------------+------------------+-------------|
-| 608              | 2019-08-22 08:12:31 | CREATE VEGETABLE | farmerbob   |
-| 609              | 2019-08-22 08:12:31 | CREATE VEGETABLE | farmerbob   |
-| 610              | 2019-08-22 08:12:31 | UPDATE VEGETABLE | farmerbarry |
-+------------------+---------------------+------------------+-------------+
++------------------+---------------------+------------------+----------------+
+| transaction_id   | client_date         | usecase          | user_name      |
+|------------------+---------------------+------------------+----------------|
+| 608              | 2019-08-22 08:12:31 | CREATE VEGETABLE | farmerbob      |
+| 609              | 2019-08-22 08:12:31 | CREATE VEGETABLE | farmerbob      |
+| 610              | 2019-08-22 08:12:31 | UPDATE VEGETABLE | farmermargaret |
++------------------+---------------------+------------------+----------------+
 ----
 
 == Enriching Change Events with Auditing Metadata
@@ -237,7 +252,7 @@ This kind of message transformation is a perfect use case for https://kafka.apac
 a Java API for implementing stream processing applications on top of Kafka topics,
 providing operators that let you filter, transform, aggregate and join Kafka messages.
 
-As foundation for our stream processing application we're going to use https://quarkus.io/[Quarkus],
+As runtime environment for our stream processing application we're going to use https://quarkus.io/[Quarkus],
 which is "a Kubernetes Native Java stack tailored for GraalVM & OpenJDK HotSpot, crafted from the best of breed Java libraries and standards".
 
 .Building Kafka Streams with Quarkus
@@ -259,7 +274,11 @@ allowing for very fast turnaround cycles during development.
 When thinking about the actual implementation of the enrichment logic,
 a https://kafka.apache.org/23/documentation/streams/developer-guide/dsl-api.html#kstream-kstream-join[stream-to-stream] join might appear as a suitable solution.
 By creating ``KStream``s for the two topics, we may try and implement the joining functionality.
-This creates a problem though in regards to ordering guarantees of the change events.
+One challenge though is how to define a suitable https://kafka.apache.org/23/documentation/streams/developer-guide/dsl-api.html#windowing-sliding[joining window],
+as there is no timing guarantees between messages on the two topics,
+and we must not miss any event.
+
+Another problem arises in regards to ordering guarantees of the change events.
 By default, Debezium will use a table's primary key as the message key for the corresponding Kafka messages.
 This means that all messages for the same vegetable record will have the same key and thus will go into the same partition of the vegetables Kafka topic.
 This in turn guarantees that a consumer of these events sees all the messages pertaining to the same vegetable record in the exact same order as they were created.
@@ -539,7 +558,9 @@ class ChangeEventEnricher implements Transformer
 transaction topic's `GlobalKTable`, using the transaction id from the `source` block of the change event as the key;
 if the metadata could be found, add the metadata to change event (under the `audit` field) and return that enriched event
 <2> If the metadata could not be found, add the incoming event into the buffer of change events and return
-<3> Before actually getting to the incoming event, all buffered events are processed; only if all could be enriched, the incoming event will be processed, too
+<3> Before actually getting to the incoming event, all buffered events are processed;
+this is required to make sure that the original change events is retained;
+only if all could be enriched, the incoming event will be processed, too
 <4> In order to emit buffered events also if no new change event is coming in,
 a punctuation is scheduled that periodically processes the buffer
 <5> A buffer for vegetable events whose corresponding metadata hasn't arrived yet
@@ -565,12 +586,12 @@ You should see messages like this in the `dbserver1.inventory.vegetable.enriched
     "before": {
         "id": 10,
         "description": "Yummy!",
-        "name": "Pear"
+        "name": "Tomatoe"
     },
     "after": {
         "id": 10,
-        "description": "tasty",
-        "name": "Pear"
+        "description": "Tasty!",
+        "name": "Tomatoe"
     },
     "source": {
         "version": "0.10.0-SNAPSHOT",
@@ -590,7 +611,7 @@ You should see messages like this in the `dbserver1.inventory.vegetable.enriched
     "audit": {
         "client_date": 1566461551000000,
         "usecase": "UPDATE VEGETABLE",
-        "user_name": "farmerbarry"
+        "user_name": "farmermargaret"
     }
 }
 ----
@@ -604,8 +625,8 @@ modify a vegetable record using SQL directly in the database.
 Debezium will capture the event, but as there's no corresponding transaction metadata provided,
 the event will not be forwarded to the enriched vegetables topic.
 If you add another vegetable using the REST API,
-this one also will not be propagated;
-Although there is a metadata record for it, it's blocked by the other change event.
+this one also will not be propagated:
+although there is a metadata record for it, it's blocked by the other change event.
 Only once you have inserted a metadata record for the first change's transaction into the `transaction_context_data` table,
 both change events will be processed and sent to the output topic.
 
@@ -635,7 +656,7 @@ just post a comment below.
 To get started with your own implementation,
 you can check out https://github.com/debezium/debezium-examples/tree/master/auditlog[the code] in the Debezium examples repository on GitHub.
 
-_Many thanks to https://twitter.com/hpgrahsl[Hans-Peter Grahsl], https://twitter.com/hashhar[Ashhar Hasan], Jiri Pechanec and https://twitter.com/crancran77[Chris Cranford] for their feedback while working on this post and the accompanying example code!_
+_Many thanks to https://twitter.com/crancran77[Chris Cranford], https://twitter.com/hpgrahsl[Hans-Peter Grahsl], https://twitter.com/hashhar[Ashhar Hasan], pass:[<a href="https://twitter.com/jbfletch_">Anna McDonald</a>] and Jiri Pechanec for their feedback while working on this post and the accompanying example code!_
 
 == About Debezium
 
