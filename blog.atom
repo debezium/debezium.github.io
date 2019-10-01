@@ -2,13 +2,895 @@
 <feed xml:lang="en-US" xmlns="http://www.w3.org/2005/Atom">
   <id>https://debezium.io/</id>
   <title>Debezium Blog</title>
-  <updated>2019-09-30T20:58:34+00:00</updated>
+  <updated>2019-10-01T14:40:39+00:00</updated>
   <link href="https://debezium.io/blog.atom" rel="self" type="application/atom+xml" />
   <link href="https://debezium.io/" rel="alternate" type="text/html" />
   <entry>
+    <id>https://debezium.io/blog/2019/10/01/audit-logs-with-change-data-capture-and-stream-processing/</id>
+    <title>Building Audit Logs with Change Data Capture and Stream Processing</title>
+    <updated>2019-10-01T14:40:39+00:00</updated>
+    <published>2019-10-01T00:00:00+00:00</published>
+    <link href="https://debezium.io/blog/2019/10/01/audit-logs-with-change-data-capture-and-stream-processing/" rel="alternate" type="text/html" />
+    <author>
+      <name>Gunnar Morling</name>
+    </author>
+    <category term="discussion"></category>
+    <category term="examples"></category>
+    <category term="apache-kafka"></category>
+    <category term="kafka-streams"></category>
+    <category term="featured"></category>
+    <summary>
+      
+      
+      
+      
+      
+      It is a common requirement for business applications to maintain some form of audit log,
+      i.e. a persistent trail of all the changes to the application&#8217;s data.
+      If you squint a bit, a Kafka topic with Debezium data change events is quite similar to that:
+      sourced from database transaction logs, it describes all the changes to the records of an application.
+      What&#8217;s missing though is some metadata: why, when and by whom was the data changed?
+      In this post we&#8217;re going to explore how that metadata can be provided and exposed via change data capture (CDC), and how stream processing can be used to enrich...
+    </summary>
+    <content type="html">
+      &lt;div id=&quot;preamble&quot;&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;openblock teaser&quot;&gt;
+      &lt;div class=&quot;content&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;It is a common requirement for business applications to maintain some form of audit log,
+      i.e. a persistent trail of all the changes to the application’s data.
+      If you squint a bit, a Kafka topic with Debezium data change events is quite similar to that:
+      sourced from database transaction logs, it describes all the changes to the records of an application.
+      What’s missing though is some metadata: why, when and by whom was the data changed?
+      In this post we’re going to explore how that metadata can be provided and exposed via change data capture (CDC), and how stream processing can be used to enrich the actual data change events with such metadata.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;&lt;!-- more --&gt;&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Reasons for maintaining data audit trails are manifold:
+      e.g. regulatory requirements may mandate businesses to keep complete historic information of their customer, purchase order, invoice or other data.
+      Also for an enterprise’s own purposes it can be very useful to have insight into why and how certain data has changed, e.g. allowing to improve business processes or analyze errors.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;One common approach for creating audit trails are application-side libraries.
+      Hooked into the chosen persistence library,
+      they’d maintain specific column(s) in the data tables (&quot;createdBy&quot;, &quot;lastUpdated&quot; etc.),
+      and/or copy earlier record versions into some form of history tables.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;There are some disadvantages to this, though:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;ulist&quot;&gt;
+      &lt;ul&gt;
+      &lt;li&gt;
+      &lt;p&gt;writing records in history tables as part of OLTP transactions increases the number of executed statements within the transaction (for each update or delete, also an insert must be written into the corresponding history table) and thus may cause longer response times of the application&lt;/p&gt;
+      &lt;/li&gt;
+      &lt;li&gt;
+      &lt;p&gt;oftentimes no audit events can be provided in case of bulk updates and deletes (e.g. &lt;code&gt;DELETE from purchaseorders where status = 'SHIPPED'&lt;/code&gt;),
+      as the listeners used to hook the library into the persistence framework are not aware of all the affected records&lt;/p&gt;
+      &lt;/li&gt;
+      &lt;li&gt;
+      &lt;p&gt;changes done directly in the database cannot be tracked, e.g. when running a data load or bypassing the application during an emergency data patch&lt;/p&gt;
+      &lt;/li&gt;
+      &lt;/ul&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Another technique are database triggers.
+      They won’t miss any operations, no matter whether issued from the application or the database itself.
+      They’ll also be able to process each record affected by a bulk statement.
+      On the downside, there’s still is the problem of increased latency when executing triggers as part of OLTP transactions.
+      Also, a process must be in place for installing and updating the triggers for each table.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect1&quot;&gt;
+      &lt;h2 id=&quot;audit_logs_based_on_change_data_capture&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#audit_logs_based_on_change_data_capture&quot;&gt;&lt;/a&gt;Audit Logs Based on Change Data Capture&lt;/h2&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;The aforementioned problems don’t exist when leveraging the transaction log as the source for an audit trail and using change data capture for retrieving the change information and sending it into a message broker or log such as Apache Kafka.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Running asynchronously, the CDC process can extract the change data without impacting OLTP transactions.
+      The transaction logs contain one entry whenever there’s a data change,
+      be it issued from the application or directly executed in the database.
+      There’ll be a log entry for each record updated or deleted in a bulk operation,
+      so a change event for each of them can be produced.
+      Also there is no impact on the data model, i.e. no special columns or history tables must be created.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;But how can CDC access the metadata we’d discussed initially?
+      This could for instance be data such as the application user that performed a data change,
+      their IP address and device configuration, a tracing span id, or an identifier for the application use case.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;As that metadata typically isn’t (nor shouldn’t) be stored in the actual business tables of an application, it must be provided separately.
+      One approach is to have a separate table where this metadata is stored.
+      For each executed transaction, the business application produces one record in that table, containing all the required metadata and using the transaction id as a primary key.
+      When running manual data changes, it is easy to also provide the metadata record with an additional insert.
+      As Debezium’s data change events contain the id of the transaction causing the specific change,
+      the data change events and the metadata records can be correlated.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;In the remainder of this post we’re going to take a closer look at how a business application can provide the transaction-scoped metadata and how data change events can be enriched with the corresponding metadata using the Kafka Streams API.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect1&quot;&gt;
+      &lt;h2 id=&quot;solution_overview&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#solution_overview&quot;&gt;&lt;/a&gt;Solution Overview&lt;/h2&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;The following image shows the overall solution design, based on the example of a microservice for managing vegetable data:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;imageblock centered-image&quot;&gt;
+          &lt;img src=&quot;https://debezium.io/images/auditing_overview.png&quot; style=&quot;max-width:100%; margin-bottom:10px; margin-top:10px;&quot; class=&quot;responsive-image&quot; alt=&quot;Auditing With Change Data Capture and Stream Processing&quot; /&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;There are two services involved:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;ulist&quot;&gt;
+      &lt;ul&gt;
+      &lt;li&gt;
+      &lt;p&gt;&lt;em&gt;vegetables-service&lt;/em&gt;: a simple REST service for inserting and updating vegetable data into a Postgres database;
+      as part of its processing, it will not only update its actual &quot;business table&quot; &lt;code&gt;vegetable&lt;/code&gt;,
+      but also insert some auditing metadata into a dedicated metadata table &lt;code&gt;transaction_context_data&lt;/code&gt;;
+      Debezium is used to stream change events from the two tables into corresponding topics in Apache Kafka&lt;/p&gt;
+      &lt;/li&gt;
+      &lt;li&gt;
+      &lt;p&gt;&lt;em&gt;log-enricher&lt;/em&gt;: a stream processing application built with Kafka Streams and Quarkus,
+      which enriches the messages from the CDC topic containing the vegetable change events (&lt;code&gt;dbserver1.inventory.vegetable&lt;/code&gt;) with the corresponding metadata in the &lt;code&gt;dbserver1.inventory.transaction_context_data&lt;/code&gt; topic and writes the enriched vegetable change event back to Kafka into the &lt;code&gt;dbserver1.inventory.vegetable.enriched&lt;/code&gt; topic.&lt;/p&gt;
+      &lt;/li&gt;
+      &lt;/ul&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;You can find a &lt;a href=&quot;https://github.com/debezium/debezium-examples/tree/master/auditlog&quot;&gt;complete example&lt;/a&gt; with all the components and instruction for running them on GitHub.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect1&quot;&gt;
+      &lt;h2 id=&quot;providing_auditing_metadata&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#providing_auditing_metadata&quot;&gt;&lt;/a&gt;Providing Auditing Metadata&lt;/h2&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Let’s first discuss how an application such as the vegetable service can provide the required auditing metadata.
+      As an example, the following metadata should be made available for auditing purposes:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;ulist&quot;&gt;
+      &lt;ul&gt;
+      &lt;li&gt;
+      &lt;p&gt;The application user that did a data change, as represented by the &lt;code&gt;sub&lt;/code&gt; claim of a JWT token (&lt;a href=&quot;https://tools.ietf.org/html/rfc7519&quot;&gt;JSON Web Token&lt;/a&gt;)&lt;/p&gt;
+      &lt;/li&gt;
+      &lt;li&gt;
+      &lt;p&gt;The request timestamp, as represented by the &lt;code&gt;Date&lt;/code&gt; HTTP header&lt;/p&gt;
+      &lt;/li&gt;
+      &lt;li&gt;
+      &lt;p&gt;A use case identifier, as provided via a custom Java annotation on the invoked REST resource method&lt;/p&gt;
+      &lt;/li&gt;
+      &lt;/ul&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Here is a basic implementation of a REST resource for persisting a new vegetable using the &lt;a href=&quot;https://jcp.org/en/jsr/detail?id=370&quot;&gt;JAX-RS API&lt;/a&gt;:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;listingblock&quot;&gt;
+      &lt;div class=&quot;content&quot;&gt;
+      &lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-java&quot; data-lang=&quot;java&quot;&gt;@Path(&quot;/vegetables&quot;)
+      @RequestScoped
+      @Produces(MediaType.APPLICATION_JSON)
+      @Consumes(MediaType.APPLICATION_JSON)
+      public class VegetableResource {
+      
+          @Inject
+          VegetableService vegetableService;
+      
+          @POST
+          @RolesAllowed({&quot;farmers&quot;})
+          @Transactional
+          @Audited(useCase=&quot;CREATE VEGETABLE&quot;)
+          public Response createVegetable(Vegetable vegetable) {
+              if (vegetable.getId() != null) {
+                  return Response.status(Status.BAD_REQUEST.getStatusCode()).build();
+              }
+      
+              vegetable = vegetableService.createVegetable(vegetable);
+      
+              return Response.ok(vegetable).status(Status.CREATED).build();
+          }
+      
+          // update, delete ...
+      }&lt;/code&gt;&lt;/pre&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;If you’ve ever built REST services with JAX-RS before, the implementation will look familiar to you:
+      a resource method annotated with &lt;code&gt;@POST&lt;/code&gt; takes the incoming request payload and passes it to a service bean which is injected via CDI.
+      The &lt;code&gt;@Audited&lt;/code&gt; annotation is special, though.
+      It is a custom annotation type which serves two purposes:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;ulist&quot;&gt;
+      &lt;ul&gt;
+      &lt;li&gt;
+      &lt;p&gt;Specifying the use case that should be referenced in the audit log (&quot;CREATE VEGETABLE&quot;)&lt;/p&gt;
+      &lt;/li&gt;
+      &lt;li&gt;
+      &lt;p&gt;Binding an &lt;a href=&quot;https://jcp.org/en/jsr/detail?id=318&quot;&gt;interceptor&lt;/a&gt; which will be triggered for each invocation of a method annotated with &lt;code&gt;@Audited&lt;/code&gt;&lt;/p&gt;
+      &lt;/li&gt;
+      &lt;/ul&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;That interceptor kicks in whenever a method annotated with &lt;code&gt;@Audited&lt;/code&gt; is invoked and implements the logic for writing the transaction-scoped audit metadata.
+      It looks like this:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;listingblock&quot;&gt;
+      &lt;div class=&quot;content&quot;&gt;
+      &lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-java&quot; data-lang=&quot;java&quot;&gt;@Interceptor &lt;i class=&quot;conum&quot; data-value=&quot;1&quot;&gt;&lt;/i&gt;&lt;b&gt;(1)&lt;/b&gt;
+      @Audited(useCase = &quot;&quot;)
+      @Priority(value = Interceptor.Priority.APPLICATION + 100) &lt;i class=&quot;conum&quot; data-value=&quot;2&quot;&gt;&lt;/i&gt;&lt;b&gt;(2)&lt;/b&gt;
+      public class TransactionInterceptor {
+      
+          @Inject
+          JsonWebToken jwt; &lt;i class=&quot;conum&quot; data-value=&quot;3&quot;&gt;&lt;/i&gt;&lt;b&gt;(3)&lt;/b&gt;
+      
+          @Inject
+          EntityManager entityManager;
+      
+          @Inject
+          HttpServletRequest request;
+      
+          @AroundInvoke
+          public Object manageTransaction(InvocationContext ctx) throws Exception {
+              BigInteger txtId = (BigInteger) entityManager &lt;i class=&quot;conum&quot; data-value=&quot;4&quot;&gt;&lt;/i&gt;&lt;b&gt;(4)&lt;/b&gt;
+                  .createNativeQuery(&quot;SELECT txid_current()&quot;)
+                  .getSingleResult();
+              String useCase = ctx.getMethod().getAnnotation(Audited.class).useCase();
+      
+              TransactionContextData context = new TransactionContextData(); &lt;i class=&quot;conum&quot; data-value=&quot;5&quot;&gt;&lt;/i&gt;&lt;b&gt;(5)&lt;/b&gt;
+      
+              context.transactionId = txtId.longValueExact();
+              context.userName = jwt.&amp;lt;String&amp;gt;claim(&quot;sub&quot;).orElse(&quot;anonymous&quot;);
+              context.clientDate = getRequestDate();
+              context.useCase = useCase;
+      
+              entityManager.persist(context);
+      
+              return ctx.proceed(); &lt;i class=&quot;conum&quot; data-value=&quot;6&quot;&gt;&lt;/i&gt;&lt;b&gt;(6)&lt;/b&gt;
+          }
+      
+          private ZonedDateTime getRequestDate() {
+              String requestDate = request.getHeader(HttpHeaders.DATE);
+              return requestDate != null ?
+                  ZonedDateTime.parse(requestDate, DateTimeFormatter.RFC_1123_DATE_TIME) :
+                  null;
+          }
+      }&lt;/code&gt;&lt;/pre&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;colist arabic&quot;&gt;
+      &lt;table&gt;
+      &lt;tr&gt;
+      &lt;td&gt;&lt;i class=&quot;conum&quot; data-value=&quot;1&quot;&gt;&lt;/i&gt;&lt;b&gt;1&lt;/b&gt;&lt;/td&gt;
+      &lt;td&gt;&lt;code&gt;@Interceptor&lt;/code&gt; and &lt;code&gt;@Audited&lt;/code&gt; mark this as an interceptor bound to our custom &lt;code&gt;@Audited&lt;/code&gt; annotion.&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+      &lt;td&gt;&lt;i class=&quot;conum&quot; data-value=&quot;2&quot;&gt;&lt;/i&gt;&lt;b&gt;2&lt;/b&gt;&lt;/td&gt;
+      &lt;td&gt;The &lt;code&gt;@Priority&lt;/code&gt; annotation controls at which point in the interceptor stack the auditing interceptor should be invoked.
+      Any application-provided interceptors should have a priority larger than &lt;code&gt;Priority.APPLICATION&lt;/code&gt; (2000);
+      in particular, this ensures that a transaction will have been started before by means of the &lt;code&gt;@Transactional&lt;/code&gt; annotation and its accompanying interceptor which run in the &lt;code&gt;Priority.PLATFORM_BEFORE&lt;/code&gt; range (&amp;lt; 1000).&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+      &lt;td&gt;&lt;i class=&quot;conum&quot; data-value=&quot;3&quot;&gt;&lt;/i&gt;&lt;b&gt;3&lt;/b&gt;&lt;/td&gt;
+      &lt;td&gt;The caller’s JWT token injected via the &lt;a href=&quot;https://microprofile.io/project/eclipse/microprofile-jwt-auth&quot;&gt;MicroProfile JWT RBAC&lt;/a&gt; API&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;/table&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;For each audited method the interceptor fires and will&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;ulist&quot;&gt;
+      &lt;ul&gt;
+      &lt;li&gt;
+      &lt;p&gt;obtain the current transaction id (the exact way for doing so is database-specific, in the example the &lt;code&gt;txid_current()&lt;/code&gt; function from Postgres is called) &lt;i class=&quot;conum&quot; data-value=&quot;4&quot;&gt;&lt;/i&gt;&lt;/p&gt;
+      &lt;/li&gt;
+      &lt;li&gt;
+      &lt;p&gt;persist a &lt;code&gt;TransactionContextData&lt;/code&gt; entity via JPA; its primary key value is the transaction id selected before, and it has attributes for the user name (obtained from the JWT token),
+      the request date (obtained from the &lt;code&gt;DATE&lt;/code&gt; HTTP request header) and the use case identifier (obtained from the &lt;code&gt;@Audited&lt;/code&gt; annotation of the invoked method) &lt;i class=&quot;conum&quot; data-value=&quot;5&quot;&gt;&lt;/i&gt;&lt;/p&gt;
+      &lt;/li&gt;
+      &lt;li&gt;
+      &lt;p&gt;continue the call flow of the invoked method &lt;i class=&quot;conum&quot; data-value=&quot;6&quot;&gt;&lt;/i&gt;&lt;/p&gt;
+      &lt;/li&gt;
+      &lt;/ul&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;When invoking the REST service to create and update a few vegetables,
+      the following records should be created in the database
+      (refer to the README in the provided example for instructions on building the example code and &lt;a href=&quot;https://github.com/debezium/debezium-examples/tree/master/auditlog#inserting-some-data-and-observing-the-audit-log&quot;&gt;invoking the vegetable service&lt;/a&gt; with a suitable JWT token):&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;listingblock&quot;&gt;
+      &lt;div class=&quot;content&quot;&gt;
+      &lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-sql&quot; data-lang=&quot;sql&quot;&gt;vegetablesdb&amp;gt; select * from inventory.vegetable;
+      +------+---------------+---------+
+      | id   | description   | name    |
+      |------+---------------+---------|
+      | 1    | Spicy!        | Potatoe |
+      | 11   | Delicious!    | Pumpkin |
+      | 10   | Tasty!        | Tomatoe |
+      +------+---------------+---------+&lt;/code&gt;&lt;/pre&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;listingblock&quot;&gt;
+      &lt;div class=&quot;content&quot;&gt;
+      &lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-sql&quot; data-lang=&quot;sql&quot;&gt;vegetablesdb&amp;gt; select * from inventory.transaction_context_data;
+      +------------------+---------------------+------------------+----------------+
+      | transaction_id   | client_date         | usecase          | user_name      |
+      |------------------+---------------------+------------------+----------------|
+      | 608              | 2019-08-22 08:12:31 | CREATE VEGETABLE | farmerbob      |
+      | 609              | 2019-08-22 08:12:31 | CREATE VEGETABLE | farmerbob      |
+      | 610              | 2019-08-22 08:12:31 | UPDATE VEGETABLE | farmermargaret |
+      +------------------+---------------------+------------------+----------------+&lt;/code&gt;&lt;/pre&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect1&quot;&gt;
+      &lt;h2 id=&quot;enriching_change_events_with_auditing_metadata&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#enriching_change_events_with_auditing_metadata&quot;&gt;&lt;/a&gt;Enriching Change Events with Auditing Metadata&lt;/h2&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;With the business data (vegetables) and the transaction-scoped metadata being stored in the database,
+      it’s time to set up the &lt;a href=&quot;https://debezium.io/documentation/reference/0.10/connectors/postgresql.html&quot;&gt;Debezium Postgres connector&lt;/a&gt; and stream the data changes from the &lt;code&gt;vegetable&lt;/code&gt; and &lt;code&gt;transaction_context_data&lt;/code&gt; tables into corresponding Kafka topics.
+      Again refer to the example README file for the details of &lt;a href=&quot;https://github.com/debezium/debezium-examples/tree/master/auditlog#deploy-the-debezium-postgres-connector&quot;&gt;deploying the connector&lt;/a&gt;.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;The &lt;code&gt;dbserver1.inventory.vegetable&lt;/code&gt; topic should contain change events for created, updated and deleted vegetable records, whereas the &lt;code&gt;dbserver1.inventory.transaction_context_data&lt;/code&gt; topic should only contain create messages for each inserted metadata record.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;admonitionblock note&quot;&gt;
+      &lt;table&gt;
+      &lt;tr&gt;
+      &lt;td class=&quot;icon&quot;&gt;
+      &lt;i class=&quot;fa icon-note&quot; title=&quot;Note&quot;&gt;&lt;/i&gt;
+      &lt;/td&gt;
+      &lt;td class=&quot;content&quot;&gt;
+      &lt;div class=&quot;title&quot;&gt;Topic Retention&lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;In order to manage the growth of involved topics, the retention policy for each topic should be well-defined.
+      For instance for the actual audit log topic with the enriched change events, a time based retention policy might be suitable, keeping each log event for as long as needed as per your requirements.
+      The transaction metadata topic on the other hand can be fairly short-lived, as its entries are not needed any longer, once all corresponding data change events have been processed.
+      It may be a good idea to set up some monitoring of the end-to-end lag in order to make sure the log enricher stream application keeps up with the incoming messages and doesn’t fall behind that far so it is at risk of transaction messages being discarded before processing the corresponding change events.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;/table&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Now, if we look at messages from the two topics, we can see that they can be correlated based on the transaction id.
+      It is part of the &lt;code&gt;source&lt;/code&gt; structure of vegetable change events,
+      and it is the message key of transaction metadata events:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;imageblock centered-image&quot;&gt;
+          &lt;img src=&quot;https://debezium.io/images/auditing_input_messages.png&quot; style=&quot;max-width:100%; margin-bottom:10px; margin-top:10px;&quot; class=&quot;responsive-image&quot; alt=&quot;Vegetable and Transaction Metadata Messages&quot; /&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Once we’ve found the corresponding transaction event for a given vegetable change event,
+      the &lt;code&gt;client_date&lt;/code&gt;, &lt;code&gt;usecase&lt;/code&gt; and &lt;code&gt;user_name&lt;/code&gt; attributes from the former can be added to the latter:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;imageblock centered-image&quot;&gt;
+          &lt;img src=&quot;https://debezium.io/images/auditing_output_message.png&quot; style=&quot;max-width:100%; margin-bottom:10px; margin-top:10px;&quot; class=&quot;responsive-image&quot; alt=&quot;Enriched Vegetable Message&quot; /&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;This kind of message transformation is a perfect use case for &lt;a href=&quot;https://kafka.apache.org/documentation/streams/&quot;&gt;Kafka Streams&lt;/a&gt;,
+      a Java API for implementing stream processing applications on top of Kafka topics,
+      providing operators that let you filter, transform, aggregate and join Kafka messages.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;As runtime environment for our stream processing application we’re going to use &lt;a href=&quot;https://quarkus.io/&quot;&gt;Quarkus&lt;/a&gt;,
+      which is &quot;a Kubernetes Native Java stack tailored for GraalVM &amp;amp; OpenJDK HotSpot, crafted from the best of breed Java libraries and standards&quot;.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;admonitionblock note&quot;&gt;
+      &lt;table&gt;
+      &lt;tr&gt;
+      &lt;td class=&quot;icon&quot;&gt;
+      &lt;i class=&quot;fa icon-note&quot; title=&quot;Note&quot;&gt;&lt;/i&gt;
+      &lt;/td&gt;
+      &lt;td class=&quot;content&quot;&gt;
+      &lt;div class=&quot;title&quot;&gt;Building Kafka Streams with Quarkus&lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Amongst many others, Quarkus comes with an &lt;a href=&quot;https://quarkus.io/guides/kafka-streams-guide&quot;&gt;extension for Kafka Streams&lt;/a&gt;,
+      which allows to build stream processing applications running on the JVM and as native code compiled ahead-of-time.
+      It takes care of the lifecycle of the streaming topology,
+      so you don’t have to deal with details like registering JVM shutdown hooks,
+      awaiting the creation of all input topics and more.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;The extension also comes with &quot;live development&quot; support,
+      which automatically reloads the stream processing application while you’re working on it,
+      allowing for very fast turnaround cycles during development.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;/table&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect2&quot;&gt;
+      &lt;h3 id=&quot;the_joining_logic&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#the_joining_logic&quot;&gt;&lt;/a&gt;The Joining Logic&lt;/h3&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;When thinking about the actual implementation of the enrichment logic,
+      a &lt;a href=&quot;https://kafka.apache.org/23/documentation/streams/developer-guide/dsl-api.html#kstream-kstream-join&quot;&gt;stream-to-stream&lt;/a&gt; join might appear as a suitable solution.
+      By creating &lt;code&gt;KStream&lt;/code&gt;s for the two topics, we may try and implement the joining functionality.
+      One challenge though is how to define a suitable &lt;a href=&quot;https://kafka.apache.org/23/documentation/streams/developer-guide/dsl-api.html#windowing-sliding&quot;&gt;joining window&lt;/a&gt;,
+      as there is no timing guarantees between messages on the two topics,
+      and we must not miss any event.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Another problem arises in regards to ordering guarantees of the change events.
+      By default, Debezium will use a table’s primary key as the message key for the corresponding Kafka messages.
+      This means that all messages for the same vegetable record will have the same key and thus will go into the same partition of the vegetables Kafka topic.
+      This in turn guarantees that a consumer of these events sees all the messages pertaining to the same vegetable record in the exact same order as they were created.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Now, in order to join the two streams, the message key must be the same on both sides.
+      This means the vegetables topic must be re-keyed by transaction id
+      (we cannot re-key the transaction metadata topic, as there’s no information about concerned vegetables contained in the metadata events; and even if that were the case, one transaction might impact multiple vegetable records).
+      By doing so, we’d loose the original ordering guarantees, though.
+      One vegetable record might be modified in two subsequent transactions,
+      and its change events may end up in different partitions of the re-keyed topic,
+      which may cause a consumer to receive the second change event before the first one.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;If a &lt;code&gt;KStream&lt;/code&gt;-&lt;code&gt;KStream&lt;/code&gt; join isn’t feasible, what else could be done?
+      &lt;a href=&quot;https://kafka.apache.org/23/documentation/streams/developer-guide/dsl-api.html#streams-developer-guide-dsl-joins-kstream-globalktable&quot;&gt;A join&lt;/a&gt; between a &lt;code&gt;KStream&lt;/code&gt; and &lt;code&gt;GlobalKTable&lt;/code&gt; looks promising, too.
+      It doesn’t have the &lt;a href=&quot;https://kafka.apache.org/23/documentation/streams/developer-guide/dsl-api.html#streams-developer-guide-dsl-joins-co-partitioning&quot;&gt;co-partitioning requirements&lt;/a&gt; of stream-to-stream joins,
+      as all partitions of the &lt;code&gt;GlobalKTable&lt;/code&gt; are present on all nodes of a distributed Kafka Streams application.
+      This seems like an acceptable trade-off, because the messages from the transaction metadata topic can be discarded rather quickly and the size of the corresponding table should be within reasonable bounds.
+      So we could have a &lt;code&gt;KStream&lt;/code&gt; sourced from the vegetables topic and a &lt;code&gt;GlobalKTable&lt;/code&gt; based on the transaction metadata topic.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;But unfortunately, there is a timing issue:
+      as the messages are consumed from multiple topics, it may happen that at the point in time when an element from the vegetables stream is processed, the corresponding transaction metadata message isn’t available yet.
+      So depending on whether we’d be using an inner join or a left join,
+      we’d in this case either skip change events or propagate them without having enriched them with the transaction metadata.
+      Both outcomes are not desirable.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect2&quot;&gt;
+      &lt;h3 id=&quot;customized_joins_with_buffering&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#customized_joins_with_buffering&quot;&gt;&lt;/a&gt;Customized Joins With Buffering&lt;/h3&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;The combination of &lt;code&gt;KStream&lt;/code&gt; and &lt;code&gt;GlobalKTable&lt;/code&gt; still hints into the right direction.
+      Only that instead of relying on the built-in join operators we’ll have to implement a custom joining logic.
+      The basic idea is to buffer messages arriving on the vegetable &lt;code&gt;KStream&lt;/code&gt; until the corresponding transaction metadata message is available from the &lt;code&gt;GlobalKTable&lt;/code&gt;s state store.
+      This can be achieved by creating a custom &lt;a href=&quot;https://kafka.apache.org/23/javadoc/org/apache/kafka/streams/kstream/KStream.html#transform-org.apache.kafka.streams.kstream.TransformerSupplier-java.lang.String…​-&quot;&gt;transformer&lt;/a&gt; which implements the required buffering logic and is applied to the vegetable &lt;code&gt;KStream&lt;/code&gt;.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Let’s begin with the streaming topology itself.
+      Thanks to the Quarkus Kafka Streams extension,
+      a CDI producer method returning the &lt;code&gt;Topology&lt;/code&gt; object is all that’s needed for that:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;listingblock&quot;&gt;
+      &lt;div class=&quot;content&quot;&gt;
+      &lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-java&quot; data-lang=&quot;java&quot;&gt;@ApplicationScoped
+      public class TopologyProducer {
+      
+          static final String STREAM_BUFFER_NAME = &quot;stream-buffer-state-store&quot;;
+          static final String STORE_NAME = &quot;transaction-meta-data&quot;;
+      
+          @ConfigProperty(name = &quot;audit.context.data.topic&quot;)
+          String txContextDataTopic;
+      
+          @ConfigProperty(name = &quot;audit.vegetables.topic&quot;)
+          String vegetablesTopic;
+      
+          @ConfigProperty(name = &quot;audit.vegetables.enriched.topic&quot;)
+          String vegetablesEnrichedTopic;
+      
+          @Produces
+          public Topology buildTopology() {
+              StreamsBuilder builder = new StreamsBuilder();
+      
+              StoreBuilder&amp;lt;KeyValueStore&amp;lt;Long, JsonObject&amp;gt;&amp;gt; streamBufferStateStore =
+                      Stores
+                          .keyValueStoreBuilder(
+                              Stores.persistentKeyValueStore(STREAM_BUFFER_NAME),
+                              new Serdes.LongSerde(),
+                              new JsonObjectSerde()
+                          )
+                          .withCachingDisabled();
+                  builder.addStateStore(streamBufferStateStore); &lt;i class=&quot;conum&quot; data-value=&quot;1&quot;&gt;&lt;/i&gt;&lt;b&gt;(1)&lt;/b&gt;
+      
+              builder.globalTable(txContextDataTopic, Materialized.as(STORE_NAME)); &lt;i class=&quot;conum&quot; data-value=&quot;2&quot;&gt;&lt;/i&gt;&lt;b&gt;(2)&lt;/b&gt;
+      
+              builder.&amp;lt;JsonObject, JsonObject&amp;gt;stream(vegetablesTopic) &lt;i class=&quot;conum&quot; data-value=&quot;3&quot;&gt;&lt;/i&gt;&lt;b&gt;(3)&lt;/b&gt;
+                      .filter((id, changeEvent) -&amp;gt; changeEvent != null)
+                      .filter((id, changeEvent) -&amp;gt; !changeEvent.getString(&quot;op&quot;).equals(&quot;r&quot;))
+                      .transform(() -&amp;gt; new ChangeEventEnricher(), STREAM_BUFFER_NAME)
+                      .to(vegetablesEnrichedTopic);
+      
+              return builder.build();
+          }
+      }&lt;/code&gt;&lt;/pre&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;colist arabic&quot;&gt;
+      &lt;table&gt;
+      &lt;tr&gt;
+      &lt;td&gt;&lt;i class=&quot;conum&quot; data-value=&quot;1&quot;&gt;&lt;/i&gt;&lt;b&gt;1&lt;/b&gt;&lt;/td&gt;
+      &lt;td&gt;State store which will serve as the buffer for change events that cannot be processed yet&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+      &lt;td&gt;&lt;i class=&quot;conum&quot; data-value=&quot;2&quot;&gt;&lt;/i&gt;&lt;b&gt;2&lt;/b&gt;&lt;/td&gt;
+      &lt;td&gt;&lt;code&gt;GlobalKTable&lt;/code&gt; based on the transaction metadata topic&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+      &lt;td&gt;&lt;i class=&quot;conum&quot; data-value=&quot;3&quot;&gt;&lt;/i&gt;&lt;b&gt;3&lt;/b&gt;&lt;/td&gt;
+      &lt;td&gt;&lt;code&gt;KStream&lt;/code&gt; based on the vegetables topic; on this stream, any incoming tombstone markers are filtered, the reasoning being that the retention policy for an audit trail topic typically should be time-based than based on log compaction;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;similarly, snapshot events are filtered, assuming they are not relevant for an audit trail and there wouldn’t be any corresponding metadata provided by the application for the snapshot transaction initiated by the Debezium connector&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Any other messages are enriched with the corresponding transaction metadata via a custom &lt;code&gt;Transformer&lt;/code&gt; (see below) and finally are written to an output topic&lt;/p&gt;
+      &lt;/div&gt;&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;/table&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;The topic names are injected using the &lt;a href=&quot;https://microprofile.io/project/eclipse/microprofile-config&quot;&gt;MicroProfile Config API&lt;/a&gt;, with the values being provided in Quarkus &lt;em&gt;application.properties&lt;/em&gt; configuration file.
+      Besides the topic names, this file also has the information about the Kafka bootstrap server, default serdes any more:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;listingblock&quot;&gt;
+      &lt;div class=&quot;content&quot;&gt;
+      &lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;audit.context.data.topic=dbserver1.inventory.transaction_context_data
+      audit.vegetables.topic=dbserver1.inventory.vegetable
+      audit.vegetables.enriched.topic=dbserver1.inventory.vegetable.enriched
+      
+      # may be overridden with env vars
+      quarkus.kafka-streams.bootstrap-servers=localhost:9092
+      quarkus.kafka-streams.application-id=auditlog-enricher
+      quarkus.kafka-streams.topics=${audit.context.data.topic},${audit.vegetables.topic}
+      
+      # pass-through
+      kafka-streams.cache.max.bytes.buffering=10240
+      kafka-streams.commit.interval.ms=1000
+      kafka-streams.metadata.max.age.ms=500
+      kafka-streams.auto.offset.reset=earliest
+      kafka-streams.metrics.recording.level=DEBUG
+      kafka-streams.default.key.serde=io.debezium.demos.auditing.enricher.JsonObjectSerde
+      kafka-streams.default.value.serde=io.debezium.demos.auditing.enricher.JsonObjectSerde
+      kafka-streams.processing.guarantee=exactly_once&lt;/code&gt;&lt;/pre&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;In the next step let’s take a look at the &lt;code&gt;ChangeEventEnricher&lt;/code&gt; class, our custom transformer.
+      The implemention is based on the assumption that change events are serialized as JSON,
+      but of course it could be done equally well using other formats such as Avro or Protocol Buffers.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;This is a bit of code, but hopefully its decomposition into multiple smaller methods makes it comprehensible:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;listingblock&quot;&gt;
+      &lt;div class=&quot;content&quot;&gt;
+      &lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-java&quot; data-lang=&quot;java&quot;&gt;class ChangeEventEnricher implements Transformer
+              &amp;lt;JsonObject, JsonObject, KeyValue&amp;lt;JsonObject, JsonObject&amp;gt;&amp;gt; {
+      
+          private static final Long BUFFER_OFFSETS_KEY = -1L;
+      
+          private static final Logger LOG = LoggerFactory.getLogger(ChangeEventEnricher.class);
+      
+          private ProcessorContext context;
+          private KeyValueStore&amp;lt;JsonObject, JsonObject&amp;gt; txMetaDataStore;
+          private KeyValueStore&amp;lt;Long, JsonObject&amp;gt; streamBuffer; &lt;i class=&quot;conum&quot; data-value=&quot;5&quot;&gt;&lt;/i&gt;&lt;b&gt;(5)&lt;/b&gt;
+      
+          @Override
+          @SuppressWarnings(&quot;unchecked&quot;)
+          public void init(ProcessorContext context) {
+              this.context = context;
+              streamBuffer = (KeyValueStore&amp;lt;Long, JsonObject&amp;gt;) context.getStateStore(
+                  TopologyProducer.STREAM_BUFFER_NAME
+              );
+              txMetaDataStore = (KeyValueStore&amp;lt;JsonObject, JsonObject&amp;gt;) context.getStateStore(
+                  TopologyProducer.STORE_NAME
+              );
+      
+              context.schedule(
+                  Duration.ofSeconds(1),
+                  PunctuationType.WALL_CLOCK_TIME, ts -&amp;gt; enrichAndEmitBufferedEvents()
+              ); &lt;i class=&quot;conum&quot; data-value=&quot;4&quot;&gt;&lt;/i&gt;&lt;b&gt;(4)&lt;/b&gt;
+          }
+      
+          @Override
+          public KeyValue&amp;lt;JsonObject, JsonObject&amp;gt; transform(JsonObject key, JsonObject value) {
+              boolean enrichedAllBufferedEvents = enrichAndEmitBufferedEvents(); &lt;i class=&quot;conum&quot; data-value=&quot;3&quot;&gt;&lt;/i&gt;&lt;b&gt;(3)&lt;/b&gt;
+      
+              if (!enrichedAllBufferedEvents) {
+                  bufferChangeEvent(key, value);
+                  return null;
+              }
+      
+              KeyValue&amp;lt;JsonObject, JsonObject&amp;gt; enriched = enrichWithTxMetaData(key, value); &lt;i class=&quot;conum&quot; data-value=&quot;1&quot;&gt;&lt;/i&gt;&lt;b&gt;(1)&lt;/b&gt;
+              if (enriched == null) { &lt;i class=&quot;conum&quot; data-value=&quot;2&quot;&gt;&lt;/i&gt;&lt;b&gt;(2)&lt;/b&gt;
+                  bufferChangeEvent(key, value);
+              }
+      
+              return enriched;
+          }
+      
+          /**
+           * Enriches the buffered change event(s) with the metadata from the associated
+           * transactions and forwards them.
+           *
+           * @return {@code true}, if all buffered events were enriched and forwarded,
+           *         {@code false} otherwise.
+           */
+          private boolean enrichAndEmitBufferedEvents() { &lt;i class=&quot;conum&quot; data-value=&quot;3&quot;&gt;&lt;/i&gt;&lt;b&gt;(3)&lt;/b&gt;
+              Optional&amp;lt;BufferOffsets&amp;gt; seq = bufferOffsets();
+      
+              if (!seq.isPresent()) {
+                  return true;
+              }
+      
+              BufferOffsets sequence = seq.get();
+      
+              boolean enrichedAllBuffered = true;
+      
+              for(long i = sequence.getFirstValue(); i &amp;lt; sequence.getNextValue(); i++) {
+                  JsonObject buffered = streamBuffer.get(i);
+      
+                  LOG.info(&quot;Processing buffered change event for key {}&quot;,
+                          buffered.getJsonObject(&quot;key&quot;));
+      
+                  KeyValue&amp;lt;JsonObject, JsonObject&amp;gt; enriched = enrichWithTxMetaData(
+                          buffered.getJsonObject(&quot;key&quot;), buffered.getJsonObject(&quot;changeEvent&quot;));
+                  if (enriched == null) {
+                      enrichedAllBuffered = false;
+                      break;
+                  }
+      
+                  context.forward(enriched.key, enriched.value);
+                  streamBuffer.delete(i);
+                  sequence.incrementFirstValue();
+              }
+      
+              streamBuffer.put(BUFFER_OFFSETS_KEY, sequence.toJson());
+      
+              return enrichedAllBuffered;
+          }
+      
+          /**
+           * Adds the given change event to the stream-side buffer.
+           */
+          private void bufferChangeEvent(JsonObject key, JsonObject changeEvent) { &lt;i class=&quot;conum&quot; data-value=&quot;2&quot;&gt;&lt;/i&gt;&lt;b&gt;(2)&lt;/b&gt;
+              LOG.info(&quot;Buffering change event for key {}&quot;, key);
+      
+              BufferOffsets sequence = bufferOffsets().orElseGet(BufferOffsets::initial);
+      
+              JsonObject wrapper = Json.createObjectBuilder()
+                      .add(&quot;key&quot;, key)
+                      .add(&quot;changeEvent&quot;, changeEvent)
+                      .build();
+      
+              streamBuffer.putAll(Arrays.asList(
+                      KeyValue.pair(sequence.getNextValueAndIncrement(), wrapper),
+                      KeyValue.pair(BUFFER_OFFSETS_KEY, sequence.toJson())
+              ));
+          }
+      
+          /**
+           * Enriches the given change event with the metadata from the associated
+           * transaction.
+           *
+           * @return The enriched change event or {@code null} if no metadata for the
+           *         associated transaction was found.
+           */
+          private KeyValue&amp;lt;JsonObject, JsonObject&amp;gt; enrichWithTxMetaData(JsonObject key,
+                  JsonObject changeEvent) { &lt;i class=&quot;conum&quot; data-value=&quot;1&quot;&gt;&lt;/i&gt;&lt;b&gt;(1)&lt;/b&gt;
+              JsonObject txId = Json.createObjectBuilder()
+                      .add(&quot;transaction_id&quot;, changeEvent.get(&quot;source&quot;).asJsonObject()
+                              .getJsonNumber(&quot;txId&quot;).longValue())
+                      .build();
+      
+              JsonObject metaData = txMetaDataStore.get(txId);
+      
+              if (metaData != null) {
+                  LOG.info(&quot;Enriched change event for key {}&quot;, key);
+      
+                  metaData = Json.createObjectBuilder(metaData.get(&quot;after&quot;).asJsonObject())
+                          .remove(&quot;transaction_id&quot;)
+                          .build();
+      
+                  return KeyValue.pair(
+                          key,
+                          Json.createObjectBuilder(changeEvent)
+                              .add(&quot;audit&quot;, metaData)
+                              .build()
+                  );
+              }
+      
+              LOG.warn(&quot;No metadata found for transaction {}&quot;, txId);
+              return null;
+          }
+      
+          private Optional&amp;lt;BufferOffsets&amp;gt; bufferOffsets() {
+              JsonObject bufferOffsets = streamBuffer.get(BUFFER_OFFSETS_KEY);
+              if (bufferOffsets == null) {
+                  return Optional.empty();
+              }
+              else {
+                  return Optional.of(BufferOffsets.fromJson(bufferOffsets));
+              }
+          }
+      
+          @Override
+          public void close() {
+          }
+      }&lt;/code&gt;&lt;/pre&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;colist arabic&quot;&gt;
+      &lt;table&gt;
+      &lt;tr&gt;
+      &lt;td&gt;&lt;i class=&quot;conum&quot; data-value=&quot;1&quot;&gt;&lt;/i&gt;&lt;b&gt;1&lt;/b&gt;&lt;/td&gt;
+      &lt;td&gt;When a vegetables change event arrives, look up the corresponding metadata in the state store of the
+      transaction topic’s &lt;code&gt;GlobalKTable&lt;/code&gt;, using the transaction id from the &lt;code&gt;source&lt;/code&gt; block of the change event as the key;
+      if the metadata could be found, add the metadata to change event (under the &lt;code&gt;audit&lt;/code&gt; field) and return that enriched event&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+      &lt;td&gt;&lt;i class=&quot;conum&quot; data-value=&quot;2&quot;&gt;&lt;/i&gt;&lt;b&gt;2&lt;/b&gt;&lt;/td&gt;
+      &lt;td&gt;If the metadata could not be found, add the incoming event into the buffer of change events and return&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+      &lt;td&gt;&lt;i class=&quot;conum&quot; data-value=&quot;3&quot;&gt;&lt;/i&gt;&lt;b&gt;3&lt;/b&gt;&lt;/td&gt;
+      &lt;td&gt;Before actually getting to the incoming event, all buffered events are processed;
+      this is required to make sure that the original change events is retained;
+      only if all could be enriched, the incoming event will be processed, too&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+      &lt;td&gt;&lt;i class=&quot;conum&quot; data-value=&quot;4&quot;&gt;&lt;/i&gt;&lt;b&gt;4&lt;/b&gt;&lt;/td&gt;
+      &lt;td&gt;In order to emit buffered events also if no new change event is coming in,
+      a punctuation is scheduled that periodically processes the buffer&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+      &lt;td&gt;&lt;i class=&quot;conum&quot; data-value=&quot;5&quot;&gt;&lt;/i&gt;&lt;b&gt;5&lt;/b&gt;&lt;/td&gt;
+      &lt;td&gt;A buffer for vegetable events whose corresponding metadata hasn’t arrived yet&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;/table&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;The key piece is the buffer for unprocessable change events.
+      To maintain the order of events, the buffer must be processed in order of insertion,
+      beginning with the event inserted first
+      (think of a FIFO queue).
+      As there’s no guaranteed traversing order when getting all the entries from a &lt;code&gt;KeyValueStore&lt;/code&gt;,
+      this is implemented by using the values of a strictly increasing sequence as the keys.
+      A &lt;a href=&quot;https://github.com/debezium/debezium-examples/blob/master/auditlog/log-enricher/src/main/java/io/debezium/demos/auditing/enricher/BufferOffsets.java&quot;&gt;special entry&lt;/a&gt; in the key value store is used to store the information about the current &quot;oldest&quot; index in the buffer and the next sequence value.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;One could also think of alternative implementations for such buffer, e.g. based on a Kafka topic or a custom &lt;code&gt;KeyValueStore&lt;/code&gt; implementation that ensures iteration order from oldest to newest entry.
+      Ultimately, it could also be useful if Kafka Streams came with built-in means of retrying a stream element that cannot be joined yet; this would avoid any custom buffering implementation.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;With the custom transformer logic in place, we can build the Quarkus project and run the stream processing application.
+      You should see messages like this in the &lt;code&gt;dbserver1.inventory.vegetable.enriched&lt;/code&gt; topic:&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;listingblock&quot;&gt;
+      &lt;div class=&quot;content&quot;&gt;
+      &lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-java&quot; data-lang=&quot;java&quot;&gt;{&quot;id&quot;:10}
+      {
+          &quot;before&quot;: {
+              &quot;id&quot;: 10,
+              &quot;description&quot;: &quot;Yummy!&quot;,
+              &quot;name&quot;: &quot;Tomatoe&quot;
+          },
+          &quot;after&quot;: {
+              &quot;id&quot;: 10,
+              &quot;description&quot;: &quot;Tasty!&quot;,
+              &quot;name&quot;: &quot;Tomatoe&quot;
+          },
+          &quot;source&quot;: {
+              &quot;version&quot;: &quot;0.10.0-SNAPSHOT&quot;,
+              &quot;connector&quot;: &quot;postgresql&quot;,
+              &quot;name&quot;: &quot;dbserver1&quot;,
+              &quot;ts_ms&quot;: 1569700445392,
+              &quot;snapshot&quot;: &quot;false&quot;,
+              &quot;db&quot;: &quot;vegetablesdb&quot;,
+              &quot;schema&quot;: &quot;inventory&quot;,
+              &quot;table&quot;: &quot;vegetable&quot;,
+              &quot;txId&quot;: 610,
+              &quot;lsn&quot;: 34204240,
+              &quot;xmin&quot;: null
+          },
+          &quot;op&quot;: &quot;u&quot;,
+          &quot;ts_ms&quot;: 1569700445537,
+          &quot;audit&quot;: {
+              &quot;client_date&quot;: 1566461551000000,
+              &quot;usecase&quot;: &quot;UPDATE VEGETABLE&quot;,
+              &quot;user_name&quot;: &quot;farmermargaret&quot;
+          }
+      }&lt;/code&gt;&lt;/pre&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Of course, the buffer processing logic may be adjusted as per your specific requirements;
+      for instance instead of indefinitely waiting for corresponding transaction metadata,
+      we may also decide that it makes more sense to propagate change events unenriched after some waiting time or to raise an exception indicating the missing metadata.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;In order to see whether the buffering works as expected, you could do a small experiment:
+      modify a vegetable record using SQL directly in the database.
+      Debezium will capture the event, but as there’s no corresponding transaction metadata provided,
+      the event will not be forwarded to the enriched vegetables topic.
+      If you add another vegetable using the REST API,
+      this one also will not be propagated:
+      although there is a metadata record for it, it’s blocked by the other change event.
+      Only once you have inserted a metadata record for the first change’s transaction into the &lt;code&gt;transaction_context_data&lt;/code&gt; table,
+      both change events will be processed and sent to the output topic.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect1&quot;&gt;
+      &lt;h2 id=&quot;summary&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#summary&quot;&gt;&lt;/a&gt;Summary&lt;/h2&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;In this blog post we’ve discussed how change data capture in combination with stream processing can be used to build audit logs in an efficient, low-overhead way.
+      In contrast to library and trigger-based approaches, the events that form the audit trail are retrieved via CDC from the database’s transaction logs,
+      and apart from the insertion of a single metadata record per transaction
+      (which in similar form would be required for any kind of audit log), no overhead to OLTP transactions is incurred.
+      Also audit log entries can be obtained when data records are subject to bulk updates or deletes,
+      something typically not possible with library-based auditing solutions.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Additional metadata that typically should be part of an audit log,
+      can be provided by the application via a separate table,
+      which also is captured via Debezium.
+      With the help of Kafka Streams the actual data change events can be enriched with the data from that metadata table.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;One aspect we haven’t discussed yet is querying the audit trail entries,
+      e.g. to examine specific earlier versions of the data.
+      To do so, the enriched change data events typically would be stored in a queryable database.
+      Unlike a basic data replication pipeline, not only the latest version of each record would be stored in the database in that case, but all the versions, i.e. the primary keys typically would be amended with the transaction id of each change.
+      This would allow to select single data records or even joins of multiple tables to get the data valid as per a given transaction id.
+      How this could be implemented in detail may be discussed in a future post.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Your feedback on this approach for building audit logs is very welcomed,
+      just post a comment below.
+      To get started with your own implementation,
+      you can check out &lt;a href=&quot;https://github.com/debezium/debezium-examples/tree/master/auditlog&quot;&gt;the code&lt;/a&gt; in the Debezium examples repository on GitHub.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;&lt;em&gt;Many thanks to &lt;a href=&quot;https://twitter.com/crancran77&quot;&gt;Chris Cranford&lt;/a&gt;, &lt;a href=&quot;https://twitter.com/hpgrahsl&quot;&gt;Hans-Peter Grahsl&lt;/a&gt;, &lt;a href=&quot;https://twitter.com/hashhar&quot;&gt;Ashhar Hasan&lt;/a&gt;, &lt;a href=&quot;https://twitter.com/jbfletch_&quot;&gt;Anna McDonald&lt;/a&gt; and Jiri Pechanec for their feedback while working on this post and the accompanying example code!&lt;/em&gt;&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect1&quot;&gt;
+      &lt;h2 id=&quot;about_debezium&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#about_debezium&quot;&gt;&lt;/a&gt;About Debezium&lt;/h2&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;Debezium is an open source distributed platform that turns your existing databases into event streams,
+      so applications can see and respond almost instantly to each committed row-level change in the databases.
+      Debezium is built on top of &lt;a href=&quot;http://kafka.apache.org/&quot;&gt;Kafka&lt;/a&gt; and provides &lt;a href=&quot;http://kafka.apache.org/documentation.html#connect&quot;&gt;Kafka Connect&lt;/a&gt; compatible connectors that monitor specific database management systems.
+      Debezium records the history of data changes in Kafka logs, so your application can be stopped and restarted at any time and can easily consume all of the events it missed while it was not running,
+      ensuring that all events are processed correctly and completely.
+      Debezium is &lt;a href=&quot;https://debezium.io/license/&quot;&gt;open source&lt;/a&gt; under the &lt;a href=&quot;http://www.apache.org/licenses/LICENSE-2.0.html&quot;&gt;Apache License, Version 2.0&lt;/a&gt;.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;sect1&quot;&gt;
+      &lt;h2 id=&quot;get_involved&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#get_involved&quot;&gt;&lt;/a&gt;Get involved&lt;/h2&gt;
+      &lt;div class=&quot;sectionbody&quot;&gt;
+      &lt;div class=&quot;paragraph&quot;&gt;
+      &lt;p&gt;We hope you find Debezium interesting and useful, and want to give it a try.
+      Follow us on Twitter &lt;a href=&quot;https://twitter.com/debezium&quot;&gt;@debezium&lt;/a&gt;, &lt;a href=&quot;https://gitter.im/debezium/user&quot;&gt;chat with us on Gitter&lt;/a&gt;,
+      or join our &lt;a href=&quot;https://groups.google.com/forum/#!forum/debezium&quot;&gt;mailing list&lt;/a&gt; to talk with the community.
+      All of the code is open source &lt;a href=&quot;https://github.com/debezium/&quot;&gt;on GitHub&lt;/a&gt;,
+      so build the code locally and help us improve ours existing connectors and add even more connectors.
+      If you find problems or have ideas how we can improve Debezium, please let us know or &lt;a href=&quot;https://issues.jboss.org/projects/DBZ/issues/&quot;&gt;log an issue&lt;/a&gt;.&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;/div&gt;
+    </content>
+  </entry>
+  <entry>
     <id>https://debezium.io/blog/2019/09/26/debezium-0-10-0-cr2-released/</id>
     <title>Debezium 0.10.0.CR2 Released</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2019-09-26T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2019/09/26/debezium-0-10-0-cr2-released/" rel="alternate" type="text/html" />
     <author>
@@ -237,7 +1119,7 @@
   <entry>
     <id>https://debezium.io/blog/2019/09/10/debezium-0-10-0-cr1-released/</id>
     <title>Debezium 0.10.0.CR1 Released</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2019-09-10T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2019/09/10/debezium-0-10-0-cr1-released/" rel="alternate" type="text/html" />
     <author>
@@ -404,7 +1286,7 @@
   <entry>
     <id>https://debezium.io/blog/2019/09/05/website-documentation-overhaul/</id>
     <title>Site and Documentation Overhaul</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2019-09-05T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2019/09/05/website-documentation-overhaul/" rel="alternate" type="text/html" />
     <author>
@@ -546,7 +1428,7 @@
   <entry>
     <id>https://debezium.io/blog/2019/08/20/debezium-0-10-0-beta4-released/</id>
     <title>Debezium 0.10.0.Beta4 Released</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2019-08-20T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2019/08/20/debezium-0-10-0-beta4-released/" rel="alternate" type="text/html" />
     <author>
@@ -720,7 +1602,7 @@
   <entry>
     <id>https://debezium.io/blog/2019/07/25/debezium-0-10-0-beta3-released/</id>
     <title>Debezium 0.10.0.Beta3 Released</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2019-07-25T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2019/07/25/debezium-0-10-0-beta3-released/" rel="alternate" type="text/html" />
     <author>
@@ -837,7 +1719,7 @@
   <entry>
     <id>https://debezium.io/blog/2019/07/15/streaming-cassandra-at-wepay-part-2/</id>
     <title>Streaming Cassandra at WePay - Part 2</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2019-07-15T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2019/07/15/streaming-cassandra-at-wepay-part-2/" rel="alternate" type="text/html" />
     <author>
@@ -1018,7 +1900,7 @@
   <entry>
     <id>https://debezium.io/blog/2019/07/12/streaming-cassandra-at-wepay-part-1/</id>
     <title>Streaming Cassandra at WePay - Part 1</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2019-07-12T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2019/07/12/streaming-cassandra-at-wepay-part-1/" rel="alternate" type="text/html" />
     <author>
@@ -1213,7 +2095,7 @@
   <entry>
     <id>https://debezium.io/blog/2019/07/08/tutorial-sentry-debezium-container-images/</id>
     <title>Tutorial for Adding Sentry into Debezium Container Images</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2019-07-08T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2019/07/08/tutorial-sentry-debezium-container-images/" rel="alternate" type="text/html" />
     <author>
@@ -1460,7 +2342,7 @@
   <entry>
     <id>https://debezium.io/blog/2019/06/28/debezium-0-10-0-beta2-released/</id>
     <title>Debezium 0.10.0.Beta2 Released</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2019-06-28T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2019/06/28/debezium-0-10-0-beta2-released/" rel="alternate" type="text/html" />
     <author>
@@ -1575,7 +2457,7 @@
   <entry>
     <id>https://debezium.io/blog/2019/06/19/debezium-wears-fedora/</id>
     <title>Debezium Wears Fedora</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2019-06-19T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2019/06/19/debezium-wears-fedora/" rel="alternate" type="text/html" />
     <author>
@@ -1838,7 +2720,7 @@
   <entry>
     <id>https://debezium.io/blog/2019/06/12/debezium-0-10-0-beta1-released/</id>
     <title>Debezium 0.10.0.Beta1 Released</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2019-06-12T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2019/06/12/debezium-0-10-0-beta1-released/" rel="alternate" type="text/html" />
     <author>
@@ -1930,7 +2812,7 @@
   <entry>
     <id>https://debezium.io/blog/2019/06/05/debezium-newsletter-01-2019/</id>
     <title>Debezium&#8217;s Newsletter 01/2019</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2019-06-05T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2019/06/05/debezium-newsletter-01-2019/" rel="alternate" type="text/html" />
     <author>
@@ -2087,7 +2969,7 @@
   <entry>
     <id>https://debezium.io/blog/2019/06/03/debezium-0-10-0-alpha2-released/</id>
     <title>Debezium 0.10.0.Alpha2 Released</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2019-06-03T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2019/06/03/debezium-0-10-0-alpha2-released/" rel="alternate" type="text/html" />
     <author>
@@ -2188,7 +3070,7 @@
   <entry>
     <id>https://debezium.io/blog/2019/05/29/debezium-0-10-0-alpha1-released/</id>
     <title>Debezium 0.10.0.Alpha1 &quot;Spring Clean-Up&quot; Edition Released</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2019-05-29T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2019/05/29/debezium-0-10-0-alpha1-released/" rel="alternate" type="text/html" />
     <author>
@@ -2404,7 +3286,7 @@
   <entry>
     <id>https://debezium.io/blog/2019/05/23/tutorial-using-debezium-connectors-with-apache-pulsar/</id>
     <title>Tutorial for Using Debezium Connectors With Apache Pulsar</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2019-05-23T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2019/05/23/tutorial-using-debezium-connectors-with-apache-pulsar/" rel="alternate" type="text/html" />
     <author>
@@ -2712,7 +3594,7 @@
   <entry>
     <id>https://debezium.io/blog/2019/05/06/debezium-0-9-5-final-released/</id>
     <title>Debezium 0.9.5.Final Released</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2019-05-06T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2019/05/06/debezium-0-9-5-final-released/" rel="alternate" type="text/html" />
     <author>
@@ -2868,7 +3750,7 @@
   <entry>
     <id>https://debezium.io/blog/2019/04/18/hello-debezium/</id>
     <title>Debezium&#8217;s Team Grows</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2019-04-18T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2019/04/18/hello-debezium/" rel="alternate" type="text/html" />
     <author>
@@ -2937,7 +3819,7 @@
   <entry>
     <id>https://debezium.io/blog/2019/04/11/debezium-0-9-4-final-released/</id>
     <title>Debezium 0.9.4.Final Released</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2019-04-11T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2019/04/11/debezium-0-9-4-final-released/" rel="alternate" type="text/html" />
     <author>
@@ -3110,7 +3992,7 @@
   <entry>
     <id>https://debezium.io/blog/2019/03/26/debezium-0-9-3-final-released/</id>
     <title>Debezium 0.9.3.Final Released</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2019-03-26T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2019/03/26/debezium-0-9-3-final-released/" rel="alternate" type="text/html" />
     <author>
@@ -3290,7 +4172,7 @@
   <entry>
     <id>https://debezium.io/blog/2019/03/14/debezium-meets-quarkus/</id>
     <title>Debezium meets Quarkus</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2019-03-14T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2019/03/14/debezium-meets-quarkus/" rel="alternate" type="text/html" />
     <author>
@@ -3656,7 +4538,7 @@
   <entry>
     <id>https://debezium.io/blog/2019/02/25/debezium-0-9-2-final-released/</id>
     <title>Debezium 0.9.2.Final Released</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2019-02-25T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2019/02/25/debezium-0-9-2-final-released/" rel="alternate" type="text/html" />
     <author>
@@ -3821,7 +4703,7 @@
   <entry>
     <id>https://debezium.io/blog/2019/02/19/reliable-microservices-data-exchange-with-the-outbox-pattern/</id>
     <title>Reliable Microservices Data Exchange With the Outbox Pattern</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2019-02-19T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2019/02/19/reliable-microservices-data-exchange-with-the-outbox-pattern/" rel="alternate" type="text/html" />
     <author>
@@ -4740,7 +5622,7 @@
   <entry>
     <id>https://debezium.io/blog/2019/02/13/debezium-webinar-at-devnation-live/</id>
     <title>Debezium at DevNation Live</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2019-02-13T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2019/02/13/debezium-webinar-at-devnation-live/" rel="alternate" type="text/html" />
     <author>
@@ -4846,7 +5728,7 @@
   <entry>
     <id>https://debezium.io/blog/2019/02/13/debezium-0-9-1-final-released/</id>
     <title>Debezium 0.9.1.Final Released</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2019-02-13T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2019/02/13/debezium-0-9-1-final-released/" rel="alternate" type="text/html" />
     <author>
@@ -4943,7 +5825,7 @@
   <entry>
     <id>https://debezium.io/blog/2019/02/05/debezium-0-9-0-final-released/</id>
     <title>Debezium 0.9.0.Final Released</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2019-02-05T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2019/02/05/debezium-0-9-0-final-released/" rel="alternate" type="text/html" />
     <author>
@@ -5149,7 +6031,7 @@
   <entry>
     <id>https://debezium.io/blog/2019/01/28/debezium-0-9-0-cr1-released/</id>
     <title>Debezium 0.9.0.CR1 Released</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2019-01-28T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2019/01/28/debezium-0-9-0-cr1-released/" rel="alternate" type="text/html" />
     <author>
@@ -5322,7 +6204,7 @@
   <entry>
     <id>https://debezium.io/blog/2018/12/19/debezium-0-9-0-beta2-released/</id>
     <title>Debezium 0.9.0.Beta2 Released</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2018-12-19T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2018/12/19/debezium-0-9-0-beta2-released/" rel="alternate" type="text/html" />
     <author>
@@ -5530,7 +6412,7 @@
   <entry>
     <id>https://debezium.io/blog/2018/12/05/automating-cache-invalidation-with-change-data-capture/</id>
     <title>Automating Cache Invalidation With Change Data Capture</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2018-12-05T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2018/12/05/automating-cache-invalidation-with-change-data-capture/" rel="alternate" type="text/html" />
     <author>
@@ -6157,7 +7039,7 @@
   <entry>
     <id>https://debezium.io/blog/2018/11/22/debezium-0-9-0-beta1-released/</id>
     <title>Debezium 0.9.0.Beta1 Released</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2018-11-22T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2018/11/22/debezium-0-9-0-beta1-released/" rel="alternate" type="text/html" />
     <author>
@@ -6294,7 +7176,7 @@
   <entry>
     <id>https://debezium.io/blog/2018/10/04/debezium-0-9-0-alpha2-released/</id>
     <title>Debezium 0.9.0.Alpha2 Released</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2018-10-04T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2018/10/04/debezium-0-9-0-alpha2-released/" rel="alternate" type="text/html" />
     <author>
@@ -6516,7 +7398,7 @@
   <entry>
     <id>https://debezium.io/blog/2018/09/20/materializing-aggregate-views-with-hibernate-and-debezium/</id>
     <title>Materializing Aggregate Views With Hibernate and Debezium</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2018-09-20T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2018/09/20/materializing-aggregate-views-with-hibernate-and-debezium/" rel="alternate" type="text/html" />
     <author>
@@ -7082,7 +7964,7 @@
   <entry>
     <id>https://debezium.io/blog/2018/09/19/debezium-0-8-3-final-released/</id>
     <title>Debezium 0.8.3.Final Released</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2018-09-19T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2018/09/19/debezium-0-8-3-final-released/" rel="alternate" type="text/html" />
     <author>
@@ -7238,7 +8120,7 @@
   <entry>
     <id>https://debezium.io/blog/2018/08/30/streaming-mysql-data-changes-into-kinesis/</id>
     <title>Streaming MySQL Data Changes to Amazon Kinesis</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2018-08-30T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2018/08/30/streaming-mysql-data-changes-into-kinesis/" rel="alternate" type="text/html" />
     <author>
@@ -7759,7 +8641,7 @@
   <entry>
     <id>https://debezium.io/blog/2018/08/30/debezium-0-8-2-released/</id>
     <title>Debezium 0.8.2 Released</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2018-08-30T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2018/08/30/debezium-0-8-2-released/" rel="alternate" type="text/html" />
     <author>
@@ -7864,7 +8746,7 @@
   <entry>
     <id>https://debezium.io/blog/2018/07/26/debezium-0-9-0-alpha1-released/</id>
     <title>Debezium 0.9 Alpha1 and 0.8.1 Released</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2018-07-26T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2018/07/26/debezium-0-9-0-alpha1-released/" rel="alternate" type="text/html" />
     <author>
@@ -8029,7 +8911,7 @@
   <entry>
     <id>https://debezium.io/blog/2018/07/19/advantages-of-log-based-change-data-capture/</id>
     <title>Five Advantages of Log-Based Change Data Capture</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2018-07-19T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2018/07/19/advantages-of-log-based-change-data-capture/" rel="alternate" type="text/html" />
     <author>
@@ -8167,7 +9049,7 @@
   <entry>
     <id>https://debezium.io/blog/2018/07/12/debezium-0-8-0-final-released/</id>
     <title>Debezium 0.8 Final Is Released</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2018-07-12T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2018/07/12/debezium-0-8-0-final-released/" rel="alternate" type="text/html" />
     <author>
@@ -8278,7 +9160,7 @@
   <entry>
     <id>https://debezium.io/blog/2018/07/04/debezium-0-8-0-cr1-released/</id>
     <title>Debezium 0.8.0.CR1 Is Released</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2018-07-04T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2018/07/04/debezium-0-8-0-cr1-released/" rel="alternate" type="text/html" />
     <author>
@@ -8394,7 +9276,7 @@
   <entry>
     <id>https://debezium.io/blog/2018/06/21/debezium-0-8-0-beta1-released/</id>
     <title>Debezium 0.8.0.Beta1 Is Released</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2018-06-21T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2018/06/21/debezium-0-8-0-beta1-released/" rel="alternate" type="text/html" />
     <author>
@@ -8651,7 +9533,7 @@
   <entry>
     <id>https://debezium.io/blog/2018/05/24/querying-debezium-change-data-eEvents-with-ksql/</id>
     <title>Querying Debezium Change Data Events With KSQL</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2018-05-24T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2018/05/24/querying-debezium-change-data-eEvents-with-ksql/" rel="alternate" type="text/html" />
     <author>
@@ -9086,7 +9968,7 @@
   <entry>
     <id>https://debezium.io/blog/2018/03/20/debezium-0-7-5-released/</id>
     <title>Debezium 0.7.5 Is Released</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2018-03-20T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2018/03/20/debezium-0-7-5-released/" rel="alternate" type="text/html" />
     <author>
@@ -9185,7 +10067,7 @@
   <entry>
     <id>https://debezium.io/blog/2018/03/16/note-on-database-history-topic-configuration/</id>
     <title>A Note On Database History Topic Configuration</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2018-03-16T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2018/03/16/note-on-database-history-topic-configuration/" rel="alternate" type="text/html" />
     <author>
@@ -9315,7 +10197,7 @@
   <entry>
     <id>https://debezium.io/blog/2018/03/08/creating-ddd-aggregates-with-debezium-and-kafka-streams/</id>
     <title>Creating DDD aggregates with Debezium and Kafka Streams</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2018-03-08T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2018/03/08/creating-ddd-aggregates-with-debezium-and-kafka-streams/" rel="alternate" type="text/html" />
     <author>
@@ -9911,7 +10793,7 @@
   <entry>
     <id>https://debezium.io/blog/2018/03/07/debezium-0-7-4-released/</id>
     <title>Debezium 0.7.4 Is Released</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2018-03-07T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2018/03/07/debezium-0-7-4-released/" rel="alternate" type="text/html" />
     <author>
@@ -10064,7 +10946,7 @@
   <entry>
     <id>https://debezium.io/blog/2018/02/15/debezium-0-7-3-released/</id>
     <title>Debezium 0.7.3 Is Released</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2018-02-15T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2018/02/15/debezium-0-7-3-released/" rel="alternate" type="text/html" />
     <author>
@@ -10236,7 +11118,7 @@
   <entry>
     <id>https://debezium.io/blog/2018/01/25/debezium-0-7-2-released/</id>
     <title>Debezium 0.7.2 Is Released</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2018-01-25T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2018/01/25/debezium-0-7-2-released/" rel="alternate" type="text/html" />
     <author>
@@ -10435,7 +11317,7 @@
   <entry>
     <id>https://debezium.io/blog/2018/01/17/streaming-to-elasticsearch/</id>
     <title>Streaming Data Changes from Your Database to Elasticsearch</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2018-01-17T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2018/01/17/streaming-to-elasticsearch/" rel="alternate" type="text/html" />
     <author>
@@ -10835,7 +11717,7 @@
   <entry>
     <id>https://debezium.io/blog/2017/12/20/debezium-0-7-1-released/</id>
     <title>Debezium 0.7.1 Is Released</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2017-12-20T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2017/12/20/debezium-0-7-1-released/" rel="alternate" type="text/html" />
     <author>
@@ -10912,7 +11794,7 @@
   <entry>
     <id>https://debezium.io/blog/2017/12/15/debezium-0-7-0-released/</id>
     <title>Debezium 0.7.0 Is Released</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
+    <updated>2019-10-01T14:40:39+00:00</updated>
     <published>2017-12-15T00:00:00+00:00</published>
     <link href="https://debezium.io/blog/2017/12/15/debezium-0-7-0-released/" rel="alternate" type="text/html" />
     <author>
@@ -11055,165 +11937,6 @@
       &lt;div class=&quot;paragraph&quot;&gt;
       &lt;p&gt;There is ongoing work for the MySQL connector to allow dynamic update of &lt;code&gt;table.whitelist&lt;/code&gt; option.
       This will allow the user to re-configure the set of tables captured without need to re-create connector.&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;If you’d like to contribute, please let us know.
-      We’re happy about any help and will work with you to get you started quickly.
-      Check out the details below on how to get in touch.&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;/div&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;sect1&quot;&gt;
-      &lt;h2 id=&quot;about_debezium&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#about_debezium&quot;&gt;&lt;/a&gt;About Debezium&lt;/h2&gt;
-      &lt;div class=&quot;sectionbody&quot;&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;Debezium is an open source distributed platform that turns your existing databases into event streams,
-      so applications can see and respond almost instantly to each committed row-level change in the databases.
-      Debezium is built on top of &lt;a href=&quot;http://kafka.apache.org/&quot;&gt;Kafka&lt;/a&gt; and provides &lt;a href=&quot;http://kafka.apache.org/documentation.html#connect&quot;&gt;Kafka Connect&lt;/a&gt; compatible connectors that monitor specific database management systems.
-      Debezium records the history of data changes in Kafka logs, so your application can be stopped and restarted at any time and can easily consume all of the events it missed while it was not running,
-      ensuring that all events are processed correctly and completely.
-      Debezium is &lt;a href=&quot;https://debezium.io/license/&quot;&gt;open source&lt;/a&gt; under the &lt;a href=&quot;http://www.apache.org/licenses/LICENSE-2.0.html&quot;&gt;Apache License, Version 2.0&lt;/a&gt;.&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;/div&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;sect1&quot;&gt;
-      &lt;h2 id=&quot;get_involved&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#get_involved&quot;&gt;&lt;/a&gt;Get involved&lt;/h2&gt;
-      &lt;div class=&quot;sectionbody&quot;&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;We hope you find Debezium interesting and useful, and want to give it a try.
-      Follow us on Twitter &lt;a href=&quot;https://twitter.com/debezium&quot;&gt;@debezium&lt;/a&gt;, &lt;a href=&quot;https://gitter.im/debezium/user&quot;&gt;chat with us on Gitter&lt;/a&gt;,
-      or join our &lt;a href=&quot;https://groups.google.com/forum/#!forum/debezium&quot;&gt;mailing list&lt;/a&gt; to talk with the community.
-      All of the code is open source &lt;a href=&quot;https://github.com/debezium/&quot;&gt;on GitHub&lt;/a&gt;,
-      so build the code locally and help us improve ours existing connectors and add even more connectors.
-      If you find problems or have ideas how we can improve Debezium, please let us know or &lt;a href=&quot;https://issues.jboss.org/projects/DBZ/issues/&quot;&gt;log an issue&lt;/a&gt;.&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;/div&gt;
-      &lt;/div&gt;
-    </content>
-  </entry>
-  <entry>
-    <id>https://debezium.io/blog/2017/11/15/debezium-0-6-2-released/</id>
-    <title>Debezium 0.6.2 Is Released</title>
-    <updated>2019-09-30T20:58:34+00:00</updated>
-    <published>2017-11-15T00:00:00+00:00</published>
-    <link href="https://debezium.io/blog/2017/11/15/debezium-0-6-2-released/" rel="alternate" type="text/html" />
-    <author>
-      <name>Jiri Pechanec</name>
-    </author>
-    <category term="releases"></category>
-    <category term="mysql"></category>
-    <category term="mongodb"></category>
-    <category term="postgres"></category>
-    <category term="docker"></category>
-    <summary>
-      
-      
-      
-      We are accelerating! Three weeks after the 0.6.1 release, the Debezium team is bringing Debezium 0.6.2 to you!
-      
-      
-      This release revolves mostly around bug fixes, but there are a few new features, too.
-      Let&#8217;s take a closer look at some of the changes.
-      
-      
-      
-      
-      PostgreSQL Connector
-      
-      
-      The big news for the Postgres connector is that Debezium now runs against PostgreSQL 10 thanks to a contribution from Scofield Xu.
-      As a part of this change we are providing a Docker Image with PostgreSQL 10, too, and we have set up a daily run of our integration tests against it.
-      
-      
-      If you are building Postgres yourself using the Debezium...
-    </summary>
-    <content type="html">
-      &lt;div id=&quot;preamble&quot;&gt;
-      &lt;div class=&quot;sectionbody&quot;&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;We are accelerating! Three weeks after the 0.6.1 release, the Debezium team is bringing &lt;strong&gt;Debezium 0.6.2&lt;/strong&gt; to you!&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;This release revolves mostly around bug fixes, but there are a few new features, too.
-      Let’s take a closer look at some of the changes.&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;/div&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;sect1&quot;&gt;
-      &lt;h2 id=&quot;postgresql_connector&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#postgresql_connector&quot;&gt;&lt;/a&gt;PostgreSQL Connector&lt;/h2&gt;
-      &lt;div class=&quot;sectionbody&quot;&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;The big news for the Postgres connector is that Debezium now runs against &lt;a href=&quot;https://issues.jboss.org/projects/DBZ/issues/DBZ-424&quot;&gt;PostgreSQL 10&lt;/a&gt; thanks to a contribution from &lt;a href=&quot;https://github.com/ScofieldXu&quot;&gt;Scofield Xu&lt;/a&gt;.
-      As a part of this change we are providing a &lt;a href=&quot;https://issues.jboss.org/projects/DBZ/issues/DBZ-426&quot;&gt;Docker Image&lt;/a&gt; with PostgreSQL 10, too, and we have set up a &lt;a href=&quot;http://ci.hibernate.org/view/Debezium/job/debezium-postgresql-10-test/&quot;&gt;daily run&lt;/a&gt; of our integration tests against it.&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;If you are building Postgres yourself using the Debezium &lt;a href=&quot;https://github.com/debezium/postgres-decoderbufs&quot;&gt;logical decoding plug-in&lt;/a&gt;,
-      you can save quite some megabytes if you don’t need the PostGIS geometric extension:
-      thanks to the work by &lt;a href=&quot;https://github.com/QazerLab&quot;&gt;Danila Kiver&lt;/a&gt;, it’s now possible to omit that extension.&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;/div&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;sect1&quot;&gt;
-      &lt;h2 id=&quot;mysql_connector&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#mysql_connector&quot;&gt;&lt;/a&gt;MySQL Connector&lt;/h2&gt;
-      &lt;div class=&quot;sectionbody&quot;&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;We’ve received multiple reports related to parsing MySQL DDL statements, e.g. there were a few specific invocations of the &lt;code&gt;ALTER TABLE&lt;/code&gt; statement which weren’t handled correctly.
-      Those as well as a few other parser bugs have been fixed.&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;If you work with the &lt;code&gt;TIMESTAMP&lt;/code&gt; column type and your Kafka Connect server isn’t using UTC as timezone, then the fix for &lt;a href=&quot;https://issues.jboss.org/browse/DBZ-260&quot;&gt;DBZ-260&lt;/a&gt; is applying to you.
-      In that case, the ISO 8601 formatted String emitted by Debezium would have, incorrectly, contained the UTC date and time plus the zone offset (as per the time zone the Kafka Connect server is located in) before.
-      Whereas now it will contain the date and time adjusted to the zone offset.
-      This may require adjustments to to downstream consumers if they were relying on the previous, incorrect behavior.&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;&lt;a href=&quot;https://issues.jboss.org/projects/DBZ/issues/DBZ-217&quot;&gt;DBZ-217&lt;/a&gt; gives you more flexibility for handling corrupt events encountered in the MySQL binlog.
-      By default, the connector will stop at the problematic event in such case.
-      But you now also have the option to just log the event and its position and continue the processing after it.&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;Another nice improvement for the MySQL connector is a much reduced CPU load after the snapshot has been completed, when using the &quot;snapshot only&quot; mode (&lt;a href=&quot;https://issues.jboss.org/browse/DBZ-396&quot;&gt;DBZ-396&lt;/a&gt;).&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;/div&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;sect1&quot;&gt;
-      &lt;h2 id=&quot;mongodb_connector&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#mongodb_connector&quot;&gt;&lt;/a&gt;MongoDB Connector&lt;/h2&gt;
-      &lt;div class=&quot;sectionbody&quot;&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;This connector received an important fix applying when more than one thread is used to performing the initial snapshot (&lt;a href=&quot;https://issues.jboss.org/browse/DBZ-438&quot;&gt;DBZ-438&lt;/a&gt;).
-      Before, it could happen that single messages got lost during snapshotting which is fixed now.&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;/div&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;sect1&quot;&gt;
-      &lt;h2 id=&quot;examples_and_docker_images&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#examples_and_docker_images&quot;&gt;&lt;/a&gt;Examples and Docker Images&lt;/h2&gt;
-      &lt;div class=&quot;sectionbody&quot;&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;We have expanded our examples repository with &lt;a href=&quot;https://github.com/debezium/debezium-examples/tree/master/tutorial#using-mysql-and-the-avro-message-format&quot;&gt;an Avro example&lt;/a&gt;,
-      which may be interesting to you if you’d like to not work with JSON messages but rather the compact Avro binary format and the Confluent schema registry.&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;As a part of our release process we are now creating &lt;a href=&quot;https://issues.jboss.org/projects/DBZ/issues/DBZ-418&quot;&gt;micro tags&lt;/a&gt; for our Docker images for every released version.
-      While tags in the format &lt;code&gt;x.y.z&lt;/code&gt; are fixed in time, tags in the format &lt;code&gt;x.y&lt;/code&gt; are rolling updates and always point to the latest micro release of that image.&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;Please see the &lt;a href=&quot;https://debezium.io/docs/releases/#release-0-6-2&quot;&gt;full change log&lt;/a&gt; for more details and the complete list of fixed issues.&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;/div&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;sect1&quot;&gt;
-      &lt;h2 id=&quot;what_s_next&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#what_s_next&quot;&gt;&lt;/a&gt;What’s next?&lt;/h2&gt;
-      &lt;div class=&quot;sectionbody&quot;&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;The Debezium 0.7 release is planned to be out in two to three weeks from now.&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;It will contain the move to Apache Kafka 1.0.0 and bring support for the wal2json logical decoding plug-in for Postgres.
-      This will eventually allow to use the Debezium Postgres connector on Amazon RDS (once the correct wal2json version is available there).&lt;/p&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;paragraph&quot;&gt;
-      &lt;p&gt;In parallel, the work around handling updates to the whitelist configuration of the MySQL connector continues (it may be ready for 0.7.0),
-      and so does the work on the Oracle connector (which will be shipping in a future release).&lt;/p&gt;
       &lt;/div&gt;
       &lt;div class=&quot;paragraph&quot;&gt;
       &lt;p&gt;If you’d like to contribute, please let us know.
