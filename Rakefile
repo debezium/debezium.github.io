@@ -42,6 +42,7 @@
 
 $use_bundle_exec = true
 $awestruct_cmd = nil
+$antora_config = "playbook.yml"
 task :default => :preview
 
 desc 'Setup the environment to run Awestruct'
@@ -170,9 +171,15 @@ task :check => :init do
   system 'sed -i "/.LOG.debug .inherit_front_matter_from for/d" vendor/bundle/ruby/2.3.0/gems/awestruct-0.5.7/lib/awestruct/page.rb'
 end
 
+desc 'Configures Antora build process to use authoring mode, allowing changes to documentation files locally without needing to push changes to github'
+task :author => :check do
+  $antora_config = "playbook_author.yml"
+end
+
 # Execute Antora
 def run_antora()
-  if system "antora playbook.yml"
+  puts "Generating Antora documentation using configuration: #{$antora_config}"
+  if system "antora #{$antora_config}"
     puts "Antora documentation created"
   else
     puts "Antora failed"
