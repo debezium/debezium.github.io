@@ -279,11 +279,7 @@ Be sure when a new major/minor release is added that a new `docs/<major>.</minor
 
 #### Edit documentation
 
-Documentation for Debezium is now split between this repository and the [main codebase](https://www.github.com/debezium/debezium.git) repository.  
-
-All of the source files for the site's [docs](https://debezium.io/docs/) are in the `docs` directory, which is structured identically to the URLs of the site (although the source files are _indexified_ as described above). Most of the time you will simply edit one of the existing files. If you want to add a new file, however, be sure that it is referenced in the [docs](https://debezium.io/docs/) table of contents defined in the `_partials/leftcol-doc.html.haml` file.
-
-All of the source files for the site's [version-specific documentation](https://debezium.io/documentation/debezium) are in the main codebase repository.  Please see [DOCUMENTATION.md](http://www.github.com/debezium/debezium/tree/master/DOCUMENTATION.md) in the main codebase repository for details about Antora and how the documentation should be updated.
+Documentation for Debezium is now split between this repository and the [main codebase](https://www.github.com/debezium/debezium.git) repository.  Please see [DOCUMENTATION.md](http://www.github.com/debezium/debezium/tree/master/DOCUMENTATION.md) in the main codebase repository for details about Antora and how the documentation should be updated.
 
 Note: There are two Antora playbook configuration files used by this repository, `playbook.yml` and `playbook_author.yml`.  It is important that these two files be kept in sync and the only difference between them should be `content.sources[0].url` which controls how each playbook obtains a reference to the Debezium main code repository.  
 
