@@ -90,10 +90,28 @@ Next, at the command line of that container run the following command:
 
 This cleans up any previously-generated files in the `_site` directory, (re)generates the files for the website, and runs a local webserver to access the site by pointing your browser to [http://localhost:4242]().
 
+Note: With documentation maintained in the main Debezium code repository you may want to edit documentation locally and review how it renders prior to committing changes.  In order to use author mode, two things must be done:
+
+1. The docker container must have an additional volume mapped that points to the main Debezium repository that you've checked out locally.  In this example, we've checked out the https://github.com/debezium/debezium repository to `~/github/debezium`.  So in order to map that directory as a volume on the docker container, you will additionally need to provide the argument `-v ~/github/debezium:/debezium` when starting the container.  Below is an example of how it should look:
+
+        $ docker run -it --rm -p 4242:4242 -e LC_ALL=C.UTF-8 -e LANG=C.UTF-8 -v $(pwd):/site -v ~/github/debezium:/debezium debezium/awestruct bash
+        
+      When inside the docker container, you should notice a `/debezium` directory now exists and its contents is that of the checked out repository.  In the event you do not see a `/debezium` directory or that its contents are empty or incorrect, please review how you mapped the volume above.
+      
+2. By default the rake command uses the remote repository checkout method, which means any changes locally that are staged and uncommitted are not going to be included.  In order to activate author mode, the `author` command line argument should be passed to rake, as shown below:
+
+        /site$ rake clean author preview
+        
+      You want to make sure that you see the following output that confirms its using author-mode.  
+      
+        Generating Antora documentation using configuration: playbook_author.yml
+        
+      If it reports that its using `playbook.yml` instead, then author mode was not properly requested and you should check how you invoked rake.                     
+
 Note: If you're running Docker on Windows or OS X, you must use [port forwarding](https://debezium.io/docs/docker#port-forwarding) so that requests get forwarded properly to the Docker host virtual machine. For example, to port forward when using a Vagrant based VM (virtualbox, etc), you can port forward the `4242` port easily like this:
 
 
-    vagrant ssh -- -vnNTL *:4242:$DOCKER_HOST_IP:4242
+    vagrant ssh -- -vnNTL *:4242:$DOCKER_HOST_IP:4242    
 
 #### Changing the source
 
@@ -266,6 +284,8 @@ Documentation for Debezium is now split between this repository and the [main co
 All of the source files for the site's [docs](https://debezium.io/docs/) are in the `docs` directory, which is structured identically to the URLs of the site (although the source files are _indexified_ as described above). Most of the time you will simply edit one of the existing files. If you want to add a new file, however, be sure that it is referenced in the [docs](https://debezium.io/docs/) table of contents defined in the `_partials/leftcol-doc.html.haml` file.
 
 All of the source files for the site's [version-specific documentation](https://debezium.io/documentation/debezium) are in the main codebase repository.  Please see [DOCUMENTATION.md](http://www.github.com/debezium/debezium/tree/master/DOCUMENTATION.md) in the main codebase repository for details about Antora and how the documentation should be updated.
+
+Note: There are two Antora playbook configuration files used by this repository, `playbook.yml` and `playbook_author.yml`.  It is important that these two files be kept in sync and the only difference between them should be `content.sources[0].url` which controls how each playbook obtains a reference to the Debezium main code repository.  
 
 #### Update the front page
 
