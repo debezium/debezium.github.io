@@ -180,7 +180,7 @@ function processJiraWidget(params) {
 
 		$.ajax({
 		  type : "POST",
-			url : "http://issues.jboss.org/rest/api/2/search",
+			url : "http://issues.redhat.com/rest/api/2/search",
 			dataType : 'jsonp',
 			data: query
 		});
