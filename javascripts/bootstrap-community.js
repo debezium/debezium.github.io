@@ -2177,6 +2177,7 @@ function processScroll() {
 
   }
 }
+
 /* FeedEk jQuery RSS/ATOM Feed Plugin v1.1.2
 *  http://jquery-plugins.net/FeedEk/FeedEk.html
 *  Author : Engin KIZIL http://www.enginkizil.com
@@ -2223,6 +2224,7 @@ function processScroll() {
         })
     }
 })(jQuery);
+
 /*
 
 Jira widget is a small display of several JIRA issues found by a given query
@@ -2405,7 +2407,7 @@ function processJiraWidget(params) {
 
 		$.ajax({
 		  type : "POST",
-			url : "http://issues.jboss.org/rest/api/2/search",
+			url : "http://issues.redhat.com/rest/api/2/search",
 			dataType : 'jsonp',
 			data: query
 		});
@@ -2413,6 +2415,7 @@ function processJiraWidget(params) {
 	}
 
 }
+
 /*
  * jQuery EasyTabs plugin 3.2.0
  *
