@@ -167,8 +167,11 @@ task :check => :init do
     end
     exit e.status_code
   end
-  system 'sed -i "/.LOG.debug .inherit_front_matter_from for/d" .bundle/ruby/2.3.0/gems/awestruct-0.5.7/lib/awestruct/page.rb'
-  system 'sed -i "/.LOG.debug .inherit_front_matter_from for/d" vendor/bundle/ruby/2.3.0/gems/awestruct-0.5.7/lib/awestruct/page.rb'
+  # https://github.com/awestruct/awestruct/issues/549
+  # that debug log statement causes a "no implicit conversion of nil into String" error
+  # Let's just remove it...
+  system 'sed -i "/.LOG.debug .inherit_front_matter_from for/d" .bundle/ruby/2.4.0/gems/awestruct-0.6.0.alpha4/lib/awestruct/page.rb'
+  system 'sed -i "/.LOG.debug .inherit_front_matter_from for/d" vendor/bundle/ruby/2.4.0/gems/awestruct-0.6.0.alpha4/lib/awestruct/page.rb'
 end
 
 desc 'Configures Antora build process to use authoring mode, allowing changes to documentation files locally without needing to push changes to github'
