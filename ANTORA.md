@@ -16,6 +16,29 @@ The `playbook.yml` file is what describes to Antora where and how the documentat
 
 The Debezium Antora integration currently uses the [antora-default-ui](https://gitlab.com/antora/antora-ui-default) with some minor changes.  In this repository there is a directory called `_antora_\supplemental_ui` where the Antora UI specific overrides are provided.  In short, any file from the default-ui bundle can be overwritten with a new, customized version by using the default-ui layout structure and providing our own custom file to replace the default implementation.
 
+## Running Antora manually
+
+There are times where one may find it useful to regenerate just the Antora documentation while running the website in preview mode.
+In order to run Antora manually, simply open a bash session to the already running Awestruct docker container:
+
+```
+docker exec -it <dynamic name of awestruct container> bash
+```
+
+Once in the container, navigate to the `/site` directory and execute:
+
+```
+antora playbook_author.yml
+```
+or
+
+```
+antora playbook.yml
+```
+
+The author mode regenerates the site from a local checked out copy of the Debezium repository, which in most cases is exactly what you'd want.
+The non-author mode regenerates the site by cloning the remote Debezium repository from Github.
+
 ## Release process
 
 What is important for the release process is to make sure that the `playbook.yml` file references the correct branches or tags for building the Debezium documentation on github pages that also aligns with the displayed series (See CONTRIBUTING.md for more details on series configuration). For example, if series `0.8`, `0.9`, and `0.10` are all displayed, then Antora should technically be building 3 differing combinations of either branches or tags.
