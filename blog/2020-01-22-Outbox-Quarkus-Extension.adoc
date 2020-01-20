@@ -1,0 +1,146 @@
+= Outbox Event Router goes Supersonic!
+ccranfor
+:awestruct-tags: [ discussion, examples, outbox, quarkus ]
+:awestruct-layout: blog-post
+
+Outbox as in that folder in my email client?
+No, not exactly but there are some similarities!
+
+The term outbox describes a pattern that allows independent components or services to perform _read your own write_ semantics while concurrently providing a reliable, eventually consistent view to those writes across component or service boundaries.
+
+You can read more about the Outbox pattern and how it applies to microservices in our blog post, link:/blog/2019/02/19/reliable-microservices-data-exchange-with-the-outbox-pattern/[Reliable Microservices Data Exchange With the Outbox Patttern].
+
+So what exactly is an Outbox Event Router?
+
+In Debezium version 0.9.3.Final, we introduced a ready-to-use https://kafka.apache.org/documentation/#connect_transforms[Single Message Transform] (SMT) that builds on the Outbox pattern to propagate data change events using Debezium and Kafka.
+Please see the link:https://debezium.io/documentation/reference/1.1/configuration/outbox-event-router.html[documentation] for details on how to use this transformation.
+
+== Going Supersonic with Quarkus!
+
+link:http://www.quarkus.io[Quarkus] is a Kubernetes Native Java framework that is tailored for GraalVM and HotSpot using the _best-of-breed_ Java technologies and standards.
+Quarkus aims to offer developers a unified reactive and imperative programming model to address a wide range of application architectures.
+
+So what does all this mean exactly in laymen's terms?
+
+In short, the Debezium community can now leverage the Outbox pattern in a Quarkus-based application using a ready-to-use extension that works in parallel with your Debezium connector to emit change data events.
+The Debezium Outbox extension for Quarkus is can be used in both JVM or Native image modes in Quarkus.
+
+=== How to get it?
+
+Currently the dependency must be manually added to your Quarkus application's `pom.xml` as shown below.
+There are plans to make this extension available using Quarkus' maven plugin a future release.
+
+[source,xml,substitutions="verbatim"]
+----
+<dependency>
+  <groupId>io.debezium.quarkus</groupId>
+  <artifactId>debezium-quarkus-outbox</artifactId>
+  <version>1.1.0.Alpha1</version>
+</dependency>
+----
+
+[NOTE]
+====
+At the time of this blog, the extension was released as _1.1.0.Alpha1_. +
+A newer version of the extension may be available, see link:/releases/[Releases] for details.
+====
+
+=== Going Supersonic
+
+The Debezium Outbox extension uses the Observer pattern to monitor when the user application emits an object that implements the `io.debezium.outbox.quarkus.ExportedEvent` interface.
+This allows the Quarkus application behavior to be completely decoupled from that of the extension.
+
+Lets walk through a simple example where a service is responsible for storing newly created orders and then emits an event that could be used to notify other interested services that an order has been created.
+
+So to get started, we'll begin by first implementing `OrderCreatedEvent`, an implementation of `ExportedEvent`.
+This event is used to signal when an `Order` has been saved by the `OrderService`.
+The `ExportedEvent` interface is the contract that defines how a Quarkus application is to provide the extension with the data to persist to the outbox database table.
+
+[source,java]
+----
+public class OrderCreatedEvent implements ExportedEvent<String, JsonNode> {
+    private final long orderId;
+    private final JsonNode payload;
+    private final Instant created;
+
+    public OrderCreatedEvent(Instant createdAt, Order order) {
+        this.orderId = order.getId();
+        this.payload = convertOrderToJsonNode(order);
+        this.created = createdAt;
+    }
+
+    @Override
+    public String getAggregateId() {
+        return String.valueOf(orderId);
+    }
+
+    @Override
+    public String getAggregateType() {
+        return "Order";
+    }
+
+    @Override
+    public JsonNode getPayload() {
+        return payload;
+    }
+
+    @Override
+    public String getType() {
+        return "OrderCreated";
+    }
+
+    @Override
+    public Instant getTimestamp() {
+        return created;
+    }
+}
+----
+
+[NOTE]
+====
+The `ExportedEvent` interface is parameterized. The first parameter is the data type for the _Aggregate Id_ field while the latter is the type for the _Payload_. +
+
+If multiple implementations of `ExportedEvent` exist in a Quarkus application, they must all use the same signature.
+If different signatures are required, the code should be split into different Quarkus applications because all `ExportedEvent` implementations will be stored in the same database outbox table for a given Quarkus application.
+====
+
+By itself, this `OrderCreatedEvent` does nothing on its own.
+
+Next we want to implement an application component that is responsible for persisting the order to the database and then to emit the `OrderCreatedEvent` event.
+The `OrderService` class below uses JPA to persist the `Order` entity and then `javax.enterprise.event.Event<T>` to notify the outbox extension.
+
+[source,java]
+----
+@ApplicationScoped
+public class OrderService {
+    @PersistenceContext
+    private EntityManager entityManager;
+
+    @Inject
+    Event<ExportedEvent<String, JsonNode>> event;
+
+    @Transactional
+    public Order addOrder(Order order) {
+        entityManager.persist(order);
+        event.fire(new OrderCreatedEvent(Instant.now(), order));
+        return order;
+    }
+}
+----
+
+As you can see, its really super simple and easy to setup and use the Debezium Outbox extension.
+We have a complete link:https://github.com/debezium/debezium-examples/tree/master/outbox[example] in our examples repository that shows both the order and shipment services discussed here.
+For more details on the extension, refer to the link:https://debezium.io/documentation/reference/1.1/integrations/outbox.html[Outbox Quarkus Extension] documentation.
+
+=== Future Plans
+
+The current implementation of the Debezium Outbox extension works quite well, but we acknowledge there is still room for improvement.
+Some of the things we've already identified and have plans to include in future iterations of the extension are:
+
+* Avro serialization support for event payload
+* Full outbox table column attribute control, e.g. definition, length, precision, scale, and converters.
+* Complete outbox table customization using a user-supplied entity class.
+
+We are currently tracking all future changes to this extension in link:https://issues.redhat.com/browse/DBZ-1711[DBZ-1711].
+As always we welcome any and all feedback, so feel free to let us know in that issue, on Gitter, or the mailing lists.
+
