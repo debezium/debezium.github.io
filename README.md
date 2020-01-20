@@ -7,6 +7,11 @@
 
 This is the source code for the [Debezium website](https://debezium.io/). This is based on [templates](https://github.com/jbossorg/bootstrap-community) created by the JBoss Community using [Awestruct](http://awestruct.org/) and [Bootstrap](http://twitter.github.com/bootstrap).
 
+For publishing the Debezium reference documentation, the [Antora](https://antora.org/) tool is used,
+which produces the documentation based on https://github.com/debezium/debezium/tree/master/documentation[AsciiDoc files] in different branches of the Debezium main code repository.
+The rendered HTML pages are added as-is to the website generated with Awestruct.
+Please see [ANTORA.mld](./ANTORA.md) to learn more.
+
 # License
 
 Contents of this repository are available as open source software under [Apache License Version 2.0](./LICENSE.txt).
