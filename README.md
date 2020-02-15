@@ -26,13 +26,13 @@ We use [Docker](http://docker.com) to build the site. Be sure you have a recent 
 
 Use Git to clone the Debezium website Git repository and change into that directory:
 
-    $ git clone https://github.com/debezium/debezium.io.git
-    $ cd debezium.io
+    $ git clone https://github.com/debezium/debezium.github.io.git
+    $ cd debezium.github.io
 
-If you plan to submit changes, fork the [Git repository](http://github.com/debezium/debezium.io) on GitHub and then add your fork as a remote:
+If you plan to submit changes, fork the [Git repository](http://github.com/debezium/debezium.github.io) on GitHub and then add your fork as a remote:
 
     $ git remote rename origin upstream
-    $ git remote add origin https://github.com/<you>/debezium.io.git
+    $ git remote add origin https://github.com/<you>/debezium.github.io.git
 
 Then check out the `develop` branch and get the latest. If you're going to make changes, create a topic branch and make the changes there.
 
