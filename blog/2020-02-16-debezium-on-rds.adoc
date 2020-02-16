@@ -1,0 +1,213 @@
+= Lessons from Debezium on Amazon RDS
+hashhar
+:awestruct-tags: [ aws, postgres, mysql, rds ]
+:awestruct-layout: blog-post
+
+This article is going to share how to skip unparseable records from PostgreSQL's WAL when using Debezium until
+https://issues.redhat.com/browse/DBZ-1760[DBZ-1760] is solved. Additionally, it is going to share our learnings with
+using Debezium on AWS RDS (AWS's managed database service) and hopefully help transfer some knowledge we've gained in
+that process.
+
+== The Issue
+
+Two of the common thigs developers often fail to do are proper date-time handling and software version upgrades. Both of
+these can lead to issues on their own but makes things difficult when both occur together. We recently faced such an
+issue and provide a way to handle it. We'll start with some background on why this issue came up in the first place.
+
+=== PostgreSQL Date/Time and Debezium
+
+PostgreSQL's https://www.postgresql.org/docs/current/datatype-datetime.html[date/time types documentation] states that
+the `TIMESTAMP` types can range from *4713 BC* to *294276 AD*. Before Debezium 0.10, there were a lot of existing issues
+regarding datetime overflow for dates too far into the future like https://issues.redhat.com/browse/DBZ-1255[DBZ-1255]
+and https://issues.redhat.com/browse/DBZ-1205[DBZ-1205].
+
+=== The Bug and Dealing With It
+
+To hit the above issue you need to have a date sufficiently far into the future. You can get one if you are not using
+ISO8601 or epoch time and have a bug in your custom datetime formatter.
+
+So, the bug was triggerred by the application writing a datetime value containing the year *20200* into one of the
+tables monitored by Debezium which caused Debezium to throw an exception since we were still running on 0.9 in
+production.
+
+Unfortunately our log pattern alerts did not work that day and the error silently skipped past us until the high
+replication lag alarms went off. Upon inspecting the logs we did figure out where the issue was coming from and for
+which value. The log did not tell what table the issue was in and which column contained the offending value. But
+thankfully only four tables were monitored and each of them had two `TIMESTAMPTZ` columns and it was easy to query for
+the offending value in those to find the actual record.
+
+A quick read of the source code showed us that this was happenning for any year > 9999 and hence we queried the database
+to check if any other such values existed. Thankfully no other values existed. By now we had a clear plan in mind:
+
+* Stop Debezium.
+* Correct the data for the record.
+* Somehow get Debezium to skip the unparseable record.
+* Add validations to database to ensure such values don't skip through for the time being.
+* Upgrade Debezium to 1.0
+
+But we were stuck at the 3rd step above since we could not find an equivalent option to MySQL's
+`event.deserialization.failure.handling.mode` for the PostgreSQL connector. So we had to make our own.
+
+=== How Debezium and PostgreSQL track offsets
+
+Each change record in PostgreSQL has a postition which is tracked using a value known as a log sequence number (LSN).
+PostgrSQL represents it as two hexadecimal numbers - logical xLog and segment. Debezium represents it as the decimal
+representation of that value. The actual conversion implementation can be seen in PostgreSQL's JDBC driver
+https://github.com/pgjdbc/pgjdbc/blob/1970c4a3fb8ebf4cc52f5d8b0d4977388ee713e7/pgjdbc/src/main/java/org/postgresql/replication/LogSequenceNumber.java#L42[here].
+
+Periodically Debezium writes the last processed LSN and transaction id to the Kafka Connect offsets topic and advances
+the replication slot to match that. On startup, Debezium uses the last record from the Kafka Connect offsets topic to
+rewind the replication slot to the postition as described before continuing streaming changes. This means that to change
+the postition in the WAL where Debezium picks up from requires a change in both Debezium's tracked information in the
+Kafka Connect offsets topic as well as server side in PostgreSQL (to be sure).
+
+=== Skipping Unparseable Events
+
+We were able to use the above information to make Debezium skip the unparseable event by performing the following steps:
+
+* Stop Debezium to make the replication slot inactive.
+* Check Debezium has stopped listening on the replication slot by running `SELECT * FROM pg_replication_slots WHERE
+  slot_name = '<your-slot-name>';`. The `active` column should be `f`.
+* Check the last message in Debezium's offsets topic and note down the value for the `lsn` key. eg. `1516427642656`.
+* Convert that long representation of LSN into the hexadecimal format using PosgtreSQL's Java driver using the below Java code:
+
+[source,java]
+----
+import org.postgresql.replication.LogSequenceNumber;
+
+class Scratch {
+  public static void main(String[] args) {
+      LogSequenceNumber a = LogSequenceNumber.valueOf(1516427642656L);
+      System.out.println(a.asString());
+  }
+}
+----
+
+* Peek changes from the WAL upto the LSN above using `SELECT pg_logical_slot_peek_changes('<your-slot-name>',
+  '<lsn-from-above>', 1)`. This is the replication change that we are going to skip, so please make sure that this is
+  the record that you want to skip. Once confirmed, proceed to next step.
+* Advance the replication slot by skipping 1 change using `SELECT pg_logical_slot_get_changes('<your-slot-name>', NULL,
+  1)`. This will consume 1 change from the replication slot.
+* Publish a message to Debezium's offset topic with the next LSN and TxId. We were able to successfully get it working
+  by adding 1 to both the `lsn` and the `txId`.
+* Deploy Debezium again and it should have skipped the record.
+
+[NOTE]
+====
+Please make sure to test the steps locally/non-production environments before doing them. Your mileage may vary.
+
+Also, upgrade to 1.0 if possible to avoid chances to hitting the issue.
+
+Also, if possible join the discussion at https://issues.redhat.com/browse/DBZ-1760[DBZ-1760] to help design a solution
+to this problem.
+====
+
+== Debezium on AWS RDS
+
+Now we are going to discuss some of the learnings from running Debezium on AWS RDS. We are not going to focus on how to
+get started with Debezium on RDS since it's documented in detail at
+https://debezium.io/documentation/reference/1.0/connectors/postgresql.html#amazon-rds[the documentation for the
+PostgreSQL connector].
+
+=== Current Architecture
+
+[.centered-image.responsive-image]
+====
+++++
+<img src="/images/2020-02-16-debezium-on-rds/figure01.png" style="max-width:100%;" class="responsive-image">
+++++
+*Figure 1. Current Architecture*
+====
+
+But to get to the above was an iterative process which took a lot of experimentation and trial and error.
+
+=== Early Mistakes
+
+We started by creating a proof-of-concept whose goal was to listen to changes from 3 different tables within a single
+PostgreSQL database and create two views downstream, one as the join of the three tables and another view which includes
+aggregated metrics tracked as a time-series. Since Debezium already provides a very feature rich Dockerfile we extended
+that slightly and decided to run the service as containers on AWS's Elastic Container Service which is a container
+orchestration service.
+
+There were a few mistakes we made which we learnt about during lots of stress-testing and failover testing.
+
+* We used the *wal2json* plugin which caused the connector to get OOM killed when committing large transactions.
+** On PostgreSQL < 10, use the *wal2json_streaming* plugin to avoid OOM on large transactions.
+** On PostgreSQL >= 10, use the *pgoutput* plugin.
+* We were producing messages with schemas enabled.
+** Disable message schemas by setting `key.converter.schemas.enabled` and `value.converter.schemas.enabled` to `false`.
+* We were observing a lot of columns with base64 encoded data.
+** Configure the datatype specific properties
+   https://debezium.io/documentation/reference/1.0/connectors/postgresql.html#data-types[as documented]. Specifically,
+   `decimal.handling.mode` set to `string` and `hstore.handling.mode` set to `json`.
+* No alarms on the transaction logs disk usage on the database.
+** We added alarms on the RDS metric *TransactionLogsDiskUsage* and *OldestReplicationSlotLag* to alert us when the
+   transaction logs disk usage increased above a threshold or when a replication slot started lagging - meaning that
+   Debezium might have died.
+* Heartbeats were not enabled.
+** We enabled Debezium's heartbeats by setting `heartbeat.interval.ms`.
+** We also added a sidecar container which ran the following query every 5 minutes:
+
+[source,sql]
+----
+CREATE TABLE IF NOT EXISTS heartbeat (id SERIAL PRIMARY KEY, ts TIMESTAMP WITH TIME ZONE);
+INSERT INTO heartbeat (id, ts) VALUES (1, NOW()) ON CONFLICT(id) DO UPDATE SET ts=EXCLUDED.ts;
+----
+
+* We were seeing inconsistent values for `ts_usec` field (before version 0.9.3)
+** This was a bug in Debezium < 0.9.3 and we helped fix it in https://issues.redhat.com/browse/DBZ-1174/[DBZ-1174].
+* We got serverely reduced throughput on tables with JSONB columns.
+** We debugged the throughput issue to be due to frequent schema refresh by Debezium due to TOASTed columns not being
+   present in replication message. This was fixed by changing `schema.refresh.mode` to
+   `columns_diff_exclude_unchanged_toast` and has since been
+   https://debezium.io/documentation/reference/1.0/connectors/postgresql.html#discrepance-between-plugins[documented].
+* Frequent EOF errors on the database connection on a few RDS instance sizes.
+** We are still not sure but initial investigations point to the issue happenning only on instances that have PgBouncer
+   attached (even if not connecting through PgBouncer) or instances with smaller sizes (AWS t2/t3 series).
+* We used a single Debezium connector per PostgreSQL database (instead of per host).
+** We are trying to indentify possible issues in this configuration but haven't found any. Although multiple replication
+   slots on a single database does add overhead but we are able to run fine with around 6 to 10 slots per database host
+   without any noticeable performance issue.
+* We ran each instance of Debezium with a different Kafka Connect group id - meaning that each instance was it's own
+  Kafka Connect cluster.
+
+=== Single Connector per Connect Cluster vs Large Connect Clusters
+
+We were slightly conflicted between using a single Debezium connector per physical database server vs a single Debezium
+connector per database. Choosing a single instance per host simplified a lot of things:
+
+* A single database user for Debezium
+* A unified place to change database and table whitelists
+* Lower resource consumption on the database host
+
+But it had a few downsides as well:
+
+* Difficult to add existing tables or databases and performing a snapshot (see
+  https://issues.redhat.com/browse/DBZ-1263[DBZ-1263])
+* Higher impact of Kafka Connect task rebalancing
+* Difficult to infer causes from error logs
+
+We are now planning to move to a single Connect cluster per connector type. With the introduction of
+https://www.confluent.io/blog/incremental-cooperative-rebalancing-in-kafka/[incremental cooperative rebalancing] and
+https://www.confluent.io/blog/kafka-rebalance-protocol-static-membership/[static membership] a lot of issues regarding
+larger Connect clusters are fixed.
+
+== Further Reading
+
+=== Docs and Repos
+
+. https://debezium.io/documentation/reference/1.0/tutorial.html[Debezium Tutorial]
+. https://debezium.io/documentation/reference/1.0/connectors/postgresql.html#amazon-rds[Debezium with PostgreSQL on
+  Amazon RDS]
+. https://debezium.io/documentation/reference/1.0/connectors/postgresql.html#discrepance-between-plugins[Debezium
+  PostgreSQL logical decoding plugin differences]
+. https://debezium.io/documentation/reference/1.0/connectors/postgresql.html#wal-disk-space[Tackling WAL Disk Space
+  Growth]
+. https://issues.redhat.com/browse/DBZ-1760[Add option to skip unprocesseable event]
+
+=== Blogs and Articles
+
+. https://www.confluent.io/blog/incremental-cooperative-rebalancing-in-kafka/[Incremental Cooperative Rebalancing]
+. https://cwiki.apache.org/confluence/display/KAFKA/KIP-415%3A+Incremental+Cooperative+Rebalancing+in+Kafka+Connect[ICR
+  Kafka Connect KIP]
+. https://www.confluent.io/blog/kafka-rebalance-protocol-static-membership/[Static Membership]
