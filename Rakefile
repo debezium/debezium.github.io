@@ -42,7 +42,7 @@
 
 $use_bundle_exec = true
 $awestruct_cmd = nil
-$antora_config = "_config/playbook.yml"
+$antora_config = "playbook.yml"
 task :default => :preview
 
 desc 'Setup the environment to run Awestruct'
@@ -176,7 +176,7 @@ end
 
 desc 'Configures Antora build process to use authoring mode, allowing changes to documentation files locally without needing to push changes to github'
 task :author => :check do
-  $antora_config = "_config/playbook_author.yml"
+  $antora_config = "playbook_author.yml"
 end
 
 # Execute Antora
