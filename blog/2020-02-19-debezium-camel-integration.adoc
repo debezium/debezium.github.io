@@ -60,10 +60,10 @@ There are multiple components in the solution topology:
 *Figure 1. The Deployment Topology*
 ====
 
-* The Q & A application is implemented using the https://quarkus.io/[Quarkus] stack and exposes a REST API to create questions and answers.
-* The application stores its data in the PostgreSQL database.
-* The Camel route runs as a plain Java application that uses an embedded https://infinispan.org/[Infinispan] store to persist its state (used to build an aggregate object linking questions to their answers) and sends messages to 
-* A https://github.com/mailhog/MailHog[MailHog] SMTP server running in a container as well as into an associated Twitter account.
+* The Q & A application is implemented using the https://quarkus.io/[Quarkus] stack and exposes a REST API to create questions and answers
+* The application stores its data in the PostgreSQL database
+* The Camel route runs as a plain Java application that uses an embedded https://infinispan.org/[Infinispan] store to persist its state (used to build an aggregate object linking questions to their answers) and sends messages to about answered questions via e-mail and to an associated Twitter account
+* A https://github.com/mailhog/MailHog[MailHog] SMTP server running in a container for sending e-mails
 
 === Question & Answer Application
 
@@ -146,7 +146,6 @@ To use Debezium Camel component we need to add at least following dependencies i
 ----
 
 The pipeline logic itself is defined in https://github.com/debezium/debezium-examples/blob/master/camel-component/qa-camel/src/main/java/io/debezium/examples/camel/pipeline/QaDatabaseUserNotifier.java[QaDatabaseUserNotifier] class.
-
 Its main route looks like tis:
 
 [source,java]
@@ -165,15 +164,15 @@ public class QaDatabaseUserNotifier extends RouteBuilder {
         + "&schemaWhitelist={{database.schema}}"
         + "&tableWhitelist={{database.schema}}.question,{{database.schema}}.answer"
         + "&offsetStorage=org.apache.kafka.connect.storage.MemoryOffsetBackingStore")
-        .routeId(QaDatabaseUserNotifier.class.getName() + ".DatabaseReader")     // (1)
+        .routeId(QaDatabaseUserNotifier.class.getName() + ".DatabaseReader")     // <1>
         .log(LoggingLevel.DEBUG, "Incoming message ${body} with headers ${headers}")
-        .choice()                                                                // (2)
+        .choice()                                                                // <2>
           .when(isQuestionEvent)
-            .filter(isCreateOrUpdateEvent)                                       // (3)
-              .convertBodyTo(Question.class)                                     // (4)
+            .filter(isCreateOrUpdateEvent)                                       // <3>
+              .convertBodyTo(Question.class)                                     // <4>
               .log(LoggingLevel.TRACE, "Converted to logical class ${body}")
-              .bean(store, "readFromStoreAndUpdateIfNeeded")                     // (5)
-              .to(ROUTE_MAIL_QUESTION_CREATE)                                    // (6)
+              .bean(store, "readFromStoreAndUpdateIfNeeded")                     // <5>
+              .to(ROUTE_MAIL_QUESTION_CREATE)                                    // <6>
             .endChoice()
           .when(isAnswerEvent)
             .filter(isCreateOrUpdateEvent)
@@ -181,47 +180,55 @@ public class QaDatabaseUserNotifier extends RouteBuilder {
               .log(LoggingLevel.TRACE, "Converted to logical class ${body}")
               .bean(store, "readFromStoreAndAddAnswer")
               .to(ROUTE_MAIL_ANSWER_CHANGE)
-              .filter(hasManyAnswers)                                            // (7)
-                .setBody().simple("Question '${exchangeProperty[aggregate].text}' has many answers (generated at " + Instant.now() + ")")
+              .filter(hasManyAnswers)                                            // <7>
+                .setBody().simple("Question '${exchangeProperty[aggregate].text}' has " +
+                    "many answers (generated at " + Instant.now() + ")")
                 .to(TWITTER_SERVER)
               .end()
             .endChoice()
           .otherwise()
-            .log(LoggingLevel.WARN, "Unknown type ${headers[" + DebeziumConstants.HEADER_IDENTIFIER + "]}")
+            .log(LoggingLevel.WARN, "Unknown type ${headers[" +
+                DebeziumConstants.HEADER_IDENTIFIER + "]}")
         .endParent();
 
-    from(ROUTE_MAIL_QUESTION_CREATE)                                             // (6)
+    from(ROUTE_MAIL_QUESTION_CREATE)                                             // <6>
       .routeId(QaDatabaseUserNotifier.class.getName() + ".QuestionNotifier")
       .setHeader("To").simple("${body.email}")
       .setHeader("Subject").simple("Question created/edited")
       .setBody().simple("Question '${body.text}' was created or edited")
       .to(SMTP_SERVER);
   }
-}
-
-@Converter
-public class Converters {
 
   @Converter
-  public static Question questionFromStruct(Struct struct) {                     // (4)
-    return new Question(struct.getInt64("id"), struct.getString("text"), struct.getString("email"));
+  public static class Converters {
+
+    @Converter
+    public static Question questionFromStruct(Struct struct) {                   // <4>
+      return new Question(struct.getInt64("id"), struct.getString("text"),
+          struct.getString("email"));
+    }
+
+    @Converter
+    public static Answer answerFromStruct(Struct struct) {                       // <4>
+      return new Answer(struct.getInt64("id"), struct.getString("text"),
+          struct.getString("email"), struct.getInt64("question_id"));
+    }
   }
 }
 ----
-
-1. `from` is the Debezium source endpoint. The URI parts map directly to connector configuration options.
-2. The pipeline logic is split depending on the change event type.
+<1> `from` is the Debezium source endpoint. The URI parts map directly to connector configuration options.
+<2> The pipeline logic is split depending on the change event type.
 The recognition is based on `CamelDebeziumIdentifier` header which contains the identifier (`<server_name>.<schema_name>.<table_name>`) of the source table.
-3. The pipeline is now able to process only updates and deletes.
+<3> The pipeline is now able to process only updates and deletes.
 The recognition is based on `CamelDebeziumOperation` header that contains `op` field of the message `Envelope`.
-4. The Kafka Connect's `Struct` type is converted into a logical type used in the pipeline.
+<4> The Kafka Connect's `Struct` type is converted into a logical type used in the pipeline.
 The conversion is performed by a custom Camel converter.
 It is possible to use out-of-the-box `DebeziumTypeConverter` that converts `Struct` into a `Map` but this tightly couples pipeline logic into the table structure.
-5. A supplementary route is invoked that communicates with a https://github.com/debezium/debezium-examples/blob/master/camel-component/qa-camel/src/main/java/io/debezium/examples/camel/pipeline/AggregateStore.java[message store] based on an Infinispan cache to build a message aggregate.
+<5> A supplementary route is invoked that communicates with a https://github.com/debezium/debezium-examples/blob/master/camel-component/qa-camel/src/main/java/io/debezium/examples/camel/pipeline/AggregateStore.java[message store] based on an Infinispan cache to build a message aggregate.
 The message store checks if it has the question already stored.
 If not a new aggregate is created and stored otherwise the stored aggregate is updated with new data.
-6. A supplementary route is invoked that formats a mail message and delivers it to the question creator via the SMTP endpoint.
-7. The route part related to the answer message type is very similar (answers are added to question aggregate).
+<6> A supplementary route is invoked that formats a mail message and delivers it to the question creator via the SMTP endpoint.
+<7> The route part related to the answer message type is very similar (answers are added to question aggregate).
 The main difference is the posting of a Twitter message when the aggregate contains three answers.
 
 == Demo
@@ -285,6 +292,7 @@ The http://localhost:8025/[MailHog server UI] should display messages like these
 == Conclusion
 
 Apache Camel is a very interesting option for implementing system integration scenarios.
+
 Without the need for any external messaging infrastructure, it is very easy to deploy a standalone Camel route with the Debezium component, enabling the capture of data changes and execution of complex routing and transformation operations on them.
 Camel equips the developer with a full arsenal of enterprise integration pattern implementations, as well as more than hundred connectors for different systems that could be included in a complex service orchestration.
 
