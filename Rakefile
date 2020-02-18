@@ -42,7 +42,7 @@
 
 $use_bundle_exec = true
 $awestruct_cmd = nil
-$antora_config = "playbook.yml"
+$antora_config = "_config/playbook.yml"
 task :default => :preview
 
 desc 'Setup the environment to run Awestruct'
@@ -176,7 +176,7 @@ end
 
 desc 'Configures Antora build process to use authoring mode, allowing changes to documentation files locally without needing to push changes to github'
 task :author => :check do
-  $antora_config = "playbook_author.yml"
+  $antora_config = "_config/playbook_author.yml"
 end
 
 # Execute Antora
@@ -199,7 +199,9 @@ def run_awestruct(args)
   else
     augmented_args = "#{args}"
   end
-  system "#{$use_bundle_exec ? 'bundle exec ' : ''}awestruct #{augmented_args}"   
+  system "#{$use_bundle_exec ? 'bundle exec ' : ''}awestruct #{augmented_args}"
+  # used to enforce GH pages not to run Jekyll on site contents
+  system "touch _site/.nojekyll"
 end
 
 # A cross-platform means of finding an executable in the $PATH.
