@@ -10,4 +10,4 @@ gem 'kramdown', '~> 1.0.1' # Kramdown works on all platforms, rdiscount only on 
 gem 'htmlcompressor', '~> 0.0.3' # Adds in HTML minification, helps remove the warning on awestruct startup
 gem 'asciidoctor', '~> 1.5.1'
 gem 'less', '~> 2.5.0'
-gem 'nokogiri', '~> 1.8.2'
+gem 'nokogiri', '~> 1.10.4'
