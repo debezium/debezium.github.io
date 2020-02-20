@@ -18,7 +18,7 @@ To solve the above goal, we are using Debezium to perform Change Data Capture on
 
 Debezium makes all of those above use-cases possible and very easy to build by providing a common platform and framework to connect our existing data sources like MongoDB, PostgreSQL or MySQL.
 
-This article is going to share how to skip unparseable records from PostgreSQL's WAL when using Debezium until https://issues.redhat.com/browse/DBZ-1760[DBZ-1760] is solved. Additionally, it is going to share our learnings with using Debezium on AWS RDS (AWS's managed database service) and hopefully help transfer some knowledge we've gained in that process.
+This article is going to share our learnings with using Debezium on AWS RDS (AWS's managed database service) and hopefully help transfer some knowledge we've gained in that process and also document how to skip unparseable records from PostgreSQL's WAL when using Debezium until https://issues.redhat.com/browse/DBZ-1760[DBZ-1760] is solved.
 
 Here's a brief architecture overview that shows a few of the use-cases that Debezium is powering and the general data platform.
 
@@ -46,41 +46,33 @@ There were a few mistakes we made which we learnt about during lots of stress-te
 ** On PostgreSQL < 10, use the *wal2json_streaming* plugin to avoid *OutOfMemoryError* on large transactions.
 ** On PostgreSQL >= 10, use the *pgoutput* plugin.
 * We were producing JSON messages with schemas enabled; this creates larger Kafka records than needed, in particular if schema changes are rare. Hence we decided to disable message schemas by setting `key.converter.schemas.enabled` and `value.converter.schemas.enabled` to `false`.
-* We were observing a lot of columns with base64 encoded data. As documented, that's the default, but can be hard to handle for consumers.  To convert to a format that's easier to parse at the expense of some accuracy loss configure the data type specific properties https://debezium.io/documentation/reference/1.0/connectors/postgresql.html#data-types[as documented]. Specifically, set `decimal.handling.mode` to `string` to receive NUMERIC, DECIMAL and equivalent types as a string (eg. "3.14") and set `hstore.handling.mode` to `json` to receive HSTORE columns as a JSON string.
+* We were observing a few data-types with base64 encoded data. As documented, that's the default for NUMERIC columns, but can be difficult to handle for consumers. To convert to a format that's easier to parse at the expense of some accuracy loss, we configured the data type specific properties https://debezium.io/documentation/reference/1.0/connectors/postgresql.html#data-types[as documented]. Specifically, set `decimal.handling.mode` to `string` to receive NUMERIC, DECIMAL and equivalent types as a string (eg. "3.14") and set `hstore.handling.mode` to `json` to receive HSTORE columns as a JSON string.
 * No alarms were set up on the transaction logs disk usage on the database. We added alarms on the RDS metric *TransactionLogsDiskUsage* and *OldestReplicationSlotLag* to alert us when the transaction logs disk usage increased above a threshold or when a replication slot started lagging - meaning that Debezium might have died.
 * Heartbeats were not enabled. Heartbeats are needed to control the https://debezium.io/documentation/reference/1.0/connectors/postgresql.html#wal-disk-space[WAL disk space consumption] in the following cases:
 ** There are many updates in a monitored database but only a minuscule amount relates to the monitored table(s) and/or schema(s). We handled this case by enabling heartbeats by setting `heartbeat.interval.ms`.
 ** The PostgreSQL instance contains multiple databases where the monitored database is low-traffic in comparison to the others. Since the WAL is shared by all databases in an instance it keeps accumulating data which cannot be removed until Debezium reads it. But since the high traffic databases are not monitored Debezium is not able to communicate to the database that the WAL files can be removed to reclaim disk space. To solve this scenario we triggered "heartbeat" events by periodically updating a single row in a table created in the monitored database using the below query:
-
++
 [source,sql]
 ----
 CREATE TABLE IF NOT EXISTS heartbeat (id SERIAL PRIMARY KEY, ts TIMESTAMP WITH TIME ZONE);
 INSERT INTO heartbeat (id, ts) VALUES (1, NOW()) ON CONFLICT(id) DO UPDATE SET ts=EXCLUDED.ts;
 ----
++
+Since this is a common use-case that comes up when using Debezium with PostgreSQL, an issue has been created to track this at https://issues.redhat.com/browse/DBZ-1815[DBZ-1815].
 
 * We got severely reduced throughput on tables with JSONB columns. After debugging we were able to confirm the reason as frequent schema refresh by Debezium due to TOASTed columns not being present in the replication message. This was fixed by changing `schema.refresh.mode` to `columns_diff_exclude_unchanged_toast` and has since been https://debezium.io/documentation/reference/1.0/connectors/postgresql.html#discrepance-between-plugins[documented].
 * We observed frequent EOF errors on the database connection on a few RDS instance sizes. We are still not sure of the cause but initial investigations point to the issue happening only on instances that have PgBouncer attached (even if not connecting through PgBouncer) or instances with smaller sizes (AWS t2/t3 series).
-* We used a single Debezium connector per PostgreSQL database (instead of per host). The main reasons for not running a single connector per PostgreSQL instance were regarding workload isolation. Any team performing bulk data updates or deletions or unplanned schema migrations will only impact their own Debezium connector instead of the entire PostgreSQL instance since Debezium filters events at its end according to the database and/or schema whitelist and blacklist configured. We are trying to identify possible issues in this configuration but haven't found any yet. Although multiple replication slots on a single database does add overhead, we are able to run fine with around 6 to 10 slots per database host without any noticeable performance impact.
+* We initially used a single Debezium connector per PostgreSQL database (instead of per host) but then moved to using a single connector for each team. The main reasons for not running a single connector per PostgreSQL instance were regarding workload isolation. Any team performing bulk data updates or deletions or unplanned schema migrations will only impact their own Debezium connector instead of the entire PostgreSQL instance since Debezium filters events at its end according to the database and/or schema whitelist and blacklist configured. We are trying to identify possible issues in this configuration but haven't found any yet. Moving to a single connector per team setup also eased a lot of management overhead regarding configuration changes since we no longer need to co-ordinate between multiple teams when creating a release plan for any changes. Although multiple replication slots on a single database do add overhead, we are able to run fine with around 6 to 10 slots per database host without any noticeable performance impact.
 
-=== Single Connector per Connect Cluster vs Large Connect Clusters
+=== Kafka Connect Deployment Models
 
-There are two ways to run Debezium to monitor a PostgreSQL instance with multiple databases:
+There are generally three deployment models people use with Kafka Connect:
 
-* A single Debezium connector monitoring all databases on the instance
-* Multiple Debezium connectors, each monitoring a single database within the instance
+* Each instance of a Kafka Connector implementation (like S3 Sink, JDBC Sink, Debezium etc.) runs as a standalone Connect cluster. This still provides high-availability and fault-tolerance if you are running multiple tasks and deploying more than one instance.
+* Each type of Kafka Connector get's their own Connect cluster. ie. S3 Sink, JDBC Sink and Debezium each have their own dedicated clusters for a total of 3 clusters. This provides some level of workload isolation and allows you to provision instances according to the use-case at hand. S3 Sink benefits from higher network bandwidth while JDBC Sink benefits from higher memory by allowing to use larger batch sizes for processing while Debezium generally works best on a balance between compute and memory.
+* A single Connect cluster for the entire organisation. This is the easiest to manage but is problematic because every time you start or stop a new connector, a cluster-wide rebalance is triggered which stops all running tasks on the cluster until the rebalancing finishes.
 
-We were slightly conflicted between the above two approaches. Choosing a single connector for all databases simplified a lot of things:
-
-* A single user in PostgreSQL for Debezium
-* A unified place to change database, schema and table whitelists
-* Lower resource consumption on the database host
-
-But it had a few downsides as well:
-
-* Difficult to add existing tables or databases and performing a snapshot (see https://issues.redhat.com/browse/DBZ-1263[DBZ-1263])
-* Difficult to infer causes from error logs. Debezium uses Mapped Diagnostic Contexts in the logger which you can use to configure the Debezium logger to route different logs from different sources to different files or outputs but it's an additional configuration to maintain and there's no easy way to modify the logger configuration programmatically for an already running connector. See the https://debezium.io/documentation/reference/operations/logging.html[documentation] to learn how to configure this.
-
-We are now planning to create multiple Connect clusters, each responsible for running a single connector implementation. ie. a dedicated cluster for running the S3 Sink Connector, a different one for the JDBC Sink Connector and another one for Debezium. With the introduction of https://www.confluent.io/blog/incremental-cooperative-rebalancing-in-kafka/[incremental cooperative rebalancing] and https://www.confluent.io/blog/kafka-rebalance-protocol-static-membership/[static membership] a lot of issues regarding larger Connect clusters are fixed.
+Currently we are using the first approach but are now planning to move to the second approach to make better use of infrastructure and improve resource utilisation. With the introduction of https://www.confluent.io/blog/incremental-cooperative-rebalancing-in-kafka/[incremental cooperative rebalancing] and https://www.confluent.io/blog/kafka-rebalance-protocol-static-membership/[static membership] a lot of issues regarding larger Connect clusters are fixed.
 
 == Production Incidents
 
@@ -93,7 +85,7 @@ As is common with every software development project we did hit a few issues and
 
 Two of the common things developers often fail to do are proper date-time handling and software version upgrades. Both of these can lead to issues on their own but makes things difficult when both occur together. We recently faced such an issue and provide a way to handle it. We'll start with some background on why this issue came up in the first place.
 
-PostgreSQL's https://www.postgresql.org/docs/current/datatype-datetime.html[date/time types documentation] states that the TIMESTAMP types can range from *4713 BC* to *294276 AD*. Before Debezium 0.10, there were a lot of existing issues regarding datetime overflow for dates too far into the future like https://issues.redhat.com/browse/DBZ-1255[DBZ-1255] and https://issues.redhat.com/browse/DBZ-1205[DBZ-1205].
+PostgreSQL's https://www.postgresql.org/docs/current/datatype-datetime.html[date/time types documentation] states that the TIMESTAMP types can range from *4713 BC* to *294276 AD*. Before Debezium 0.10, there were serveral issues regarding datetime overflow for dates too far into the future like https://issues.redhat.com/browse/DBZ-1255[DBZ-1255] and https://issues.redhat.com/browse/DBZ-1205[DBZ-1205].
 
 === The Bug and Dealing With It
 
@@ -105,11 +97,11 @@ Unfortunately our log pattern alerts did not work that day and the error silentl
 
 A quick read of the source code showed us that this was happening for any year > 9999 and hence we queried the database to check if any other such values existed. Thankfully no other values existed. By now we had a clear plan in mind:
 
-* Stop Debezium
-* Correct the data for the record
-* Somehow get Debezium to skip the unparseable record
-* Add validations to database to ensure such values don't skip through for the time being
-* Upgrade Debezium to 1.0
+. Stop Debezium
+. Correct the data for the record
+. Somehow get Debezium to skip the unparseable record
+. Add validations to database to ensure such values don't skip through for the time being
+. Upgrade Debezium to 1.0
 
 But we were stuck at the 3rd step above since we could not find an equivalent option to MySQL's `event.deserialization.failure.handling.mode` for the PostgreSQL connector.
 
@@ -123,11 +115,11 @@ Periodically Debezium writes the last processed LSN and transaction id to the Ka
 
 We were able to use the above information to make Debezium skip the unparseable event by performing the following steps:
 
-* Stop Debezium to make the replication slot inactive.
-* Check Debezium has stopped listening on the replication slot by running `SELECT * FROM pg_replication_slots WHERE slot_name = '<your-slot-name>';`. The `active` column should be `f`.
-* Check the last message in Debezium's offsets topic and note down the value for the `lsn` key. eg. `1516427642656`.
-* Convert that long representation of LSN into the hexadecimal format using PosgtreSQL's Java driver using the below Java code:
-
+. Stop Debezium to make the replication slot inactive.
+. Check Debezium has stopped listening on the replication slot by running `SELECT * FROM pg_replication_slots WHERE slot_name = '<your-slot-name>';`. The `active` column should be `f`.
+. Check the last message in Debezium's offsets topic and note down the value for the `lsn` key. eg. `1516427642656`.
+. Convert that long representation of LSN into the hexadecimal format using PosgtreSQL's Java driver using the below Java code:
++
 [source,java]
 ----
 import org.postgresql.replication.LogSequenceNumber;
@@ -140,10 +132,10 @@ class Scratch {
 }
 ----
 
-* Peek changes from the WAL upto the LSN above using `SELECT pg_logical_slot_peek_changes('<your-slot-name>', '<lsn-from-above>', 1)`. This is the replication change that we are going to skip, so please make sure that this is the record that you want to skip. Once confirmed, proceed to next step.
-* Advance the replication slot by skipping 1 change using `SELECT pg_logical_slot_get_changes('<your-slot-name>', NULL, 1)`. This will consume 1 change from the replication slot.
-* Publish a message to Debezium's offset topic with the next LSN and TxId. We were able to successfully get it working by adding 1 to both the `lsn` and the `txId`.
-* Deploy Debezium again and it should have skipped the record.
+. Peek changes from the WAL upto the LSN above using `SELECT pg_logical_slot_peek_changes('<your-slot-name>', '<lsn-from-above>', 1)`. This is the replication change that we are going to skip, so please make sure that this is the record that you want to skip. Once confirmed, proceed to next step.
+. Advance the replication slot by skipping 1 change using `SELECT pg_logical_slot_get_changes('<your-slot-name>', NULL, 1)`. This will consume 1 change from the replication slot.
+. Publish a message to Debezium's offset topic with the next LSN and TxId. We were able to successfully get it working by adding 1 to both the `lsn` and the `txId`.
+. Deploy Debezium again and it should have skipped the record.
 
 [NOTE]
 ====
@@ -164,7 +156,7 @@ One of the biggest concerns when handling any data is regarding data consistency
 
 Debezium enables low overhead change data capture and now we have ended up defaulting to enabling Debezium for all new data sources being created.
 
-Debezium's support for a wide variety of data sources - PostgreSQL, MySQL, Microsoft SQLServer, Oracle, MongoDB and even Cassandra and IBM DB2 - helps us provide a standard technology and platform to perform data integration on. No more having to write custom code to connect each data source.
+Debezium's support for a wide variety of data sources, PostgreSQL, MySQL and MongoDB specifically, helps us provide a standard technology and platform to perform data integration on. No more having to write custom code to connect each data source.
 
 Debezium being open source proved to be immensely useful in the early days to make sure we were able to send in patches for a few bugs ourselves without having to ask someone to prioritise the issue. And since it's open source there is a growing community around it which can help you figure out your issues and provide general guidance. Check out https://debezium.io/community/[this page] on the Debezium website for a lot of awesome community contributed content.
 
@@ -181,7 +173,7 @@ Having said the above Debezium is still quite a young project and has a few area
 
 We do have a few tasks planned for the future to improve our existing workflow regarding Debezium and Kafka Connect.
 
-* Upgrading to Debezium v1.0. Debezium recently released the first 1.0 release with a lot of amazing new features including https://debezium.io/documentation/reference/integrations/cloudevents.html[support for the CloudEvents format] which we are looking towards to provide a unified message format for all data across the organisation.
+* Upgrading to Debezium v1.0. Debezium recently released the first 1.0 release with a number of new features including https://debezium.io/documentation/reference/integrations/cloudevents.html[support for the CloudEvents format] which we are looking towards to provide a unified message format for all data across the organisation.
 * Trying out the Outbox design pattern as documented at https://debezium.io/blog/2019/02/19/reliable-microservices-data-exchange-with-the-outbox-pattern/[Reliable Microservices Data Exchange With the Outbox Pattern] to unify application events and data change events. The outbox pattern also provides transactional guarantees across service boundaries in a microservices system - something everybody wants in an event based microservices architecture.
 * Setting up an https://atlas.apache.org/[Apache Atlas] integration to automate the creation of data sources and tracking data lineage in Atlas to help with data governance and discoverability.
 * Writing and open sourcing an AWS DynamoDB CDC connector as a Debezium connector. Since we are using AWS DynamoDB too we need to provide the same capabilities that the other data sources are using in terms of CDC. For that we are writing a DynamoDB CDC connector using Debezium as a framework. The work is still in its early stages and is planned to be released as an open source connector.
@@ -219,6 +211,7 @@ So overall, we started the post by sharing our business use-case and discussed h
 
 . https://issues.redhat.com/browse/DBZ-1760[DBZ-1760 - Add option to skip unprocesseable event]
 . https://issues.redhat.com/browse/DBZ-1263[DBZ-1263 - Allow table.whitelist to be updated after a connector is created]
+. https://issues.redhat.com/browse/DBZ-1815[DBZ-1815 - The Postgres connector heartbeat should optionally write back a heartbeat change to the DB]
 
 ==== Solved Issues
 
