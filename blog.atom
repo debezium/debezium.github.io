@@ -2,13 +2,444 @@
 <feed xml:lang="en-US" xmlns="http://www.w3.org/2005/Atom">
 <id>https://debezium.io/</id>
 <title>Debezium Blog</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <link href="https://debezium.io/blog.atom" rel="self" type="application/atom+xml" />
 <link href="https://debezium.io/" rel="alternate" type="text/html" />
 <entry>
+<id>https://debezium.io/blog/2020/02/25/lessons-learned-running-debezium-with-postgrsql-on-rds/</id>
+<title>Lessons Learned from Running Debezium with PostgreSQL on Amazon RDS</title>
+<updated>2020-02-25T15:44:28+00:00</updated>
+<published>2020-02-25T00:00:00+00:00</published>
+<link href="https://debezium.io/blog/2020/02/25/lessons-learned-running-debezium-with-postgrsql-on-rds/" rel="alternate" type="text/html" />
+<author>
+<name>Ashhar Hasan</name>
+</author>
+<category term="aws"></category>
+<category term="postgres"></category>
+<category term="rds"></category>
+<summary>
+
+
+
+In this blog post, we are going to discuss how Delhivery, the leading supply chain services company in India, is using Debezium to power a lot of different business use-cases ranging from driving event driven microservices, providing data integration and moving operational data to a data warehouse for real-time analytics and reporting. We will also take a look at the early mistakes we made when integrating Debezium and how we solved them so that any future users can avoid them, discuss one of the more challenging production incidents we faced and how Debezium helped ensure we could recover without any...
+</summary>
+<content type="html">
+&lt;div id=&quot;preamble&quot;&gt;
+&lt;div class=&quot;sectionbody&quot;&gt;
+&lt;div class=&quot;paragraph&quot;&gt;
+&lt;p&gt;In this blog post, we are going to discuss how &lt;a href=&quot;https://www.delhivery.com/&quot;&gt;Delhivery&lt;/a&gt;, the leading supply chain services company in India, is using Debezium to power a lot of different business use-cases ranging from driving event driven microservices, providing data integration and moving operational data to a data warehouse for real-time analytics and reporting. We will also take a look at the early mistakes we made when integrating Debezium and how we solved them so that any future users can avoid them, discuss one of the more challenging production incidents we faced and how Debezium helped ensure we could recover without any data loss. In closing, we discuss what value Debezium has provided us, areas where we believe there is a scope for improvement and how Debezium fits into our future goals.&lt;/p&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;div class=&quot;sect1&quot;&gt;
+&lt;h2 id=&quot;debezium_at_delhivery&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#debezium_at_delhivery&quot; /&gt;Debezium at Delhivery&lt;/h2&gt;
+&lt;div class=&quot;sectionbody&quot;&gt;
+&lt;div class=&quot;paragraph&quot;&gt;
+&lt;p&gt;We work in the logistics landscape and hence most of the software we write is focused around state - status changes of a shipment, tracking location updates, collecting real time data and reacting to it. The most common place where you might find &quot;state&quot; in any software architecture is the database. We maintain all of our transactional data primarily in a document database like MongoDB and in relational database systems (specifically PostgreSQL) for different services within the organisation. There is a need to allow efficient and near-real time analysis of the transactional data across all the different data sources to allow surfacing insights and looking at the big picture of how the organisation is doing and to make data driven decisions.&lt;/p&gt;
+&lt;/div&gt;
+&lt;div class=&quot;paragraph&quot;&gt;
+&lt;p&gt;To solve the above goal, we are using Debezium to perform Change Data Capture on our transactional data to make it available in Kafka, our choice of message broker. Once that data is available in Kafka we can do one or all of the following:&lt;/p&gt;
+&lt;/div&gt;
+&lt;div class=&quot;ulist&quot;&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;Perform streaming joins or data enrichment across change streams of different relational tables (maybe even from different databases or services altogether. eg. Enriching shipments with trip and vehicle data)&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;Creating domain events from change streams for consumption by downstream services (eg. Creating an aggregate message with order, shipment and product information from three different change streams)&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;Moving the change stream data into a data lake to allow for disaster recovery or replaying part of the data&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;Complex event processing to generate real time metrics and power dashboards (eg. Live count of items in transit, average trip time within each region etc.)&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/div&gt;
+&lt;div class=&quot;paragraph&quot;&gt;
+&lt;p&gt;Debezium makes all of those above use-cases possible and very easy to build by providing a common platform and framework to connect our existing data sources like MongoDB, PostgreSQL or MySQL.&lt;/p&gt;
+&lt;/div&gt;
+&lt;div class=&quot;paragraph&quot;&gt;
+&lt;p&gt;This article is going to share our learnings with using Debezium on AWS RDS (AWS’s managed database service) and hopefully help transfer some knowledge we’ve gained in that process and also document how to skip unparseable records from PostgreSQL’s WAL until &lt;a href=&quot;https://issues.redhat.com/browse/DBZ-1760&quot;&gt;DBZ-1760&lt;/a&gt; is fixed (already implemented and scheduled for the next Debezium 1.1 preview release).&lt;/p&gt;
+&lt;/div&gt;
+&lt;div class=&quot;paragraph&quot;&gt;
+&lt;p&gt;Here’s a brief architecture overview that shows a few of the use-cases that Debezium is powering and the general data platform.&lt;/p&gt;
+&lt;/div&gt;
+&lt;div class=&quot;exampleblock centered-image responsive-image&quot;&gt;
+&lt;div class=&quot;content&quot;&gt;
+&lt;img src=&quot;https://debezium.io/images/2020-02-25-debezium-on-rds/figure01.png&quot; style=&quot;max-width:100%;&quot; class=&quot;responsive-image&quot;&gt;
+&lt;div class=&quot;paragraph&quot;&gt;
+&lt;p&gt;&lt;strong&gt;Figure 1. Current Architecture&lt;/strong&gt;&lt;/p&gt;
+&lt;/div&gt;
+&lt;/img&gt;
+&lt;/div&gt;
+&lt;div class=&quot;paragraph&quot;&gt;
+&lt;p&gt;But to get to the above was an iterative process which took a lot of experimentation and trial and error.&lt;/p&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;div class=&quot;sect1&quot;&gt;
+&lt;h2 id=&quot;debezium_with_postgresql_on_aws_rds&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#debezium_with_postgresql_on_aws_rds&quot; /&gt;Debezium with PostgreSQL on AWS RDS&lt;/h2&gt;
+&lt;div class=&quot;sectionbody&quot;&gt;
+&lt;div class=&quot;paragraph&quot;&gt;
+&lt;p&gt;Now we are going to discuss some of the learnings from running Debezium with PostgreSQL on AWS RDS. We are not going to focus on how to get started with Debezium with PostgreSQL on RDS since it’s documented in detail at &lt;a href=&quot;https://debezium.io/documentation/reference/1.0/connectors/postgresql.html#amazon-rds&quot;&gt;the documentation for the PostgreSQL connector&lt;/a&gt;.&lt;/p&gt;
+&lt;/div&gt;
+&lt;div class=&quot;sect2&quot;&gt;
+&lt;h3 id=&quot;lessons_learnt&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#lessons_learnt&quot; /&gt;Lessons Learnt&lt;/h3&gt;
+&lt;div class=&quot;paragraph&quot;&gt;
+&lt;p&gt;We started by creating a proof-of-concept whose goal was to listen to changes from 3 different tables within a single PostgreSQL database and create two views downstream, one as the join of the three tables and another view which includes aggregated metrics tracked as a time-series. Both the join and the aggregations were implemented using &lt;a href=&quot;https://kafka.apache.org/documentation/streams/&quot;&gt;Kafka Streams&lt;/a&gt; since it was easier to setup and learn compared to other stream processing frameworks. Since Debezium already provides a very feature rich &lt;a href=&quot;https://hub.docker.com/r/debezium/connect&quot;&gt;Docker container image&lt;/a&gt; we extended that slightly and decided to run the service as containers on AWS’s Elastic Container Service which is a container orchestration service.&lt;/p&gt;
+&lt;/div&gt;
+&lt;div class=&quot;paragraph&quot;&gt;
+&lt;p&gt;There were a few mistakes we made when we were starting out. All of the solutions to our mistakes are now documented in the Debezium documentation but they are all listed together here to make it easier to avoid them.&lt;/p&gt;
+&lt;/div&gt;
+&lt;div class=&quot;ulist&quot;&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;We initially used the &lt;strong&gt;wal2json&lt;/strong&gt; plugin which caused the connector to encounter &lt;strong&gt;OutOfMemoryError&lt;/strong&gt; when committing large transactions (transactions whose serialized form uses more memory than available Java Heap space). Hence our recommendation is:&lt;/p&gt;
+&lt;div class=&quot;ulist&quot;&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;On PostgreSQL &amp;lt; 10, use the &lt;strong&gt;wal2json_streaming&lt;/strong&gt; plugin to avoid &lt;strong&gt;OutOfMemoryError&lt;/strong&gt; on large transactions.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;On PostgreSQL &amp;gt;= 10, use the &lt;strong&gt;pgoutput&lt;/strong&gt; plugin.&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/div&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;We were producing JSON messages with schemas enabled; this creates larger Kafka records than needed, in particular if schema changes are rare. Hence we decided to disable message schemas by setting &lt;code&gt;key.converter.schemas.enabled&lt;/code&gt; and &lt;code&gt;value.converter.schemas.enabled&lt;/code&gt; to &lt;code&gt;false&lt;/code&gt; to reduce the size of each payload considerably hence saving on network bandwidth and serialization/deserialization costs. The only downside is that we now need to maintain the schema of those messages in an external schema registry.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;We were observing a few data-types with base64 encoded data. As &lt;a href=&quot;https://debezium.io/documentation/reference/1.0/connectors/postgresql.html#decimal-values&quot;&gt;documented&lt;/a&gt;, that’s the default for NUMERIC columns, but can be difficult to handle for consumers. To convert to a format that’s easier to parse at the expense of some accuracy loss, we configured the data type specific properties &lt;a href=&quot;https://debezium.io/documentation/reference/1.0/connectors/postgresql.html#data-types&quot;&gt;as documented&lt;/a&gt;. Specifically, set &lt;code&gt;decimal.handling.mode&lt;/code&gt; to &lt;code&gt;string&lt;/code&gt; to receive NUMERIC, DECIMAL and equivalent types as a string (eg. &quot;3.14&quot;) and set &lt;code&gt;hstore.handling.mode&lt;/code&gt; to &lt;code&gt;json&lt;/code&gt; to receive HSTORE columns as a JSON string.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;Always ensure basic hygiene checks like database disk usage, transaction logs disk usage and network and disk bandwidth being used for read and write operations. No alarms were set up on the transaction logs disk usage on the database. We added alarms on the RDS metric &lt;strong&gt;TransactionLogsDiskUsage&lt;/strong&gt; and &lt;strong&gt;OldestReplicationSlotLag&lt;/strong&gt; to alert us when the transaction logs disk usage increased above a threshold or when a replication slot started lagging - meaning that Debezium might have died.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;We had not enabled heartbeats in Debezium. Heartbeats are needed to control the &lt;a href=&quot;https://debezium.io/documentation/reference/1.0/connectors/postgresql.html#wal-disk-space&quot;&gt;WAL disk space consumption&lt;/a&gt; in the following cases:&lt;/p&gt;
+&lt;div class=&quot;ulist&quot;&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;There are many updates in a monitored database but only a minuscule amount relates to the monitored table(s) and/or schema(s). We handled this case by enabling heartbeats by setting &lt;code&gt;heartbeat.interval.ms&lt;/code&gt;.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;The PostgreSQL instance contains multiple databases where the monitored database is low-traffic in comparison to the others. Since the WAL is shared by all databases in an instance it keeps accumulating data which cannot be removed until Debezium reads it. But since the high traffic databases are not monitored Debezium is not able to communicate to the database that the WAL files can be removed to reclaim disk space. To solve this scenario we triggered &quot;heartbeat&quot; events by periodically updating a single row in a table created in the monitored database using the below query:&lt;/p&gt;
+&lt;div class=&quot;listingblock&quot;&gt;
+&lt;div class=&quot;content&quot;&gt;
+&lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-sql&quot; data-lang=&quot;sql&quot;&gt;CREATE TABLE IF NOT EXISTS heartbeat (id SERIAL PRIMARY KEY, ts TIMESTAMP WITH TIME ZONE);
+INSERT INTO heartbeat (id, ts) VALUES (1, NOW()) ON CONFLICT(id) DO UPDATE SET ts=EXCLUDED.ts;&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;div class=&quot;paragraph&quot;&gt;
+&lt;p&gt;Since this is a common use-case that comes up when using Debezium with PostgreSQL, an issue has been created to track this at &lt;a href=&quot;https://issues.redhat.com/browse/DBZ-1815&quot;&gt;DBZ-1815&lt;/a&gt;.&lt;/p&gt;
+&lt;/div&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/div&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;We got severely reduced throughput on tables with JSONB columns. After debugging we were able to confirm the reason as frequent schema refresh by Debezium due to TOASTed columns not being present in the replication message. This was fixed by changing &lt;code&gt;schema.refresh.mode&lt;/code&gt; to &lt;code&gt;columns_diff_exclude_unchanged_toast&lt;/code&gt; and has since been &lt;a href=&quot;https://debezium.io/documentation/reference/1.0/connectors/postgresql.html#discrepance-between-plugins&quot;&gt;documented&lt;/a&gt;.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;We observed frequent EOF errors on the database connection on a few RDS instance sizes. We are still not sure of the cause but initial investigations point to the issue happening only on instances that have PgBouncer attached (even if not connecting through PgBouncer) or instances with smaller sizes (AWS t2/t3 series).&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;We initially used a single Debezium connector per PostgreSQL database (instead of per host) but then moved to using a single connector for each team. The main reasons for not running a single connector per PostgreSQL instance were regarding workload isolation. Any team performing bulk data updates or deletions or unplanned schema migrations will only impact their own Debezium connector instead of the entire PostgreSQL instance since Debezium filters events at its end according to the database and/or schema whitelist and blacklist configured. We are trying to identify possible issues in this configuration but haven’t found any yet. Moving to a single connector per team setup also eased a lot of management overhead regarding configuration changes since we no longer need to co-ordinate between multiple teams when creating a release plan for any changes. Although multiple replication slots on a single database do add overhead, we are able to run fine with around 6 to 10 slots per database host without any noticeable performance impact.&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;div class=&quot;sect1&quot;&gt;
+&lt;h2 id=&quot;production_incidents&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#production_incidents&quot; /&gt;Production Incidents&lt;/h2&gt;
+&lt;div class=&quot;sectionbody&quot;&gt;
+&lt;div class=&quot;paragraph&quot;&gt;
+&lt;p&gt;As is common with every software development project we did hit a few issues and here we discuss one of the more difficult ones in detail. But thanks to Debezium being focused on ensuring data consistency we were able to recover without &lt;strong&gt;ANY&lt;/strong&gt; data loss.&lt;/p&gt;
+&lt;/div&gt;
+&lt;div class=&quot;admonitionblock note&quot;&gt;
+&lt;table&gt;
+&lt;tr&gt;
+&lt;td class=&quot;icon&quot;&gt;
+&lt;i class=&quot;fa icon-note&quot; title=&quot;Note&quot; /&gt;
+&lt;/td&gt;
+&lt;td class=&quot;content&quot;&gt;
+&lt;div class=&quot;paragraph&quot;&gt;
+&lt;p&gt;&lt;strong&gt;The issue we discuss below is already fixed in Debezium 1.0 and you should update as soon as possible&lt;/strong&gt;.&lt;/p&gt;
+&lt;/div&gt;
+&lt;div class=&quot;paragraph&quot;&gt;
+&lt;p&gt;A new feature for skipping such unprocessable events in general has been merged as &lt;a href=&quot;https://github.com/debezium/debezium/pull/1271&quot;&gt;PR#1271&lt;/a&gt; in the core Debezium framework and will be part of the next Debezium 1.1 preview release.&lt;/p&gt;
+&lt;/div&gt;
+&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/table&gt;
+&lt;/div&gt;
+&lt;div class=&quot;paragraph&quot;&gt;
+&lt;p&gt;Two of the common things developers often fail to do are proper date-time handling and software version upgrades. Both of these can lead to issues on their own but makes things difficult when both occur together. We recently faced such an issue and provide a way to handle it. We’ll start with some background on why this issue came up in the first place.&lt;/p&gt;
+&lt;/div&gt;
+&lt;div class=&quot;paragraph&quot;&gt;
+&lt;p&gt;PostgreSQL’s &lt;a href=&quot;https://www.postgresql.org/docs/current/datatype-datetime.html&quot;&gt;date/time types documentation&lt;/a&gt; states that the TIMESTAMP types can range from &lt;strong&gt;4713 BC&lt;/strong&gt; to &lt;strong&gt;294276 AD&lt;/strong&gt;. Before Debezium 0.10, there were serveral issues regarding datetime overflow for dates too far into the future like &lt;a href=&quot;https://issues.redhat.com/browse/DBZ-1255&quot;&gt;DBZ-1255&lt;/a&gt; and &lt;a href=&quot;https://issues.redhat.com/browse/DBZ-1205&quot;&gt;DBZ-1205&lt;/a&gt;.&lt;/p&gt;
+&lt;/div&gt;
+&lt;div class=&quot;sect2&quot;&gt;
+&lt;h3 id=&quot;the_bug_and_dealing_with_it&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#the_bug_and_dealing_with_it&quot; /&gt;The Bug and Dealing With It&lt;/h3&gt;
+&lt;div class=&quot;paragraph&quot;&gt;
+&lt;p&gt;To hit the above issue you need to have a date sufficiently far into the future. You can get one if you are not using ISO8601 or epoch time and have a bug in your custom datetime formatter.&lt;/p&gt;
+&lt;/div&gt;
+&lt;div class=&quot;paragraph&quot;&gt;
+&lt;p&gt;So, the bug was triggered by the application writing a datetime value containing the year &lt;strong&gt;20200&lt;/strong&gt; into one of the tables monitored by Debezium which caused Debezium to throw an exception since we were still running on 0.9 in production.&lt;/p&gt;
+&lt;/div&gt;
+&lt;div class=&quot;paragraph&quot;&gt;
+&lt;p&gt;Unfortunately our log pattern alerts did not work that day and the error silently skipped past us until the high replication lag alarms went off. Upon inspecting the logs we did figure out where the issue was coming from and for which value. Unfortunately the log did not tell what table the issue was in (&lt;em&gt;hint - can become a valuable contribution&lt;/em&gt;) and which column contained the offending value. Luckily only four tables were monitored and each of them had two TIMESTAMPTZ columns and it was easy to query for the offending value in those to find the actual record.&lt;/p&gt;
+&lt;/div&gt;
+&lt;div class=&quot;paragraph&quot;&gt;
+&lt;p&gt;A quick read of the source code showed us that this was happening for any year &amp;gt; 9999 and hence we queried the database to check if any other such values existed. Thankfully no other values existed. By now we had a clear plan in mind:&lt;/p&gt;
+&lt;/div&gt;
+&lt;div class=&quot;olist arabic&quot;&gt;
+&lt;ol class=&quot;arabic&quot;&gt;
+&lt;li&gt;
+&lt;p&gt;Stop Debezium&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;Correct the data for the record&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;Somehow get Debezium to skip the unparseable record&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;Add validations to database to ensure such values don’t skip through for the time being&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;Upgrade Debezium to 1.0&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;/div&gt;
+&lt;div class=&quot;paragraph&quot;&gt;
+&lt;p&gt;But we were stuck at the 3rd step above since we could not find an equivalent option to MySQL’s &lt;code&gt;event.deserialization.failure.handling.mode&lt;/code&gt; for the PostgreSQL connector.&lt;/p&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;div class=&quot;sect2&quot;&gt;
+&lt;h3 id=&quot;how_debezium_and_postgresql_track_offsets&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#how_debezium_and_postgresql_track_offsets&quot; /&gt;How Debezium and PostgreSQL track offsets&lt;/h3&gt;
+&lt;div class=&quot;paragraph&quot;&gt;
+&lt;p&gt;Each change record in PostgreSQL has a position which is tracked using a value known as a log sequence number (LSN). PostgreSQL represents it as two hexadecimal numbers - logical &lt;strong&gt;xLog&lt;/strong&gt; and &lt;strong&gt;segment&lt;/strong&gt;. Debezium represents it as the decimal representation of that value. The actual conversion implementation can be seen in PostgreSQL’s JDBC driver &lt;a href=&quot;https://github.com/pgjdbc/pgjdbc/blob/1970c4a3fb8ebf4cc52f5d8b0d4977388ee713e7/pgjdbc/src/main/java/org/postgresql/replication/LogSequenceNumber.java#L42&quot;&gt;here&lt;/a&gt;.&lt;/p&gt;
+&lt;/div&gt;
+&lt;div class=&quot;paragraph&quot;&gt;
+&lt;p&gt;Periodically Debezium writes the last processed LSN and transaction id to the Kafka Connect offsets topic and advances the replication slot to match that. On startup, Debezium uses the last record from the Kafka Connect offsets topic to rewind the replication slot to the position as described before continuing streaming changes. This means that to change the position in the WAL where Debezium picks up from requires a change in both Debezium’s tracked information in the Kafka Connect offsets topic as well as server side in PostgreSQL.&lt;/p&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;div class=&quot;sect2&quot;&gt;
+&lt;h3 id=&quot;skipping_unparseable_events&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#skipping_unparseable_events&quot; /&gt;Skipping Unparseable Events&lt;/h3&gt;
+&lt;div class=&quot;paragraph&quot;&gt;
+&lt;p&gt;We were able to use the above information to make Debezium skip the unparseable event by performing the following steps:&lt;/p&gt;
+&lt;/div&gt;
+&lt;div class=&quot;olist arabic&quot;&gt;
+&lt;ol class=&quot;arabic&quot;&gt;
+&lt;li&gt;
+&lt;p&gt;Stop Debezium to make the replication slot inactive.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;Check Debezium has stopped listening on the replication slot by running &lt;code&gt;SELECT * FROM pg_replication_slots WHERE slot_name = &#39;&amp;lt;your-slot-name&amp;gt;&#39;;&lt;/code&gt;. The &lt;code&gt;active&lt;/code&gt; column should be &lt;code&gt;f&lt;/code&gt;.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;Check the last message in Debezium’s offsets topic and note down the value for the &lt;code&gt;lsn&lt;/code&gt; key. eg. &lt;code&gt;1516427642656&lt;/code&gt;.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;Convert that long representation of LSN into the hexadecimal format using PosgtreSQL’s Java driver using the below Java code:&lt;/p&gt;
+&lt;div class=&quot;listingblock&quot;&gt;
+&lt;div class=&quot;content&quot;&gt;
+&lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-java&quot; data-lang=&quot;java&quot;&gt;import org.postgresql.replication.LogSequenceNumber;
+
+class Scratch {
+  public static void main(String[] args) {
+      LogSequenceNumber a = LogSequenceNumber.valueOf(1516427642656L);
+      System.out.println(a.asString());
+  }
+}&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;Peek changes from the WAL upto the LSN above using &lt;code&gt;SELECT pg_logical_slot_peek_changes(&#39;&amp;lt;your-slot-name&amp;gt;&#39;, &#39;&amp;lt;lsn-from-above&amp;gt;&#39;, 1)&lt;/code&gt;. This is the replication change that we are going to skip, so please make sure that this is the record that you want to skip. Once confirmed, proceed to next step.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;Advance the replication slot by skipping 1 change using &lt;code&gt;SELECT pg_logical_slot_get_changes(&#39;&amp;lt;your-slot-name&amp;gt;&#39;, NULL, 1)&lt;/code&gt;. This will consume 1 change from the replication slot.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;Publish a message to Debezium’s offset topic with the next LSN and TxId. We were able to successfully get it working by adding 1 to both the &lt;code&gt;lsn&lt;/code&gt; and the &lt;code&gt;txId&lt;/code&gt;.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;Deploy Debezium again and it should have skipped the record.&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;div class=&quot;sect1&quot;&gt;
+&lt;h2 id=&quot;conclusion&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#conclusion&quot; /&gt;Conclusion&lt;/h2&gt;
+&lt;div class=&quot;sectionbody&quot;&gt;
+&lt;div class=&quot;sect2&quot;&gt;
+&lt;h3 id=&quot;why_debezium&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#why_debezium&quot; /&gt;Why Debezium?&lt;/h3&gt;
+&lt;div class=&quot;paragraph&quot;&gt;
+&lt;p&gt;In closing we would like to highlight the issues Debezium has solved for us.&lt;/p&gt;
+&lt;/div&gt;
+&lt;div class=&quot;paragraph&quot;&gt;
+&lt;p&gt;One of the biggest concerns when handling any data is regarding data consistency and Debezium helps us avoid dual writes and maintains data consistency between our RDBMS and Kafka which makes it easier to ensure data consistency in all further layers.&lt;/p&gt;
+&lt;/div&gt;
+&lt;div class=&quot;paragraph&quot;&gt;
+&lt;p&gt;Debezium enables low overhead change data capture and now we have ended up defaulting to enabling Debezium for all new data sources being created.&lt;/p&gt;
+&lt;/div&gt;
+&lt;div class=&quot;paragraph&quot;&gt;
+&lt;p&gt;Debezium’s support for a wide variety of data sources, PostgreSQL, MySQL and MongoDB specifically, helps us provide a standard technology and platform to perform data integration on. No more having to write custom code to connect each data source.&lt;/p&gt;
+&lt;/div&gt;
+&lt;div class=&quot;paragraph&quot;&gt;
+&lt;p&gt;Debezium being open source proved to be immensely useful in the early days to make sure we were able to send in patches for a few bugs ourselves without having to ask someone to prioritise the issue. And since it’s open source there is a growing community around it which can help you figure out your issues and provide general guidance. Check out &lt;a href=&quot;https://debezium.io/community/&quot;&gt;this page&lt;/a&gt; on the Debezium website for a lot of awesome community contributed content.&lt;/p&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;div class=&quot;sect2&quot;&gt;
+&lt;h3 id=&quot;challenges&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#challenges&quot; /&gt;Challenges&lt;/h3&gt;
+&lt;div class=&quot;paragraph&quot;&gt;
+&lt;p&gt;Having said the above Debezium is still quite a young project and has a few areas in which improvement will be welcome (and your contributions too in the form of code, design, ideas, documentation and even blog posts):&lt;/p&gt;
+&lt;/div&gt;
+&lt;div class=&quot;ulist&quot;&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;Zero-downtime high availability. Debezium relies on the Kafka Connect framework to provide high availability but it does not provide something similar to a hot standby instance. It takes time for an existing connector to shut down and a new instance to come up - which might be acceptable for a few use-cases but unacceptable in others. See &lt;a href=&quot;https://medium.com/blablacar-tech/streaming-data-out-of-the-monolith-building-a-highly-reliable-cdc-stack-d71599131acb&quot;&gt;this blog post by BlaBlaCar&lt;/a&gt; for a discussion and their solution around it.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;Support for other data sinks besides Kafka. In a few scenarios you might want to directly move the events from your database to an API, a different data store or maybe a different message broker. But since Debezium is currently written on top of Kafka Connect it can only write the data into Kafka. Debezium does provide an embedded engine which you can use as a library to consume change events in your Java applications.  See &lt;a href=&quot;https://debezium.io/documentation/reference/operations/embedded.html&quot;&gt;the documentation around embedding Debezium&lt;/a&gt;. In case you do end up writing a different adapter around Debezium to move data into a different destination, consider making it open source so that both you benefit by additional maintainers and the community benefits by getting new use cases solved.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;Common framework to write any new CDC implementation. We particularly have a use case of performing CDC on top of AWS DynamoDB. Instead of writing a custom Kafka Connector from scratch, we can reuse the Debezium core framework and write only the DynamoDB specific parts. This will help prevent bugs since a lot of the existing flows and edge cases might have already been handled. There is ongoing work around this theme to refactor all existing Debezium connectors to use the common framework to make it easier to write new custom connectors. For an example of how to implement one, take a look at the &lt;a href=&quot;https://github.com/debezium/debezium-incubator&quot;&gt;Debezium incubator repository&lt;/a&gt;.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;A few minor annoyances which are already tracked on the project’s issue tracker - specifically &lt;a href=&quot;https://issues.redhat.com/browse/DBZ-1760&quot;&gt;DBZ-1760 (skipping unparseable records)&lt;/a&gt;, &lt;a href=&quot;https://issues.redhat.com/browse/DBZ-1263&quot;&gt;DBZ-1263 (update table whitelist for existing connector)&lt;/a&gt;, &lt;a href=&quot;https://issues.redhat.com/projects/DBZ/issues/DBZ-1723&quot;&gt;DBZ-1723 (Reconnect to DB on failure)&lt;/a&gt;, &lt;a href=&quot;https://issues.redhat.com/projects/DBZ/issues/DBZ-823&quot;&gt;DBZ-823 (Parallel snapshots)&lt;/a&gt;.&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;div class=&quot;sect2&quot;&gt;
+&lt;h3 id=&quot;future_scope&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#future_scope&quot; /&gt;Future Scope&lt;/h3&gt;
+&lt;div class=&quot;paragraph&quot;&gt;
+&lt;p&gt;We do have a few tasks planned for the future to improve our existing workflow regarding Debezium and Kafka Connect.&lt;/p&gt;
+&lt;/div&gt;
+&lt;div class=&quot;ulist&quot;&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;Upgrading to Debezium v1.0. Debezium recently released the first 1.0 release with a number of new features including &lt;a href=&quot;https://debezium.io/documentation/reference/integrations/cloudevents.html&quot;&gt;support for the CloudEvents format&lt;/a&gt; which we are looking towards to provide a unified message format for all data across the organisation.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;Trying out the Outbox design pattern as documented at &lt;a href=&quot;https://debezium.io/blog/2019/02/19/reliable-microservices-data-exchange-with-the-outbox-pattern/&quot;&gt;Reliable Microservices Data Exchange With the Outbox Pattern&lt;/a&gt; to unify application events and data change events. The outbox pattern also provides transactional guarantees across service boundaries in a microservices system - something everybody wants in an event based microservices architecture.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;Setting up an &lt;a href=&quot;https://atlas.apache.org/&quot;&gt;Apache Atlas&lt;/a&gt; integration to automate the creation of data sources and tracking data lineage in Atlas to help with data governance and discoverability.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;Writing and open sourcing an AWS DynamoDB CDC connector as a Debezium connector. Since we are using AWS DynamoDB too we need to provide the same capabilities that the other data sources are using in terms of CDC. For that we are writing a DynamoDB CDC connector using Debezium as a framework. The work is still in its early stages and is planned to be released as an open source connector.&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/div&gt;
+&lt;div class=&quot;paragraph&quot;&gt;
+&lt;p&gt;So overall, we started the post by sharing our business use-case and discussed how Debezium has helped us solve them. We then detailed how we have been running Debezium in production for performing CDC on PostgreSQL on AWS RDS and talked about the mistakes we made when starting out and how to solve them. And as is common in software engineering, we did face production incidents along the way and are sharing our learnings from that incident in the hopes that they might be useful for the wider community.&lt;/p&gt;
+&lt;/div&gt;
+&lt;div class=&quot;paragraph&quot;&gt;
+&lt;p&gt;&lt;em&gt;Also a lot of thanks to the people who reviewed this post including &lt;a href=&quot;https://twitter.com/gunnarmorling&quot;&gt;Gunnar Morling&lt;/a&gt;, &lt;a href=&quot;https://www.linkedin.com/in/kbhara&quot;&gt;Kapil Bharati&lt;/a&gt; and &lt;a href=&quot;https://www.linkedin.com/in/akashdeep1&quot;&gt;Akash Deep Verma&lt;/a&gt;.&lt;/em&gt;&lt;/p&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;div class=&quot;sect1&quot;&gt;
+&lt;h2 id=&quot;further_reading&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#further_reading&quot; /&gt;Further Reading&lt;/h2&gt;
+&lt;div class=&quot;sectionbody&quot;&gt;
+&lt;div class=&quot;sect2&quot;&gt;
+&lt;h3 id=&quot;debezium_documentation_and_repositories&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#debezium_documentation_and_repositories&quot; /&gt;Debezium Documentation and Repositories&lt;/h3&gt;
+&lt;div class=&quot;olist arabic&quot;&gt;
+&lt;ol class=&quot;arabic&quot;&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;a href=&quot;https://debezium.io/documentation/reference/1.0/connectors/postgresql.html&quot;&gt;Debezium PostgreSQL Connector Documentation&lt;/a&gt;&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;a href=&quot;https://debezium.io/documentation/reference/1.0/connectors/postgresql.html#amazon-rds&quot;&gt;Debezium with PostgreSQL on
+Amazon RDS&lt;/a&gt;&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;a href=&quot;https://debezium.io/documentation/reference/operations/embedded.html&quot;&gt;Debezium Embedded Engine&lt;/a&gt;&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;a href=&quot;https://github.com/debezium/debezium-incubator&quot;&gt;Debezium Incubator Connectors - Cassandra, IBM DB2&lt;/a&gt;&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;div class=&quot;sect2&quot;&gt;
+&lt;h3 id=&quot;external_documentation&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#external_documentation&quot; /&gt;External Documentation&lt;/h3&gt;
+&lt;div class=&quot;olist arabic&quot;&gt;
+&lt;ol class=&quot;arabic&quot;&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;a href=&quot;https://kafka.apache.org/documentation/streams/&quot;&gt;Kafka Streams&lt;/a&gt;&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;a href=&quot;https://www.postgresql.org/docs/current/datatype-datetime.html&quot;&gt;PostgreSQL date/time data types&lt;/a&gt;&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;a href=&quot;https://github.com/pgjdbc/pgjdbc/blob/1970c4a3fb8ebf4cc52f5d8b0d4977388ee713e7/pgjdbc/src/main/java/org/postgresql/replication/LogSequenceNumber.java#L42&quot;&gt;PostgreSQL LSN conversion in JDBC driver&lt;/a&gt;&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;div class=&quot;sect2&quot;&gt;
+&lt;h3 id=&quot;blogs_and_articles&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#blogs_and_articles&quot; /&gt;Blogs and Articles&lt;/h3&gt;
+&lt;div class=&quot;olist arabic&quot;&gt;
+&lt;ol class=&quot;arabic&quot;&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;a href=&quot;https://medium.com/blablacar-tech/streaming-data-out-of-the-monolith-building-a-highly-reliable-cdc-stack-d71599131acb&quot;&gt;Streaming Data out of the Monolith: Building a Highly Reliable CDC Stack&lt;/a&gt;&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;a href=&quot;https://debezium.io/blog/2019/02/19/reliable-microservices-data-exchange-with-the-outbox-pattern/&quot;&gt;Reliable Microservices Data Exchange With the Outbox Pattern&lt;/a&gt;&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;div class=&quot;sect2&quot;&gt;
+&lt;h3 id=&quot;relevant_issues&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#relevant_issues&quot; /&gt;Relevant Issues&lt;/h3&gt;
+&lt;div class=&quot;sect3&quot;&gt;
+&lt;h4 id=&quot;open_issues&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#open_issues&quot; /&gt;Open Issues&lt;/h4&gt;
+&lt;div class=&quot;olist arabic&quot;&gt;
+&lt;ol class=&quot;arabic&quot;&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;a href=&quot;https://issues.redhat.com/browse/DBZ-1760&quot;&gt;DBZ-1760 - Add option to skip unprocesseable event&lt;/a&gt;&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;a href=&quot;https://issues.redhat.com/browse/DBZ-1263&quot;&gt;DBZ-1263 - Allow table.whitelist to be updated after a connector is created&lt;/a&gt;&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;a href=&quot;https://issues.redhat.com/browse/DBZ-1815&quot;&gt;DBZ-1815 - The Postgres connector heartbeat should optionally write back a heartbeat change to the DB&lt;/a&gt;&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;div class=&quot;sect3&quot;&gt;
+&lt;h4 id=&quot;solved_issues&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#solved_issues&quot; /&gt;Solved Issues&lt;/h4&gt;
+&lt;div class=&quot;olist arabic&quot;&gt;
+&lt;ol class=&quot;arabic&quot;&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;a href=&quot;https://issues.redhat.com/browse/DBZ-1255&quot;&gt;DBZ-1255 - Debezium does not expect a year larger than 9999&lt;/a&gt;&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;a href=&quot;https://issues.redhat.com/browse/DBZ-1205&quot;&gt;DBZ-1205 - Overflowed Timestamp in Postgres Connection&lt;/a&gt;&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;/div&gt;
+</content>
+</entry>
+<entry>
 <id>https://debezium.io/blog/2020/02/19/debezium-camel-integration/</id>
 <title>Integration Scenarios with Debezium and Apache Camel</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2020-02-19T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2020/02/19/debezium-camel-integration/" rel="alternate" type="text/html" />
 <author>
@@ -461,7 +892,7 @@ If you find problems or have an idea on how we can improve Debezium, please let 
 <entry>
 <id>https://debezium.io/blog/2020/02/13/debezium-1-1-beta2-released/</id>
 <title>Debezium 1.1.0.Beta2 Released</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2020-02-13T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2020/02/13/debezium-1-1-beta2-released/" rel="alternate" type="text/html" />
 <author>
@@ -615,7 +1046,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2020/02/11/debezium-1-1-beta1-released/</id>
 <title>Debezium 1.1.0.Beta1 Released</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2020-02-11T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2020/02/11/debezium-1-1-beta1-released/" rel="alternate" type="text/html" />
 <author>
@@ -837,7 +1268,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2020/02/10/event-sourcing-vs-cdc/</id>
 <title>Distributed Data for Microservices — Event Sourcing vs. Change Data Capture</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2020-02-10T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2020/02/10/event-sourcing-vs-cdc/" rel="alternate" type="text/html" />
 <author>
@@ -1494,7 +1925,7 @@ Application (Outbox)&lt;/p&gt;&lt;/td&gt;
 <entry>
 <id>https://debezium.io/blog/2020/01/22/outbox-quarkus-extension/</id>
 <title>Outbox Event Router goes Supersonic!</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2020-01-22T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2020/01/22/outbox-quarkus-extension/" rel="alternate" type="text/html" />
 <author>
@@ -1963,7 +2394,7 @@ As always we welcome any and all feedback, so feel free to let us know in that i
 <entry>
 <id>https://debezium.io/blog/2020/01/16/debezium-1-1-alpha1-released/</id>
 <title>Debezium 1.1.0.Alpha1 Released</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2020-01-16T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2020/01/16/debezium-1-1-alpha1-released/" rel="alternate" type="text/html" />
 <author>
@@ -2178,7 +2609,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2019/12/18/debezium-1-0-0-final-released/</id>
 <title>Streaming Now: Debezium 1.0 Final Is Out</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-12-18T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/12/18/debezium-1-0-0-final-released/" rel="alternate" type="text/html" />
 <author>
@@ -2427,7 +2858,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2019/12/13/externalized-secrets/</id>
 <title>Secrets externalization with Debezium connectors</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-12-13T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/12/13/externalized-secrets/" rel="alternate" type="text/html" />
 <author>
@@ -2627,7 +3058,7 @@ It should be noted though that the file config provider is satisfactory in Kuber
 <entry>
 <id>https://debezium.io/blog/2019/12/12/debezium-1-0-0-cr1-released/</id>
 <title>Debezium 1.0.0.CR1 Released</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-12-12T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/12/12/debezium-1-0-0-cr1-released/" rel="alternate" type="text/html" />
 <author>
@@ -2759,7 +3190,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2019/11/14/debezium-1-0-0-beta3-released/</id>
 <title>Debezium 1.0.0.Beta3 Released</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-11-14T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/11/14/debezium-1-0-0-beta3-released/" rel="alternate" type="text/html" />
 <author>
@@ -2903,7 +3334,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2019/10/24/debezium-1-0-0-beta2-released/</id>
 <title>Debezium 1.0.0.Beta2 Released</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-10-24T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/10/24/debezium-1-0-0-beta2-released/" rel="alternate" type="text/html" />
 <author>
@@ -3032,7 +3463,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2019/10/22/audit-logs-with-kogito/</id>
 <title>Admin Service for Audit Logs with Kogito</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-10-22T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/10/22/audit-logs-with-kogito/" rel="alternate" type="text/html" />
 <author>
@@ -3231,7 +3662,7 @@ to not affect any other activities.&lt;/p&gt;
 <entry>
 <id>https://debezium.io/blog/2019/10/17/debezium-newsletter-02-2019/</id>
 <title>Debezium&#8217;s Newsletter 02/2019</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-10-17T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/10/17/debezium-newsletter-02-2019/" rel="alternate" type="text/html" />
 <author>
@@ -3471,7 +3902,7 @@ You can reach out to us via any of our community channels found &lt;a href=&quot
 <entry>
 <id>https://debezium.io/blog/2019/10/17/debezium-1-0-0-beta1-released/</id>
 <title>Debezium 1.0.0.Beta1 Released</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-10-17T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/10/17/debezium-1-0-0-beta1-released/" rel="alternate" type="text/html" />
 <author>
@@ -3588,7 +4019,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2019/10/08/handling-unchanged-postgres-toast-values/</id>
 <title>Strategies for Handling Unchanged Postgres TOAST Values</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-10-08T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/10/08/handling-unchanged-postgres-toast-values/" rel="alternate" type="text/html" />
 <author>
@@ -4027,7 +4458,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2019/10/02/debezium-0-10-0-final-released/</id>
 <title>Debezium 0.10 Final Released</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-10-02T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/10/02/debezium-0-10-0-final-released/" rel="alternate" type="text/html" />
 <author>
@@ -4199,7 +4630,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2019/10/01/audit-logs-with-change-data-capture-and-stream-processing/</id>
 <title>Building Audit Logs with Change Data Capture and Stream Processing</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-10-01T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/10/01/audit-logs-with-change-data-capture-and-stream-processing/" rel="alternate" type="text/html" />
 <author>
@@ -5105,7 +5536,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2019/09/26/debezium-0-10-0-cr2-released/</id>
 <title>Debezium 0.10.0.CR2 Released</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-09-26T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/09/26/debezium-0-10-0-cr2-released/" rel="alternate" type="text/html" />
 <author>
@@ -5334,7 +5765,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2019/09/10/debezium-0-10-0-cr1-released/</id>
 <title>Debezium 0.10.0.CR1 Released</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-09-10T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/09/10/debezium-0-10-0-cr1-released/" rel="alternate" type="text/html" />
 <author>
@@ -5501,7 +5932,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2019/09/05/website-documentation-overhaul/</id>
 <title>Site and Documentation Overhaul</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-09-05T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/09/05/website-documentation-overhaul/" rel="alternate" type="text/html" />
 <author>
@@ -5643,7 +6074,7 @@ You can report such concerns to us by &lt;a href=&quot;https://issues.redhat.com
 <entry>
 <id>https://debezium.io/blog/2019/08/20/debezium-0-10-0-beta4-released/</id>
 <title>Debezium 0.10.0.Beta4 Released</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-08-20T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/08/20/debezium-0-10-0-beta4-released/" rel="alternate" type="text/html" />
 <author>
@@ -5817,7 +6248,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2019/07/25/debezium-0-10-0-beta3-released/</id>
 <title>Debezium 0.10.0.Beta3 Released</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-07-25T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/07/25/debezium-0-10-0-beta3-released/" rel="alternate" type="text/html" />
 <author>
@@ -5934,7 +6365,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2019/07/15/streaming-cassandra-at-wepay-part-2/</id>
 <title>Streaming Cassandra at WePay - Part 2</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-07-15T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/07/15/streaming-cassandra-at-wepay-part-2/" rel="alternate" type="text/html" />
 <author>
@@ -6115,7 +6546,7 @@ The Cassandra CDC agent is a JVM process that is intended to be deployed on each
 <entry>
 <id>https://debezium.io/blog/2019/07/12/streaming-cassandra-at-wepay-part-1/</id>
 <title>Streaming Cassandra at WePay - Part 1</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-07-12T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/07/12/streaming-cassandra-at-wepay-part-1/" rel="alternate" type="text/html" />
 <author>
@@ -6310,7 +6741,7 @@ With these criteria in front of us, we began to brainstorm for solutions, and ul
 <entry>
 <id>https://debezium.io/blog/2019/07/08/tutorial-sentry-debezium-container-images/</id>
 <title>Tutorial for Adding Sentry into Debezium Container Images</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-07-08T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/07/08/tutorial-sentry-debezium-container-images/" rel="alternate" type="text/html" />
 <author>
@@ -6557,7 +6988,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2019/06/28/debezium-0-10-0-beta2-released/</id>
 <title>Debezium 0.10.0.Beta2 Released</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-06-28T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/06/28/debezium-0-10-0-beta2-released/" rel="alternate" type="text/html" />
 <author>
@@ -6672,7 +7103,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2019/06/19/debezium-wears-fedora/</id>
 <title>Debezium Wears Fedora</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-06-19T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/06/19/debezium-wears-fedora/" rel="alternate" type="text/html" />
 <author>
@@ -6935,7 +7366,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2019/06/12/debezium-0-10-0-beta1-released/</id>
 <title>Debezium 0.10.0.Beta1 Released</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-06-12T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/06/12/debezium-0-10-0-beta1-released/" rel="alternate" type="text/html" />
 <author>
@@ -7027,7 +7458,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2019/06/05/debezium-newsletter-01-2019/</id>
 <title>Debezium&#8217;s Newsletter 01/2019</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-06-05T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/06/05/debezium-newsletter-01-2019/" rel="alternate" type="text/html" />
 <author>
@@ -7184,7 +7615,7 @@ into this release, you can view the &lt;a href=&quot;https://issues.redhat.com/i
 <entry>
 <id>https://debezium.io/blog/2019/06/03/debezium-0-10-0-alpha2-released/</id>
 <title>Debezium 0.10.0.Alpha2 Released</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-06-03T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/06/03/debezium-0-10-0-alpha2-released/" rel="alternate" type="text/html" />
 <author>
@@ -7285,7 +7716,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2019/05/29/debezium-0-10-0-alpha1-released/</id>
 <title>Debezium 0.10.0.Alpha1 &quot;Spring Clean-Up&quot; Edition Released</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-05-29T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/05/29/debezium-0-10-0-alpha1-released/" rel="alternate" type="text/html" />
 <author>
@@ -7501,7 +7932,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2019/05/23/tutorial-using-debezium-connectors-with-apache-pulsar/</id>
 <title>Tutorial for Using Debezium Connectors With Apache Pulsar</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-05-23T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/05/23/tutorial-using-debezium-connectors-with-apache-pulsar/" rel="alternate" type="text/html" />
 <author>
@@ -7809,7 +8240,7 @@ $ rm -rf data&lt;/code&gt;&lt;/pre&gt;
 <entry>
 <id>https://debezium.io/blog/2019/05/06/debezium-0-9-5-final-released/</id>
 <title>Debezium 0.9.5.Final Released</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-05-06T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/05/06/debezium-0-9-5-final-released/" rel="alternate" type="text/html" />
 <author>
@@ -7965,7 +8396,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2019/04/18/hello-debezium/</id>
 <title>Debezium&#8217;s Team Grows</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-04-18T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/04/18/hello-debezium/" rel="alternate" type="text/html" />
 <author>
@@ -8034,7 +8465,7 @@ the team and myself cannot wait to share them.&lt;/p&gt;
 <entry>
 <id>https://debezium.io/blog/2019/04/11/debezium-0-9-4-final-released/</id>
 <title>Debezium 0.9.4.Final Released</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-04-11T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/04/11/debezium-0-9-4-final-released/" rel="alternate" type="text/html" />
 <author>
@@ -8207,7 +8638,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2019/03/26/debezium-0-9-3-final-released/</id>
 <title>Debezium 0.9.3.Final Released</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-03-26T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/03/26/debezium-0-9-3-final-released/" rel="alternate" type="text/html" />
 <author>
@@ -8387,7 +8818,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2019/03/14/debezium-meets-quarkus/</id>
 <title>Debezium meets Quarkus</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-03-14T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/03/14/debezium-meets-quarkus/" rel="alternate" type="text/html" />
 <author>
@@ -8753,7 +9184,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2019/02/25/debezium-0-9-2-final-released/</id>
 <title>Debezium 0.9.2.Final Released</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-02-25T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/02/25/debezium-0-9-2-final-released/" rel="alternate" type="text/html" />
 <author>
@@ -8918,7 +9349,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2019/02/19/reliable-microservices-data-exchange-with-the-outbox-pattern/</id>
 <title>Reliable Microservices Data Exchange With the Outbox Pattern</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-02-19T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/02/19/reliable-microservices-data-exchange-with-the-outbox-pattern/" rel="alternate" type="text/html" />
 <author>
@@ -9837,7 +10268,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2019/02/13/debezium-webinar-at-devnation-live/</id>
 <title>Debezium at DevNation Live</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-02-13T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/02/13/debezium-webinar-at-devnation-live/" rel="alternate" type="text/html" />
 <author>
@@ -9943,7 +10374,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2019/02/13/debezium-0-9-1-final-released/</id>
 <title>Debezium 0.9.1.Final Released</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-02-13T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/02/13/debezium-0-9-1-final-released/" rel="alternate" type="text/html" />
 <author>
@@ -10040,7 +10471,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2019/02/05/debezium-0-9-0-final-released/</id>
 <title>Debezium 0.9.0.Final Released</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-02-05T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/02/05/debezium-0-9-0-final-released/" rel="alternate" type="text/html" />
 <author>
@@ -10246,7 +10677,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2019/01/28/debezium-0-9-0-cr1-released/</id>
 <title>Debezium 0.9.0.CR1 Released</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2019-01-28T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2019/01/28/debezium-0-9-0-cr1-released/" rel="alternate" type="text/html" />
 <author>
@@ -10419,7 +10850,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2018/12/19/debezium-0-9-0-beta2-released/</id>
 <title>Debezium 0.9.0.Beta2 Released</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2018-12-19T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2018/12/19/debezium-0-9-0-beta2-released/" rel="alternate" type="text/html" />
 <author>
@@ -10627,7 +11058,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2018/12/05/automating-cache-invalidation-with-change-data-capture/</id>
 <title>Automating Cache Invalidation With Change Data Capture</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2018-12-05T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2018/12/05/automating-cache-invalidation-with-change-data-capture/" rel="alternate" type="text/html" />
 <author>
@@ -11254,7 +11685,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2018/11/22/debezium-0-9-0-beta1-released/</id>
 <title>Debezium 0.9.0.Beta1 Released</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2018-11-22T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2018/11/22/debezium-0-9-0-beta1-released/" rel="alternate" type="text/html" />
 <author>
@@ -11391,7 +11822,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2018/10/04/debezium-0-9-0-alpha2-released/</id>
 <title>Debezium 0.9.0.Alpha2 Released</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2018-10-04T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2018/10/04/debezium-0-9-0-alpha2-released/" rel="alternate" type="text/html" />
 <author>
@@ -11613,7 +12044,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2018/09/20/materializing-aggregate-views-with-hibernate-and-debezium/</id>
 <title>Materializing Aggregate Views With Hibernate and Debezium</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2018-09-20T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2018/09/20/materializing-aggregate-views-with-hibernate-and-debezium/" rel="alternate" type="text/html" />
 <author>
@@ -12183,7 +12614,7 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 <entry>
 <id>https://debezium.io/blog/2018/09/19/debezium-0-8-3-final-released/</id>
 <title>Debezium 0.8.3.Final Released</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
+<updated>2020-02-25T15:44:28+00:00</updated>
 <published>2018-09-19T00:00:00+00:00</published>
 <link href="https://debezium.io/blog/2018/09/19/debezium-0-8-3-final-released/" rel="alternate" type="text/html" />
 <author>
@@ -12334,531 +12765,6 @@ If you find problems or have ideas how we can improve Debezium, please let us kn
 &lt;/div&gt;
 &lt;/div&gt;
 &lt;/div&gt;
-</content>
-</entry>
-<entry>
-<id>https://debezium.io/blog/2018/08/30/streaming-mysql-data-changes-into-kinesis/</id>
-<title>Streaming MySQL Data Changes to Amazon Kinesis</title>
-<updated>2020-02-25T15:04:51+00:00</updated>
-<published>2018-08-30T00:00:00+00:00</published>
-<link href="https://debezium.io/blog/2018/08/30/streaming-mysql-data-changes-into-kinesis/" rel="alternate" type="text/html" />
-<author>
-<name>Gunnar Morling</name>
-</author>
-<category term="discussion"></category>
-<category term="examples"></category>
-<summary>
-
-
-
-Most of the times Debezium is used to stream data changes into Apache Kafka.
-What though if you&#8217;re using another streaming platform such as Apache Pulsar or a cloud-based solution such as Amazon Kinesis, Azure Event Hubs and the like?
-Can you still benefit from Debezium&#8217;s powerful change data capture (CDC) capabilities  and ingest changes from databases such as MySQL, Postgres, SQL Server etc.?
-
-
-Turns out, with just a bit of glue code, you can!
-In the following we&#8217;ll discuss how to use Debezium to capture changes in a MySQL database and stream the change events into Kinesis,
-a fully-managed data streaming service available...
-</summary>
-<content type="html">
-&lt;div id=&quot;preamble&quot;&gt;
-&lt;div class=&quot;sectionbody&quot;&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;Most of the times Debezium is used to stream data changes into &lt;a href=&quot;http://kafka.apache.org/&quot;&gt;Apache Kafka&lt;/a&gt;.
-What though if you’re using another streaming platform such as &lt;a href=&quot;https://pulsar.incubator.apache.org/&quot;&gt;Apache Pulsar&lt;/a&gt; or a cloud-based solution such as &lt;a href=&quot;https://aws.amazon.com/kinesis/&quot;&gt;Amazon Kinesis&lt;/a&gt;, &lt;a href=&quot;https://azure.microsoft.com/services/event-hubs/&quot;&gt;Azure Event Hubs&lt;/a&gt; and the like?
-Can you still benefit from Debezium’s powerful change data capture (CDC) capabilities  and ingest changes from databases such as MySQL, Postgres, SQL Server etc.?&lt;/p&gt;
-&lt;/div&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;Turns out, with just a bit of glue code, you can!
-In the following we’ll discuss how to use Debezium to capture changes in a MySQL database and stream the change events into Kinesis,
-a fully-managed data streaming service available on the Amazon cloud.&lt;/p&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;div class=&quot;sect1&quot;&gt;
-&lt;h2 id=&quot;introducing_the_debezium_embedded_engine&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#introducing_the_debezium_embedded_engine&quot; /&gt;Introducing the Debezium Embedded Engine&lt;/h2&gt;
-&lt;div class=&quot;sectionbody&quot;&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;Debezium is implemented as a set of connectors for Kafka and thus usually is run via &lt;a href=&quot;https://kafka.apache.org/documentation/#connect&quot;&gt;Kafka Connect&lt;/a&gt;.
-But there’s one little gem in Debezium which isn’t as widely known yet, which is the &lt;a href=&quot;https://debezium.io/docs/embedded/&quot;&gt;embedded engine&lt;/a&gt;.&lt;/p&gt;
-&lt;/div&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;When using this engine, the Debezium connectors are not executed within Kafka Connect, but as a library embedded into your own Java application.
-For this purpose, the &lt;em&gt;debezium-embedded&lt;/em&gt; module provides a small runtime environment which performs the tasks that’d otherwise be handled by the Kafka Connect framework:
-requesting change records from the connector, committing offsets etc.
-Each change record produced by the connector is passed to a configured event handler method,
-which in our case will convert the record into its JSON representation and submit it to a Kinesis stream, using the Kinesis Java API.&lt;/p&gt;
-&lt;/div&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;The overall architecture looks like so:&lt;/p&gt;
-&lt;/div&gt;
-&lt;div class=&quot;exampleblock centered-image&quot;&gt;
-&lt;div class=&quot;content&quot;&gt;
-&lt;img src=&quot;https://debezium.io/images/debezium-embedded.png&quot; class=&quot;responsive-image&quot; alt=&quot;Debezium Embedded Engine Streaming to Amazon Kinesis&quot;&gt;
-&lt;/img&gt;
-&lt;/div&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;Now let’s walk through the relevant parts of the code required for that.
-A complete executable example can be found in the &lt;a href=&quot;https://github.com/debezium/debezium-examples/tree/master/kinesis&quot;&gt;debezium-examples&lt;/a&gt; repo on GitHub.&lt;/p&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;div class=&quot;sect1&quot;&gt;
-&lt;h2 id=&quot;set_up&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#set_up&quot; /&gt;Set-Up&lt;/h2&gt;
-&lt;div class=&quot;sectionbody&quot;&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;In order to use Debezium’s embedded engine, add the &lt;em&gt;debezium-embedded&lt;/em&gt; dependency as well as the Debezium connector of your choice to your project’s &lt;em&gt;pom.xml&lt;/em&gt;.
-In the following we’re going to use the connector for MySQL.
-We also need to add a dependency to the &lt;a href=&quot;https://docs.aws.amazon.com/AWSJavaSDK/latest/javadoc/com/amazonaws/services/kinesis/package-summary.html&quot;&gt;Kinesis Client API&lt;/a&gt;, so these are the dependencies needed:&lt;/p&gt;
-&lt;/div&gt;
-&lt;div class=&quot;listingblock&quot;&gt;
-&lt;div class=&quot;content&quot;&gt;
-&lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-xml&quot; data-lang=&quot;xml&quot;&gt;...
-&amp;lt;dependency&amp;gt;
-    &amp;lt;groupId&amp;gt;io.debezium&amp;lt;/groupId&amp;gt;
-    &amp;lt;artifactId&amp;gt;debezium-embedded&amp;lt;/artifactId&amp;gt;
-    &amp;lt;version&amp;gt;0.8.3.Final&amp;lt;/version&amp;gt;
-&amp;lt;/dependency&amp;gt;
-&amp;lt;dependency&amp;gt;
-    &amp;lt;groupId&amp;gt;io.debezium&amp;lt;/groupId&amp;gt;
-    &amp;lt;artifactId&amp;gt;debezium-connector-mysql&amp;lt;/artifactId&amp;gt;
-    &amp;lt;version&amp;gt;0.8.3.Final&amp;lt;/version&amp;gt;
-&amp;lt;/dependency&amp;gt;
-&amp;lt;dependency&amp;gt;
-    &amp;lt;groupId&amp;gt;com.amazonaws&amp;lt;/groupId&amp;gt;
-    &amp;lt;artifactId&amp;gt;amazon-kinesis-client&amp;lt;/artifactId&amp;gt;
-    &amp;lt;version&amp;gt;1.9.0&amp;lt;/version&amp;gt;
-&amp;lt;/dependency&amp;gt;
-...&lt;/code&gt;&lt;/pre&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;div class=&quot;sect1&quot;&gt;
-&lt;h2 id=&quot;configuring_the_embedded_engine&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#configuring_the_embedded_engine&quot; /&gt;Configuring the Embedded Engine&lt;/h2&gt;
-&lt;div class=&quot;sectionbody&quot;&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;The Debezium embedded engine is configured through an instance of &lt;code&gt;io.debezium.config.Configuration&lt;/code&gt;.
-This class can obtain values from system properties or from a given config file,
-but for the sake of the example we’ll simply pass all required values via its fluent builder API:&lt;/p&gt;
-&lt;/div&gt;
-&lt;div class=&quot;listingblock&quot;&gt;
-&lt;div class=&quot;content&quot;&gt;
-&lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-java&quot; data-lang=&quot;java&quot;&gt;Configuration config = Configuration.create()
-    .with(EmbeddedEngine.CONNECTOR_CLASS, &quot;io.debezium.connector.mysql.MySqlConnector&quot;)
-    .with(EmbeddedEngine.ENGINE_NAME, &quot;kinesis&quot;)
-    .with(MySqlConnectorConfig.SERVER_NAME, &quot;kinesis&quot;)
-    .with(MySqlConnectorConfig.SERVER_ID, 8192)
-    .with(MySqlConnectorConfig.HOSTNAME, &quot;localhost&quot;)
-    .with(MySqlConnectorConfig.PORT, 3306)
-    .with(MySqlConnectorConfig.USER, &quot;debezium&quot;)
-    .with(MySqlConnectorConfig.PASSWORD, &quot;dbz&quot;)
-    .with(MySqlConnectorConfig.DATABASE_WHITELIST, &quot;inventory&quot;)
-    .with(MySqlConnectorConfig.TABLE_WHITELIST, &quot;inventory.customers&quot;)
-    .with(EmbeddedEngine.OFFSET_STORAGE,
-        &quot;org.apache.kafka.connect.storage.MemoryOffsetBackingStore&quot;)
-    .with(MySqlConnectorConfig.DATABASE_HISTORY,
-        MemoryDatabaseHistory.class.getName())
-    .with(&quot;schemas.enable&quot;, false)
-    .build();&lt;/code&gt;&lt;/pre&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;If you’ve ever set up the Debezium MySQL connector in Kafka Connect, most of the properties will look familiar to you.&lt;/p&gt;
-&lt;/div&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;But let’s talk about the &lt;code&gt;OFFSET_STORAGE&lt;/code&gt; and &lt;code&gt;DATABASE_HISTORY&lt;/code&gt; options in a bit more detail.
-They deal with how connector offsets and the database history should be persisted.
-When running the connector via Kafka Connect, both would typically be stored in specific Kafka topics.
-But that’s not an option here, so an alternative is needed.
-For this example we’re simply going to keep the offsets and database history in memory.
-I.e. if the engine is restarted, this information will be lost and the connector will start from scratch, e.g. with a new initial snapshot.&lt;/p&gt;
-&lt;/div&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;While out of scope for this blog post, it wouldn’t be too difficult to create alternative implementations of the &lt;code&gt;OffsetBackingStore&lt;/code&gt; and &lt;code&gt;DatabaseHistory&lt;/code&gt; contracts, respectively.
-For instance if you’re fully committed into the AWS cloud services, you could think of storing offsets and database history in the DynamoDB NoSQL store.
-Note that, different from Kafka, a Kinesis stream wouldn’t be suitable for storing the database history.
-The reason being, that the maximum retention period for Kinesis data streams is seven days, whereas the database history must be kept for the entire lifetime of the connector.
-Another alternative could be to use the existing filesystem based implementations &lt;code&gt;FileOffsetBackingStore&lt;/code&gt; and &lt;code&gt;FileDatabaseHistory&lt;/code&gt;, respectively.&lt;/p&gt;
-&lt;/div&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;The next step is to build an &lt;code&gt;EmbeddedEngine&lt;/code&gt; instance from the configuration.
-Again this is done using a fluent API:&lt;/p&gt;
-&lt;/div&gt;
-&lt;div class=&quot;listingblock&quot;&gt;
-&lt;div class=&quot;content&quot;&gt;
-&lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-java&quot; data-lang=&quot;java&quot;&gt;EmbeddedEngine engine = EmbeddedEngine.create()
-    .using(config)
-    .using(this.getClass().getClassLoader())
-    .using(Clock.SYSTEM)
-    .notifying(this::sendRecord)
-    .build();&lt;/code&gt;&lt;/pre&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;The most interesting part here is the &lt;code&gt;notifying&lt;/code&gt; call.
-The method passed here is the one which will be invoked by the engine for each emitted data change record.
-So let’s take a look at the implementation of this method.&lt;/p&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;div class=&quot;sect1&quot;&gt;
-&lt;h2 id=&quot;sending_change_records_to_kinesis&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#sending_change_records_to_kinesis&quot; /&gt;Sending Change Records to Kinesis&lt;/h2&gt;
-&lt;div class=&quot;sectionbody&quot;&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;The &lt;code&gt;sendRecord()&lt;/code&gt; method is where the magic happens.
-We’ll convert the incoming &lt;code&gt;SourceRecord&lt;/code&gt; into an equivalent JSON representation and propagate it to a Kinesis stream.&lt;/p&gt;
-&lt;/div&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;For that, it’s important to understand some conceptual differences between Apache Kafka and Kinesis.
-Specifically, messages in Kafka have a &lt;em&gt;key&lt;/em&gt; and a &lt;em&gt;value&lt;/em&gt; (which both are arbitrary byte arrays).
-In case of Debezium, the key of data change events represents the primary key of the affected record and the value is a structure comprising of old and new row state as well as some additional metadata.&lt;/p&gt;
-&lt;/div&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;In Kinesis on the other hand a message contains a &lt;em&gt;data blob&lt;/em&gt; (again an arbitrary byte sequence) and a &lt;em&gt;partition key&lt;/em&gt;.
-Kinesis streams can be split up into multiple shards and the partition key is used to determine into which shard a given message should go.&lt;/p&gt;
-&lt;/div&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;Now one could think of mapping the key from Debezium’s change data events to the Kinesis partition key,
-but partition keys are limited to a length of 256 bytes.
-Depending on the length of primary key column(s) in the captured tables, this might not be enough.
-So a safer option is to create a hash value from the change message key and use that as the partition key.
-This in turn means that the change message key structure should be added next to the actual value to the Kinesis message’s data blob.
-While the key column values themselves are part of the value structure, too, a consumer otherwise wouldn’t know which column(s) make up the primary key.&lt;/p&gt;
-&lt;/div&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;With that in mind, let’s take a look at the &lt;code&gt;sendRecord()&lt;/code&gt; implementation:&lt;/p&gt;
-&lt;/div&gt;
-&lt;div class=&quot;listingblock&quot;&gt;
-&lt;div class=&quot;content&quot;&gt;
-&lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-java&quot; data-lang=&quot;java&quot;&gt;private void sendRecord(SourceRecord record) {
-    // We are interested only in data events not schema change events
-    if (record.topic().equals(&quot;kinesis&quot;)) {
-        return;
-    }
-
-    // create schema for container with key *and* value
-    Schema schema = SchemaBuilder.struct()
-        .field(&quot;key&quot;, record.keySchema())
-        .field(&quot;value&quot;, record.valueSchema())
-        .build();
-
-    Struct message = new Struct(schema);
-    message.put(&quot;key&quot;, record.key());
-    message.put(&quot;value&quot;, record.value());
-
-    // create partition key by hashing the record&#39;s key
-    String partitionKey = String.valueOf(
-        record.key() != null ? record.key().hashCode() : -1);
-
-    // create data blob representing the container by using Kafka Connect&#39;s
-    // JSON converter
-    final byte[] payload = valueConverter.fromConnectData(
-        &quot;dummy&quot;, schema, message);
-
-    // Assemble the put-record request ...
-    PutRecordRequest putRecord = new PutRecordRequest();
-
-    putRecord.setStreamName(record.topic());
-    putRecord.setPartitionKey(partitionKey);
-    putRecord.setData(ByteBuffer.wrap(payload));
-
-    // ... and execute it
-    kinesisClient.putRecord(putRecord);
-}&lt;/code&gt;&lt;/pre&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;The code is quite straight-forward; as discussed above it’s first creating a container structure containing key &lt;em&gt;and&lt;/em&gt; value of the incoming source record.
-This structure then is converted into a binary representation using the JSON converter provided by Kafka Connect (an instance of &lt;code&gt;JsonConverter&lt;/code&gt;).
-Then a &lt;code&gt;PutRecordRequest&lt;/code&gt; is assembled from that blob, the partition key and the change record’s topic name, which finally is sent to Kinesis.&lt;/p&gt;
-&lt;/div&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;The Kinesis client object can be re-used and is set up once like so:&lt;/p&gt;
-&lt;/div&gt;
-&lt;div class=&quot;listingblock&quot;&gt;
-&lt;div class=&quot;content&quot;&gt;
-&lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-java&quot; data-lang=&quot;java&quot;&gt;// Uses the credentials from the local &quot;default&quot; AWS profile
-AWSCredentialsProvider credentialsProvider =
-    new ProfileCredentialsProvider(&quot;default&quot;);
-
-this.kinesisClient = AmazonKinesisClientBuilder.standard()
-    .withCredentials(credentialsProvider)
-    .withRegion(&quot;eu-central-1&quot;) // use your AWS region here
-    .build();&lt;/code&gt;&lt;/pre&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;With that, we’ve set up an instance of Debezium’s &lt;code&gt;EmbeddedEngine&lt;/code&gt; which runs the configured MySQL connector and passes each emitted change event to Amazon Kinesis.
-The last missing step is to actually run the engine.
-This is done on a separate thread using an &lt;code&gt;Executor&lt;/code&gt;, e.g. like so:&lt;/p&gt;
-&lt;/div&gt;
-&lt;div class=&quot;listingblock&quot;&gt;
-&lt;div class=&quot;content&quot;&gt;
-&lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-java&quot; data-lang=&quot;java&quot;&gt;ExecutorService executor = Executors.newSingleThreadExecutor();
-executor.execute(engine);&lt;/code&gt;&lt;/pre&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;Note you also should make sure to properly shut down the engine eventually.
-How that can be done &lt;a href=&quot;https://github.com/debezium/debezium-examples/blob/master/kinesis/src/main/java/io/debezium/examples/kinesis/ChangeDataSender.java#L83-L88&quot;&gt;is shown&lt;/a&gt; in the accompanying example in the &lt;em&gt;debezium-examples&lt;/em&gt; repo.&lt;/p&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;div class=&quot;sect1&quot;&gt;
-&lt;h2 id=&quot;running_the_example&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#running_the_example&quot; /&gt;Running the Example&lt;/h2&gt;
-&lt;div class=&quot;sectionbody&quot;&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;Finally let’s take a look at running the complete example and consuming the Debezium CDC events from the Kinesis stream.
-Start by cloning the examples repository and go to the &lt;em&gt;kinesis&lt;/em&gt; directory:&lt;/p&gt;
-&lt;/div&gt;
-&lt;div class=&quot;listingblock&quot;&gt;
-&lt;div class=&quot;content&quot;&gt;
-&lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-shell&quot; data-lang=&quot;shell&quot;&gt;git clone https://github.com/debezium/debezium-examples.git
-cd debezium-examples/kinesis&lt;/code&gt;&lt;/pre&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;Make sure you’ve met the &lt;a href=&quot;https://github.com/debezium/debezium-examples/tree/master/kinesis#prerequisites&quot;&gt;prerequisites&lt;/a&gt; described in the example’s &lt;em&gt;README.md&lt;/em&gt;;
-most notably you should have a local Docker installation and you’ll need to have set up an AWS account as well as have the AWS client tools installed.
-Note that Kinesis isn’t part of the free tier when registering with AWS, i.e. you’ll pay a (small) amount of money when executing the example.
-Don’t forget to delete the streams you’ve set up once done, we won’t pay your AWS bills :)&lt;/p&gt;
-&lt;/div&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;Now run Debezium’s MySQL example database to have some data to play with:&lt;/p&gt;
-&lt;/div&gt;
-&lt;div class=&quot;listingblock&quot;&gt;
-&lt;div class=&quot;content&quot;&gt;
-&lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-shell&quot; data-lang=&quot;shell&quot;&gt;docker run -it --rm --name mysql -p 3306:3306 \
-  -e MYSQL_ROOT_PASSWORD=debezium \
-  -e MYSQL_USER=mysqluser \
-  -e MYSQL_PASSWORD=mysqlpw \
-  debezium/example-mysql:0.8&lt;/code&gt;&lt;/pre&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;Create a Kinesis stream for change events from the &lt;code&gt;customers&lt;/code&gt; table:&lt;/p&gt;
-&lt;/div&gt;
-&lt;div class=&quot;listingblock&quot;&gt;
-&lt;div class=&quot;content&quot;&gt;
-&lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-shell&quot; data-lang=&quot;shell&quot;&gt;aws kinesis create-stream --stream-name kinesis.inventory.customers \
-  --shard-count 1&lt;/code&gt;&lt;/pre&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;Execute the Java application that runs the Debezium embedded engine
-(if needed, adjust the value of the &lt;code&gt;kinesis.region&lt;/code&gt; property in &lt;em&gt;pom.xml&lt;/em&gt; to your own region first):&lt;/p&gt;
-&lt;/div&gt;
-&lt;div class=&quot;listingblock&quot;&gt;
-&lt;div class=&quot;content&quot;&gt;
-&lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-shell&quot; data-lang=&quot;shell&quot;&gt;mvn exec:java&lt;/code&gt;&lt;/pre&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;This will start up the engine and the MySQL connector, which takes an initial snapshot of the captured database.&lt;/p&gt;
-&lt;/div&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;In order to take a look at the CDC events in the Kinesis stream, the AWS CLI can be used
-(usually, you’d implement a Kinesis Streams application for consuming the events).
-To do so, set up a &lt;a href=&quot;https://docs.aws.amazon.com/streams/latest/dev/developing-consumers-with-sdk.html#kinesis-using-sdk-java-get-data-shard-iterators&quot;&gt;shard iterator&lt;/a&gt; first:&lt;/p&gt;
-&lt;/div&gt;
-&lt;div class=&quot;listingblock&quot;&gt;
-&lt;div class=&quot;content&quot;&gt;
-&lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-shell&quot; data-lang=&quot;shell&quot;&gt;ITERATOR=$(aws kinesis get-shard-iterator --stream-name kinesis.inventory.customers --shard-id 0 --shard-iterator-type TRIM_HORIZON | jq &#39;.ShardIterator&#39;)&lt;/code&gt;&lt;/pre&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;Note how the &lt;a href=&quot;https://stedolan.github.io/jq/&quot;&gt;jq&lt;/a&gt; utility is used to obtain the generated id of the iterator from the JSON structure returned by the Kinesis API.
-Next that iterator can be used to examine the stream:&lt;/p&gt;
-&lt;/div&gt;
-&lt;div class=&quot;listingblock&quot;&gt;
-&lt;div class=&quot;content&quot;&gt;
-&lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-shell&quot; data-lang=&quot;shell&quot;&gt;aws kinesis get-records --shard-iterator $ITERATOR&lt;/code&gt;&lt;/pre&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;You should receive an array of records like this:&lt;/p&gt;
-&lt;/div&gt;
-&lt;div class=&quot;listingblock&quot;&gt;
-&lt;div class=&quot;content&quot;&gt;
-&lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-json&quot; data-lang=&quot;json&quot;&gt;{
-    &quot;Records&quot;: [
-        {
-            &quot;SequenceNumber&quot;:
-                &quot;49587760482547027816046765529422807492446419903410339842&quot;,
-            &quot;ApproximateArrivalTimestamp&quot;: 1535551896.475,
-            &quot;Data&quot;: &quot;eyJiZWZvcm...4OTI3MzN9&quot;,
-            &quot;PartitionKey&quot;: &quot;eyJpZCI6MTAwMX0=&quot;
-        },
-        ...
-    ]
-}&lt;/code&gt;&lt;/pre&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;The &lt;code&gt;Data&lt;/code&gt; element is a Base64-encoded representation of the message’s data blob.
-Again &lt;em&gt;jq&lt;/em&gt; comes in handy: we can use it to just extract the &lt;code&gt;Data&lt;/code&gt; part of each record and decode the Base64 representation
-(make sure to use jq 1.6 or newer):&lt;/p&gt;
-&lt;/div&gt;
-&lt;div class=&quot;listingblock&quot;&gt;
-&lt;div class=&quot;content&quot;&gt;
-&lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-shell&quot; data-lang=&quot;shell&quot;&gt;aws kinesis get-records --shard-iterator $ITERATOR | \
-  jq -r &#39;.Records[].Data | @base64d&#39; | jq .&lt;/code&gt;&lt;/pre&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;Now you should see the change events as JSON, each one with key and value:&lt;/p&gt;
-&lt;/div&gt;
-&lt;div class=&quot;listingblock&quot;&gt;
-&lt;div class=&quot;content&quot;&gt;
-&lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-json&quot; data-lang=&quot;json&quot;&gt;{
-  &quot;key&quot;: {
-    &quot;id&quot;: 1001
-  },
-  &quot;value&quot;: {
-    &quot;before&quot;: null,
-    &quot;after&quot;: {
-      &quot;id&quot;: 1001,
-      &quot;first_name&quot;: &quot;Sally&quot;,
-      &quot;last_name&quot;: &quot;Thomas&quot;,
-      &quot;email&quot;: &quot;sally.thomas@acme.com&quot;
-    },
-    &quot;source&quot;: {
-      &quot;version&quot;: &quot;0.8.1.Final&quot;,
-      &quot;name&quot;: &quot;kinesis&quot;,
-      &quot;server_id&quot;: 0,
-      &quot;ts_sec&quot;: 0,
-      &quot;gtid&quot;: null,
-      &quot;file&quot;: &quot;mysql-bin.000003&quot;,
-      &quot;pos&quot;: 154,
-      &quot;row&quot;: 0,
-      &quot;snapshot&quot;: true,
-      &quot;thread&quot;: null,
-      &quot;db&quot;: &quot;inventory&quot;,
-      &quot;table&quot;: &quot;customers&quot;,
-      &quot;query&quot;: null
-    },
-    &quot;op&quot;: &quot;c&quot;,
-    &quot;ts_ms&quot;: 1535555325628
-  }
-}
-...&lt;/code&gt;&lt;/pre&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;Next let’s try and update a record in MySQL:&lt;/p&gt;
-&lt;/div&gt;
-&lt;div class=&quot;listingblock&quot;&gt;
-&lt;div class=&quot;content&quot;&gt;
-&lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-shell&quot; data-lang=&quot;shell&quot;&gt;# Start MySQL CLI client
-docker run -it --rm --name mysqlterm --link mysql --rm mysql:5.7 \
-  sh -c &#39;exec mysql -h&quot;$MYSQL_PORT_3306_TCP_ADDR&quot; \
-  -P&quot;$MYSQL_PORT_3306_TCP_PORT&quot; -uroot -p&quot;$MYSQL_ENV_MYSQL_ROOT_PASSWORD&quot;&#39;
-
-# In the MySQL client
-use inventory;
-update customers set first_name = &#39;Trudy&#39; where id = 1001;&lt;/code&gt;&lt;/pre&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;If you now fetch the iterator again, you should see one more data change event representing that update:&lt;/p&gt;
-&lt;/div&gt;
-&lt;div class=&quot;listingblock&quot;&gt;
-&lt;div class=&quot;content&quot;&gt;
-&lt;pre class=&quot;highlight&quot;&gt;&lt;code class=&quot;language-json&quot; data-lang=&quot;json&quot;&gt;...
-
-{
-  &quot;key&quot;: {
-    &quot;id&quot;: 1001
-  },
-  &quot;value&quot;: {
-    &quot;before&quot;: {
-      &quot;id&quot;: 1001,
-      &quot;first_name&quot;: &quot;Sally&quot;,
-      &quot;last_name&quot;: &quot;Thomas&quot;,
-      &quot;email&quot;: &quot;sally.thomas@acme.com&quot;
-    },
-    &quot;after&quot;: {
-      &quot;id&quot;: 1001,
-      &quot;first_name&quot;: &quot;Trudy&quot;,
-      &quot;last_name&quot;: &quot;Thomas&quot;,
-      &quot;email&quot;: &quot;sally.thomas@acme.com&quot;
-    },
-    &quot;source&quot;: {
-      &quot;version&quot;: &quot;0.8.1.Final&quot;,
-      &quot;name&quot;: &quot;kinesis&quot;,
-      &quot;server_id&quot;: 223344,
-      &quot;ts_sec&quot;: 1535627629,
-      &quot;gtid&quot;: null,
-      &quot;file&quot;: &quot;mysql-bin.000003&quot;,
-      &quot;pos&quot;: 364,
-      &quot;row&quot;: 0,
-      &quot;snapshot&quot;: false,
-      &quot;thread&quot;: 10,
-      &quot;db&quot;: &quot;inventory&quot;,
-      &quot;table&quot;: &quot;customers&quot;,
-      &quot;query&quot;: null
-    },
-    &quot;op&quot;: &quot;u&quot;,
-    &quot;ts_ms&quot;: 1535627622546
-  }
-}&lt;/code&gt;&lt;/pre&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;Once you’re done, stop the embedded engine application by hitting Ctrl + C,
-stop the MySQL server by running &lt;code&gt;docker stop mysql&lt;/code&gt; and delete the &lt;em&gt;kinesis.inventory.customers&lt;/em&gt; stream in Kinesis.&lt;/p&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;div class=&quot;sect1&quot;&gt;
-&lt;h2 id=&quot;summary_and_outlook&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#summary_and_outlook&quot; /&gt;Summary and Outlook&lt;/h2&gt;
-&lt;div class=&quot;sectionbody&quot;&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;In this blog post we’ve demonstrated that Debezium cannot only be used to stream data changes into Apache Kafka, but also into other streaming platforms such as Amazon Kinesis.
-Leveraging its embedded engine and by implementing a bit of glue code, you can benefit from &lt;a href=&quot;https://debezium.io/docs/connectors/&quot;&gt;all the CDC connectors&lt;/a&gt; provided by Debezium and their capabilities and connect them to the streaming solution of your choice.&lt;/p&gt;
-&lt;/div&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;And we’re thinking about even further simplifying this usage of Debezium.
-Instead of requiring you to implement your own application that invokes the embedded engine API,
-we’re considering to provide a small self-contained Debezium runtime which you can simply execute.
-It’d be configured with the source connector to run and make use of an outbound plug-in SPI with ready-to-use implementations for Kinesis, Apache Pulsar and others.
-Of course such runtime would also provide suitable implementations for safely persisting offsets and database history,
-and it’d offer means of monitoring, health checks etc.
-Meaning you could connect the Debezium source connectors with your preferred streaming platform in a robust and reliable way, without any manual coding required!&lt;/p&gt;
-&lt;/div&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;If you like this idea, then please check out JIRA issue &lt;a href=&quot;https://issues.redhat.com/browse/DBZ-651&quot;&gt;DBZ-651&lt;/a&gt; and let us know about your thoughts,
-e.g. by leaving a comment on the issue, in the comment section below or on our &lt;a href=&quot;https://groups.google.com/forum/#!forum/debezium&quot;&gt;mailing list&lt;/a&gt;.&lt;/p&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;div class=&quot;sect1&quot;&gt;
-&lt;h2 id=&quot;about_debezium&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#about_debezium&quot; /&gt;About Debezium&lt;/h2&gt;
-&lt;div class=&quot;sectionbody&quot;&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;Debezium is an open source distributed platform that turns your existing databases into event streams,
-so applications can see and respond almost instantly to each committed row-level change in the databases.
-Debezium is built on top of &lt;a href=&quot;http://kafka.apache.org/&quot;&gt;Kafka&lt;/a&gt; and provides &lt;a href=&quot;http://kafka.apache.org/documentation.html#connect&quot;&gt;Kafka Connect&lt;/a&gt; compatible connectors that monitor specific database management systems.
-Debezium records the history of data changes in Kafka logs, so your application can be stopped and restarted at any time and can easily consume all of the events it missed while it was not running,
-ensuring that all events are processed correctly and completely.
-Debezium is &lt;a href=&quot;https://debezium.io/license/&quot;&gt;open source&lt;/a&gt; under the &lt;a href=&quot;http://www.apache.org/licenses/LICENSE-2.0.html&quot;&gt;Apache License, Version 2.0&lt;/a&gt;.&lt;/p&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;div class=&quot;sect1&quot;&gt;
-&lt;h2 id=&quot;get_involved&quot;&gt;&lt;a class=&quot;anchor&quot; href=&quot;#get_involved&quot; /&gt;Get involved&lt;/h2&gt;
-&lt;div class=&quot;sectionbody&quot;&gt;
-&lt;div class=&quot;paragraph&quot;&gt;
-&lt;p&gt;We hope you find Debezium interesting and useful, and want to give it a try.
-Follow us on Twitter &lt;a href=&quot;https://twitter.com/debezium&quot;&gt;@debezium&lt;/a&gt;, &lt;a href=&quot;https://gitter.im/debezium/user&quot;&gt;chat with us on Gitter&lt;/a&gt;,
-or join our &lt;a href=&quot;https://groups.google.com/forum/#!forum/debezium&quot;&gt;mailing list&lt;/a&gt; to talk with the community.
-All of the code is open source &lt;a href=&quot;https://github.com/debezium/&quot;&gt;on GitHub&lt;/a&gt;,
-so build the code locally and help us improve ours existing connectors and add even more connectors.
-If you find problems or have ideas how we can improve Debezium, please let us know or &lt;a href=&quot;https://issues.redhat.com/projects/DBZ/issues/&quot;&gt;log an issue&lt;/a&gt;.&lt;/p&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;/div&gt;&lt;/div&gt;
 </content>
 </entry>
 </feed>
