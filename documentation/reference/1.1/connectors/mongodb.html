@@ -142,6 +142,18 @@
   </li>
   <li class="nav-item" data-depth="1">
     <button class="nav-item-toggle"></button>
+    <span class="nav-text">API and SPI</span>
+<ul class="nav-list">
+  <li class="nav-item" data-depth="2">
+    <a class="nav-link" href="../development/engine.html">Debezium Engine</a>
+  </li>
+  <li class="nav-item" data-depth="2">
+    <a class="nav-link" href="../development/converters.html">Custom Converters</a>
+  </li>
+</ul>
+  </li>
+  <li class="nav-item" data-depth="1">
+    <button class="nav-item-toggle"></button>
     <span class="nav-text">Integrations</span>
 <ul class="nav-list">
   <li class="nav-item" data-depth="2">
@@ -261,7 +273,7 @@
 <li><a href="#how-the-mongodb-connector-works">How the MongoDB connector works</a>
 <ul class="sectlevel2">
 <li><a href="#logical-connector-name">Logical connector name</a></li>
-<li><a href="#initial-sync">Initial sync</a></li>
+<li><a href="#Snapshot">Snapshotting</a></li>
 <li><a href="#tailing-the-oplog">Tailing the oplog</a></li>
 <li><a href="#mongodb-topic-names">Topics names</a></li>
 <li><a href="#partitions">Partitions</a></li>
@@ -271,6 +283,7 @@
 <li><a href="#mongodb-deploying-a-connector">Deploying the MongoDB connector</a>
 <ul class="sectlevel2">
 <li><a href="#mongodb-example-configuration">Example configuration</a></li>
+<li><a href="#mongodb-connector-monitoring">Monitoring</a></li>
 <li><a href="#mongodb-connector-properties">Connector properties</a></li>
 </ul>
 </li>
@@ -303,7 +316,7 @@ MongoDB connector captures the changes in a replica set or sharded cluster.</p>
 <div class="paragraph">
 <p>A MongoDB <em>replica set</em> consists of a set of servers that all have copies of the same data, and replication ensures that all changes made by clients to documents on the replica set&#8217;s <em>primary</em> are correctly applied to the other replica set&#8217;s servers, called <em>secondaries</em>.
 MongoDB replication works by having the primary record the changes in its <em>oplog</em> (or operation log), and then each of the secondaries reads the primary&#8217;s oplog and applies in order all of the operations to their own documents.
-When a new server is added to a replica set, that server first performs an <a href="https://docs.mongodb.com/manual/core/replica-set-sync/">initial sync</a> of all of the databases and collections on the primary, and then reads the primary&#8217;s oplog to apply all changes that might have been made since it began the initial sync.
+When a new server is added to a replica set, that server first performs an <a href="https://docs.mongodb.com/manual/core/replica-set-sync/">snapshot</a> of all of the databases and collections on the primary, and then reads the primary&#8217;s oplog to apply all changes that might have been made since it began the snapshot.
 This new server becomes a secondary (and able to handle queries) when it catches up to the tail of the primary&#8217;s oplog.</p>
 </div>
 <div class="paragraph">
@@ -317,7 +330,7 @@ When all the data is copied, the connector then starts reading the oplog from th
 When the MongoDB connector stops, it records the last oplog position that it processed, so that upon restart it simply begins reading the oplog from that position.
 In other words, the connector can be stopped, upgraded or maintained, and restarted some time later, and it will pick up exactly where it left off without losing a single event.
 Of course, MongoDB&#8217;s oplogs are usually capped at a maximum size, which means that the connector should not be stopped for too long, or else some of the operations in the oplog might be purged before the connector has a chance to read them.
-In this case, upon restart the connector will detect the missing oplog operations, perform an initial sync, and then proceed to tail the oplog.</p>
+In this case, upon restart the connector will detect the missing oplog operations, perform a snapshot, and then proceed to tail the oplog.</p>
 </div>
 <div class="paragraph">
 <p>The MongoDB connector is also quite tolerant of changes in membership and leadership of the replica sets, of additions or removals of shards within a sharded cluster, and network problems that might cause communication failures.
@@ -480,21 +493,21 @@ We recommend logical names begin with an alphabetic or underscore character, and
 </div>
 </div>
 <div class="sect2">
-<h3 id="initial-sync"><a class="anchor" href="#initial-sync"></a>Initial sync</h3>
+<h3 id="Snapshot"><a class="anchor" href="#Snapshot"></a>Snapshotting</h3>
 <div class="paragraph">
 <p>When a task starts up using a replica set, it uses the connector&#8217;s logical name and the replica set name to find an <em>offset</em> that describes the position in the replica sets oplog where the connector previously stopped reading.
 If an offset can be found and it is still in the oplog, then the task immediately proceeds with <a href="#tailing-the-oplog">tailing the oplog</a>, starting at the recorded offset position.</p>
 </div>
 <div class="paragraph">
-<p>However, if no offset is found or if the oplog no longer contains that position, the task must first obtain the current state of the replica set contents by performing an <em>initial sync</em>.
-This process starts by recording the current position of the oplog and recording that as the offset (along with a flag that denotes an initial sync has been started).
+<p>However, if no offset is found or if the oplog no longer contains that position, the task must first obtain the current state of the replica set contents by performing a <em>snapshot</em>.
+This process starts by recording the current position of the oplog and recording that as the offset (along with a flag that denotes a snapshot has been started).
 The task will then proceed to copy each collection, spawning as many threads as possible (up to the value of the <code>initial.sync.max.threads</code> configuration property) to perform this work in parallel.
 The connector will record a separate <em>read event</em> for each document it sees, and that read event will contain the object&#8217;s identifier, the complete state of the object, and <em>source</em> information about the MongoDB replica set where the object was found.
-The source information will also include a flag that denotes the event was produced during an initial sync.</p>
+The source information will also include a flag that denotes the event was produced during a snapshot.</p>
 </div>
 <div class="paragraph">
-<p>This initial sync will continue until it has copied all collections that match the connector&#8217;s filters.
-If the connector is stopped before the tasks' initial syncs are completed, upon restart the connector begins the initial sync again.</p>
+<p>This snapshot will continue until it has copied all collections that match the connector&#8217;s filters.
+If the connector is stopped before the tasks' snapshots are completed, upon restart the connector begins the snapshot again.</p>
 </div>
 <div class="admonitionblock note">
 <table>
@@ -504,7 +517,7 @@ If the connector is stopped before the tasks' initial syncs are completed, upon 
 </td>
 <td class="content">
 <div class="paragraph">
-<p>Try to avoid task reassignment and reconfiguration while the connector is performing an intial sync of any replica sets. The connector does log messages with the progress of the initial sync. For utmost control, run a separate cluster of Kafka Connect for each connector.</p>
+<p>Try to avoid task reassignment and reconfiguration while the connector is performing a snapshot of any replica sets. The connector does log messages with the progress of the snapshot. For utmost control, run a separate cluster of Kafka Connect for each connector.</p>
 </div>
 </td>
 </tr>
@@ -733,13 +746,13 @@ The payload section of every change event value produced by the MongoDB connecto
 <div class="ulist">
 <ul>
 <li>
-<p><code>op</code> is a mandatory field that contains a string value describing the type of operation. Values for the MongoDB connector are <code>c</code> for create (or insert), <code>u</code> for update, <code>d</code> for delete, and <code>r</code> for read (in the case of a initial sync).</p>
+<p><code>op</code> is a mandatory field that contains a string value describing the type of operation. Values for the MongoDB connector are <code>c</code> for create (or insert), <code>u</code> for update, <code>d</code> for delete, and <code>r</code> for read (in the case of a snapshot).</p>
 </li>
 <li>
 <p><code>after</code> is an optional field that if present contains the state of the document <em>after</em> the event occurred. MongoDB&#8217;s oplog entries only contain the full state of a document for <em>create</em> events, so these are the only events that contain an <em>after</em> field.</p>
 </li>
 <li>
-<p><code>source</code> is a mandatory field that contains a structure describing the source metadata for the event, which in the case of MongoDB contains several fields: the Debezium version, the logical name, the replica set&#8217;s name, the namespace of the collection, the MongoDB timestamp (and ordinal of the event within the timestamp) at which the event occurred, the identifier of the MongoDB operation (e.g., the <code>h</code> field in the oplog event), and the initial sync flag if the event resulted during an intial sync.</p>
+<p><code>source</code> is a mandatory field that contains a structure describing the source metadata for the event, which in the case of MongoDB contains several fields: the Debezium version, the logical name, the replica set&#8217;s name, the namespace of the collection, the MongoDB timestamp (and ordinal of the event within the timestamp) at which the event occurred, the identifier of the MongoDB operation (e.g., the <code>h</code> field in the oplog event), and the initial sync flag if the event resulted during a snapshot.</p>
 </li>
 <li>
 <p><code>ts_ms</code> is optional and if present contains the time (using the system clock in the JVM running the Kafka Connect task) at which the connector processed the event.</p>
@@ -771,6 +784,13 @@ The payload section of every change event value produced by the MongoDB connecto
           "name": "io.debezium.data.Json",
           "version": 1,
           "field": "patch"
+        },
+        {
+          "type": "string",
+          "optional": true,
+          "name": "io.debezium.data.Json",
+          "version": 1,
+          "field": "filter"
         },
         {
           "type": "struct",
@@ -849,7 +869,7 @@ The payload section of every change event value produced by the MongoDB connecto
       "after": "{\"_id\" : {\"$numberLong\" : \"1004\"},\"first_name\" : \"Anne\",\"last_name\" : \"Kretchmar\",\"email\" : \"annek@noanswer.org\"}",
       "patch": null,
       "source": {
-        "version": "1.1.0.Beta2",
+        "version": "1.1.0.CR1",
         "connector": "mongodb",
         "name": "fulfillment",
         "ts_ms": 1558965508000,
@@ -870,7 +890,7 @@ The payload section of every change event value produced by the MongoDB connecto
 <p>If we look at the <code>schema</code> portion of this event&#8217;s <em>value</em>, we can see the schema for the <em>envelope</em> is specific to the collection, and the schema for the <code>source</code> structure (which is specific to the MongoDB connector and reused across all events). Also note that the <code>after</code> value is always a string, and that by convention it will contain a JSON representation of the document.</p>
 </div>
 <div class="paragraph">
-<p>If we look at the <code>payload</code> portion of this event&#8217;s <em>value</em>, we can see the information in the event, namely that it is describing that the document was read as part of an initial sync (since <code>op=r</code> and <code>initsync=true</code>), and that the <code>after</code> field value contains the JSON string representation of the document.</p>
+<p>If we look at the <code>payload</code> portion of this event&#8217;s <em>value</em>, we can see the information in the event, namely that it is describing that the document was read as part of an snapshot (since <code>op=r</code> and <code>initsync=true</code>), and that the <code>after</code> field value contains the JSON string representation of the document.</p>
 </div>
 <div class="admonitionblock note">
 <table>
@@ -888,7 +908,7 @@ It is possible and even recommended to use the <a href="/docs/faq/#avro-converte
 </table>
 </div>
 <div class="paragraph">
-<p>The value of an <em>update</em> change event on this collection will actually have the exact same <em>schema</em>, and its payload is structured the same but will hold different values. Specifically, an update event will not have an <code>after</code> value and will instead have a <code>patch</code> string containing the JSON representation of the idempotent update operation. Here&#8217;s an example:</p>
+<p>The value of an <em>update</em> change event on this collection will actually have the exact same <em>schema</em>, and its payload is structured the same but will hold different values. Specifically, an update event will not have an <code>after</code> value and will instead have a <code>patch</code> string containing the JSON representation of the idempotent update operation and a <code>filter</code> string containing the JSON representation of the selection criteria for the update.  The <code>filter</code> string can include multiple shard key fields for sharded collections. Here&#8217;s an example:</p>
 </div>
 <div class="listingblock">
 <div class="content">
@@ -898,8 +918,9 @@ It is possible and even recommended to use the <a href="/docs/faq/#avro-converte
       "op": "u",
       "ts_ms": 1465491461815,
       "patch": "{\"$set\":{\"first_name\":\"Anne Marie\"}}",
+      "filter": "{\"_id\" : {\"$numberLong\" : \"1004\"}}",
       "source": {
-        "version": "1.1.0.Beta2",
+        "version": "1.1.0.CR1",
         "connector": "mongodb",
         "name": "fulfillment",
         "ts_ms": 1558965508000,
@@ -924,6 +945,9 @@ It is possible and even recommended to use the <a href="/docs/faq/#avro-converte
 </li>
 <li>
 <p>The <code>patch</code> field appears and has the stringified JSON representation of the actual MongoDB idempotent change to the document, which in this example involves setting the <code>first_name</code> field to a new value</p>
+</li>
+<li>
+<p>The <code>filter</code> field appears and has the stringified JSON representation of the MongoDB selection criteria used for the update</p>
 </li>
 <li>
 <p>The <code>after</code> field no longer appears</p>
@@ -981,8 +1005,9 @@ In particular, a delete event will not have an <code>after</code> value or a <co
     "payload": {
       "op": "d",
       "ts_ms": 1465495462115,
+      "filter": "{\"_id\" : {\"$numberLong\" : \"1004\"}}",
       "source": {
-        "version": "1.1.0.Beta2",
+        "version": "1.1.0.CR1",
         "connector": "mongodb",
         "name": "fulfillment",
         "ts_ms": 1558965508000,
@@ -1010,6 +1035,9 @@ In particular, a delete event will not have an <code>after</code> value or a <co
 </li>
 <li>
 <p>The <code>after</code> field does not appear</p>
+</li>
+<li>
+<p>The <code>filter</code> field appears and has the stringified JSON representation of the MongoDB selection criteria used for the delete</p>
 </li>
 <li>
 <p>The <code>source</code> field structure has the same fields as before, but the values are different since this event is from a different position in the oplog</p>
@@ -1058,7 +1086,7 @@ Our <a href="../tutorial.html" class="page">tutorial</a> even walks you through 
 <h3 id="mongodb-example-configuration"><a class="anchor" href="#mongodb-example-configuration"></a>Example configuration</h3>
 <div class="paragraph">
 <p>To use the connector to produce change events for a particular MongoDB replica set or sharded cluster, create a configuration file in JSON.
-When the connector starts, it will perform an initial sync of the collections in your MongoDB replica sets and start reading the replica sets' oplogs, producing events for every inserted, updated, and deleted row.
+When the connector starts, it will perform a snapshot of the collections in your MongoDB replica sets and start reading the replica sets' oplogs, producing events for every inserted, updated, and deleted row.
 Optionally filter out collections that are not needed.</p>
 </div>
 <div class="paragraph">
@@ -1105,7 +1133,347 @@ Optionally filter out collections that are not needed.</p>
 <p>See the <a href="#mongodb-connector-properties">complete list of connector properties</a> that can be specified in these configurations.</p>
 </div>
 <div class="paragraph">
-<p>This configuration can be sent via POST to a running Kafka Connect service, which will then record the configuration and start up the one connector task that will connect to the MongoDB replica set or sharded cluster, assign tasks for each replica set, perform an initial sync if necessary, read the oplog, and record events to Kafka topics.</p>
+<p>This configuration can be sent via POST to a running Kafka Connect service, which will then record the configuration and start up the one connector task that will connect to the MongoDB replica set or sharded cluster, assign tasks for each replica set, perform a snapshot if necessary, read the oplog, and record events to Kafka topics.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="mongodb-connector-monitoring"><a class="anchor" href="#mongodb-connector-monitoring"></a>Monitoring</h3>
+<div class="paragraph">
+<p>Kafka, Zookeeper, and Kafka Connect all have built-in support for JMX metrics.
+The MongoDB connector also publishes a number of metrics about the connector&#8217;s activities that can be monitored through JMX.
+The connector has two types of metrics.
+Snapshot metrics help you monitor the snapshot activity and are available when the connector is performing a snapshot.
+Streaming metrics help you monitor the progress and activity while the connector reads CDC collection changes.</p>
+</div>
+<div class="sect3">
+<h4 id="snapshot-metrics"><a class="anchor" href="#snapshot-metrics"></a>Snapshot Metrics</h4>
+<div class="sect4">
+<h5 id="_mbean_debezium_mongodbtypeconnector_metricscontextsnapshotservermongodb_name"><a class="anchor" href="#_mbean_debezium_mongodbtypeconnector_metricscontextsnapshotservermongodb_name"></a><strong>MBean: debezium.mongodb:type=connector-metrics,context=snapshot,server=<em>&lt;mongodb.name&gt;</em></strong></h5>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 30%;">
+<col style="width: 10%;">
+<col style="width: 60%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Attribute Name</th>
+<th class="tableblock halign-left valign-top">Type</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>LastEvent</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>string</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The last snapshot event that the connector has read.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>MilliSecondsSinceLastEvent</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of milliseconds since the connector has read and processed the most recent event.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>TotalNumberOfEventsSeen</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The total number of events that this connector has seen since last started or reset.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>NumberOfEventsFiltered</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of events that have been filtered by whitelist or blacklist filtering rules configured on the connector.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>MonitoredTables</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>string[]</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The list of collections that are monitored by the connector.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>QueueTotalCapcity</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>int</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The length of the queue used to pass events between the snapshotter and the main Kafka Connect loop.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>QueueRemainingCapcity</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>int</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The free capacity of the queue used to pass events between the snapshotter and the main Kafka Connect loop.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>TotalTableCount</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>int</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The total number of collections that are being included in the snapshot.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>RemainingTableCount</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>int</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of collections that the snapshot has yet to copy.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>SnapshotRunning</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>boolean</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Whether the snapshot was started.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>SnapshotAborted</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>boolean</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Whether the snapshot was aborted.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>SnapshotCompleted</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>boolean</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Whether the snapshot completed.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>SnapshotDurationInSeconds</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The total number of seconds that the snapshot has taken so far, even if not complete.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>RowsScanned</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>Map&lt;String, Long&gt;</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Map containing the number of documents exported for each collection in the snapshot. Collections are incrementally added to the Map during processing. Updates every 10,000 documents scanned and upon completing a collection.</p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<div class="sect3">
+<h4 id="streaming-metrics"><a class="anchor" href="#streaming-metrics"></a>Streaming Metrics</h4>
+<div class="sect4">
+<h5 id="_mbean_debezium_sql_servertypeconnector_metricscontextstreamingservermongodb_name"><a class="anchor" href="#_mbean_debezium_sql_servertypeconnector_metricscontextstreamingservermongodb_name"></a><strong>MBean: debezium.sql_server:type=connector-metrics,context=streaming,server=<em>&lt;mongodb.name&gt;</em></strong></h5>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 30%;">
+<col style="width: 10%;">
+<col style="width: 60%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Attribute Name</th>
+<th class="tableblock halign-left valign-top">Type</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>LastEvent</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>string</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The last streaming event that the connector has read.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>MilliSecondsSinceLastEvent</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of milliseconds since the connector has read and processed the most recent event.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>TotalNumberOfEventsSeen</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The total number of events that this connector has seen since last started or reset.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>NumberOfEventsFiltered</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of events that have been filtered by whitelist or blacklist filtering rules configured on the connector.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>MonitoredTables</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>string[]</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The list of collections that are monitored by the connector.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>QueueTotalCapcity</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>int</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The length of the queue used to pass events between the streamer and the main Kafka Connect loop.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>QueueRemainingCapcity</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>int</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The free capacity of the queue used to pass events between the streamer and the main Kafka Connect loop.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>Connected</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>boolean</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Flag that denotes whether the connector is currently connected to mongodb.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>MilliSecondsBehindSource</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of milliseconds between the last change event&#8217;s timestamp and the connector processing it. The values will incorporate any differences between the clocks on the machines where the database server and the connector are running.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>NumberOfCommittedTransactions</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of processed transactions that were committed.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>SourceEventPosition</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>map&lt;string, string&gt;</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The coordinates of the last received event.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>LastTransactionId</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>string</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Transaction identifier of the last processed transaction.</p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
+</div>
 </div>
 </div>
 <div class="sect2">
@@ -1160,7 +1528,8 @@ Optionally filter out collections that are not needed.</p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>A unique name that identifies the connector and/or MongoDB replica set or sharded cluster that this connector monitors. Each server should be monitored by at most one Debezium connector, since this server name prefixes all persisted Kafka topics emanating from the MongoDB replica set or cluster.</p>
+<p>A unique name that identifies the connector and/or MongoDB replica set or sharded cluster that this connector monitors. Each server should be monitored by at most one Debezium connector, since this server name prefixes all persisted Kafka topics emanating from the MongoDB replica set or cluster.
+Only alphanumeric characters and underscores should be used.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -1506,6 +1875,17 @@ The topic is named according to the pattern <code>&lt;heartbeat.topics.prefix&gt
 See <a href="../configuration/avro.html#names" class="page">Avro naming</a> for more details.</p>
 </div></div></td>
 </tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>skipped.operations</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>comma-separated list of oplog operations that will be skipped during streaming.
+The operations include: <code>i</code> for inserts, <code>u</code> for updates, and <code>d</code> for deletes.
+By default, no operations are skipped.</p>
+</div></div></td>
+</tr>
 </tbody>
 </table>
 </div>
@@ -1792,7 +2172,7 @@ The number of duplicate events depends on the offset flush period and the volume
 <h3 id="_connector_is_stopped_for_a_duration"><a class="anchor" href="#_connector_is_stopped_for_a_duration"></a>Connector is stopped for a duration</h3>
 <div class="paragraph">
 <p>If the connector is gracefully stopped, the replica sets can continue to be used and any new changes are recorded in MongoDB&#8217;s oplog.
-When the connector is restarted, it will resume reading the oplog for each replica set where it last left off, recording change events for all of the changes that were made while the connector was stopped. If the connector is stopped long enough such that MongoDB purges from its oplog some operations that the connector has not read, then upon startup the connector will perform an initial sync.</p>
+When the connector is restarted, it will resume reading the oplog for each replica set where it last left off, recording change events for all of the changes that were made while the connector was stopped. If the connector is stopped long enough such that MongoDB purges from its oplog some operations that the connector has not read, then upon startup the connector will perform a snapshot.</p>
 </div>
 <div class="paragraph">
 <p>A properly configured Kafka cluster is capable of <a href="https://engineering.linkedin.com/kafka/benchmarking-apache-kafka-2-million-writes-second-three-cheap-machines">massive throughput</a>.
