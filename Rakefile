@@ -200,8 +200,6 @@ def run_awestruct(args)
     augmented_args = "#{args}"
   end
   system "#{$use_bundle_exec ? 'bundle exec ' : ''}awestruct #{augmented_args}"
-  # used to enforce GH pages not to run Jekyll on site contents
-  system "touch _site/.nojekyll"
 end
 
 # A cross-platform means of finding an executable in the $PATH.
