@@ -1,23 +1,23 @@
-= API/Schema registry for Debezium
+= Using the Apicurio API and Schema Registry with Debezium
 jpechane
 :awestruct-tags: [ schema, avro, apicurio ]
 :awestruct-layout: blog-post
 
-Messages streamed from a database by Debezium are (in developer parlance) strong-typed.
-This means that consumer processing the messages should be aware of the types of data stored in the message.
-This problem can be solved in multiple ways:
+Change events streamed from a database by Debezium are (in developer parlance) strongly typed.
+This means that event consumers should be aware of the types of data conveyed in the events.
+This problem of passing along message type data can be solved in multiple ways:
 
-. the message structure is passed out-of-band to the consumer who is able to process the data stored in it
-. the message contains metadata called schema that is embedded in the message
-. the message contains a reference to a registry that contains the associated metadata
+. the message structure is passed out-of-band to the consumer, which is able to process the data stored in it
+. the message contains metadata (the _schema_) that is embedded within the message
+. the message contains a reference to a registry which contains the associated metadata
 
-The example of the first case is `JsonConverter`.
-`JsonConverter` can operate in two modes - with and without schemas.
-When configured to work without schemas it generates a plain `JSON` message where the consumer either needs to know the types of each field beforehand or it needs to execute heuristic rules to "guess" and map values to datatypes.
-While this approach is quite flexible it can fail for example in case of mixed string/number values in a single field.
+The example of the first case is Apache Kafka's well known `JsonConverter`.
+It can operate in two modes - with and without schemas.
+When configured to work without schemas, it generates a plain JSON message where the consumer either needs to know the types of each field beforehand, or it needs to execute heuristic rules to "guess" and map values to datatypes.
+While this approach is quite flexible it can fail for more advanced cases, e.g. temporal or other semantic types encoded as strings.
 Also, constraints associated with the types are usually lost.
 
-An example of such a message is:
+An example of such a message is this:
 
 [source,json]
 ----
@@ -51,13 +51,18 @@ An example of such a message is:
 }
 ----
 
-The example of the second case is again `JsonConverter`.
-If we keep the schemas enable the `JSON` message will consist of two parts - `schema` and `payload`.
-The `payload` is exactly the same as in the previous case but the `schema` contains description of the message, its fields, field types and associated type constraints.
-This enables the consumer to process the message in type safe way.
-The drawback of this approach is that the size of the message has increased significantly as the schema is quite large object and it is copied over and over for each message even if it is unchanged.
+Note how no type information beyond JSON's basic type system is present.
+E.g. a consumer cannot conclude from the event itself, which length the numeric `id` field has.
 
-The example of a message with a schema clearly shows that the schema itself can be significantly larger than the payload and is not economical to use.
+The example of the second case is again `JsonConverter`.
+By means of its `schemas.enable` option, the JSON message will consist of two parts - `schema` and `payload`.
+The `payload` is exactly the same as in the previous case but the `schema` contains a description of the message, its fields, field types and associated type constraints.
+This enables the consumer to process the message in a type-safe way.
+The drawback of this approach is that the size of the message has increased significantly, as the schema is quite a large object.
+As schemas tend to be changed rarely (how often do you change the definitions of the columns of your database tables?),
+adding the schema to each and every event poses a signficant overhead.
+
+The example of a message with a schema clearly shows that the schema itself can be significantly larger than the payload and is not very economical to use:
 
 [source,json]
 ----
@@ -274,24 +279,27 @@ The example of a message with a schema clearly shows that the schema itself can 
 
 == Registry
 
-Then there is the third approach that combines strong points of the first two while it removes their drawbacsk at the cost of introducing a new component - registry - that stores and versions message schemas.
+Then there is the third approach that combines strong points of the first two, while it removes their drawbacks at the cost of introducing a new component - a registry - that stores and versions message schemas.
 
-Debezium's preferred choice is https://github.com/Apicurio/apicurio-registry[Apicurio Registry]. The project provides not only the registry itself but also client libraries and tight integration with Apache Kafka and Kafka Connect in form of serializers and converters.
+There are multiple schema registry implementations available;
+in the following we're going to focus on the https://github.com/Apicurio/apicurio-registry[Apicurio Registry],
+which is an open-source (Apache license 2.0) API and schema registry.
+The project provides not only the registry itself, but also client libraries and tight integration with Apache Kafka and Kafka Connect in form of serializers and converters.
 
-Apicurio enables Debezium and consumers to exchange messages whose schema is stored into the registry and pass only reference to the schema in the message.
-Also as the source table and thus message schema evolves, the registry versions the schemas so not only current but also historical schemas are available.
+Apicurio enables Debezium and consumers to exchange messages whose schema is stored in the registry and pass only a reference to the schema in the messages themselves.
+A the structure of captured source tables and thus message schemas evolve, the registry creates new versions of the schemas, too, so not only current but also historical schemas are available.
 
 Apicurio provides multiple serialization formats out-of-the-box:
 
-* https://avro.apache.org/[Avro]
 * JSON with externalized schema support
+* https://avro.apache.org/[Apache Avro]
 * https://developers.google.com/protocol-buffers[Protocol Buffers]
 
-Every serializer and deserializer knows how to automatically interact with Apicurio API so the consumer is isolated from it as an implementation detail.
+Every serializer and deserializer knows how to automatically interact with the Apicurio API so the consumer is isolated from it as an implementation detail.
 The only information necessary is the location of the registry.
 
-Apicurio also provides API compatibility layers for Confluent Schema Registry and IBM Schema Registry.
-This is a very useful feature as it enables the use of 3rd party tools like https://github.com/edenhill/kafkacat[kafkacat] even if they are not yet aware of the native API.
+Apicurio also provides API compatibility layers with the Confluent Schema Registry and IBM Schema Registry.
+This is a very useful feature as it enables the use of 3rd party tools like https://github.com/edenhill/kafkacat[kafkacat], even if they are not yet aware of the native API.
 
 === JSON Converter
 
@@ -308,10 +316,14 @@ $ export DEBZIUM_VERSION=1.1
 $ docker-compose -f docker-compose-mysql-apicurio.yaml up -d --build
 
 # Start the connector
-curl -i -X POST -H "Accept:application/json" -H  "Content-Type:application/json" http://localhost:8083/connectors/ -d @register-mysql-apicurio-converter-json.json
+curl -i -X POST -H "Accept:application/json" \
+    -H  "Content-Type:application/json" \
+    http://localhost:8083/connectors/ -d @register-mysql-apicurio-converter-json.json
 
 # Read content of the first message
-$ docker run --rm --tty   --network tutorial_default debezium/tooling bash -c 'kafkacat -b kafka:9092 -C -o beginning -q -t dbserver1.inventory.customers -c 1 | jq .'
+$ docker run --rm --tty \
+    --network tutorial_default debezium/tooling bash \
+    -c 'kafkacat -b kafka:9092 -C -o beginning -q -t dbserver1.inventory.customers -c 1 | jq .'
 ----
 
 The resulting message should look like:
@@ -357,8 +369,13 @@ In this case both commands:
 
 [source,bash]
 ----
-$ docker run --rm --tty   --network tutorial_default debezium/tooling bash -c 'http http://apicurio:8080/ids/64 | jq .'
-$ docker run --rm --tty   --network tutorial_default debezium/tooling bash -c 'http http://apicurio:8080/artifacts/dbserver1.inventory.customers-value | jq .'
+$ docker run --rm --tty \
+    --network tutorial_default \
+    debezium/tooling bash -c 'http http://apicurio:8080/ids/64 | jq .'
+
+$ docker run --rm --tty \
+    --network tutorial_default \
+    debezium/tooling bash -c 'http http://apicurio:8080/artifacts/dbserver1.inventory.customers-value | jq .'
 ----
 
 results in the same schema description:
@@ -403,31 +420,35 @@ results in the same schema description:
 }
 ----
 
-which is the same as we have seen in the `JSON` with schema example.
+Which is the same as we have seen in the "JSON with schema" example.
 
 The connector registration request differs in a few lines from the standard one:
 
 [source,json]
 ----
-        (1) "key.converter": "io.apicurio.registry.utils.converter.ExtJsonConverter",
-        (2) "key.converter.apicurio.registry.url": "http://apicurio:8080",
-        (3) "key.converter.apicurio.registry.global-id": "io.apicurio.registry.utils.serde.strategy.AutoRegisterIdStrategy",
-        (1) "value.converter": "io.apicurio.registry.utils.converter.ExtJsonConverter",
-        (2) "value.converter.apicurio.registry.url": "http://apicurio:8080",
-        (3) "value.converter.apicurio.registry.global-id": "io.apicurio.registry.utils.serde.strategy.AutoRegisterIdStrategy"
-----
+...
+"key.converter": "io.apicurio.registry.utils.converter.ExtJsonConverter", <1>
+"key.converter.apicurio.registry.url": "http://apicurio:8080", <2>
+"key.converter.apicurio.registry.global-id":
+    "io.apicurio.registry.utils.serde.strategy.AutoRegisterIdStrategy", <3>
 
-. Apicurio JSON converter is used as both key and value converter
-. Option points to the actual Apicurio registry endpoint
-. This setting ensures that it is posible to automatically register the schema id which is typical setting in Debezium deployment
+"value.converter": "io.apicurio.registry.utils.converter.ExtJsonConverter", <1>
+"value.converter.apicurio.registry.url": "http://apicurio:8080", <2>
+"value.converter.apicurio.registry.global-id":
+    "io.apicurio.registry.utils.serde.strategy.AutoRegisterIdStrategy" <3>
+...
+----
+<1> Apicurio JSON converter is used as both key and value converter
+<2> Option points to the actual Apicurio registry endpoint
+<3> This setting ensures that it is posible to automatically register the schema id which is typical setting in Debezium deployment
 
 === Avro Converter
 
-So far we have demonstrated serialization of message into the `JSON` format only.
-While `JSON` format has a lot of advantages like easy human readibility it still contains a lot of content unrelated to the data itself.
+So far we have demonstrated serialization of messages into the JSON format only.
+While using the JSON format with the registry has a lot of advantages, like easy human readability, it's still not very space-efficient.
 
-To transfer really only the data without any significant overhead it is useful to use binary format serialization like Avro format.
-In this case, we would pack the data only without any field names and other ceremony and again the message will contain a reference to a schema stored in the registry.
+To transfer really only the data without any significant overhead, it is useful to use binary format serialization like Avro format.
+In this case, we would pack the data only without any field names and other ceremony, and again the message will contain a reference to a schema stored in the registry.
 
 Let's look at how easily the Avro serialization can be used with Apicurio's Avro converter.
 
@@ -440,14 +461,19 @@ $ docker-compose -f docker-compose-mysql-apicurio.yaml down
 $ docker-compose -f docker-compose-mysql-apicurio.yaml up -d --build
 
 # Start the connector
-curl -i -X POST -H "Accept:application/json" -H  "Content-Type:application/json" http://localhost:8083/connectors/ -d @register-mysql-apicurio-converter-avro.json
+curl -i -X POST -H "Accept:application/json" \
+    -H  "Content-Type:application/json" \
+    http://localhost:8083/connectors/ \
+    -d @register-mysql-apicurio-converter-avro.json
 
 # Read content of the first message
-$ docker run --rm --tty   --network tutorial_default debezium/tooling bash -c 'kafkacat -b kafka:9092 -C -o beginning -q -t dbserver1.inventory.customers -c 1 -s avro -r http://apicurio:8080/ccompat | jq .'
+$ docker run --rm --tty \
+    --network tutorial_default debezium/tooling bash -c \
+    'kafkacat -b kafka:9092 -C -o beginning -q -t dbserver1.inventory.customers -c 1 -s avro -r http://apicurio:8080/ccompat | jq .'
 ----
 
 We introduced options `-s avro` and `-r http://apicurio:8080/ccompat` to declare that we are using Avro format and location of the Apicurio registry endpoint.
-Please note that the endpoint points not to the native API but to the compatibility layer so even if `kafkacat` is not yet aware of the new API it can easily interoperate with Apicurio.
+Please note that the endpoint does not reference the native API, but the compatibility layer so even if `kafkacat` is not yet aware of the new API, it can easily interoperate with Apicurio.
 
 The resulting message should look like:
 
@@ -551,35 +577,45 @@ The resulting schema description is slightly different for the previous ones as 
 }
 ----
 
-The connector registration request also differs from the standard one in a handful of lines
+The connector registration request also differs from the standard one in a handful of lines:
 
 [source,json]
 ----
-        (1) "key.converter": "io.apicurio.registry.utils.converter.AvroConverter",
-        (2) "key.converter.apicurio.registry.url": "http://apicurio:8080",
-        (3) "key.converter.apicurio.registry.converter.serializer": "io.apicurio.registry.utils.serde.AvroKafkaSerializer",
-        (3) "key.converter.apicurio.registry.converter.deserializer": "io.apicurio.registry.utils.serde.AvroKafkaDeserializer",
-        (4) "key.converter.apicurio.registry.global-id": "io.apicurio.registry.utils.serde.strategy.AutoRegisterIdStrategy",
-        (5) "key.converter.apicurio.registry.id-handler": "io.apicurio.registry.utils.serde.strategy.ConfluentIdHandler",
-        (1) "value.converter": "io.apicurio.registry.utils.converter.AvroConverter",
-        (2) "value.converter.apicurio.registry.url": "http://apicurio:8080",
-        (3) "value.converter.apicurio.registry.converter.serializer": "io.apicurio.registry.utils.serde.AvroKafkaSerializer",
-        (3) "value.converter.apicurio.registry.converter.deserializer": "io.apicurio.registry.utils.serde.AvroKafkaDeserializer",
-        (4) "value.converter.apicurio.registry.global-id": "io.apicurio.registry.utils.serde.strategy.AutoRegisterIdStrategy",
-        (5) "value.converter.apicurio.registry.id-handler": "io.apicurio.registry.utils.serde.strategy.ConfluentIdHandler"
-----
+...
+"key.converter": "io.apicurio.registry.utils.converter.AvroConverter", <1>
+"key.converter.apicurio.registry.url": "http://apicurio:8080", <2>
+"key.converter.apicurio.registry.converter.serializer":
+    "io.apicurio.registry.utils.serde.AvroKafkaSerializer", <3>
+"key.converter.apicurio.registry.converter.deserializer":
+    "io.apicurio.registry.utils.serde.AvroKafkaDeserializer", <3>
+"key.converter.apicurio.registry.global-id":
+    "io.apicurio.registry.utils.serde.strategy.AutoRegisterIdStrategy", <4>
+"key.converter.apicurio.registry.id-handler":
+    "io.apicurio.registry.utils.serde.strategy.ConfluentIdHandler", <5>
 
-. Apicurio Avro converter is used as both key and value converter
-. Option points to the actual Apicurio registry endpoint
-. Prescribe which serializer and deserializer should be used by the converter
-. This setting ensures that it is posible to automatically register the schema id which is typical setting in Debezium deployment
-. This option is necessary only if we want to ensure binary compatibility with non-Apicurio aware tools like `kafkacat`
+"value.converter": "io.apicurio.registry.utils.converter.AvroConverter", <1>
+"value.converter.apicurio.registry.url": "http://apicurio:8080", <2>
+"value.converter.apicurio.registry.converter.serializer":
+    "io.apicurio.registry.utils.serde.AvroKafkaSerializer", <3>
+"value.converter.apicurio.registry.converter.deserializer":
+    "io.apicurio.registry.utils.serde.AvroKafkaDeserializer", <3>
+"value.converter.apicurio.registry.global-id":
+    "io.apicurio.registry.utils.serde.strategy.AutoRegisterIdStrategy", <4>
+"value.converter.apicurio.registry.id-handler":
+    "io.apicurio.registry.utils.serde.strategy.ConfluentIdHandler" <5>
+...
+----
+<1> Apicurio Avro converter is used as both key and value converter
+<2> Option points to the actual Apicurio registry endpoint
+<3> Prescribe which serializer and deserializer should be used by the converter
+<4> This setting ensures that it is posible to automatically register the schema id which is typical setting in Debezium deployment
+<5> This option is necessary only if we want to ensure binary compatibility with non-Apicurio aware tools like `kafkacat`
 
 == Conclusion
 
-In this article we discussed mutliple approaches to message/schema association.
-The Apicurio registry was presented as a solution for schema sotrage and versioning and we have demonstarted how Apicurio can be integrated with Debezium connectors to efficiently deliver messages with schema to the consumer.
-
+In this article we discussed multiple approaches to message/schema association.
+The Apicurio registry was presented as a solution for schema sotrage and versioning and we have demonstrated how Apicurio can be integrated with Debezium connectors to efficiently deliver messages with schema to the consumer.
+You can find a complete example for using the Debezium connectors together with the Apicurio registry in the https://github.com/debezium/debezium-examples/tree/master/tutorial#using-mysql-and-apicurio-registry[tutorial] project of the Debezium examples repository on GitHub.
 
 == About Debezium
 
