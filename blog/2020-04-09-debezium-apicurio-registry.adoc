@@ -465,63 +465,13 @@ curl -i -X POST -H "Accept:application/json" \
     -H  "Content-Type:application/json" \
     http://localhost:8083/connectors/ \
     -d @register-mysql-apicurio-converter-avro.json
-
-# Read content of the first message
-$ docker run --rm --tty \
-    --network tutorial_default debezium/tooling bash -c \
-    'kafkacat -b kafka:9092 -C -o beginning -q -t dbserver1.inventory.customers -c 1 -s avro -r http://apicurio:8080/ccompat | jq .'
 ----
 
-We introduced options `-s avro` and `-r http://apicurio:8080/ccompat` to declare that we are using Avro format and location of the Apicurio registry endpoint.
-Please note that the endpoint does not reference the native API, but the compatibility layer so even if `kafkacat` is not yet aware of the new API, it can easily interoperate with Apicurio.
-
-The resulting message should look like:
-
-[source,json]
-----
-{
-  "before": null,
-  "after": {
-    "Value": {
-      "id": 1001,
-      "first_name": "Sally",
-      "last_name": "Thomas",
-      "email": "sally.thomas@acme.com"
-    }
-  },
-  "source": {
-    "version": "1.1.0.Final",
-    "connector": "mysql",
-    "name": "dbserver1",
-    "ts_ms": 0,
-    "snapshot": {
-      "string": "true"
-    },
-    "db": "inventory",
-    "table": {
-      "string": "customers"
-    },
-    "server_id": 0,
-    "gtid": null,
-    "file": "mysql-bin.000003",
-    "pos": 154,
-    "row": 0,
-    "thread": null,
-    "query": null
-  },
-  "op": "c",
-  "ts_ms": {
-    "long": 1586336163386
-  },
-  "transaction": null
-}
-----
-
-In this case we get only message payload without the schema identifier but we can still query the registry using schema name:
+We can query the registry using schema name:
 
 [source,bash]
 ----
-$ docker run --rm --tty   --network tutorial_default debezium/tooling bash -c 'http http://apicurio:8080/artifacts/dbserver1.inventory.customers-value | jq .'
+$ docker run --rm --tty --network tutorial_default debezium/tooling bash -c 'http http://apicurio:8080/artifacts/dbserver1.inventory.customers-value | jq .'
 ----
 
 The resulting schema description is slightly different for the previous ones as it has an Avro flavour:
@@ -590,8 +540,6 @@ The connector registration request also differs from the standard one in a handf
     "io.apicurio.registry.utils.serde.AvroKafkaDeserializer", <3>
 "key.converter.apicurio.registry.global-id":
     "io.apicurio.registry.utils.serde.strategy.AutoRegisterIdStrategy", <4>
-"key.converter.apicurio.registry.id-handler":
-    "io.apicurio.registry.utils.serde.strategy.ConfluentIdHandler", <5>
 
 "value.converter": "io.apicurio.registry.utils.converter.AvroConverter", <1>
 "value.converter.apicurio.registry.url": "http://apicurio:8080", <2>
@@ -601,15 +549,51 @@ The connector registration request also differs from the standard one in a handf
     "io.apicurio.registry.utils.serde.AvroKafkaDeserializer", <3>
 "value.converter.apicurio.registry.global-id":
     "io.apicurio.registry.utils.serde.strategy.AutoRegisterIdStrategy", <4>
-"value.converter.apicurio.registry.id-handler":
-    "io.apicurio.registry.utils.serde.strategy.ConfluentIdHandler" <5>
 ...
 ----
 <1> Apicurio Avro converter is used as both key and value converter
 <2> Option points to the actual Apicurio registry endpoint
 <3> Prescribe which serializer and deserializer should be used by the converter
 <4> This setting ensures that it is posible to automatically register the schema id which is typical setting in Debezium deployment
-<5> This option is necessary only if we want to ensure binary compatibility with non-Apicurio aware tools like `kafkacat`
+
+To consume the messages on the sink side we can, for example, demonstrate an Elasticsearch sink connector. The sink configuration will be again extended only with converter configuration and the sink connector can consume from Avro-enabled topics without any other changes needed.
+
+[source,json]
+----
+{
+    "name": "elastic-sink",
+    "config": {
+        "connector.class": "io.confluent.connect.elasticsearch.ElasticsearchSinkConnector",
+        "tasks.max": "1",
+        "topics": "customers",
+        "connection.url": "http://elastic:9200",
+        "transforms": "unwrap,key",
+        "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState",
+        "transforms.unwrap.drop.tombstones": "false",
+        "transforms.key.type": "org.apache.kafka.connect.transforms.ExtractField$Key",
+        "transforms.key.field": "id",
+        "key.ignore": "false",
+        "type.name": "customer",
+        "behavior.on.null.values": "delete",
+        "key.converter": "io.apicurio.registry.utils.converter.AvroConverter",
+        "key.converter.apicurio.registry.url": "http://apicurio:8080",
+        "key.converter.apicurio.registry.converter.serializer":
+            "io.apicurio.registry.utils.serde.AvroKafkaSerializer",
+        "key.converter.apicurio.registry.converter.deserializer":
+            "io.apicurio.registry.utils.serde.AvroKafkaDeserializer",
+        "key.converter.apicurio.registry.global-id":
+            "io.apicurio.registry.utils.serde.strategy.AutoRegisterIdStrategy",
+        "value.converter": "io.apicurio.registry.utils.converter.AvroConverter",
+        "value.converter.apicurio.registry.url": "http://apicurio:8080",
+        "value.converter.apicurio.registry.converter.serializer":
+            "io.apicurio.registry.utils.serde.AvroKafkaSerializer",
+        "value.converter.apicurio.registry.converter.deserializer":
+            "io.apicurio.registry.utils.serde.AvroKafkaDeserializer",
+        "value.converter.apicurio.registry.global-id":
+            "io.apicurio.registry.utils.serde.strategy.AutoRegisterIdStrategy",
+    }
+}
+----
 
 == Conclusion
 
