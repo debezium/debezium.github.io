@@ -93,6 +93,9 @@
   <li class="nav-item" data-depth="2">
     <a class="nav-link" href="../configuration/outbox-event-router.html">Outbox Event Router</a>
   </li>
+  <li class="nav-item" data-depth="2">
+    <a class="nav-link" href="../configuration/filtering.html">Message Filtering</a>
+  </li>
 </ul>
   </li>
   <li class="nav-item" data-depth="1">
@@ -103,22 +106,7 @@
     <a class="nav-link" href="../connectors/index.html">Overview</a>
   </li>
   <li class="nav-item" data-depth="2">
-    <button class="nav-item-toggle"></button>
     <a class="nav-link" href="../connectors/mysql.html">MySQL</a>
-<ul class="nav-list">
-  <li class="nav-item" data-depth="3">
-    <a class="nav-link" href="../assemblies/cdc-mysql-connector/as_overview-of-how-the-mysql-connector-works.html">How It Works</a>
-  </li>
-  <li class="nav-item" data-depth="3">
-    <a class="nav-link" href="../assemblies/cdc-mysql-connector/as_setup-the-mysql-server.html">Setup</a>
-  </li>
-  <li class="nav-item" data-depth="3">
-    <a class="nav-link" href="../assemblies/cdc-mysql-connector/as_deploy-the-mysql-connector.html">Deployment</a>
-  </li>
-  <li class="nav-item" data-depth="3">
-    <a class="nav-link" href="../assemblies/cdc-mysql-connector/as_connector-common-issues.html">Common Issues</a>
-  </li>
-</ul>
   </li>
   <li class="nav-item" data-depth="2">
     <a class="nav-link" href="../connectors/mongodb.html">MongoDB</a>
@@ -263,6 +251,8 @@
 <ul class="sectlevel1">
 <li><a href="#_dependencies">Dependencies</a></li>
 <li><a href="#_in_the_code">In the Code</a></li>
+<li><a href="#output-message-formats">Output Message Formats</a></li>
+<li><a href="#message-transformations">Message transformations</a></li>
 <li><a href="#advanced-consuming">Advanced Record Consuming</a></li>
 <li><a href="#engine-properties">Engine Properties</a></li>
 <li><a href="#_handling_failures">Handling Failures</a></li>
@@ -350,7 +340,7 @@ Basically, you create the <code>DebeziumEngine</code> with a configuration (perh
 You also provide parametrize the engine with the format int which you want to receive the messages (currently only <code>Connect</code> is supported) and with a function that it will call for every data change event produced by the connector.</p>
 </div>
 <div class="paragraph">
-<p>Here&#8217;s an example of code that configures and runs an embedded <a href="#connectors/mysql">MySQL connector</a>:</p>
+<p>Here&#8217;s an example of code that configures and runs an embedded <a href="../connectors/mysql.html" class="page">MySQL connector</a>:</p>
 </div>
 <div class="listingblock">
 <div class="content">
@@ -497,7 +487,7 @@ try (DebeziumEngine&lt;SourceRecord&gt; engine = DebeziumEngine.create(Connect.c
 </div>
 <div class="paragraph">
 <p>A fluent-style builder API is used to create an engine that uses our <code>Properties</code> object and that sends all data change records to the <code>handleEvent(SourceRecord)</code> method, which can be any method that matches the signature of the <code>java.util.function.Consumer&lt;SourceRecord&gt;</code> functional interface, where <code>SourceRecord</code> is the <code>org.apache.kafka.connect.source.SourceRecord</code> class.
-This example speaks specifically about <code>SourceRecord</code> but the engine implementation is parametrized and in future different types like <code>JSON</code> or <code>Avro</code> could be returned by the engine.
+This example speaks specifically about <code>SourceRecord</code> but the engine implementation is parametrized but different types like <code>JSON</code> or <code>Avro</code> could be returned by the engine.
 Note that your application&#8217;s handler function should not throw any exceptions; if it does, the engine will log any exception thrown by the method and will continue to operate on the next source record, but your application will not have another chance to handle the particular source record that caused the exception, meaning your application might become inconsistent with the database.</p>
 </div>
 <div class="paragraph">
@@ -554,6 +544,100 @@ Therefore, if your application exits, be sure to wait for completion of the engi
 <p>Your application should always properly stop the engine to ensure graceful and complete shutdown and that each source record is sent to the application exactly one time.
 For example, do not rely upon shutting down the <code>ExecutorService</code>, since that interrupts the running threads.
 Although the <code>DebeziumEngine</code> will indeed terminate when its thread is interrupted, the engine may not terminate cleanly, and when your application is restarted it may see some of the same source records that it had processed just prior to the shutdown.</p>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="output-message-formats"><a class="anchor" href="#output-message-formats"></a>Output Message Formats</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p><code>DebeziumEngine#create()</code> can accept multiple different parameters that affect the format in which the messages are received by the consumer.
+Allowed values are</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p><code>Connect.class</code> - the output value is Kafka Connect&#8217;s <code>SourceRecord</code></p>
+</li>
+<li>
+<p><code>Json.class</code> - the output value is a pair of key and value encoded as <code>JSON</code> strings</p>
+</li>
+<li>
+<p><code>Avro.class</code> - the output value is a pair of key and value encoded as Avro serialized records</p>
+</li>
+<li>
+<p><code>CloudEvents.class</code> - the output value is a pair of key and value encoded as <a href="../integrations/cloudevents.html" class="page">Cloud Events</a> messages</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>Internally, the engine uses the apropriate Kafka Connect converter implementation to which the conversion is delegated.
+The convertor can be parametrized using engine properties to modify its behaviour.</p>
+</div>
+<div class="paragraph">
+<p>An example of <code>JSON</code> output format is</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-java hljs" data-lang="java">final Properties props = new Properties();
+...
+props.setProperty("converter.schemas.enable", "false"); // don't include schema in message
+...
+final DebeziumEngine&lt;ChangeEvent&lt;String&gt;&gt; engine = DebeziumEngine.create(Json.class)
+    .using(props)
+    .notifying((records, committer) -&gt; {
+
+        for (ChangeEvent&lt;String&gt; r : records) {
+            System.out.println("Key = '" + key + "' value = '" + value + "'");
+            committer.markProcessed(r);
+        }
+...</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Where the <code>ChangeEvent</code> datatype is the key/value pair.</p>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="message-transformations"><a class="anchor" href="#message-transformations"></a>Message transformations</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>Before the messages are delivered to the handler it is possible to run them through a pipeline of Kafka Connect  <a href="https://cwiki.apache.org/confluence/display/KAFKA/KIP-66%3A+Single+Message+Transforms+for+Kafka+Connect">Simple Message Transforms</a> (SMT).
+Each SMT can pass the message unchanged, modify it or filter it out.
+The chain is configured using property <code>transforms</code>.
+The property contains a comma-separated list of logical names of the transformations to be applied.
+Properties <code>transforms.&lt;logical_name&gt;.type</code> then defines the name of the implementation class for each transformation and <code>transforms.&lt;logical_name&gt;.*</code> configuration options that are passed to the transformation.</p>
+</div>
+<div class="paragraph">
+<p>An example of the configuration is</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-java hljs" data-lang="java">final Properties props = new Properties();
+...
+props.setProperty("transforms", "filter, router");                                               // (1)
+props.setProperty("transforms.router.type", "org.apache.kafka.connect.transforms.RegexRouter");  // (2)
+props.setProperty("transforms.router.regex", "(.*)");                                            // (3)
+props.setProperty("transforms.router.replacement", "trf$1");                                     // (3)
+props.setProperty("transforms.filter.type", "io.debezium.embedded.ExampleFilterTransform");      // (4)</code></pre>
+</div>
+</div>
+<div class="olist arabic">
+<ol class="arabic">
+<li>
+<p>Two transformations are defined - <code>filter</code> and <code>router</code></p>
+</li>
+<li>
+<p>Implementation of the <code>router</code> transformation is <code>org.apache.kafka.connect.transforms.RegexRouter</code></p>
+</li>
+<li>
+<p>The <code>router</code> transformation has two configurations options -<code>regex</code> and <code>replacement</code></p>
+</li>
+<li>
+<p>Implementation of the <code>filter</code> transformation is <code>io.debezium.embedded.ExampleFilterTransform</code></p>
+</li>
+</ol>
 </div>
 </div>
 </div>
