@@ -268,8 +268,8 @@
 <li><a href="#how-the-mongodb-connector-works">How the MongoDB connector works</a>
 <ul class="sectlevel2">
 <li><a href="#logical-connector-name">Logical connector name</a></li>
-<li><a href="#Snapshot">Snapshotting</a></li>
-<li><a href="#tailing-the-oplog">Tailing the oplog</a></li>
+<li><a href="#Snapshot">Performing a snapshot</a></li>
+<li><a href="#streaming-changes">Streaming changes</a></li>
 <li><a href="#mongodb-topic-names">Topics names</a></li>
 <li><a href="#partitions">Partitions</a></li>
 <li><a href="#mongodb-events">Events</a></li>
@@ -317,20 +317,20 @@ This new server becomes a secondary (and able to handle queries) when it catches
 <div class="paragraph">
 <p>The MongoDB connector uses this same replication mechanism, though it does not actually become a member of the replica set.
 Just like MongoDB secondaries, however, the connector always reads the oplog of the replica set&#8217;s primary.
-And, when the connector sees a replica set for the first time, it looks at the oplog to get the last recorded transaction and then performs an <em>intial sync</em> of the primary&#8217;s databases and collections.
-When all the data is copied, the connector then starts reading the oplog from the position it read earlier. Operations in the MongoDB oplog are <a href="https://docs.mongodb.com/manual/core/replica-set-oplog/">idempotent</a>, so no matter how many times the operations are applied, they result in the same end state.</p>
+And, when the connector sees a replica set for the first time, it looks at the oplog to get the last recorded transaction and then performs a snapshot of the primary&#8217;s databases and collections.
+When all the data is copied, the connector then starts streaming changes from the position it read earlier from the oplog. Operations in the MongoDB oplog are <a href="https://docs.mongodb.com/manual/core/replica-set-oplog/">idempotent</a>, so no matter how many times the operations are applied, they result in the same end state.</p>
 </div>
 <div class="paragraph">
-<p>As the MongoDB connector processes the oplog, it periodically records the position in the oplog where the event originated.
-When the MongoDB connector stops, it records the last oplog position that it processed, so that upon restart it simply begins reading the oplog from that position.
+<p>As the MongoDB connector processes changes, it periodically records the position in the oplog where the event originated.
+When the MongoDB connector stops, it records the last oplog position that it processed, so that upon restart it simply begins streaming from that position.
 In other words, the connector can be stopped, upgraded or maintained, and restarted some time later, and it will pick up exactly where it left off without losing a single event.
 Of course, MongoDB&#8217;s oplogs are usually capped at a maximum size, which means that the connector should not be stopped for too long, or else some of the operations in the oplog might be purged before the connector has a chance to read them.
-In this case, upon restart the connector will detect the missing oplog operations, perform a snapshot, and then proceed to tail the oplog.</p>
+In this case, upon restart the connector will detect the missing oplog operations, perform a snapshot, and then proceed with streaming the changes.</p>
 </div>
 <div class="paragraph">
 <p>The MongoDB connector is also quite tolerant of changes in membership and leadership of the replica sets, of additions or removals of shards within a sharded cluster, and network problems that might cause communication failures.
-The connector always uses the replica set&#8217;s primary node to tail the oplog, so when the replica set undergoes an election and a different node becomes primary, the connector will immediately stop tailing the oplog, connect to the new primary, and start tailing the oplog using the new primary node.
-Likewise, if connector experiences any problems communicating with the replica set primary, it will try to reconnect (using exponential backoff so as to not overwhelm the network or replica set) and continue tailing the oplog from where it last left off.
+The connector always uses the replica set&#8217;s primary node to stream changes, so when the replica set undergoes an election and a different node becomes primary, the connector will immediately stop streaming changes, connect to the new primary, and start streaming changes using the new primary node.
+Likewise, if connector experiences any problems communicating with the replica set primary, it will try to reconnect (using exponential backoff so as to not overwhelm the network or replica set) and continue streaming changes from where it last left off.
 In this way the connector is able to dynamically adjust to changes in replica set membership and to automatically handle communication failures.</p>
 </div>
 <div class="ulist">
@@ -488,10 +488,10 @@ We recommend logical names begin with an alphabetic or underscore character, and
 </div>
 </div>
 <div class="sect2">
-<h3 id="Snapshot"><a class="anchor" href="#Snapshot"></a>Snapshotting</h3>
+<h3 id="Snapshot"><a class="anchor" href="#Snapshot"></a>Performing a snapshot</h3>
 <div class="paragraph">
-<p>When a task starts up using a replica set, it uses the connector&#8217;s logical name and the replica set name to find an <em>offset</em> that describes the position in the replica sets oplog where the connector previously stopped reading.
-If an offset can be found and it is still in the oplog, then the task immediately proceeds with <a href="#tailing-the-oplog">tailing the oplog</a>, starting at the recorded offset position.</p>
+<p>When a task starts up using a replica set, it uses the connector&#8217;s logical name and the replica set name to find an <em>offset</em> that describes the position where the connector previously stopped reading changes.
+If an offset can be found and it still exists in the oplog, then the task immediately proceeds with <a href="#streaming-changes">streaming changes</a>, starting at the recorded offset position.</p>
 </div>
 <div class="paragraph">
 <p>However, if no offset is found or if the oplog no longer contains that position, the task must first obtain the current state of the replica set contents by performing a <em>snapshot</em>.
@@ -520,10 +520,10 @@ If the connector is stopped before the tasks' snapshots are completed, upon rest
 </div>
 </div>
 <div class="sect2">
-<h3 id="tailing-the-oplog"><a class="anchor" href="#tailing-the-oplog"></a>Tailing the oplog</h3>
+<h3 id="streaming-changes"><a class="anchor" href="#streaming-changes"></a>Streaming changes</h3>
 <div class="paragraph">
-<p>Once the connector task for a replica set has an offset, it uses the offset to determine the position in the oplog where it should start reading.
-The task will then connect to the replica set&#8217;s primary node and start reading the oplog from that position, processing all of the create, insert, and delete operations and converting them into Debezium <a href="#mongodb-events">change events</a>. Each change event includes the position in the oplog where the operation was found, and the connector periodically records this as its most recent offset. (The interval at which the offset is recorded is governed by the <code>offset.flush.interval.ms</code> <a href="https://kafka.apache.org/documentation/#connectconfigs">Kafka Connect worker configuration property</a>.)</p>
+<p>Once the connector task for a replica set has an offset, it uses the offset to determine the position in the oplog where it should start streaming changes.
+The task will then connect to the replica set&#8217;s primary node and start streaming changes from that position, processing all of the create, insert, and delete operations and converting them into Debezium <a href="#mongodb-events">change events</a>. Each change event includes the position in the oplog where the operation was found, and the connector periodically records this as its most recent offset. (The interval at which the offset is recorded is governed by the <code>offset.flush.interval.ms</code> <a href="https://kafka.apache.org/documentation/#connectconfigs">Kafka Connect worker configuration property</a>.)</p>
 </div>
 <div class="paragraph">
 <p>When the connector is stopped gracefully, the last offset processed is recorded so that, upon restart, the connector will continue exactly where it left off.
@@ -544,7 +544,7 @@ If the connector&#8217;s tasks terminate unexpectedly, however, then the tasks m
 </table>
 </div>
 <div class="paragraph">
-<p>As mentioned above, the connector tasks always use the replica set&#8217;s primary node to tail the oplog, ensuring that the connector sees the most up-to-date operations as possible and can capture the changes with lower latency than if secondaries were to be used instead. When the replica set elects a new primary, the connector will immediately stop tailing the oplog, connect to the new primary, and start tailing the new primary&#8217;s oplog start at the same position. Likewise, if connector experiences any problems communicating with the replica set members, it will try to reconnect (using exponential backoff so as to not overwhelm the replica set) and once connected continue tailing the oplog from where it last left off. In this way the connector is able to dynamically adjust to changes in replica set membership and to automatically handle communication failures.</p>
+<p>As mentioned above, the connector tasks always use the replica set&#8217;s primary node to stream changes from the oplog, ensuring that the connector sees the most up-to-date operations as possible and can capture the changes with lower latency than if secondaries were to be used instead. When the replica set elects a new primary, the connector will immediately stops streaming changes, connect to the new primary, and starts streaming changes from the new primary node at the same position. Likewise, if connector experiences any problems communicating with the replica set members, it will try to reconnect (using exponential backoff so as to not overwhelm the replica set) and once connected continue streaming changes from where it last left off. In this way the connector is able to dynamically adjust to changes in replica set membership and to automatically handle communication failures.</p>
 </div>
 <div class="paragraph">
 <p>The bottom line is that the MongoDB connector will continue running under most situations, though communication problems may cause the connector to wait until the problems are resolved.</p>
@@ -1089,7 +1089,8 @@ When the connector starts, it will perform a snapshot of the collections in your
 Optionally filter out collections that are not needed.</p>
 </div>
 <div class="paragraph">
-<p>Here is an example of the configuration for a MongoDB connector that monitors a MongoDB replica set <code>rs0</code> at port 27017 on 192.168.99.100, which we logically name <code>fullfillment</code>:</p>
+<p>Following is an example of the configuration for a MongoDB connector that monitors a MongoDB replica set <code>rs0</code> at port 27017 on 192.168.99.100, which we logically name <code>fullfillment</code>.
+Typically, you configure the Debezium MongoDB connector in a <code>.json</code> file using the configuration properties available for the connector.</p>
 </div>
 <div class="listingblock">
 <div class="content">
@@ -1116,7 +1117,7 @@ Optionally filter out collections that are not needed.</p>
 </tr>
 <tr>
 <td><i class="conum" data-value="3"></i><b>3</b></td>
-<td>The host addresses to use to connect to the MongoDB replica set</td>
+<td>The host addresses to use to connect to the MongoDB replica set.</td>
 </tr>
 <tr>
 <td><i class="conum" data-value="4"></i><b>4</b></td>
@@ -1124,7 +1125,7 @@ Optionally filter out collections that are not needed.</p>
 </tr>
 <tr>
 <td><i class="conum" data-value="5"></i><b>5</b></td>
-<td>A list of regular expressions that match the collection namespaces (e.g., &lt;dbName&gt;.&lt;collectionName&gt;) of all collections to be monitored. This is optional.</td>
+<td>A list of regular expressions that match the collection namespaces (for example, &lt;dbName&gt;.&lt;collectionName&gt;) of all collections to be monitored. This is optional.</td>
 </tr>
 </table>
 </div>
@@ -1405,7 +1406,7 @@ The values will incoporate any differences between the clocks on the machines wh
 <tbody>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>name</code></p>
+<p><a id="connector-property-name"></a><a href="#connector-property-name"><code>name</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -1414,7 +1415,7 @@ The values will incoporate any differences between the clocks on the machines wh
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>connector.class</code></p>
+<p><a id="connector-property-connector-class"></a><a href="#connector-property-connector-class"><code>connector.class</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -1423,7 +1424,7 @@ The values will incoporate any differences between the clocks on the machines wh
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>mongodb.hosts</code></p>
+<p><a id="connector-property-mongodb-hosts"></a><a href="#connector-property-mongodb-hosts"><code>mongodb.hosts</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -1432,7 +1433,7 @@ The values will incoporate any differences between the clocks on the machines wh
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>mongodb.name</code></p>
+<p><a id="connector-property-mongodb-name"></a><a href="#connector-property-mongodb-name"><code>mongodb.name</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -1442,7 +1443,7 @@ Only alphanumeric characters and underscores should be used.</p>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>mongodb.user</code></p>
+<p><a id="connector-property-mongodb-user"></a><a href="#connector-property-mongodb-user"><code>mongodb.user</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -1451,7 +1452,7 @@ Only alphanumeric characters and underscores should be used.</p>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>mongodb.password</code></p>
+<p><a id="connector-property-mongodb-password"></a><a href="#connector-property-mongodb-password"><code>mongodb.password</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -1460,7 +1461,7 @@ Only alphanumeric characters and underscores should be used.</p>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>mongodb.authsource</code></p>
+<p><a id="connector-property-mongodb-authsource"></a><a href="#connector-property-mongodb-authsource"><code>mongodb.authsource</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>admin</code></p>
@@ -1471,7 +1472,7 @@ Only alphanumeric characters and underscores should be used.</p>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>mongodb.ssl.enabled</code></p>
+<p><a id="connector-property-mongodb-ssl-enabled"></a><a href="#connector-property-mongodb-ssl-enabled"><code>mongodb.ssl.enabled</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>false</code></p>
@@ -1482,7 +1483,7 @@ Only alphanumeric characters and underscores should be used.</p>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>mongodb.ssl.invalid.hostname.allowed</code></p>
+<p><a id="connector-property-mongodb-ssl-invalid-hostname-allowed"></a><a href="#connector-property-mongodb-ssl-invalid-hostname-allowed"><code>mongodb.ssl.invalid.hostname.allowed</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>false</code></p>
@@ -1493,7 +1494,7 @@ Only alphanumeric characters and underscores should be used.</p>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>database.whitelist</code></p>
+<p><a id="connector-property-database-whitelist"></a><a href="#connector-property-database-whitelist"><code>database.whitelist</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><em>empty string</em></p>
@@ -1505,7 +1506,7 @@ May not be used with <code>database.blacklist</code>.</p>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>database.blacklist</code></p>
+<p><a id="connector-property-database-blacklist"></a><a href="#connector-property-database-blacklist"><code>database.blacklist</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><em>empty string</em></p>
@@ -1516,7 +1517,7 @@ May not be used with <code>database.blacklist</code>.</p>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>collection.whitelist</code></p>
+<p><a id="connector-property-collection-whitelist"></a><a href="#connector-property-collection-whitelist"><code>collection.whitelist</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><em>empty string</em></p>
@@ -1527,7 +1528,7 @@ May not be used with <code>database.blacklist</code>.</p>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>collection.blacklist</code></p>
+<p><a id="connector-property-collection-blacklist"></a><a href="#connector-property-collection-blacklist"><code>collection.blacklist</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><em>empty string</em></p>
@@ -1538,7 +1539,7 @@ May not be used with <code>database.blacklist</code>.</p>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>snapshot.mode</code></p>
+<p><a id="connector-property-snapshot-mode"></a><a href="#connector-property-snapshot-mode"><code>snapshot.mode</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>initial</code></p>
@@ -1549,7 +1550,7 @@ May not be used with <code>database.blacklist</code>.</p>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>field.blacklist</code></p>
+<p><a id="connector-property-field-blacklist"></a><a href="#connector-property-field-blacklist"><code>field.blacklist</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><em>empty string</em></p>
@@ -1560,7 +1561,7 @@ May not be used with <code>database.blacklist</code>.</p>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>field.renames</code></p>
+<p><a id="connector-property-field-renames"></a><a href="#connector-property-field-renames"><code>field.renames</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><em>empty string</em></p>
@@ -1571,7 +1572,7 @@ May not be used with <code>database.blacklist</code>.</p>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>tasks.max</code></p>
+<p><a id="connector-property-tasks-max"></a><a href="#connector-property-tasks-max"><code>tasks.max</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>1</code></p>
@@ -1582,7 +1583,7 @@ May not be used with <code>database.blacklist</code>.</p>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>initial.sync.max.threads</code></p>
+<p><a id="connector-property-initial-sync-max-threads"></a><a href="#connector-property-initial-sync-max-threads"><code>initial.sync.max.threads</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>1</code></p>
@@ -1593,7 +1594,7 @@ May not be used with <code>database.blacklist</code>.</p>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>tombstones.on.delete</code></p>
+<p><a id="connector-property-tombstones-on-delete"></a><a href="#connector-property-tombstones-on-delete"><code>tombstones.on.delete</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>true</code></p>
@@ -1606,7 +1607,7 @@ Emitting the tombstone event (the default behavior) allows Kafka to completely d
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>snapshot.delay.ms</code></p>
+<p><a id="connector-property-snapshot-delay-ms"></a><a href="#connector-property-snapshot-delay-ms"><code>snapshot.delay.ms</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -1616,7 +1617,7 @@ Can be used to avoid snapshot interruptions when starting multiple connectors in
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>snapshot.fetch.size</code></p>
+<p><a id="connector-property-snapshot-fetch-size"></a><a href="#connector-property-snapshot-fetch-size"><code>snapshot.fetch.size</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>0</code></p>
@@ -1648,7 +1649,7 @@ Defaults to 0, which indicates that the server chooses an appropriate fetch size
 <tbody>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>max.queue.size</code></p>
+<p><a id="connector-property-max-queue-size"></a><a href="#connector-property-max-queue-size"><code>max.queue.size</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>8192</code></p>
@@ -1659,7 +1660,7 @@ Defaults to 0, which indicates that the server chooses an appropriate fetch size
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>max.batch.size</code></p>
+<p><a id="connector-property-max-batch-size"></a><a href="#connector-property-max-batch-size"><code>max.batch.size</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>2048</code></p>
@@ -1670,7 +1671,7 @@ Defaults to 0, which indicates that the server chooses an appropriate fetch size
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>poll.interval.ms</code></p>
+<p><a id="connector-property-poll-interval-ms"></a><a href="#connector-property-poll-interval-ms"><code>poll.interval.ms</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>1000</code></p>
@@ -1681,7 +1682,7 @@ Defaults to 0, which indicates that the server chooses an appropriate fetch size
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>connect.backoff.initial.delay.ms</code></p>
+<p><a id="connector-property-connect-backoff-initial-delay-ms"></a><a href="#connector-property-connect-backoff-initial-delay-ms"><code>connect.backoff.initial.delay.ms</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>1000</code></p>
@@ -1692,7 +1693,7 @@ Defaults to 0, which indicates that the server chooses an appropriate fetch size
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>connect.backoff.max.delay.ms</code></p>
+<p><a id="connector-property-connect-backoff-max-delay-ms"></a><a href="#connector-property-connect-backoff-max-delay-ms"><code>connect.backoff.max.delay.ms</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>1000</code></p>
@@ -1703,7 +1704,7 @@ Defaults to 0, which indicates that the server chooses an appropriate fetch size
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>connect.max.attempts</code></p>
+<p><a id="connector-property-connect-max-attempts"></a><a href="#connector-property-connect-max-attempts"><code>connect.max.attempts</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>16</code></p>
@@ -1714,7 +1715,7 @@ Defaults to 0, which indicates that the server chooses an appropriate fetch size
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>mongodb.members.auto.discover</code></p>
+<p><a id="connector-property-mongodb-members-auto-discover"></a><a href="#connector-property-mongodb-members-auto-discover"><code>mongodb.members.auto.discover</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>true</code></p>
@@ -1725,7 +1726,7 @@ Defaults to 0, which indicates that the server chooses an appropriate fetch size
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>source.struct.version</code></p>
+<p><a id="connector-property-source-struct-version"></a><a href="#connector-property-source-struct-version"><code>source.struct.version</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>v2</p>
@@ -1740,7 +1741,7 @@ Note that this setting is not recommended and is planned for removal in a future
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>heartbeat.interval.ms</code></p>
+<p><a id="connector-property-heartbeat-interval-ms"></a><a href="#connector-property-heartbeat-interval-ms"><code>heartbeat.interval.ms</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>0</code></p>
@@ -1761,7 +1762,7 @@ Disabled by default.</p>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>heartbeat.topics.prefix</code></p>
+<p><a id="connector-property-heartbeat-topics-prefix"></a><a href="#connector-property-heartbeat-topics-prefix"><code>heartbeat.topics.prefix</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>__debezium-heartbeat</code></p>
@@ -1773,7 +1774,7 @@ The topic is named according to the pattern <code>&lt;heartbeat.topics.prefix&gt
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>sanitize.field.names</code></p>
+<p><a id="connector-property-sanitize-field-names"></a><a href="#connector-property-sanitize-field-names"><code>sanitize.field.names</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>true</code> when connector configuration explicitly specifies the <code>key.converter</code> or <code>value.converter</code> parameters to use Avro, otherwise defaults to <code>false</code>.</p>
@@ -1785,7 +1786,7 @@ See <a href="../configuration/avro.html#names" class="page">Avro naming</a> for 
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>skipped.operations</code></p>
+<p><a id="connector-property-skipped-operations"></a><a href="#connector-property-skipped-operations"><code>skipped.operations</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -2080,7 +2081,7 @@ The number of duplicate events depends on the offset flush period and the volume
 <h3 id="_connector_is_stopped_for_a_duration"><a class="anchor" href="#_connector_is_stopped_for_a_duration"></a>Connector is stopped for a duration</h3>
 <div class="paragraph">
 <p>If the connector is gracefully stopped, the replica sets can continue to be used and any new changes are recorded in MongoDB&#8217;s oplog.
-When the connector is restarted, it will resume reading the oplog for each replica set where it last left off, recording change events for all of the changes that were made while the connector was stopped. If the connector is stopped long enough such that MongoDB purges from its oplog some operations that the connector has not read, then upon startup the connector will perform a snapshot.</p>
+When the connector is restarted, it will resume streaming changes for each replica set where it last left off, recording change events for all of the changes that were made while the connector was stopped. If the connector is stopped long enough such that MongoDB purges from its oplog some operations that the connector has not read, then upon startup the connector will perform a snapshot.</p>
 </div>
 <div class="paragraph">
 <p>A properly configured Kafka cluster is capable of <a href="https://engineering.linkedin.com/kafka/benchmarking-apache-kafka-2-million-writes-second-three-cheap-machines">massive throughput</a>.
