@@ -233,20 +233,67 @@ compatibility:
   connect:
     version: 1.x, 2.x
   mysql:
-    version: 8.0.13
+    database:
+      versions:
+        - 5.7
+        - 8.0.13
+    driver:
+      versions:
+        - 8.0.13
   mongodb:
-    version: 3.2, 3.4, 4.0
+    database:
+      versions:
+        - 3.2
+        - 3.4
+        - 3.6
+        - 4.0
+    driver:
+      versions:
+        - 3.11.1
   postgresql:
-    version: 9.6, 10, 11
+    database:
+      versions:
+        - 9.6
+        - 10
+        - 11
+        - 12
+    driver:
+      versions:
+        - 42.2.9
   sqlserver:
-    veresion: 2017
+    database:
+      versions:
+        - 2017
+        - 2019
+    driver:
+      versions:
+        - 7.2.2.jre8
   oracle:
-    version: 11g, 12c   
+    database:
+      versions:
+        - 11g
+        - 12c
+    driver:
+      versions:
+        - 12.2.0.1  
+  cassandra:
+    database:
+      versions: 
+        - 3.11.4
+    driver:
+      versions:
+        - 3.5.0         
 ```  
 
 The `summary` attribute describes a brief overview/highlight of changes in this series.
 
-The contents under _compatibility_ are meant to reflect what this version was tested with.  If new compatibility types are added, be sure to update the `_config/site.yml` file accordingly.
+The contents under _compatibility_ are meant to reflect what this version was tested with.
+If new compatibility types are added, be sure to update the `_config/site.yml` file accordingly.
+For non-connector entries, specifying the compatibility-type and its associated version string is sufficient.
+For connector entries, specify the `database -> versions` and `driver -> versions` arrays accordingly.
+
+_Note that since a series.yml file describes a release series and not a specific bugfix release, the contents of the file should reflect what the latest test compatibility is for the most recent release within the series._
+_So as new releases are added to a given series, its important to update the series.yml file with the pertinent connector and driver tested versions_.
 
 The _hidden_ attribute describes whether or not the series should be exposed on the website at all.   In general, when a series is considered legacy/old and no longer relevant, this attribute can be set to _true_ and no reference to this version will be included in the awestruct output.
 
