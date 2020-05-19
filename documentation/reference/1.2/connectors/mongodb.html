@@ -166,6 +166,9 @@
     <span class="nav-text">Operations</span>
 <ul class="nav-list">
   <li class="nav-item" data-depth="2">
+    <a class="nav-link" href="../operations/debezium-server.html">Debezium Server</a>
+  </li>
+  <li class="nav-item" data-depth="2">
     <a class="nav-link" href="../operations/logging.html">Logging</a>
   </li>
   <li class="nav-item" data-depth="2">
@@ -273,6 +276,7 @@
 <li><a href="#mongodb-topic-names">Topics names</a></li>
 <li><a href="#partitions">Partitions</a></li>
 <li><a href="#mongodb-events">Events</a></li>
+<li><a href="#transaction-metadata">Transaction Metadata</a></li>
 </ul>
 </li>
 <li><a href="#mongodb-deploying-a-connector">Deploying the MongoDB connector</a>
@@ -864,7 +868,7 @@ The payload section of every change event value produced by the MongoDB connecto
       "after": "{\"_id\" : {\"$numberLong\" : \"1004\"},\"first_name\" : \"Anne\",\"last_name\" : \"Kretchmar\",\"email\" : \"annek@noanswer.org\"}",
       "patch": null,
       "source": {
-        "version": "1.2.0.Beta1",
+        "version": "1.2.0.Beta2",
         "connector": "mongodb",
         "name": "fulfillment",
         "ts_ms": 1558965508000,
@@ -915,7 +919,7 @@ It is possible and even recommended to use the <a href="/docs/faq/#avro-converte
       "patch": "{\"$set\":{\"first_name\":\"Anne Marie\"}}",
       "filter": "{\"_id\" : {\"$numberLong\" : \"1004\"}}",
       "source": {
-        "version": "1.2.0.Beta1",
+        "version": "1.2.0.Beta2",
         "connector": "mongodb",
         "name": "fulfillment",
         "ts_ms": 1558965508000,
@@ -1002,7 +1006,7 @@ In particular, a delete event will not have an <code>after</code> value or a <co
       "ts_ms": 1465495462115,
       "filter": "{\"_id\" : {\"$numberLong\" : \"1004\"}}",
       "source": {
-        "version": "1.2.0.Beta1",
+        "version": "1.2.0.Beta2",
         "connector": "mongodb",
         "name": "fulfillment",
         "ts_ms": 1558965508000,
@@ -1065,6 +1069,126 @@ And, a tombstone event informs Kafka that <em>all</em> messages with that same k
 </div>
 </div>
 </div>
+<div class="sect2">
+<h3 id="transaction-metadata"><a class="anchor" href="#transaction-metadata"></a>Transaction Metadata</h3>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>This feature is under active development right now (incubating),
+so the structure of transaction events or other details may still change as development progresses.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="paragraph">
+<p>Debezium can generate events that represents tranaction metadata boundaries and enrich data messages.</p>
+</div>
+<div class="sect3">
+<h4 id="_transaction_boundaries"><a class="anchor" href="#_transaction_boundaries"></a>Transaction boundaries</h4>
+<div class="paragraph">
+<p>Debezium generates events for every transaction start and end.
+Every event contains</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p><code>status</code> - <code>BEGIN</code> or <code>END</code></p>
+</li>
+<li>
+<p><code>id</code> - string representation of unique transaction identifier</p>
+</li>
+<li>
+<p><code>event_count</code> (for <code>END</code> events) - total number of events emmitted by the transaction</p>
+</li>
+<li>
+<p><code>data_collections</code> (for <code>END</code> events) - an array of pairs of <code>data_collection</code> and <code>event_count</code> that provides number of events emitted by changes originating from given data collection</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>An example of messages looks like</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
+  "status": "BEGIN",
+  "id": "00000025:00000d08:0025",
+  "event_count": null,
+  "data_collections": null
+}
+
+{
+  "status": "END",
+  "id": "00000025:00000d08:0025",
+  "event_count": 2,
+  "data_collections": [
+    {
+      "data_collection": "rs0.testDB.tablea",
+      "event_count": 1
+    },
+    {
+      "data_collection": "rs0.testDB.tableb",
+      "event_count": 1
+    }
+  ]
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>The transaction events are written to the topic named <code>&lt;database.server.name&gt;.transaction</code>.</p>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_data_events_enrichment"><a class="anchor" href="#_data_events_enrichment"></a>Data events enrichment</h4>
+<div class="paragraph">
+<p>When transaction metadata are enabled then data message <code>Envelope</code> is enriched with a new field <code>transaction</code>.
+This field provide information about every event in form of composite of fields</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p><code>id</code> - string representation of unique transaction identifier</p>
+</li>
+<li>
+<p><code>total_order</code> - the absolute position the event amongst all events generated by the transaction</p>
+</li>
+<li>
+<p><code>data_collection_order</code> - the per-data collection position of the event amongst all events emitted by the transaction</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>An example of messages looks like</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
+  "before": null,
+  "after": {
+    "pk": "2",
+    "aa": "1"
+  },
+  "source": {
+...
+  },
+  "op": "c",
+  "ts_ms": "1580390884335",
+  "transaction": {
+    "id": "00000025:00000d08:0025",
+    "total_order": "1",
+    "data_collection_order": "1"
+  }
+}</code></pre>
+</div>
+</div>
+</div>
+</div>
 </div>
 </div>
 <div class="sect1">
@@ -1073,7 +1197,7 @@ And, a tombstone event informs Kafka that <em>all</em> messages with that same k
 <div class="paragraph">
 <p>If you&#8217;ve already installed <a href="https://zookeeper.apache.org">Zookeeper</a>, <a href="http://kafka.apache.org/">Kafka</a>, and <a href="https://kafka.apache.org/documentation.html#connect">Kafka Connect</a>, then using Debezium&#8217;s MongoDB connector is easy.
 Simply download the
-<a href="https://repo1.maven.org/maven2/io/debezium/debezium-connector-mongodb/1.2.0.Beta1/debezium-connector-mongodb-1.2.0.Beta1-plugin.tar.gz">connector&#8217;s plugin archive</a>,
+<a href="https://repo1.maven.org/maven2/io/debezium/debezium-connector-mongodb/1.2.0.Beta2/debezium-connector-mongodb-1.2.0.Beta2-plugin.tar.gz">connector&#8217;s plugin archive</a>,
 extract the JARs into your Kafka Connect environment, and add the directory with the JARs to Kafka Connect&#8217;s plugin path using the <a href="https://kafka.apache.org/documentation/#connectconfigs">plugin.path</a> configuration property.
 Restart your Kafka Connect process to pick up the new JARs.</p>
 </div>
