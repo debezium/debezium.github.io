@@ -250,61 +250,73 @@
 <div id="toc" class="toc">
 <div id="toctitle" class="title">Table of Contents</div>
 <ul class="sectlevel1">
-<li><a href="#_use_cases">Use-Cases</a>
-<ul class="sectlevel2">
-<li><a href="#_logical_tables">Logical Tables</a></li>
+<li><a href="#_use_case">Use case</a></li>
+<li><a href="#_example">Example</a></li>
+<li><a href="#_ensure_unique_key">Ensure unique key</a></li>
+<li><a href="#configuration-options">Configuration options</a></li>
 </ul>
+</div>
+<div class="paragraph">
+<p>Each Kafka record that contains a data change event has a default destination topic. If you need to, you can re-route records to topics that you specify before the records reach the Kafka Connect converter.
+To do this, Debezium provides the <code>ByLogicalTableRouter</code> single message transformation (SMT). Configure this transformation in the Debezium connector&#8217;s Kafka Connect configuration. Configuration options enable you to specify the following:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>An expression for identifying the records to re-route</p>
 </li>
-<li><a href="#_topic_names">Topic Names</a></li>
-<li><a href="#_key_fields">Key Fields</a></li>
+<li>
+<p>An expression that resolves to the destination topic</p>
+</li>
+<li>
+<p>How to ensure a unique key among the records being re-routed to the destination topic</p>
+</li>
 </ul>
 </div>
 <div class="paragraph">
-<p>Debezium enables you to re-route the emitted change before the message reaches the converter using a single message transformation,
-or <a href="https://kafka.apache.org/documentation/#connect_transforms">SMT</a>.
-The SMT provided by Debezium enables you to rewrite the topic and the key according to a regular expression and a replacement pattern,
-configurable per instance of Debezium.</p>
+<p>It is up to you to ensure that the transformation configuration provides the behavior that you want. Debezium does not validate the behavior that results from your configuration of the transformation.</p>
 </div>
 <div class="paragraph">
-<p>The implementation does not care about the sanity of the change, this is in the responsibility of the user.</p>
+<p>The <code>ByLogicalTableRouter</code> transformation is a
+<a href="https://kafka.apache.org/documentation/#connect_transforms">Kafka Connect SMT</a>.</p>
 </div>
 </div>
 </div>
 <div class="sect1">
-<h2 id="_use_cases"><a class="anchor" href="#_use_cases"></a>Use-Cases</h2>
+<h2 id="_use_case"><a class="anchor" href="#_use_case"></a>Use case</h2>
 <div class="sectionbody">
-<div class="sect2">
-<h3 id="_logical_tables"><a class="anchor" href="#_logical_tables"></a>Logical Tables</h3>
 <div class="paragraph">
-<p>A logical table consists of one or more physical tables with the same table structure.
-A common use case is sharding, where for example two physical tables <code>db_shard1.my_table</code> and <code>db_shard2.my_table</code> together form one logical table.</p>
+<p>The default behavior is that a Debezium connector sends each change event record to a topic whose name is formed from the name of the database and the name of the table in which the change was made. In other words, a topic receives records for one physical table. When you want a topic to receive records for more than one physical table, you must configure the Debezium connector to re-route the records to that topic.</p>
 </div>
 <div class="paragraph">
-<p>Typically the physical tables share the same schema.</p>
+<div class="title">Logical tables</div>
+<p>A logical table is a common use case for routing records for multiple physical tables to one topic. In a logical table, there are multiple physical tables that all have the same schema. For example, sharded tables have the same schema. A logical table might consist of two or more sharded tables: <code>db_shard1.my_table</code> and <code>db_shard2.my_table</code>. The tables are in different shards and are physically distinct but together they form a logical table.
+You can re-route change event records for tables in any of the shards to the same topic.</p>
 </div>
 <div class="paragraph">
-<p>Normally, Debezium connectors send each change event to a topic that is named by the database and table.
-But since the sharded tables have the same schema, we&#8217;d instead like to re-route each change event to a topic named by the <em>logical</em> table name.
-This way, all changes events for any of the shards all go to the same topic.</p>
-</div>
-<div class="paragraph">
-<p>What happens if each physical table has a primary key that is only unique within that table?
-In this case, a row in shard 1 can have the same primary key as a row in shard 2.
-Since Debezium events are keyed by the columns that make up the primary key, the events for that row in shard 1 would have the same key as the row in shard 2,
-even though globally they are different rows.
-So, in addition to changing the topic name, we may also want to <em>modify the event key</em> to add a field that makes the key globally unique.</p>
-</div>
-<div class="paragraph">
-<p>This SMT lets you specify how you want to choose the new topic name and then specify how to modify the change event key to ensure it is globally unique.</p>
-</div>
+<div class="title">Partitioned PostgreSQL tables</div>
+<p>When the Debezium PostgreSQL connector captures changes in a partitioned table, the default behavior is that change event records are routed to a different topic for each partition. To emit records from all partitions to one topic, configure the <code>ByLogicalTableRouter</code> SMT. Because each key in a partitioned table is guaranteed to be unique, configure <a href="#by-logical-table-router-key-enforce-uniqueness"><code>key.enforce.uniqueness=false</code></a> so that the SMT does not add a key field to ensure unique keys. The addition of a key field is default behavior.</p>
 </div>
 </div>
 </div>
 <div class="sect1">
-<h2 id="_topic_names"><a class="anchor" href="#_topic_names"></a>Topic Names</h2>
+<h2 id="_example"><a class="anchor" href="#_example"></a>Example</h2>
 <div class="sectionbody">
 <div class="paragraph">
-<p>Below is an example for a configuration which replaces a part of the table in the topic with another string, allowing two tables to emit changes to the same topic:</p>
+<p>To route change event records for multiple physical tables to the same topic, configure the <code>ByLogicalTableRouter</code> transformation in the Kafka Connect configuration for the Debezium connector. Configuration of the <code>ByLogicalTableRouter</code> SMT requires you to specify regular expressions that determine:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>The tables for which to route records. These tables must all have the same schema.</p>
+</li>
+<li>
+<p>The destination topic name.</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>For example, configuration in a <code>.properties</code> file looks like this:</p>
 </div>
 <div class="listingblock">
 <div class="content">
@@ -314,48 +326,182 @@ transforms.Reroute.topic.regex=(.*)customers_shard(.*)
 transforms.Reroute.topic.replacement=$1customers_all_shards</code></pre>
 </div>
 </div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>topic.regex</code></dt>
+<dd>
+<p>Specifies a regular expression that the transformation applies to each change event record to determine if it should be routed to a particular topic.</p>
 <div class="paragraph">
-<p>The configuration above will match topics such as <code>myserver.mydb.customers_shard1</code>, <code>myserver.mydb.customers_shard2</code> etc. and replace it with <code>myserver.mydb.customers_all_shards.</code></p>
+<p>In the example, the regular expression, <code>(.<strong>)customers_shard(.</strong>)</code> matches records for changes to tables whose names include the <code>customers_shard</code> string. This would re-route records for tables with the following names:</p>
+</div>
+<div class="paragraph">
+<p><code>myserver.mydb.customers_shard1</code><br>
+<code>myserver.mydb.customers_shard2</code><br>
+<code>myserver.mydb.customers_shard3</code></p>
+</div>
+</dd>
+<dt class="hdlist1"><code>topic.replacement</code></dt>
+<dd>
+<p>Specifies a regular expression that represents the destination topic name. The transformation routes each matching record to the topic identified by this expression. In this example, records for the three sharded tables listed above would be routed to the <code>myserver.mydb.customers_all_shards</code> topic.</p>
+</dd>
+</dl>
 </div>
 </div>
 </div>
 <div class="sect1">
-<h2 id="_key_fields"><a class="anchor" href="#_key_fields"></a>Key Fields</h2>
+<h2 id="_ensure_unique_key"><a class="anchor" href="#_ensure_unique_key"></a>Ensure unique key</h2>
 <div class="sectionbody">
 <div class="paragraph">
-<p>To address the concern of uniqueness across all the original tables discussed above,
-one more field for identifying the original (physical) table is inserted into the key structure of the change events.
-By default, this field is named <code>__dbz__physicalTableIdentifier</code> and has the original topic name as its value.</p>
+<p>A Debezium change event key uses the table columns that make up the table&#8217;s primary key. To route records for multiple physical tables to one topic, the event key must be unique across all of those tables. However, it is possible for each physical table to have a primary key that is unique within only that table. For example, a row in the <code>myserver.mydb.customers_shard1</code> table might have the same key value as a row in the <code>myserver.mydb.customers_shard2</code> table.</p>
 </div>
 <div class="paragraph">
-<p>If needed, another <em>field name</em> can be chosen by means of the <code>key.field.name</code> property
-(obviously you&#8217;ll want to choose a field name that doesn&#8217;t clash with existing primary key fields).
-For example the following configuration will use the name <code>shard_id</code> for the key field:</p>
+<p>To ensure that each event key is unique across the tables whose change event records go to the same topic, the <code>ByLogicalTableRouter</code> transformation inserts a field into change event keys. By default, the name of the inserted field is <code>__dbz__physicalTableIdentifier</code>. The value of the inserted field is the default destination topic name.</p>
+</div>
+<div class="paragraph">
+<p>If you want to, you can configure the <code>ByLogicalTableRouter</code> transformation to insert a different field into the key. To do this, specify the <code>key.field.name</code> option and set it to a field name that does not clash with existing primary key field names. For example:</p>
 </div>
 <div class="listingblock">
 <div class="content">
-<pre class="highlightjs highlight"><code>...
-transforms.Reroute.key.field.name=shard_id
-...</code></pre>
+<pre class="highlightjs highlight"><code>transforms=Reroute
+transforms.Reroute.type=io.debezium.transforms.ByLogicalTableRouter
+transforms.Reroute.topic.regex=(.*)customers_shard(.*)
+transforms.Reroute.topic.replacement=$1customers_all_shards
+transforms.Reroute.key.field.name=shard_id</code></pre>
 </div>
 </div>
 <div class="paragraph">
-<p>The <em>value</em> of the field can be adjusted via the <code>key.field.regex</code> and <code>key.field.replacement</code> properties.
-The former allows you to define a regular expression that will be applied to the original topic name to capture one or more groups of characters.
-The latter lets you specify an expression that defines the value for the field in terms of those captured groups.
-For example:</p>
+<p>This example adds the <code>shard_id</code> field to the key structure in routed records.</p>
+</div>
+<div class="paragraph">
+<p>If you want to adjust the value of the key&#8217;s new field, configure both of these options:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>key.field.regex</code></dt>
+<dd>
+<p>Specifies a regular expression that the transformation applies to the default destination topic name to capture one or more groups of characters.</p>
+</dd>
+<dt class="hdlist1"><code>key.field.replacement</code></dt>
+<dd>
+<p>Specifies a regular expression for determining the value of the inserted key field in terms of those captured groups.</p>
+</dd>
+</dl>
+</div>
+<div class="paragraph">
+<p>For example:</p>
 </div>
 <div class="listingblock">
 <div class="content">
-<pre class="highlightjs highlight"><code>...
-transforms.Reroute.key.field.regex=(.*)customers_shard(.*)
+<pre class="highlightjs highlight"><code>transforms.Reroute.key.field.regex=(.*)customers_shard(.*)
 transforms.Reroute.key.field.replacement=$2</code></pre>
 </div>
 </div>
 <div class="paragraph">
-<p>This will apply the given regular expression to original topic names and use the second capturing group as value for the key field.
-Assuming the source topics are named <code>myserver.mydb.customers_shard1</code>, <code>myserver.mydb.customers_shard2</code> etc., the key field&#8217;s values would be <code>1</code>, <code>2</code> etc.</p>
+<p>With this configuration, suppose that the default destination topic names are:</p>
 </div>
+<div class="paragraph">
+<p><code>myserver.mydb.customers_shard1</code><br>
+<code>myserver.mydb.customers_shard2</code><br>
+<code>myserver.mydb.customers_shard3</code></p>
+</div>
+<div class="paragraph">
+<p>The transformation uses the values in the second captured group, the shard numbers, as the value of the key&#8217;s new field. In this example, the inserted key field&#8217;s values would be <code>1</code>, <code>2</code>, or <code>3</code>.</p>
+</div>
+<div class="paragraph">
+<p>If your tables contain globally unique keys and you do not need to change the key structure, you can set the <code>key.enforce.uniqueness</code> property to <code>false</code>:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code>...
+transforms.Reroute.key.enforce.uniqueness=false
+...</code></pre>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="configuration-options"><a class="anchor" href="#configuration-options"></a>Configuration options</h2>
+<div class="sectionbody">
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 35%;">
+<col style="width: 10%;">
+<col style="width: 55%;">
+</colgroup>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Property</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Default</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Description</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a href="#by-logical-table-router-topic-regex"><code>topic.regex</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies a regular expression that the transformation applies to each change event record to determine if it should be routed to a particular topic.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a href="#by-logical-table-router-topic-replacement"><code>topic.replacement</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies a regular expression that represents the destination topic name. The transformation routes each matching record to the topic identified by this expression. This expression can refer to groups captured by the regular expression that you specify for <code>topic.regex</code>. To refer to a group, specify <code>$1</code>, <code>$2</code>, and so on.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a href="#by-logical-table-router-key-enforce-uniqueness"><code>key.enforce.uniqueness</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>true</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Indicates whether to add a field to the record&#8217;s change event key. Adding a key field ensures that each event key is unique across the tables whose change event records go to the same topic. This helps to prevent collisions of change events for records that have the same key but that originate from different source tables.<br>
+<br>
+Specify <code>false</code> if you do not want the transformation to add a key field.  For example, if you are routing records from a partitioned PostgreSQL table to one topic, you can configure <code>key.enforce.uniqueness=false</code> because unique keys are guaranteed in partitioned PostgreSQL tables.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a href="#by-logical-table-router-key-field-name"><code>key.field.name</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>__dbz__physicalTableIdentifier</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Name of a field to be added to the change event key. The value of this field identifies the original table name. For the SMT to add this field, <code>key.enforce.uniqueness</code> must be <code>true</code>, which is the default.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a href="#by-logical-table-router-key-field-regex"><code>key.field.regex</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies a regular expression that the transformation applies to the default destination topic name to capture one or more groups of characters. For the SMT to apply this expression, <code>key.enforce.uniqueness</code> must be <code>true</code>, which is the default.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a href="#by-logical-table-router-key-field-replacement"><code>key.field.replacement</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies a regular expression for determining the value of the inserted key field in terms of the groups captured by the expression specified for <code>key.field.regex</code>. For the SMT to apply this expression, <code>key.enforce.uniqueness</code> must be <code>true</code>, which is the default.</p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
 </div>
 </div>
 </article>
