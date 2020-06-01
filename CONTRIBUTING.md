@@ -320,6 +320,23 @@ The `summary` describes a brief overview of the changes in this specific release
 
 The `annoncement_url` is the fully qualified URL to the blog post about the release.
 
+##### Update playbook attributes
+
+When a new stable release has been published, be sure to update `playbook.yml` and `playbook_author.yml` files and set the `page-version-current` asciidoc variable to the most recent stable version identified by the `version` attribute from the main repository's `antora.yml` descriptor (see Antora Version in the table below).
+
+At the time of writing the following table illustrates the mappings:
+
+|Branch|Debezium Version|Antora Version|
+|---|---|---|
+|master|1.2.x|master|
+|1.2|1.2.x|1.2|
+|1.1|1.1.x|1.1|
+|1.0|1.0.x|1.0|
+|0.9|0.9.x|0.9|
+
+At the time of writing this, 1.2 has not yet been published as _Final_ and therefore the `page-version-current` asciidoc attribute in the playbook files should reference the Antora Version value of `1.1`.
+Once version 1.2.0.Final has been released, the playbooks should reference `1.2`.
+
 ##### Updating docs hierarchy
 
 Be sure when a new major/minor release is added that a new `docs/<major>.</minor>` directory is created and contains an `index.asciidoc` and `release-notes.asciidoc`.  See prior version directories for examples.
