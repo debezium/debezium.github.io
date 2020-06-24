@@ -518,7 +518,7 @@ If the connector is stopped before the tasks' snapshots are completed, upon rest
 <h3 id="mongodb-streaming-changes"><a class="anchor" href="#mongodb-streaming-changes"></a>Streaming changes</h3>
 <div class="paragraph">
 <p>Once the connector task for a replica set has an offset, it uses the offset to determine the position in the oplog where it should start streaming changes.
-The task will then connect to the replica set&#8217;s primary node and start streaming changes from that position, processing all of the create, insert, and delete operations and converting them into Debezium <a href="#mongodb-events">change events</a>. Each change event includes the position in the oplog where the operation was found, and the connector periodically records this as its most recent offset. (The interval at which the offset is recorded is governed by the <code>offset.flush.interval.ms</code> <a href="https://kafka.apache.org/documentation/#connectconfigs">Kafka Connect worker configuration property</a>.)</p>
+The task will then connect to the replica set&#8217;s primary node and start streaming changes from that position, processing all of the create, insert, and delete operations and converting them into Debezium <a href="#mongodb-events">change events</a>. Each change event includes the position in the oplog where the operation was found, and the connector periodically records this as its most recent offset. The interval at which the offset is recorded is governed by <a href="https://kafka.apache.org/documentation/#offset.flush.interval.ms"><code>offset.flush.interval.ms</code></a>, which is a Kafka Connect worker configuration property.</p>
 </div>
 <div class="paragraph">
 <p>When the connector is stopped gracefully, the last offset processed is recorded so that, upon restart, the connector will continue exactly where it left off.
@@ -539,10 +539,10 @@ If the connector&#8217;s tasks terminate unexpectedly, however, then the tasks m
 </table>
 </div>
 <div class="paragraph">
-<p>As mentioned above, the connector tasks always use the replica set&#8217;s primary node to stream changes from the oplog, ensuring that the connector sees the most up-to-date operations as possible and can capture the changes with lower latency than if secondaries were to be used instead. When the replica set elects a new primary, the connector will immediately stops streaming changes, connect to the new primary, and starts streaming changes from the new primary node at the same position. Likewise, if connector experiences any problems communicating with the replica set members, it will try to reconnect (using exponential backoff so as to not overwhelm the replica set) and once connected continue streaming changes from where it last left off. In this way the connector is able to dynamically adjust to changes in replica set membership and to automatically handle communication failures.</p>
+<p>As mentioned above, the connector tasks always use the replica set&#8217;s primary node to stream changes from the oplog, ensuring that the connector sees the most up-to-date operations as possible and can capture the changes with lower latency than if secondaries were to be used instead. When the replica set elects a new primary, the connector immediately stops streaming changes, connects to the new primary, and starts streaming changes from the new primary node at the same position. Likewise, if the connector experiences any problems communicating with the replica set members, it trys to reconnect, by using exponential backoff so as to not overwhelm the replica set, and once connected it continues streaming changes from where it last left off. In this way, the connector is able to dynamically adjust to changes in replica set membership and automatically handle communication failures.</p>
 </div>
 <div class="paragraph">
-<p>The bottom line is that the MongoDB connector will continue running under most situations, though communication problems may cause the connector to wait until the problems are resolved.</p>
+<p>To summarize, the MongoDB connector continues running in most situations. Communication problems might cause the connector to wait until the problems are resolved.</p>
 </div>
 </div>
 <div class="sect2">
@@ -584,32 +584,18 @@ If not, then you must use Kafka administration tools to create the topics before
 <h3 id="mongodb-partitions"><a class="anchor" href="#mongodb-partitions"></a>Partitions</h3>
 <div class="paragraph">
 <p>The MongoDB connector does not make any explicit determination of the topic partitions for events.
-Instead, it allows Kafka to determine the partition based upon the key.
+Instead, it allows Kafka to determine the partition based on the key.
 You can change Kafka&#8217;s partitioning logic by defining in the Kafka Connect worker configuration the name of the <code>Partitioner</code> implementation.</p>
 </div>
 <div class="paragraph">
-<p>Be aware that Kafka only maintains total order for events written to a single topic <em>partition</em>.
-Partitioning the events by key does mean that all events with the same key will always go to the same partition, ensuring that all events for a specific document are always totally ordered.</p>
+<p>Kafka maintains total order only for events written to a single topic partition.
+Partitioning the events by key does mean that all events with the same key always go to the same partition. This ensures that all events for a specific document are always totally ordered.</p>
 </div>
 </div>
 <div class="sect2">
 <h3 id="mongodb-events"><a class="anchor" href="#mongodb-events"></a>Events</h3>
 <div class="paragraph">
 <p>All data change events produced by the MongoDB connector have a key and a value.</p>
-</div>
-<div class="admonitionblock note">
-<table>
-<tr>
-<td class="icon">
-<i class="fa icon-note" title="Note"></i>
-</td>
-<td class="content">
-<div class="paragraph">
-<p>Starting with Kafka 0.10, Kafka can optionally record with the message key and value the <a href="https://kafka.apache.org/documentation.html#upgrade_10_performance_impact"><em>timestamp</em></a> at which the message was created (recorded by the producer) or written to the log by Kafka.</p>
-</div>
-</td>
-</tr>
-</table>
 </div>
 <div class="paragraph">
 <p>Debezium and Kafka Connect are designed around <em>continuous streams of event messages</em>, and the structure of these events could potentially change over time if the source of those events changed in structure or if the connector is improved or changed.
@@ -1038,7 +1024,7 @@ In particular, a delete event does not have an <code>after</code> value nor a <c
 </ul>
 </div>
 <div class="paragraph">
-<p>The MongoDB connector actually provides one other kind of event. Each <em>delete</em> event is followed by a <em>tombstone</em> event that has the same key but a <code>null</code> value, giving Kafka enough information to know that its <a href="https://cwiki.apache.org/confluence/display/KAFKA/Log+Compaction">Kafka log compaction</a> mechanism can remove <em>all</em> messages with that key.</p>
+<p>The MongoDB connector provides one other kind of event. Each <em>delete</em> event is followed by a <em>tombstone</em> event that has the same key as the <em>delete</em> event but a <code>null</code> value. This provides Kafka with the information needed to run its <a href="https://kafka.apache.org/documentation/#compaction">log compaction</a> mechanism to remove <em>all</em> messages with that key.</p>
 </div>
 <div class="admonitionblock note">
 <table>
@@ -1048,11 +1034,10 @@ In particular, a delete event does not have an <code>after</code> value nor a <c
 </td>
 <td class="content">
 <div class="paragraph">
-<p>All MongoDB connector events are designed to work with <a href="https://cwiki.apache.org/confluence/display/KAFKA/Log+Compaction">Kafka log compaction</a>, which allows for the removal of older messages as long as at least the most recent message for every key is kept. This is how Kafka can reclaim storage space while ensuring the topic contains a complete dataset and can be used for reloading key-based state.</p>
+<p>All MongoDB connector events are designed to work with <a href="https://kafka.apache.org/documentation/#compaction">Kafka log compaction</a>, which allows for the removal of older messages as long as at least the most recent message for every key is kept. This is how Kafka can reclaim storage space while ensuring that the topic contains a complete dataset and can be used for reloading key-based state.</p>
 </div>
 <div class="paragraph">
-<p>All MongoDB connector events for a uniquely identified document will have exactly the same key, signaling to Kafka that only the latest event be kept.
-And, a tombstone event informs Kafka that <em>all</em> messages with that same key can be removed.</p>
+<p>All MongoDB connector events for a uniquely identified document have exactly the same key, signaling to Kafka that only the latest event be kept. A tombstone event informs Kafka that <em>all</em> messages with that same key can be removed.</p>
 </div>
 </td>
 </tr>
@@ -1068,7 +1053,7 @@ And, a tombstone event informs Kafka that <em>all</em> messages with that same k
 <div class="sect3">
 <h4 id="_transaction_boundaries"><a class="anchor" href="#_transaction_boundaries"></a>Transaction boundaries</h4>
 <div class="paragraph">
-<p>Debezium generates events for every transaction start and end.
+<p>Debezium generates events for every transaction <code>BEGIN</code> and <code>END</code>.
 Every event contains</p>
 </div>
 <div class="ulist">
@@ -1088,7 +1073,7 @@ Every event contains</p>
 </ul>
 </div>
 <div class="paragraph">
-<p>An example of messages looks like</p>
+<p>Following is an example of what a message looks like:</p>
 </div>
 <div class="listingblock">
 <div class="content">
@@ -1123,8 +1108,8 @@ Every event contains</p>
 <div class="sect3">
 <h4 id="_data_events_enrichment"><a class="anchor" href="#_data_events_enrichment"></a>Data events enrichment</h4>
 <div class="paragraph">
-<p>When transaction metadata are enabled then data message <code>Envelope</code> is enriched with a new field <code>transaction</code>.
-This field provide information about every event in form of composite of fields</p>
+<p>When transaction metadata is enabled the data message <code>Envelope</code> is enriched with a new <code>transaction</code> field.
+This field provides information about every event in the form of a composite of fields:</p>
 </div>
 <div class="ulist">
 <ul>
@@ -1132,15 +1117,15 @@ This field provide information about every event in form of composite of fields<
 <p><code>id</code> - string representation of unique transaction identifier</p>
 </li>
 <li>
-<p><code>total_order</code> - the absolute position the event amongst all events generated by the transaction</p>
+<p><code>total_order</code> - the absolute position of the event among all events generated by the transaction</p>
 </li>
 <li>
-<p><code>data_collection_order</code> - the per-data collection position of the event amongst all events emitted by the transaction</p>
+<p><code>data_collection_order</code> - the per-data collection position of the event among all events that were emitted by the transaction</p>
 </li>
 </ul>
 </div>
 <div class="paragraph">
-<p>An example of messages looks like</p>
+<p>Following is an example of what a message looks like:</p>
 </div>
 <div class="listingblock">
 <div class="content">
@@ -1261,18 +1246,20 @@ Typically, you configure the Debezium MongoDB connector in a <code>.json</code> 
 </div>
 <table class="tableblock frame-all grid-all stretch">
 <colgroup>
+<col style="width: 45%;">
+<col style="width: 25%;">
 <col style="width: 30%;">
-<col style="width: 10%;">
-<col style="width: 60%;">
 </colgroup>
-<thead>
-<tr>
-<th class="tableblock halign-left valign-top">Attribute Name</th>
-<th class="tableblock halign-left valign-top">Type</th>
-<th class="tableblock halign-left valign-top">Description</th>
-</tr>
-</thead>
 <tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Attribute Name</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Type</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><strong>Description</strong></p></td>
+</tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>LastEvent</code></p>
@@ -1280,9 +1267,7 @@ Typically, you configure the Debezium MongoDB connector in a <code>.json</code> 
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>string</code></p>
 </div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The last snapshot event that the connector has read.</p>
-</div></div></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><strong>The last snapshot event that the connector has read.</strong></p></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -1291,9 +1276,7 @@ Typically, you configure the Debezium MongoDB connector in a <code>.json</code> 
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>long</code></p>
 </div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The number of milliseconds since the connector has read and processed the most recent event.</p>
-</div></div></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><strong>The number of milliseconds since the connector has read and processed the most recent event.</strong></p></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -1302,9 +1285,7 @@ Typically, you configure the Debezium MongoDB connector in a <code>.json</code> 
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>long</code></p>
 </div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The total number of events that this connector has seen since last started or reset.</p>
-</div></div></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><strong>The total number of events that this connector has seen since last started or reset.</strong></p></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -1313,9 +1294,7 @@ Typically, you configure the Debezium MongoDB connector in a <code>.json</code> 
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>long</code></p>
 </div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The number of events that have been filtered by whitelist or blacklist filtering rules configured on the connector.</p>
-</div></div></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><strong>The number of events that have been filtered by whitelist or blacklist filtering rules configured on the connector.</strong></p></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -1324,9 +1303,7 @@ Typically, you configure the Debezium MongoDB connector in a <code>.json</code> 
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>string[]</code></p>
 </div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The list of collections that are monitored by the connector.</p>
-</div></div></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><strong>The list of collections that are monitored by the connector.</strong></p></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -1335,9 +1312,7 @@ Typically, you configure the Debezium MongoDB connector in a <code>.json</code> 
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>int</code></p>
 </div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The length of the queue used to pass events between the snapshotter and the main Kafka Connect loop.</p>
-</div></div></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><strong>The length of the queue used to pass events between the snapshotter and the main Kafka Connect loop.</strong></p></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -1346,9 +1321,7 @@ Typically, you configure the Debezium MongoDB connector in a <code>.json</code> 
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>int</code></p>
 </div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The free capacity of the queue used to pass events between the snapshotter and the main Kafka Connect loop.</p>
-</div></div></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><strong>The free capacity of the queue used to pass events between the snapshotter and the main Kafka Connect loop.</strong></p></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -1357,9 +1330,7 @@ Typically, you configure the Debezium MongoDB connector in a <code>.json</code> 
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>int</code></p>
 </div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The total number of collections that are being included in the snapshot.</p>
-</div></div></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><strong>The total number of collections that are being included in the snapshot.</strong></p></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -1368,9 +1339,7 @@ Typically, you configure the Debezium MongoDB connector in a <code>.json</code> 
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>int</code></p>
 </div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The number of collections that the snapshot has yet to copy.</p>
-</div></div></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><strong>The number of collections that the snapshot has yet to copy.</strong></p></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -1379,9 +1348,7 @@ Typically, you configure the Debezium MongoDB connector in a <code>.json</code> 
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>boolean</code></p>
 </div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Whether the snapshot was started.</p>
-</div></div></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><strong>Whether the snapshot was started.</strong></p></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -1390,9 +1357,7 @@ Typically, you configure the Debezium MongoDB connector in a <code>.json</code> 
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>boolean</code></p>
 </div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Whether the snapshot was aborted.</p>
-</div></div></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><strong>Whether the snapshot was aborted.</strong></p></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -1401,9 +1366,7 @@ Typically, you configure the Debezium MongoDB connector in a <code>.json</code> 
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>boolean</code></p>
 </div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Whether the snapshot completed.</p>
-</div></div></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><strong>Whether the snapshot completed.</strong></p></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -1412,9 +1375,7 @@ Typically, you configure the Debezium MongoDB connector in a <code>.json</code> 
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>long</code></p>
 </div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The total number of seconds that the snapshot has taken so far, even if not complete.</p>
-</div></div></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><strong>The total number of seconds that the snapshot has taken so far, even if not complete.</strong></p></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -1423,9 +1384,7 @@ Typically, you configure the Debezium MongoDB connector in a <code>.json</code> 
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>Map&lt;String, Long&gt;</code></p>
 </div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Map containing the number of documents exported for each collection in the snapshot. Collections are incrementally added to the Map during processing. Updates every 10,000 documents scanned and upon completing a collection.</p>
-</div></div></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><strong>Map containing the number of documents exported for each collection in the snapshot. Collections are incrementally added to the Map during processing. Updates every 10,000 documents scanned and upon completing a collection.</strong></p></td>
 </tr>
 </tbody>
 </table>
@@ -1461,18 +1420,20 @@ Typically, you configure the Debezium MongoDB connector in a <code>.json</code> 
 </div>
 <table class="tableblock frame-all grid-all stretch">
 <colgroup>
+<col style="width: 45%;">
+<col style="width: 25%;">
 <col style="width: 30%;">
-<col style="width: 10%;">
-<col style="width: 60%;">
 </colgroup>
-<thead>
-<tr>
-<th class="tableblock halign-left valign-top">Attribute Name</th>
-<th class="tableblock halign-left valign-top">Type</th>
-<th class="tableblock halign-left valign-top">Description</th>
-</tr>
-</thead>
 <tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Attribute Name</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Type</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><strong>Description</strong></p></td>
+</tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>LastEvent</code></p>
@@ -1480,9 +1441,7 @@ Typically, you configure the Debezium MongoDB connector in a <code>.json</code> 
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>string</code></p>
 </div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The last streaming event that the connector has read.</p>
-</div></div></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><strong>The last streaming event that the connector has read.</strong></p></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -1491,9 +1450,7 @@ Typically, you configure the Debezium MongoDB connector in a <code>.json</code> 
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>long</code></p>
 </div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The number of milliseconds since the connector has read and processed the most recent event.</p>
-</div></div></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><strong>The number of milliseconds since the connector has read and processed the most recent event.</strong></p></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -1502,9 +1459,7 @@ Typically, you configure the Debezium MongoDB connector in a <code>.json</code> 
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>long</code></p>
 </div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The total number of events that this connector has seen since last started or reset.</p>
-</div></div></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><strong>The total number of events that this connector has seen since last started or reset.</strong></p></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -1513,9 +1468,7 @@ Typically, you configure the Debezium MongoDB connector in a <code>.json</code> 
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>long</code></p>
 </div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The number of events that have been filtered by whitelist or blacklist filtering rules configured on the connector.</p>
-</div></div></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><strong>The number of events that have been filtered by whitelist or blacklist filtering rules configured on the connector.</strong></p></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -1524,9 +1477,7 @@ Typically, you configure the Debezium MongoDB connector in a <code>.json</code> 
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>string[]</code></p>
 </div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The list of collections that are monitored by the connector.</p>
-</div></div></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><strong>The list of collections that are monitored by the connector.</strong></p></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -1535,9 +1486,7 @@ Typically, you configure the Debezium MongoDB connector in a <code>.json</code> 
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>int</code></p>
 </div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The length of the queue used to pass events between the streamer and the main Kafka Connect loop.</p>
-</div></div></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><strong>The length of the queue used to pass events between the streamer and the main Kafka Connect loop.</strong></p></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -1546,9 +1495,7 @@ Typically, you configure the Debezium MongoDB connector in a <code>.json</code> 
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>int</code></p>
 </div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The free capacity of the queue used to pass events between the streamer and the main Kafka Connect loop.</p>
-</div></div></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><strong>The free capacity of the queue used to pass events between the streamer and the main Kafka Connect loop.</strong></p></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -1557,9 +1504,7 @@ Typically, you configure the Debezium MongoDB connector in a <code>.json</code> 
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>boolean</code></p>
 </div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Flag that denotes whether the connector is currently connected to mongodb.</p>
-</div></div></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><strong>Flag that denotes whether the connector is currently connected to mongodb.</strong></p></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -1568,9 +1513,7 @@ Typically, you configure the Debezium MongoDB connector in a <code>.json</code> 
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>long</code></p>
 </div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The number of milliseconds between the last change event&#8217;s timestamp and the connector processing it. The values will incorporate any differences between the clocks on the machines where the database server and the connector are running.</p>
-</div></div></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><strong>The number of milliseconds between the last change event&#8217;s timestamp and the connector processing it. The values will incorporate any differences between the clocks on the machines where the database server and the connector are running.</strong></p></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -1579,9 +1522,7 @@ Typically, you configure the Debezium MongoDB connector in a <code>.json</code> 
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>long</code></p>
 </div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The number of processed transactions that were committed.</p>
-</div></div></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><strong>The number of processed transactions that were committed.</strong></p></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -1590,9 +1531,7 @@ Typically, you configure the Debezium MongoDB connector in a <code>.json</code> 
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>map&lt;string, string&gt;</code></p>
 </div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The coordinates of the last received event.</p>
-</div></div></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><strong>The coordinates of the last received event.</strong></p></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -1601,9 +1540,7 @@ Typically, you configure the Debezium MongoDB connector in a <code>.json</code> 
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>string</code></p>
 </div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Transaction identifier of the last processed transaction.</p>
-</div></div></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><strong>Transaction identifier of the last processed transaction.</strong></p></td>
 </tr>
 </tbody>
 </table>
@@ -2359,7 +2296,7 @@ The number of duplicate events depends on the offset flush period and the volume
 When the connector is restarted, it will resume streaming changes for each replica set where it last left off, recording change events for all of the changes that were made while the connector was stopped. If the connector is stopped long enough such that MongoDB purges from its oplog some operations that the connector has not read, then upon startup the connector will perform a snapshot.</p>
 </div>
 <div class="paragraph">
-<p>A properly configured Kafka cluster is capable of <a href="https://engineering.linkedin.com/kafka/benchmarking-apache-kafka-2-million-writes-second-three-cheap-machines">massive throughput</a>.
+<p>A properly configured Kafka cluster is capable of massive throughput.
 Kafka Connect is written with Kafka best practices, and given enough resources will also be able to handle very large numbers of database change events. Because of this, when a connector has been restarted after a while, it is very likely to catch up with the database, though how quickly will depend upon the capabilities and performance of Kafka and the volume of changes being made to the data in MongoDB.</p>
 </div>
 <div class="admonitionblock note">
