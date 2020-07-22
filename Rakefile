@@ -199,7 +199,7 @@ def run_awestruct(args)
   else
     augmented_args = "#{args}"
   end
-  system "#{$use_bundle_exec ? 'bundle exec ' : ''}awestruct #{augmented_args}"
+  system "#{$use_bundle_exec ? 'bundle exec ' : ''}awestruct #{augmented_args}" or raise "Awestruct build failed"
 end
 
 # A cross-platform means of finding an executable in the $PATH.
