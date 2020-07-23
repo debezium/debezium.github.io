@@ -35,7 +35,7 @@ module Awestruct
         # Guarantee that each page has a date value for sorting purposes
         featured.each do |p|
           if p.date.nil?
-            if ( p.relative_source_path =~ /^#{@path_prefix}\/(20[0123456789][0-9])-([01][0-9])-([0123][0-9])-([^.]+)\..*$/ )
+            if ( p.relative_source_path =~ /^#{@path_prefix}\/(20[0-9][0-9])-([01][0-9])-([0123][0-9])-([^.]+)\..*$/ )
               year  = $1
               month = $2
               day   = $3
@@ -53,4 +53,3 @@ module Awestruct
     end
   end
 end
-
