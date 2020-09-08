@@ -537,6 +537,9 @@ This ensures that the changes are replayed by Debezium in the same order as were
 </div>
 <div class="sect2">
 <h3 id="_schema_change_topic"><a class="anchor" href="#_schema_change_topic"></a>Schema change topic</h3>
+<div class="paragraph">
+<p>For a table for which CDC is enabled, the Debezium SQL Server connector stores the history of schema changes to that table in a database history topic. This topic reflects an internal connector state and you should not use it. If your application needs to track schema changes, there is a public schema change topic. The name of the schema change topic is the same as the logical server name specified in the connector configuration.</p>
+</div>
 <div class="admonitionblock warning">
 <table>
 <tr>
@@ -545,24 +548,30 @@ This ensures that the changes are replayed by Debezium in the same order as were
 </td>
 <td class="content">
 <div class="paragraph">
-<p>The format of the schema change topic messages is in incubating state and it can change without further notice.</p>
+<p>The format of messages that a connector emits to its schema change topic is in an incubating state and can change without notice.</p>
 </div>
 </td>
 </tr>
 </table>
 </div>
 <div class="paragraph">
-<p>SQL Server connector stores the historic schema structure of database tables in a database history topic.
-This topic should be considered as an internal state of the connector and should not be used by the user.
-If the application needs to track changes in the source database there is the public-facing schema change topic.
-The topic name is the same as the logical server name configured in connector configuration.</p>
+<p>Debezium emits a message to the schema change topic when:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>You enable CDC for a table.</p>
+</li>
+<li>
+<p>You disable CDC for a table.</p>
+</li>
+<li>
+<p>You alter the structure of a table for which CDC is enabled by following the <a href="#sqlserver-schema-evolution">schema evolution procedure</a>.</p>
+</li>
+</ul>
 </div>
 <div class="paragraph">
-<p>Debezium emits a new message to this topic whenever a new table is streamed from or when the structure of the table is altered (<a href="#sqlserver-schema-evolution">schema evolution procedure must be followed</a>).
-The message contains a logical representation of the table schema.</p>
-</div>
-<div class="paragraph">
-<p>The example of the message is:</p>
+<p>A message to the schema change topic contains a logical representation of the table schema, for example:</p>
 </div>
 <div class="listingblock">
 <div class="content">
@@ -572,7 +581,7 @@ The message contains a logical representation of the table schema.</p>
   },
   "payload": {
     "source": {
-      "version": "1.2.2.Final",
+      "version": "1.2.3.Final",
       "connector": "sqlserver",
       "name": "server1",
       "ts_ms": 1588252618953,
@@ -584,19 +593,19 @@ The message contains a logical representation of the table schema.</p>
       "commit_lsn": "00000025:00000d98:00a2",
       "event_serial_no": null
     },
-    "databaseName": "testDB",
+    "databaseName": "testDB", // <1>
     "schemaName": "dbo",
-    "ddl": null,
-    "tableChanges": [
+    "ddl": null, // <2>
+    "tableChanges": [ // <3>
       {
-        "type": "CREATE",
-        "id": "\"testDB\".\"dbo\".\"customers\"",
-        "table": {
+        "type": "CREATE", // <4>
+        "id": "\"testDB\".\"dbo\".\"customers\"", // <5>
+        "table": { // <6>
           "defaultCharsetName": null,
-          "primaryKeyColumnNames": [
+          "primaryKeyColumnNames": [ // <7>
             "id"
           ],
-          "columns": [
+          "columns": [ // <8>
             {
               "name": "id",
               "jdbcType": 4,
@@ -661,39 +670,81 @@ The message contains a logical representation of the table schema.</p>
 }</code></pre>
 </div>
 </div>
-<div class="paragraph">
-<p>The fields</p>
+<table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 1. Descriptions of fields in messages emitted to the schema change topic</caption>
+<colgroup>
+<col style="width: 10%;">
+<col style="width: 30%;">
+<col style="width: 60%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Item</th>
+<th class="tableblock halign-left valign-top">Field name</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">1</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>databaseName</code><br>
+<code>schemaName</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Identifies the database and the schema that contain the change.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">2</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>ddl</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Always <code>null</code> for the SQL Server connector. For other connectors, this field contains the DDL responsible for the schema change. This DDL is not available to SQL Server connectors.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">3</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>tableChanges</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">An array of one or more items that contain the schema changes generated by a DDL command.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">4</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>type</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Describes the kind of change. The value is one of the following:</p>
 </div>
 <div class="ulist">
 <ul>
 <li>
-<p><code>databaseName</code> and <code>schemaName</code> describe which database/schema has been affected</p>
+<p><code>CREATE</code> - table created</p>
 </li>
 <li>
-<p><code>ddl</code> contains the DDL responsible for the schema change (not available for SQL Server connector)</p>
+<p><code>ALTER</code> - table modified</p>
 </li>
 <li>
-<p><code>tableChanges</code> array contains one or more schema changes generated by the DDL command</p>
-</li>
-<li>
-<p><code>type</code> describes the kind of the change: <code>CREATE</code> - table created, <code>ALTER</code> - table modified, <code>DROP</code> - table deleted</p>
-</li>
-<li>
-<p><code>id</code> is the full identifier of the table</p>
-</li>
-<li>
-<p><code>table</code> represents table metadata after the applied change</p>
-</li>
-<li>
-<p><code>primaryKeyColumnNames</code> is a list of columns that compose the table primary key</p>
-</li>
-<li>
-<p><code>columns</code> are column metadata of each of the columns</p>
+<p><code>DROP</code> - table deleted</p>
 </li>
 </ul>
-</div>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">5</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>id</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Full identifier of the table that was created, altered, or dropped.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">6</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>table</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Represents table metadata after the applied change.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">7</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>primaryKeyColumnNames</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">List of columns that compose the table&#8217;s primary key.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">8</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>columns</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Metadata for each column in the changed table.</p></td>
+</tr>
+</tbody>
+</table>
 <div class="paragraph">
-<p>The schema change messages use as the key the name of the database to which the changes apply:</p>
+<p>In messages to the schema change topic, the key is the name of the database that contains the schema change. In the following example, the <code>payload</code> field contains the key:</p>
 </div>
 <div class="listingblock">
 <div class="content">
@@ -1027,7 +1078,7 @@ Both operations share the same commit and change LSN and their event numbers are
       "email": "john.doe@example.org"
     },
     "source": {
-      "version": "1.2.2.Final",
+      "version": "1.2.3.Final",
       "connector": "sqlserver",
       "name": "server1",
       "ts_ms": 1559729468470,
@@ -1107,7 +1158,7 @@ Here&#8217;s an example:</p>
       "email": "noreply@example.org"
     },
     "source": {
-      "version": "1.2.2.Final",
+      "version": "1.2.3.Final",
       "connector": "sqlserver",
       "name": "server1",
       "ts_ms": 1559729995937,
@@ -1191,7 +1242,7 @@ The following sample shows the value of a <em>delete</em> event for the same tab
     },
     "after": null,
     "source": {
-      "version": "1.2.2.Final",
+      "version": "1.2.3.Final",
       "connector": "sqlserver",
       "name": "server1",
       "ts_ms": 1559730445243,
@@ -2144,7 +2195,7 @@ The <code>connect.decimal.precision</code> schema parameter contains an integer 
 <div class="sectionbody">
 <div class="paragraph">
 <p>If you have already installed <a href="https://zookeeper.apache.org">Zookeeper</a>, <a href="http://kafka.apache.org/">Kafka</a>, and <a href="https://kafka.apache.org/documentation.html#connect">Kafka Connect</a>, then using Debezium&#8217;s SQL Server` connector is easy.
-Simply download the <a href="https://repo1.maven.org/maven2/io/debezium/debezium-connector-sqlserver/1.2.2.Final/debezium-connector-sqlserver-1.2.2.Final-plugin.tar.gz">connector&#8217;s plug-in archive</a>, extract the JARs into your Kafka Connect environment, and add the directory with the JARs to <a href="https://kafka.apache.org/documentation/#connectconfigs">Kafka Connect&#8217;s <code>plugin.path</code></a>.
+Simply download the <a href="https://repo1.maven.org/maven2/io/debezium/debezium-connector-sqlserver/1.2.3.Final/debezium-connector-sqlserver-1.2.3.Final-plugin.tar.gz">connector&#8217;s plug-in archive</a>, extract the JARs into your Kafka Connect environment, and add the directory with the JARs to <a href="https://kafka.apache.org/documentation/#connectconfigs">Kafka Connect&#8217;s <code>plugin.path</code></a>.
 Restart your Kafka Connect process to pick up the new JARs.</p>
 </div>
 <div class="paragraph">
@@ -2913,6 +2964,17 @@ The hash is automatically shortened to the length of the column.</p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>Time, date, and timestamps can be represented with different kinds of precision, including: <code>adaptive</code> (the default) captures the time and timestamp values exactly as in the database using either millisecond, microsecond, or nanosecond precision values based on the database column&#8217;s type; or <code>connect</code> always represents time and timestamp values using Kafka Connect&#8217;s built-in representations for Time, Date, and Timestamp, which uses millisecond precision regardless of the database columns' precision. See <a href="#sqlserver-temporal-values">temporal values</a>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="sqlserver-property-include-schema-changes"></a><a href="#sqlserver-property-include-schema-changes"><code>include.schema.changes</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>true</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Boolean value that specifies whether the connector should publish changes in the database schema to a Kafka topic with the same name as the database server ID. Each schema change is recorded with a key that contains the database name and a value that is a JSON structure that describes the schema update. This is independent of how the connector internally records database history. The default is <code>true</code>.</p>
 </div></div></td>
 </tr>
 <tr>

@@ -284,7 +284,7 @@
 <ul class="sectlevel2">
 <li><a href="#how-the-mysql-connector-uses-database-schemas_debezium">How the MySQL connector uses database schemas</a></li>
 <li><a href="#how-the-mysql-connector-performs-database-snapshots_debezium">How the MySQL connector performs database snapshots</a></li>
-<li><a href="#how-the-mysql-connector-handles-schema-change-topics_debezium">How the MySQL connector handles schema change topics</a></li>
+<li><a href="#how-the-mysql-connector-exposes-schema-changes">How the MySQL connector exposes schema changes</a></li>
 <li><a href="#mysql-connector-events_debezium">MySQL connector events</a></li>
 <li><a href="#how-the-mysql-connector-maps-data-types_debezium">How the MySQL connector maps data types</a></li>
 <li><a href="#the-mysql-connector-and-kafka-topics_debezium">The MySQL connector and Kafka topics</a></li>
@@ -333,7 +333,7 @@
 <p>When the connector restarts after having crashed or been stopped gracefully, the connector starts reading the binlog from a specific position, that is, from a specific point in time. The connector rebuilds the table structures that existed at this point in time by reading the database history Kafka topic and parsing all DDL statements up to the point in the binlog where the connector is starting.</p>
 </div>
 <div class="paragraph">
-<p>This database history topic is for connector use only. The connector can optionally generate schema change events on a different topic that is intended for consumer applications. This is described in <a href="#how-the-mysql-connector-handles-schema-change-topics_debezium">how the MySQL connector handles schema change topics</a>.</p>
+<p>This database history topic is for connector use only. The connector can optionally generate schema change events on a different topic that is intended for consumer applications. This is described in <a href="#how-the-mysql-connector-exposes-schema-changes">how the MySQL connector exposes schema changes</a>.</p>
 </div>
 <div class="paragraph">
 <p>When the MySQL connector captures changes in a table to which a schema change tool such as <code>gh-ost</code> or <code>pt-online-schema-change</code> is applied then helper tables created during the migration process need to be included among whitelisted tables.</p>
@@ -581,7 +581,7 @@ This happens if applicable.
 </div>
 </div>
 <div class="sect2">
-<h3 id="how-the-mysql-connector-handles-schema-change-topics_debezium"><a class="anchor" href="#how-the-mysql-connector-handles-schema-change-topics_debezium"></a>How the MySQL connector handles schema change topics</h3>
+<h3 id="how-the-mysql-connector-exposes-schema-changes"><a class="anchor" href="#how-the-mysql-connector-exposes-schema-changes"></a>How the MySQL connector exposes schema changes</h3>
 <div class="paragraph">
 <p>You can configure the Debezium <strong>MySQL connector</strong> to produce schema change events that include all DDL statements applied to databases in the MySQL server. The connector writes all of these events to a Kafka topic named <code>&lt;serverName&gt;</code> where <code>serverName</code> is the name of the connector as specified in the <code>database.server.name</code> configuration property.</p>
 </div>
@@ -758,8 +758,9 @@ creation, make sure that Kafka’s <code>num.partitions</code> configuration opt
 }</code></pre>
 </div>
 </div>
-<div class="sect4">
-<h5 id="_important_tips_regarding_schema_change_topics"><a class="anchor" href="#_important_tips_regarding_schema_change_topics"></a>Important tips regarding schema change topics</h5>
+</div>
+<div class="sect3">
+<h4 id="_important_tips_about_the_schema_change_topic"><a class="anchor" href="#_important_tips_about_the_schema_change_topic"></a>Important tips about the schema change topic</h4>
 <div class="paragraph">
 <p>The <code>ddl</code> field may contain multiple DDL statements. Every statement applies to the database in the <code>databaseName</code> field and appears in the same order as they were applied in the database. The <code>source</code> field is structured exactly as a standard data change event written to table-specific topics. This field is useful to correlate events on different topic.</p>
 </div>
@@ -803,113 +804,37 @@ creation, make sure that Kafka’s <code>num.partitions</code> configuration opt
 </div>
 </div>
 </div>
-</div>
 <div class="sect2">
 <h3 id="mysql-connector-events_debezium"><a class="anchor" href="#mysql-connector-events_debezium"></a>MySQL connector events</h3>
 <div class="paragraph">
-<p>All data change events produced by the Debezium MySQL connector contain a key and a value. The change event key and the change event value each contain a <em>schema</em> and a <em>payload</em> where the schema describes the structure of the payload and the payload contains the data.</p>
+<p>The Debezium MySQL connector generates a data change event for each row-level <code>INSERT</code>, <code>UPDATE</code>, and <code>DELETE</code> operation. Each event contains a key and a value. The structure of the key and the value depends on the table that was changed.</p>
 </div>
-<div class="admonitionblock warning">
-<table>
-<tr>
-<td class="icon">
-<i class="fa icon-warning" title="Warning"></i>
-</td>
-<td class="content">
-The MySQL connector ensures that all Kafka Connect schema names adhere to the <a href="http://avro.apache.org/docs/current/spec.html#names">Avro schema name format</a>. This is important as any character that is not a latin letter or underscore is replaced by an underscore which can lead to unexpected conflicts in schema names when the logical server names, database names, and table names container other characters that are replaced with these underscores.
-</td>
-</tr>
-</table>
-</div>
-<div class="sect3">
-<h4 id="_change_event_key"><a class="anchor" href="#_change_event_key"></a>Change event key</h4>
 <div class="paragraph">
-<p>For any given table, the change event&#8217;s key has a structure that contains a field for each column in the <code>PRIMARY KEY</code> (or unique constraint) at the time the event was created. Let us look at an example table and then how the schema and payload would appear for the table.</p>
+<p>Debezium and Kafka Connect are designed around <em>continuous streams of event messages</em>. However, the structure of these events may change over time, which can be difficult for consumers to handle. To address this, each event contains the schema for its content or, if you are using a schema registry, a schema ID that a consumer can use to obtain the schema from the registry. This makes each event self-contained.</p>
+</div>
+<div class="paragraph">
+<p>The following skeleton JSON shows the basic four parts of a change event. However, how you configure the Kafka Connect converter that you choose to use in your application determines the representation of these four parts in change events. A <code>schema</code> field is in a change event only when you configure the converter to produce it. Likewise, the event key and event payload are in a change event only if you configure a converter to produce it. If you use the JSON converver and you configure it to produce all four basic change event parts, change events have this structure:</p>
 </div>
 <div class="listingblock">
-<div class="title">example table</div>
-<div class="content">
-<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">CREATE TABLE customers (
-  id INTEGER NOT NULL AUTO_INCREMENT PRIMARY KEY,
-  first_name VARCHAR(255) NOT NULL,
-  last_name VARCHAR(255) NOT NULL,
-  email VARCHAR(255) NOT NULL UNIQUE KEY
-) AUTO_INCREMENT=1001;</code></pre>
-</div>
-</div>
-<div class="exampleblock">
-<div class="content">
-<div class="listingblock">
-<div class="title">example change event key</div>
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
  "schema": { <i class="conum" data-value="1"></i><b>(1)</b>
-    "type": "struct",
- "name": "mysql-server-1.inventory.customers.Key", <i class="conum" data-value="2"></i><b>(2)</b>
- "optional": false, <i class="conum" data-value="3"></i><b>(3)</b>
- "fields": [ <i class="conum" data-value="4"></i><b>(4)</b>
-      {
-        "field": "id",
-        "type": "int32",
-        "optional": false
-      }
-    ]
+   ...
   },
- "payload": { <i class="conum" data-value="5"></i><b>(5)</b>
-    "id": 1001
-  }
+ "payload": { <i class="conum" data-value="2"></i><b>(2)</b>
+   ...
+ },
+ "schema": { <i class="conum" data-value="3"></i><b>(3)</b>
+   ...
+ },
+ "payload": { <i class="conum" data-value="4"></i><b>(4)</b>
+   ...
+ },
 }</code></pre>
 </div>
 </div>
-<div class="colist arabic">
-<table>
-<tr>
-<td><i class="conum" data-value="1"></i><b>1</b></td>
-<td>The <code>schema</code> describes what is in the <code>payload</code>.</td>
-</tr>
-<tr>
-<td><i class="conum" data-value="2"></i><b>2</b></td>
-<td>The <code>mysql-server-1.inventory.customers.Key</code> is the name of the schema which defines the structure where <code>mysql-server-1</code> is the connector name, <code>inventory</code> is the database, and <code>customers</code> is the table.</td>
-</tr>
-<tr>
-<td><i class="conum" data-value="3"></i><b>3</b></td>
-<td>Denotes that the <code>payload</code> is not optional.</td>
-</tr>
-<tr>
-<td><i class="conum" data-value="4"></i><b>4</b></td>
-<td>Specifies the type of fields expected in the <code>payload</code>.</td>
-</tr>
-<tr>
-<td><i class="conum" data-value="5"></i><b>5</b></td>
-<td>The payload itself, which in this case only contains a single <code>id</code> field.</td>
-</tr>
-</table>
-</div>
-<div class="paragraph">
-<p>This key describes the row in the <code>inventory.customers</code> table which is out from the connector entitled <code>mysql-server-1</code> whose <code>id</code> primary key column has a value of <code>1001</code>.</p>
-</div>
-</div>
-</div>
-</div>
-<div class="sect3">
-<h4 id="_change_event_value"><a class="anchor" href="#_change_event_value"></a>Change event value</h4>
-<div class="paragraph">
-<p>The change event value contains a schema and a payload section. There are three types of change event values which have an envelope structure. The fields in this structure are explained below and marked on each of the change event value examples.</p>
-</div>
-<div class="ulist">
-<ul>
-<li>
-<p><a href="#_create_change_event_value">Create change event value</a></p>
-</li>
-<li>
-<p><a href="#_update_change_event_value">Update change event value</a></p>
-</li>
-<li>
-<p><a href="#_delete_change_event_value">Delete change event value</a></p>
-</li>
-</ul>
-</div>
 <table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 1. Overview of change event basic content</caption>
 <colgroup>
 <col style="width: 10%;">
 <col style="width: 20%;">
@@ -925,122 +850,58 @@ The MySQL connector ensures that all Kafka Connect schema names adhere to the <a
 <tbody>
 <tr>
 <td class="tableblock halign-left valign-top"><p class="tableblock">1</p></td>
-<td class="tableblock halign-left valign-top"><p class="tableblock"><code>name</code></p></td>
-<td class="tableblock halign-left valign-top"><p class="tableblock"><code>mysql-server-1.inventory.customers.Key</code> is the name of the schema which defines the structure where <code>mysql-server-1</code> is the connector name, <code>inventory</code> is the database and <code>customers</code> is the table</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>schema</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The first <code>schema</code> field is part of the event key. It specifies a Kafka Connect schema that describes what is in the event key&#8217;s <code>payload</code> portion. In other words, the first <code>schema</code> field describes the structure of the primary key, or the unique key if the table does not have a primary key, for the table that was changed.<br>
+<br>
+It is possible to override the table&#8217;s primary key by setting the <a href="#mysql-property-message-key-columns"><code>message.key.columns</code> connector configuration property</a>. In this case, the first schema field describes the structure of the the key identified by that property.</p></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><p class="tableblock">2</p></td>
-<td class="tableblock halign-left valign-top"><p class="tableblock"><code>op</code></p></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>A <strong>mandatory</strong> string that describes the type of operation.</p>
-</div>
-<div class="ulist">
-<div class="title">values</div>
-<ul>
-<li>
-<p><code>c</code> = create</p>
-</li>
-<li>
-<p><code>u</code> = update</p>
-</li>
-<li>
-<p><code>d</code> = delete</p>
-</li>
-<li>
-<p><code>r</code> = read (<em>initial snapshot</em> only)</p>
-</li>
-</ul>
-</div></div></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>payload</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The first <code>payload</code> field is part of the event key. It has the structure described by the previous <code>schema</code> field and it contains the key for the row that was changed.</p></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><p class="tableblock">3</p></td>
-<td class="tableblock halign-left valign-top"><p class="tableblock"><code>before</code></p></td>
-<td class="tableblock halign-left valign-top"><p class="tableblock">An optional field that specifies the state of the row before the event occurred.</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>schema</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The second <code>schema</code> field is part of the event value. It specifies the Kafka Connect schema that describes what is in the event value&#8217;s <code>payload</code> portion. In other words, the second <code>schema</code> describes the structure of the row that was changed. Typically, this schema contains nested schemas.</p></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><p class="tableblock">4</p></td>
-<td class="tableblock halign-left valign-top"><p class="tableblock"><code>after</code></p></td>
-<td class="tableblock halign-left valign-top"><p class="tableblock">An optional field that specifies the state of the row after the event occurred.</p></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><p class="tableblock">5</p></td>
-<td class="tableblock halign-left valign-top"><p class="tableblock"><code>source</code></p></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>A <strong>mandatory</strong> field that describes the source metadata for the event including:</p>
-</div>
-<div class="ulist">
-<ul>
-<li>
-<p>the Debezium version</p>
-</li>
-<li>
-<p>the connector name</p>
-</li>
-<li>
-<p>the binlog name where the event was recorded</p>
-</li>
-<li>
-<p>the binlog position</p>
-</li>
-<li>
-<p>the row within the event</p>
-</li>
-<li>
-<p>if the event was part of a snapshot</p>
-</li>
-<li>
-<p>the name of the affected database and table</p>
-</li>
-<li>
-<p>the id of the MySQL thread creating the event (non-snapshot only)</p>
-</li>
-<li>
-<p>the MySQL server ID (if available)</p>
-</li>
-<li>
-<p>timestamp</p>
-</li>
-</ul>
-</div>
-<div class="admonitionblock note">
-<table>
-<tr>
-<td class="icon">
-<i class="fa icon-note" title="Note"></i>
-</td>
-<td class="content">
-If the <a href="#enable-query-log-events-for-cdc_debezium">binlog_rows_query_log_events</a> option is enabled and the connector has the <code>include.query</code> option enabled, a <code>query</code> field is displayed which contains the original SQL statement that generated the event.
-</td>
-</tr>
-</table>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><p class="tableblock">6</p></td>
-<td class="tableblock halign-left valign-top"><p class="tableblock"><code>ts_ms</code></p></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>An optional field that displays the time at which the connector processed the event.</p>
-</div>
-<div class="admonitionblock note">
-<table>
-<tr>
-<td class="icon">
-<i class="fa icon-note" title="Note"></i>
-</td>
-<td class="content">
-The time is based on the system clock in the JVM running the Kafka Connect task.
-</td>
-</tr>
-</table>
-</div></div></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>payload</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The second <code>payload</code> field is part of the event value. It has the structure described by the previous <code>schema</code> field and it contains the actual data for the row that was changed.</p></td>
 </tr>
 </tbody>
 </table>
 <div class="paragraph">
-<p>Let us look at an example table and then how the schema and payload would appear for the table.</p>
+<p>By default, the connector streams change event records to topics with names that are the same as the event&#8217;s originating table. See <a href="#the-mysql-connector-and-kafka-topics_debezium">MySQL connector and Kafka topics</a>.</p>
+</div>
+<div class="admonitionblock warning">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-warning" title="Warning"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>The MySQL connector ensures that all Kafka Connect schema names adhere to the <a href="http://avro.apache.org/docs/current/spec.html#names">Avro schema name format</a>. This means that the logical server name must start with a Latin letter or an underscore, that is, a-z, A-Z, or _. Each remaining character in the logical server name and each character in the database and table names must be a Latin letter, a digit, or an underscore, that is, a-z, A-Z, 0-9, or \_. If there is an invalid character it is replaced with an underscore character.</p>
+</div>
+<div class="paragraph">
+<p>This can lead to unexpected conflicts if the logical server name, a database name, or a table name contains invalid characters, and the only characters that distinguish names from one another are invalid and thus replaced with underscores.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="sect3">
+<h4 id="_change_event_keys"><a class="anchor" href="#_change_event_keys"></a>Change event keys</h4>
+<div class="paragraph">
+<p>A change event&#8217;s key contains the schema for the changed table&#8217;s key and the changed row&#8217;s actual key. Both the schema and its corresponding payload contain a field for each column in the changed table&#8217;s <code>PRIMARY KEY</code> (or unique constraint) at the time the connector created the event.</p>
+</div>
+<div class="paragraph">
+<p>Consider the following <code>customers</code> table, which is followed by an example of a change event key for this table.</p>
 </div>
 <div class="listingblock">
-<div class="title">example table</div>
+<div class="title">Example table</div>
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">CREATE TABLE customers (
   id INTEGER NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -1050,10 +911,127 @@ The time is based on the system clock in the JVM running the Kafka Connect task.
 ) AUTO_INCREMENT=1001;</code></pre>
 </div>
 </div>
-<div class="sect4">
-<h5 id="_create_change_event_value"><a class="anchor" href="#_create_change_event_value"></a>Create change event value</h5>
 <div class="paragraph">
-<p>This example shows a <em>create</em> event for the <code>customers</code> table:</p>
+<div class="title">Example change event key</div>
+<p>Every change event that captures a change to the <code>customers</code> table has the same event key schema. For as long as the <code>customers</code> table has the previous definition, every change event that captures a change to the <code>customers</code> table has the following key structure. In JSON, it looks like this:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
+ "schema": { <i class="conum" data-value="1"></i><b>(1)</b>
+    "type": "struct",
+    "name": "mysql-server-1.inventory.customers.Key", <i class="conum" data-value="2"></i><b>(2)</b>
+    "optional": false, <i class="conum" data-value="3"></i><b>(3)</b>
+    "fields": [ <i class="conum" data-value="4"></i><b>(4)</b>
+      {
+        "field": "id",
+        "type": "int32",
+        "optional": false
+      }
+    ]
+  },
+ "payload": { <i class="conum" data-value="5"></i><b>(5)</b>
+    "id": 1001
+  }
+}</code></pre>
+</div>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 2. Description of change event key</caption>
+<colgroup>
+<col style="width: 10%;">
+<col style="width: 20%;">
+<col style="width: 70%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Item</th>
+<th class="tableblock halign-left valign-top">Field name</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">1</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>schema</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The schema portion of the key specifies a Kafka Connect schema that describes what is in the key&#8217;s <code>payload</code> portion.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">2</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>mysql-server-1.inventory.customers.Key</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Name of the schema that defines the structure of the key&#8217;s payload. This schema describes the structure of the primary key for the table that was changed. Key schema names have the format <em>connector-name</em>.<em>database-name</em>.<em>table-name</em>.<code>Key</code>. In this example:<br></p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p><code>mysql-server-1</code> is the name of the connector that generated this event.<br></p>
+</li>
+<li>
+<p><code>inventory</code> is the database that contains the table that was changed.<br></p>
+</li>
+<li>
+<p><code>customers</code> is the table that was updated.</p>
+</li>
+</ul>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">3</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>optional</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Indicates whether the event key must contain a value in its <code>payload</code> field. In this example, a value in the key&#8217;s payload is required. A value in the key&#8217;s payload field is optional when a table does not have a primary key.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">4</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>fields</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Specifies each field that is expected in the <code>payload</code>, including each field&#8217;s name, type, and whether it is required.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">5</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>payload</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Contains the key for the row for which this change event was generated. In this example, the key, contains a single <code>id</code> field whose value is <code>1001</code>.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="sect3">
+<h4 id="_change_event_values"><a class="anchor" href="#_change_event_values"></a>Change event values</h4>
+<div class="paragraph">
+<p>The value in a change event is a bit more complicated than the key. Like the key, the value has a <code>schema</code> section and a <code>payload</code> section. The <code>schema</code> section contains the schema that describes the <code>Envelope</code> structure of the <code>payload</code> section, including its nested fields. Change events for operations that create, update or delete data all have a value payload with an envelope structure.</p>
+</div>
+<div class="paragraph">
+<p>Consider the same sample table that was used to show an example of a change event key:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">CREATE TABLE customers (
+  id INTEGER NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  first_name VARCHAR(255) NOT NULL,
+  last_name VARCHAR(255) NOT NULL,
+  email VARCHAR(255) NOT NULL UNIQUE KEY
+) AUTO_INCREMENT=1001;</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>The value portion of a change event for a change to this table is described for each event type:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p><a href="#mysql-create-events"><em>create</em> events</a></p>
+</li>
+<li>
+<p><a href="#mysql-update-events"><em>update</em> events</a></p>
+</li>
+<li>
+<p><a href="#mysql-delete-events"><em>delete</em> events</a></p>
+</li>
+</ul>
+</div>
+<div class="sect4">
+<h5 id="mysql-create-events"><a class="anchor" href="#mysql-create-events"></a><em>create</em> events</h5>
+<div class="paragraph">
+<p>The following example shows the value portion of a change event that the connector generates for an operation that creates data in the <code>customers</code> table:</p>
 </div>
 <div class="listingblock">
 <div class="content">
@@ -1086,7 +1064,7 @@ The time is based on the system clock in the JVM running the Kafka Connect task.
           }
         ],
         "optional": true,
-        "name": "mysql-server-1.inventory.customers.Value",
+        "name": "mysql-server-1.inventory.customers.Value", <i class="conum" data-value="2"></i><b>(2)</b>
         "field": "before"
       },
       {
@@ -1114,7 +1092,7 @@ The time is based on the system clock in the JVM running the Kafka Connect task.
           }
         ],
         "optional": true,
-        "name": "mysql-server-1.inventory.customers.Value",
+        "name": "mysql-server-1.inventory.customers.Value", <i class="conum" data-value="2"></i><b>(2)</b>
         "field": "after"
       },
       {
@@ -1138,7 +1116,7 @@ The time is based on the system clock in the JVM running the Kafka Connect task.
           {
             "type": "int64",
             "optional": false,
-            "field": "ts_ms"
+            "field": "ts_sec"
           },
           {
             "type": "boolean",
@@ -1193,7 +1171,7 @@ The time is based on the system clock in the JVM running the Kafka Connect task.
           }
         ],
         "optional": false,
-        "name": "io.product.connector.mysql.Source",
+        "name": "io.product.connector.mysql.Source", <i class="conum" data-value="2"></i><b>(2)</b>
         "field": "source"
       },
       {
@@ -1208,23 +1186,23 @@ The time is based on the system clock in the JVM running the Kafka Connect task.
       }
     ],
     "optional": false,
-    "name": "mysql-server-1.inventory.customers.Envelope"
+    "name": "mysql-server-1.inventory.customers.Envelope" <i class="conum" data-value="2"></i><b>(2)</b>
   },
-  "payload": { <i class="conum" data-value="2"></i><b>(2)</b>
-    "op": "c",
-    "ts_ms": 1465491411815,
-    "before": null,
-    "after": {
+  "payload": { <i class="conum" data-value="3"></i><b>(3)</b>
+    "op": "c", <i class="conum" data-value="4"></i><b>(4)</b>
+    "ts_ms": 1465491411815, <i class="conum" data-value="5"></i><b>(5)</b>
+    "before": null, <i class="conum" data-value="6"></i><b>(6)</b>
+    "after": { <i class="conum" data-value="7"></i><b>(7)</b>
       "id": 1004,
       "first_name": "Anne",
       "last_name": "Kretchmar",
       "email": "annek@noanswer.org"
     },
-    "source": {
-      "version": "1.2.2.Final",
+    "source": { <i class="conum" data-value="8"></i><b>(8)</b>
+      "version": "1.2.3.Final",
       "connector": "mysql",
       "name": "mysql-server-1",
-      "ts_ms": 0,
+      "ts_sec": 0,
       "snapshot": false,
       "db": "inventory",
       "table": "customers",
@@ -1240,52 +1218,147 @@ The time is based on the system clock in the JVM running the Kafka Connect task.
 }</code></pre>
 </div>
 </div>
-<div class="colist arabic">
-<table>
+<table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 3. Descriptions of <em>create</em> event value fields</caption>
+<colgroup>
+<col style="width: 10%;">
+<col style="width: 20%;">
+<col style="width: 70%;">
+</colgroup>
+<thead>
 <tr>
-<td><i class="conum" data-value="1"></i><b>1</b></td>
-<td>The <code>schema</code> portion of this event’s <em>value</em> shows the schema for the envelope, the schema for the source structure (which is specific to the MySQL connector and reused across all events), and the table-specific schemas for the <code>before</code> and <code>after</code> fields.
-<div class="admonitionblock tip">
-<table>
+<th class="tableblock halign-left valign-top">Item</th>
+<th class="tableblock halign-left valign-top">Field name</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
 <tr>
-<td class="icon">
-<i class="fa icon-tip" title="Tip"></i>
-</td>
-<td class="content">
+<td class="tableblock halign-left valign-top"><p class="tableblock">1</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>schema</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The value&#8217;s schema, which describes the structure of the value&#8217;s payload. A change event&#8217;s value schema is the same in every change event that the connector generates for a particular table.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">2</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>name</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>In the <code>schema</code> section, each <code>name</code> field specifies the schema for a field in the value&#8217;s payload. In this example:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p><code>mysql-server-1.inventory.customers.Value</code> is the schema for the payload&#8217;s <code>before</code> and <code>after</code> fields. This schema is specific to the <code>customers</code> table.</p>
+</li>
+<li>
+<p><code>io.product.connector.mysql.Source</code> is the schema for the payload&#8217;s <code>source</code> field. This schema is specific to the MySQL connector. The connector uses it for all events that it generates.</p>
+</li>
+<li>
+<p><code>mysql-server-1.inventory.customers.Envelope</code> is the schema for the overall structure of the payload, where <code>mysql-server-1</code> is the connector name, <code>inventory</code> is the database, and <code>customers</code> is the table.</p>
+</li>
+</ul>
+</div>
 <div class="paragraph">
-<p>The names of the schemas for the <code>before</code> and <code>after</code> fields are of the form <code>&lt;logicalName&gt;.&lt;tableName&gt;.Value</code>, and thus are entirely independent from all other schemas for all other tables. This means that when using the <a href="../configuration/avro.html" class="page">Avro Converter</a>, the resulting Avro schemas for each table in each logical source have their own evolution and history.</p>
+<p>Names of schemas for <code>before</code> and <code>after</code> fields are of the form <code><em>logicalName</em>.<em>tableName</em>.Value</code>, which ensures that the schema name is unique in the database. This means that when using the <a href="../configuration/avro.html" class="page">Avro converter</a>, the resulting Avro schema for each table in each logical source has its own evolution and history.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">3</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>payload</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The value&#8217;s actual data. This is the information that the change event is providing.</p>
+<p class="tableblock">It may appear that the JSON representations of the events are much larger than the rows they describe. This is because the JSON representation must include the schema and the payload portions of the message.
+However, by using the <a href="../configuration/avro.html" class="page">Avro converter</a>, you can significantly decrease the size of the messages that the connector streams to Kafka topics.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">4</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>op</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Mandatory string that describes the type of operation that caused the connector to generate the event. In this example, <code>c</code> indicates that the operation created a row. Valid values are:</p>
 </div>
-</td>
-</tr>
-</table>
-</div></td>
+<div class="ulist">
+<ul>
+<li>
+<p><code>c</code> = create</p>
+</li>
+<li>
+<p><code>u</code> = update</p>
+</li>
+<li>
+<p><code>d</code> = delete</p>
+</li>
+<li>
+<p><code>r</code> = read (applies to only snapshots)</p>
+</li>
+</ul>
+</div></div></td>
 </tr>
 <tr>
-<td><i class="conum" data-value="2"></i><b>2</b></td>
-<td>The <code>payload</code> portion of this event’s <em>value</em> shows the information in the event, namely that it is describing that the row was created (because <code>op=c</code>), and that the <code>after</code> field value contains the values of the new inserted row&#8217;s <code>id</code>, <code>first_name</code>, <code>last_name</code>, and <code>email</code> columns.
-<div class="admonitionblock tip">
-<table>
+<td class="tableblock halign-left valign-top"><p class="tableblock">5</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>ts_ms</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Optional field that displays the time at which the connector processed the event. The time is based on the system clock in the JVM running the Kafka Connect task.</p>
+</div></div></td>
+</tr>
 <tr>
-<td class="icon">
-<i class="fa icon-tip" title="Tip"></i>
-</td>
-<td class="content">
+<td class="tableblock halign-left valign-top"><p class="tableblock">6</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>before</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">An optional field that specifies the state of the row before the event occurred. When the <code>op</code> field is <code>c</code> for create, as it is in this example, the <code>before</code> field is <code>null</code> since this change event is for new content.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">7</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>after</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">An optional field that specifies the state of the row after the event occurred. In this example, the <code>after</code> field contains the values of the new row&#8217;s <code>id</code>, <code>first_name</code>, <code>last_name</code>, and <code>email</code> columns.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">8</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>source</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Mandatory field that describes the source metadata for the event. This field contains information that you can use to compare this event with other events, with regard to the origin of the events, the order in which the events occurred, and whether events were part of the same transaction. The source metadata includes:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>Debezium version</p>
+</li>
+<li>
+<p>Connector name</p>
+</li>
+<li>
+<p>binlog name where the event was recorded</p>
+</li>
+<li>
+<p>binlog position</p>
+</li>
+<li>
+<p>Row within the event</p>
+</li>
+<li>
+<p>If the event was part of a snapshot</p>
+</li>
+<li>
+<p>Name of the database and table that contain the new row</p>
+</li>
+<li>
+<p>ID of the MySQL thread that created the event (non-snapshot only)</p>
+</li>
+<li>
+<p>MySQL server ID (if available)</p>
+</li>
+<li>
+<p>Timestamp</p>
+</li>
+</ul>
+</div>
 <div class="paragraph">
-<p>It may appear that the JSON representations of the events are much larger than the rows they describe. This is because the JSON representation must include the schema and the payload portions of the message.
-However, by using the <a href="../configuration/avro.html" class="page">Avro Converter</a>, you can dramatically decrease the size of the actual messages written to the Kafka topics.</p>
-</div>
-</td>
+<p>If the <a href="#enable-query-log-events-for-cdc_debezium"><code>binlog_rows_query_log_events</code></a> MySQL configuration option is enabled and the connector configuration <code>include.query</code> property is enabled, the <code>source</code> field also provides the <code>query</code> field, which contains the original SQL statement that caused the change event.</p>
+</div></div></td>
 </tr>
+</tbody>
 </table>
-</div></td>
-</tr>
-</table>
-</div>
 </div>
 <div class="sect4">
-<h5 id="_update_change_event_value"><a class="anchor" href="#_update_change_event_value"></a>Update change event value</h5>
+<h5 id="mysql-update-events"><a class="anchor" href="#mysql-update-events"></a><em>update</em> events</h5>
 <div class="paragraph">
-<p>The value of an <em>update</em> change event on the <code>customers</code> table has the exact same schema as a <em>create</em> event. The payload is structured the same, but holds different values. Here is an example (formatted for readability):</p>
+<p>The value of a change event for an update in the sample <code>customers</code> table has the same schema as a <em>create</em> event for that table. Likewise, the event value&#8217;s payload has the same structure. However, the event value payload contains different values in an <em>update</em> event. Here is an example of a change event value in an event that the connector generates for an update in the <code>customers</code> table:</p>
 </div>
 <div class="listingblock">
 <div class="content">
@@ -1305,11 +1378,11 @@ However, by using the <a href="../configuration/avro.html" class="page">Avro Con
       "email": "annek@noanswer.org"
     },
     "source": { <i class="conum" data-value="3"></i><b>(3)</b>
-      "version": "1.2.2.Final",
+      "version": "1.2.3.Final",
       "name": "mysql-server-1",
       "connector": "mysql",
       "name": "mysql-server-1",
-      "ts_ms": 1465581,
+      "ts_sec": 1465581,
       "snapshot": false,
       "db": "inventory",
       "table": "customers",
@@ -1322,38 +1395,89 @@ However, by using the <a href="../configuration/avro.html" class="page">Avro Con
       "query": "UPDATE customers SET first_name='Anne Marie' WHERE id=1004"
     },
     "op": "u", <i class="conum" data-value="4"></i><b>(4)</b>
-    "ts_ms": 1465581029523 <i class="conum" data-value="5"></i><b>(5)</b>
+    "ts_ms": 1465581029523
   }
 }</code></pre>
 </div>
 </div>
+<table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 4. Descriptions of <em>update</em> event value fields</caption>
+<colgroup>
+<col style="width: 10%;">
+<col style="width: 20%;">
+<col style="width: 70%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Item</th>
+<th class="tableblock halign-left valign-top">Field name</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">1</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>before</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">An optional field that specifies the state of the row before the event occurred. In an <em>update</em> event value, the <code>before</code> field contains a field for each table column and the value that was in that column before the database commit. In this example, the <code>first_name</code> value is <code>Anne.</code></p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">2</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>after</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">An optional field that specifies the state of the row after the event occurred. You can compare the <code>before</code> and <code>after</code> structures to determine what the update to this row was. In the example, the <code>first_name</code> value is now <code>Anne Marie</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">3</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>source</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Mandatory field that describes the source metadata for the event. The <code>source</code> field structure has the same fields as in a <em>create</em> event, but some values are different, for example, the sample <em>update</em> event is from a different position in the binlog. The source metadata includes:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>Debezium version</p>
+</li>
+<li>
+<p>Connector name</p>
+</li>
+<li>
+<p>binlog name where the event was recorded</p>
+</li>
+<li>
+<p>binlog position</p>
+</li>
+<li>
+<p>Row within the event</p>
+</li>
+<li>
+<p>If the event was part of a snapshot</p>
+</li>
+<li>
+<p>Name of the database and table that contain the updated row</p>
+</li>
+<li>
+<p>ID of the MySQL thread that created the event (non-snapshot only)</p>
+</li>
+<li>
+<p>MySQL server ID (if available)</p>
+</li>
+<li>
+<p>Timestamp</p>
+</li>
+</ul>
+</div>
 <div class="paragraph">
-<p>Comparing this to the value in the <em>insert</em> event, you can see a couple of differences in the <code>payload</code> section:</p>
-</div>
-<div class="colist arabic">
-<table>
-<tr>
-<td><i class="conum" data-value="1"></i><b>1</b></td>
-<td>The <code>before</code> field now has the state of the row with the values before the database commit.</td>
+<p>If the <a href="#enable-query-log-events-for-cdc_debezium"><code>binlog_rows_query_log_events</code></a> MySQL configuration option is enabled and the connector configuration <code>include.query</code> property is enabled, the <code>source</code> field also provides the <code>query</code> field, which contains the original SQL statement that caused the change event.</p>
+</div></div></td>
 </tr>
 <tr>
-<td><i class="conum" data-value="2"></i><b>2</b></td>
-<td>The <code>after</code> field now has the updated state of the row, and the <code>first_name</code> value is now <code>Anne Marie</code>. You can compare the <code>before</code> and <code>after</code> structures to determine what actually changed in this row because of the commit.</td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">4</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>op</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Mandatory string that describes the type of operation. In an <em>update</em> event value, the <code>op</code> field value is <code>u</code>, signifying that this row changed because of an update.</p>
+</div></div></td>
 </tr>
-<tr>
-<td><i class="conum" data-value="3"></i><b>3</b></td>
-<td>The <code>source</code> field structure has the same fields as before, but the values are different (this event is from a different position in the binlog). The <code>source</code> structure shows information about MySQL’s record of this change (providing traceability). It also has information you can use to compare to other events in this and other topics to know whether this event occurred before, after, or as part of the same MySQL commit as other events.</td>
-</tr>
-<tr>
-<td><i class="conum" data-value="4"></i><b>4</b></td>
-<td>The <code>op</code> field value is now <code>u</code>, signifying that this row changed because of an update.</td>
-</tr>
-<tr>
-<td><i class="conum" data-value="5"></i><b>5</b></td>
-<td>The <code>ts_ms</code> field shows the timestamp when Debezium processed this event.</td>
-</tr>
+</tbody>
 </table>
-</div>
 <div class="admonitionblock note">
 <table>
 <tr>
@@ -1362,7 +1486,7 @@ However, by using the <a href="../configuration/avro.html" class="page">Avro Con
 </td>
 <td class="content">
 <div class="paragraph">
-<p>When the columns for a row’s primary or unique key are updated, the value of the row’s key is changed and Debezium outputs three events: a <em>DELETE</em> event and tombstone event with the old key for the row, followed by an <em>INSERT</em> event with the new key for the row.</p>
+<p>Updating the columns for a row&#8217;s primary/unique key changes the value of the row&#8217;s key. When a key changes, Debezium outputs <em>three</em> events: a <code>DELETE</code> event and a <a href="#mysql-tombstone-events">tombstone event</a> with the old key for the row, followed by an event with the new key for the row. Details are in the next section.</p>
 </div>
 </td>
 </tr>
@@ -1370,9 +1494,26 @@ However, by using the <a href="../configuration/avro.html" class="page">Avro Con
 </div>
 </div>
 <div class="sect4">
-<h5 id="_delete_change_event_value"><a class="anchor" href="#_delete_change_event_value"></a>Delete change event value</h5>
+<h5 id="mysql-primary-key-updates"><a class="anchor" href="#mysql-primary-key-updates"></a>Primary key updates</h5>
 <div class="paragraph">
-<p>The value of a <em>delete</em> change event on the <code>customers</code> table has the exact same schema as <em>create</em> and <em>update</em> events. The payload is structured the same, but holds different values. Here is an example (formatted for readability):</p>
+<p>An <code>UPDATE</code> operation that changes a row&#8217;s primary key field(s) is known
+as a primary key change. For a primary key change, in place of an <code>UPDATE</code> event record, the connector emits a <code>DELETE</code> event record for the old key and a <code>CREATE</code> event record for the new (updated) key. These events have the usual structure and content, and in addition, each one has a message header related to the primary key change:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>The <code>DELETE</code> event record has <code>__debezium.newkey</code> as a message header. The value of this header is the new primary key for the updated row.</p>
+</li>
+<li>
+<p>The <code>CREATE</code> event record has <code>__debezium.oldkey</code> as a message header. The value of this header is the previous (old) primary key that the updated row had.</p>
+</li>
+</ul>
+</div>
+</div>
+<div class="sect4">
+<h5 id="mysql-delete-events"><a class="anchor" href="#mysql-delete-events"></a><em>delete</em> events</h5>
+<div class="paragraph">
+<p>The value in a <em>delete</em> change event has the same <code>schema</code> portion as <em>create</em> and <em>update</em> events for the same table. The <code>payload</code> portion in a <em>delete</em> event for the sample <code>customers</code> table looks like this:</p>
 </div>
 <div class="listingblock">
 <div class="content">
@@ -1387,10 +1528,10 @@ However, by using the <a href="../configuration/avro.html" class="page">Avro Con
     },
     "after": null, <i class="conum" data-value="2"></i><b>(2)</b>
     "source": { <i class="conum" data-value="3"></i><b>(3)</b>
-      "version": "1.2.2.Final",
+      "version": "1.2.3.Final",
       "connector": "mysql",
       "name": "mysql-server-1",
-      "ts_ms": 1465581,
+      "ts_sec": 1465581,
       "snapshot": false,
       "db": "inventory",
       "table": "customers",
@@ -1408,58 +1549,101 @@ However, by using the <a href="../configuration/avro.html" class="page">Avro Con
 }</code></pre>
 </div>
 </div>
-<div class="paragraph">
-<p>Comparing the <code>payload</code> portion to the payloads in the <em>create</em> and <em>update</em> events, you can see some differences:</p>
+<table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 5. Descriptions of <em>delete</em> event value fields</caption>
+<colgroup>
+<col style="width: 10%;">
+<col style="width: 20%;">
+<col style="width: 70%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Item</th>
+<th class="tableblock halign-left valign-top">Field name</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">1</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>before</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Optional field that specifies the state of the row before the event occurred. In a <em>delete</em> event value, the <code>before</code> field contains the values that were in the row before it was deleted with the database commit.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">2</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>after</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Optional field that specifies the state of the row after the event occurred. In a <em>delete</em> event value, the <code>after</code> field is <code>null</code>, signifying that the row no longer exists.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">3</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>source</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Mandatory field that describes the source metadata for the event. In a <em>delete</em> event value, the <code>source</code> field structure is the same as for <em>create</em> and <em>update</em> events for the same table. Many <code>source</code> field values are also the same. In a <em>delete</em> event value, the <code>ts_ms</code> and <code>pos</code> field values, as well as other values, might have changed. But the <code>source</code> field in a <em>delete</em> event value provides the same metadata:</p>
 </div>
-<div class="colist arabic">
-<table>
-<tr>
-<td><i class="conum" data-value="1"></i><b>1</b></td>
-<td>The <code>before</code> field now has the state of the row that was deleted with the database commit.</td>
+<div class="ulist">
+<ul>
+<li>
+<p>Debezium version</p>
+</li>
+<li>
+<p>Connector name</p>
+</li>
+<li>
+<p>binlog name where the event was recorded</p>
+</li>
+<li>
+<p>binlog position</p>
+</li>
+<li>
+<p>Row within the event</p>
+</li>
+<li>
+<p>If the event was part of a snapshot</p>
+</li>
+<li>
+<p>Name of the database and table that contain the updated row</p>
+</li>
+<li>
+<p>ID of the MySQL thread that created the event (non-snapshot only)</p>
+</li>
+<li>
+<p>MySQL server ID (if available)</p>
+</li>
+<li>
+<p>Timestamp</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>If the <a href="#enable-query-log-events-for-cdc_debezium"><code>binlog_rows_query_log_events</code></a> MySQL configuration option is enabled and the connector configuration <code>include.query</code> property is enabled, the <code>source</code> field also provides the <code>query</code> field, which contains the original SQL statement that caused the change event.</p>
+</div></div></td>
 </tr>
 <tr>
-<td><i class="conum" data-value="2"></i><b>2</b></td>
-<td>The <code>after</code> field is <code>null</code>, signifying that the row no longer exists.</td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">4</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>op</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Mandatory string that describes the type of operation. The <code>op</code> field value is <code>d</code>, signifying that this row was deleted.</p>
+</div></div></td>
 </tr>
 <tr>
-<td><i class="conum" data-value="3"></i><b>3</b></td>
-<td>The <code>source</code> field structure has many of the same values as before, except the <code>ts_sec</code> and <code>pos</code> fields have changed (and the file might have changed in other scenarios).</td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">5</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>ts_ms</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Optional field that displays the time at which the connector processed the event. The time is based on the system clock in the JVM running the Kafka Connect task.</p>
+</div></div></td>
 </tr>
-<tr>
-<td><i class="conum" data-value="4"></i><b>4</b></td>
-<td>The <code>op</code> field value is now <code>d</code>, signifying that this row was deleted.</td>
-</tr>
-<tr>
-<td><i class="conum" data-value="5"></i><b>5</b></td>
-<td>The <code>ts_ms</code> shows the timestamp when Debezium processed this event.</td>
-</tr>
+</tbody>
 </table>
+<div class="paragraph">
+<p>A <em>delete</em> change event record provides a consumer with the information it needs to process the removal of this row. The old values are included because some consumers might require them in order to properly handle the removal.</p>
 </div>
 <div class="paragraph">
-<p>This event provides a consumer with the information that it needs to process the removal of this row. The old values are included because some consumers might require them in order to properly handle the removal.</p>
+<p>MySQL connector events are designed to work with <a href="https://kafka.apache.org/documentation/#compaction">Kafka log compaction</a>. Log compaction enables removal of some older messages as long as at least the most recent message for every key is kept. This lets Kafka reclaim storage space while ensuring that the topic contains a complete data set and can be used for reloading key-based state.</p>
 </div>
-<div class="paragraph">
-<p>The MySQL connector’s events are designed to work with <a href="https://kafka.apache.org/documentation#compaction">Kafka log compaction</a>, which allows for the removal of some older messages as long as at least the most recent message for every key is kept. This allows Kafka to reclaim storage space while ensuring the topic contains a complete data set and can be used for reloading key-based state.</p>
+<div id="mysql-tombstone-events" class="paragraph">
+<div class="title">Tombstone events</div>
+<p>When a row is deleted, the <em>delete</em> event value still works with log compaction, because Kafka can remove all earlier messages that have that same key. However, for Kafka to remove all messages that have that same key, the message value must be <code>null</code>. To make this possible, after Debezium’s MySQL connector emits a <em>delete</em> event, the connector emits a special tombstone event that has the same key but a <code>null</code> value.</p>
 </div>
-<div class="paragraph">
-<p>When a row is deleted, the <em>delete</em> event value listed above still works with log compaction, because Kafka can still remove all earlier messages with that same key. If the message value is <code>null</code>, Kafka knows that it can remove all messages with that same key. To make this possible, Debezium’s MySQL connector always follows a <em>delete</em> event with a special tombstone event that has the same key but a <code>null</code> value.</p>
-</div>
-</div>
-</div>
-<div class="sect3">
-<h4 id="_primary_key_update_header"><a class="anchor" href="#_primary_key_update_header"></a>Primary Key Update Header</h4>
-<div class="paragraph">
-<p>When there is an update event that&#8217;s changing the row&#8217;s primary key field/s, also known
-as a primary key change, Debezium will in that case send a DELETE event for the old key
-and an INSERT event for the new (updated) key.</p>
-</div>
-<div class="paragraph">
-<p>The DELETE event produces a Kafka message which has a message header <code>__debezium.newkey</code>
-and the value is the new primary key.</p>
-</div>
-<div class="paragraph">
-<p>The INSERT event produces a Kafka message which has a message header <code>__debezium.oldkey</code>
-and the value is the previous (old) primary key of the updated row.</p>
 </div>
 </div>
 </div>
@@ -1980,12 +2164,12 @@ Represents the number of milliseconds since epoch, and does not include time zon
 </tr>
 </tbody>
 </table>
-<div class="paragraph">
-<p>== Decimal values</p>
-</div>
 </dd>
 </dl>
 </div>
+</div>
+<div class="sect3">
+<h4 id="_decimal_values"><a class="anchor" href="#_decimal_values"></a>Decimal values</h4>
 <div class="paragraph">
 <p>Decimals are handled via the <code>decimal.handling.mode</code> property.</p>
 </div>
@@ -2293,7 +2477,7 @@ Because these hosted options do not allow a <strong>global read lock</strong>, t
 <ul class="sectlevel2">
 <li><a href="#how-the-mysql-connector-uses-database-schemas_debezium">How the MySQL connector uses database schemas</a></li>
 <li><a href="#how-the-mysql-connector-performs-database-snapshots_debezium">How the MySQL connector performs database snapshots</a></li>
-<li><a href="#how-the-mysql-connector-handles-schema-change-topics_debezium">How the MySQL connector handles schema change topics</a></li>
+<li><a href="#how-the-mysql-connector-exposes-schema-changes">How the MySQL connector exposes schema changes</a></li>
 <li><a href="#mysql-connector-events_debezium">MySQL connector events</a></li>
 <li><a href="#how-the-mysql-connector-maps-data-types_debezium">How the MySQL connector maps data types</a></li>
 <li><a href="#the-mysql-connector-and-kafka-topics_debezium">The MySQL connector and Kafka topics</a></li>
@@ -2972,7 +3156,7 @@ This option is only available from MySQL 5.6 and later.
 <ul class="sectlevel2">
 <li><a href="#how-the-mysql-connector-uses-database-schemas_debezium">How the MySQL connector uses database schemas</a></li>
 <li><a href="#how-the-mysql-connector-performs-database-snapshots_debezium">How the MySQL connector performs database snapshots</a></li>
-<li><a href="#how-the-mysql-connector-handles-schema-change-topics_debezium">How the MySQL connector handles schema change topics</a></li>
+<li><a href="#how-the-mysql-connector-exposes-schema-changes">How the MySQL connector exposes schema changes</a></li>
 <li><a href="#mysql-connector-events_debezium">MySQL connector events</a></li>
 <li><a href="#how-the-mysql-connector-maps-data-types_debezium">How the MySQL connector maps data types</a></li>
 <li><a href="#the-mysql-connector-and-kafka-topics_debezium">The MySQL connector and Kafka topics</a></li>
@@ -3026,7 +3210,7 @@ This option is only available from MySQL 5.6 and later.
 <div class="title">Procedure</div>
 <ol class="arabic">
 <li>
-<p>Download the Debezium <a href="https://repo1.maven.org/maven2/io/debezium/debezium-connector-mysql/1.2.2.Final/debezium-connector-mysql-1.2.2.Final-plugin.tar.gz">MySQL connector plug-in</a>.</p>
+<p>Download the Debezium <a href="https://repo1.maven.org/maven2/io/debezium/debezium-connector-mysql/1.2.3.Final/debezium-connector-mysql-1.2.3.Final-plugin.tar.gz">MySQL connector plug-in</a>.</p>
 </li>
 <li>
 <p>Extract the files into your Kafka Connect environment.</p>
@@ -4196,7 +4380,7 @@ The values will incoporate any differences between the clocks on the machines wh
 <ul class="sectlevel2">
 <li><a href="#how-the-mysql-connector-uses-database-schemas_debezium">How the MySQL connector uses database schemas</a></li>
 <li><a href="#how-the-mysql-connector-performs-database-snapshots_debezium">How the MySQL connector performs database snapshots</a></li>
-<li><a href="#how-the-mysql-connector-handles-schema-change-topics_debezium">How the MySQL connector handles schema change topics</a></li>
+<li><a href="#how-the-mysql-connector-exposes-schema-changes">How the MySQL connector exposes schema changes</a></li>
 <li><a href="#mysql-connector-events_debezium">MySQL connector events</a></li>
 <li><a href="#how-the-mysql-connector-maps-data-types_debezium">How the MySQL connector maps data types</a></li>
 <li><a href="#the-mysql-connector-and-kafka-topics_debezium">The MySQL connector and Kafka topics</a></li>
