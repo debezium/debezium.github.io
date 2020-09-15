@@ -272,7 +272,7 @@
 <li><a href="#setting-up-oracle">Setting up Oracle</a>
 <ul class="sectlevel2">
 <li><a href="#_preparing_the_database">Preparing the Database</a></li>
-<li><a href="#_creating_an_xstream_admin_user_and_a_user_for_the_connector">Creating an XStream Admin User and a User For the Connector</a></li>
+<li><a href="#_creating_users_for_the_connector">Creating Users for the connector</a></li>
 <li><a href="#_create_an_xstream_outbound_server">Create an XStream Outbound Server</a></li>
 <li><a href="#_supported_configurations">Supported Configurations</a></li>
 </ul>
@@ -325,11 +325,9 @@ It is supported though to capture tables newly added while the connector is runn
 <h2 id="oracle-overview"><a class="anchor" href="#oracle-overview"></a>Overview</h2>
 <div class="sectionbody">
 <div class="paragraph">
-<p>Debezium ingests change events from Oracle using the <a href="https://docs.oracle.com/database/121/XSTRM/xstrm_intro.htm#XSTRM72647">XStream API</a>.
-In order to use this API and hence this connector, you need to have a license for the GoldenGate product
-(though it is not required that GoldenGate itself is installed).
-We are currently exploring alternatives to using XStream for a future Debezium release, e.g. based on LogMiner and/or alternative solutions.
-Please track the <a href="https://issues.redhat.com/browse/DBZ-137">DBZ-137</a> JIRA issue and join the discussion if you are aware of potential other ways for ingesting change events from Oracle.</p>
+<p>Debezium ingests change events from Oracle using the <a href="https://docs.oracle.com/database/121/XSTRM/xstrm_intro.htm#XSTRM72647">XStream API</a> or directly by Log Miner.
+In order to use the XStream API, you need to have a license for the GoldenGate product
+(though it is not required that GoldenGate itself is installed).</p>
 </div>
 </div>
 </div>
@@ -346,6 +344,8 @@ if you&#8217;re not using this model, adjust the steps accordingly.</p>
 </div>
 <div class="sect2">
 <h3 id="_preparing_the_database"><a class="anchor" href="#_preparing_the_database"></a>Preparing the Database</h3>
+<div class="sect3">
+<h4 id="_xstream"><a class="anchor" href="#_xstream"></a>XStream</h4>
 <div class="paragraph">
 <p>Enable GoldenGate replication and archive log mode:</p>
 </div>
@@ -377,8 +377,59 @@ E.g. like so for a specific table:</p>
 </div>
 </div>
 </div>
+<div class="sect3">
+<h4 id="_log_miner"><a class="anchor" href="#_log_miner"></a>Log Miner</h4>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>The Log Miner implementation requires the database to be configured with a minimum number of redo log groups and files per group.
+It&#8217;s recommended to have a minimum of <code>5</code> redo log groups each with <code>2</code> redo files per group.
+Please refer to the Oracle documentation on how to manipulate redo log groups and files for your database version.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="paragraph">
+<p>Enable archive log mode:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code>ORACLE_SID=ORACLCDB dbz_oracle sqlplus /nolog
+
+CONNECT sys/top_secret AS SYSDBA
+alter system set db_recovery_file_dest_size = 10G;
+alter system set db_recovery_file_dest = '/opt/oracle/oradta/recovery_area' scope=spfile;
+shutdown immediate
+startup mount
+alter database archivelog;
+alter database open;
+-- Should now "Database log mode: Archive Mode"
+archive log list
+
+exit;</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Furthermore, in order to capture the <em>before</em> state of changed rows, supplemental logging must be enabled for the captured tables or the database in general.
+E.g. like so for a specific table:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code>ALTER TABLE inventory.customers ADD SUPPLEMENTAL LOG DATA (ALL) COLUMNS;</code></pre>
+</div>
+</div>
+</div>
+</div>
 <div class="sect2">
-<h3 id="_creating_an_xstream_admin_user_and_a_user_for_the_connector"><a class="anchor" href="#_creating_an_xstream_admin_user_and_a_user_for_the_connector"></a>Creating an XStream Admin User and a User For the Connector</h3>
+<h3 id="_creating_users_for_the_connector"><a class="anchor" href="#_creating_users_for_the_connector"></a>Creating Users for the connector</h3>
+<div class="sect3">
+<h4 id="_xstream_2"><a class="anchor" href="#_xstream_2"></a>XStream</h4>
 <div class="paragraph">
 <p>Create an XStream admin user in the container database (used per Oracle&#8217;s recommendation for administering XStream):</p>
 </div>
@@ -459,8 +510,64 @@ exit;</code></pre>
 </div>
 </div>
 </div>
+<div class="sect3">
+<h4 id="_log_miner_2"><a class="anchor" href="#_log_miner_2"></a>Log Miner</h4>
+<div class="paragraph">
+<p>Create Log Miner user (used by the Debezium connector to connect to Oracle):</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code>sqlplus sys/top_secret@//localhost:1521/ORCLCDB as sysdba
+CREATE TABLESPACE logminer_tbs DATAFILE '/opt/oracle/oradata/ORCLCDB/logminer_tbs.dbf'
+  SIZE 25M REUSE AUTOEXTEND ON MAXSIZE UNLIMITED;
+exit;</code></pre>
+</div>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code>sqlplus sys/top_secret@//localhost:1521/ORCLPDB1 as sysdba
+CREATE TABLESPACE logminer_tbs DATAFILE '/opt/oracle/oradata/ORCLCDB/ORCLPDB1/logminer_tbs.dbf'
+  SIZE 25M REUSE AUTOEXTEND ON MAXSIZE UNLIMITED;
+exit;</code></pre>
+</div>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code>sqlplus sys/top_secret@//localhost:1521/ORCLCDB as sysdba
+
+CREATE USER c##logminer IDENTIFIED BY lm
+  DEFAULT TABLESPACE logminer_tbs
+  QUOTA UNLIMITED ON logminer_tbs
+  CONTAINER=ALL;
+
+GRANT CREATE SESSION TO c##logminer CONTAINER=ALL;
+GRANT SET CONTAINER TO c##logminer CONTAINER=ALL;
+GRANT SELECT ON V_$DATABASE to c##logminer CONTAINER=ALL;
+GRANT FLASHBACK ANY TABLE TO c##logminer CONTAINER=ALL;
+GRANT LOGMINING TO c##logminer CONTAINER=ALL;
+GRANT LOCK ANY TABLE TO c##logminer CONTAINER=ALL;
+
+exit;</code></pre>
+</div>
+</div>
+</div>
+</div>
 <div class="sect2">
 <h3 id="_create_an_xstream_outbound_server"><a class="anchor" href="#_create_an_xstream_outbound_server"></a>Create an XStream Outbound Server</h3>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>If you&#8217;re using the Log Miner implementation, this step is not necessary.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
 <div class="paragraph">
 <p>Create an <a href="https://docs.oracle.com/cd/E11882_01/server.112/e16545/xstrm_cncpt.htm#XSTRM1088">XStream Outbound server</a>
 (given the right privileges, this may be done automatically by the connector going forward, see <a href="https://issues.redhat.com/browse/DBZ-721">DBZ-721</a>):</p>
@@ -2389,6 +2496,19 @@ Only alphanumeric characters and underscores should be used.</p>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="oracle-property-database-connection-adapter"></a><a href="#oracle-database-connection-adapter"><code>database.connection.adapter</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>xstream</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The adapter implementation to use.
+<code>xstream</code> uses the Oracle XStreams API.
+<code>logminer</code> uses the native Oracle Log Miner API.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><a id="oracle-property-database-history-kafka-topic"></a><a href="#oracle-property-database-history-kafka-topic"><code>database.history.kafka.topic</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"></div></td>
@@ -2417,25 +2537,25 @@ Only alphanumeric characters and underscores should be used.</p>
 </div></div></td>
 </tr>
 <tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="oracle-property-table-whitelist"></a><a href="#oracle-property-table-whitelist"><code>table.whitelist</code></a></p>
+<td class="tableblock halign-left valign-top"><div class="content"><div id="oracle-property-table-whitelist" class="paragraph">
+<p><a id="oracle-property-table-include-list"></a><a href="#oracle-property-table-include-list"><code>table.include.list</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><em>empty string</em></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>An optional comma-separated list of regular expressions that match fully-qualified table identifiers for tables to be monitored; any table not included in the whitelist will be excluded from monitoring. Each identifier is of the form <em>schemaName</em>.<em>tableName</em>. By default the connector will monitor every non-system table in each monitored database. May not be used with <code>table.blacklist</code>.</p>
+<p>An optional comma-separated list of regular expressions that match fully-qualified table identifiers for tables to be monitored; any table not included in the include list will be excluded from monitoring. Each identifier is of the form <em>schemaName</em>.<em>tableName</em>. By default the connector will monitor every non-system table in each monitored database. May not be used with <code>table.exclude.list</code>.</p>
 </div></div></td>
 </tr>
 <tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="oracle-property-table-blacklist"></a><a href="#oracle-property-table-blacklist"><code>table.blacklist</code></a></p>
+<td class="tableblock halign-left valign-top"><div class="content"><div id="oracle-property-table-blacklist" class="paragraph">
+<p><a id="oracle-property-table-exclude-list"></a><a href="#oracle-property-table-exclude-list"><code>table.exclude.list</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><em>empty string</em></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>An optional comma-separated list of regular expressions that match fully-qualified table identifiers for tables to be excluded from monitoring; any table not included in the blacklist will be monitored. Each identifier is of the form <em>schemaName</em>.<em>tableName</em>. May not be used with <code>table.whitelist</code>.</p>
+<p>An optional comma-separated list of regular expressions that match fully-qualified table identifiers for tables to be excluded from monitoring; any table not included in the exclude list will be monitored. Each identifier is of the form <em>schemaName</em>.<em>tableName</em>. May not be used with <code>table.include.list</code>.</p>
 </div></div></td>
 </tr>
 <tr>

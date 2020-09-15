@@ -279,13 +279,14 @@
 <li><a href="#mongodb-streaming-changes">Streaming changes</a></li>
 <li><a href="#mongodb-topic-names">Topics names</a></li>
 <li><a href="#mongodb-partitions">Partitions</a></li>
-<li><a href="#mongodb-events">Events</a></li>
+<li><a href="#mongodb-events">Data change events</a></li>
 <li><a href="#mongodb-transaction-metadata">Transaction Metadata</a></li>
 </ul>
 </li>
 <li><a href="#mongodb-deploying-a-connector">Deploying the MongoDB connector</a>
 <ul class="sectlevel2">
 <li><a href="#mongodb-example-configuration">Example configuration</a></li>
+<li><a href="#mongodb-adding-connector-configuration">Adding connector configuration</a></li>
 <li><a href="#mongodb-monitoring">Monitoring</a></li>
 <li><a href="#mongodb-connector-properties">Connector properties</a></li>
 </ul>
@@ -606,21 +607,102 @@ Partitioning the events by key does mean that all events with the same key alway
 </div>
 </div>
 <div class="sect2">
-<h3 id="mongodb-events"><a class="anchor" href="#mongodb-events"></a>Events</h3>
+<h3 id="mongodb-events"><a class="anchor" href="#mongodb-events"></a>Data change events</h3>
 <div class="paragraph">
-<p>All data change events produced by the MongoDB connector have a key and a value.</p>
+<p>The Debezium MongoDB connector generates a data change event for each document-level operation that inserts, updates, or deletes data. Each event contains a key and a value. The structure of the key and the value depends on the collection that was changed.</p>
 </div>
 <div class="paragraph">
-<p>Debezium and Kafka Connect are designed around <em>continuous streams of event messages</em>, and the structure of these events could potentially change over time if the source of those events changed in structure or if the connector is improved or changed.
-This could be difficult for consumers to deal with, so to make it very easy Kafka Connect makes each event self-contained. Every message key and value has two parts: a <em>schema</em> and <em>payload</em>. The schema describes the structure of the payload, while the payload contains the actual data.</p>
+<p>Debezium and Kafka Connect are designed around <em>continuous streams of event messages</em>. However, the structure of these events may change over time, which can be difficult for consumers to handle. To address this, each event contains the schema for its content or, if you are using a schema registry, a schema ID that a consumer can use to obtain the schema from the registry. This makes each event self-contained.</p>
 </div>
-<div class="sect3">
-<h4 id="mongodb-change-events-key"><a class="anchor" href="#mongodb-change-events-key"></a>Change event&#8217;s key</h4>
 <div class="paragraph">
-<p>For a given collection, the change event&#8217;s key contains a single <code>id</code> field.
-Its value is the document&#8217;s identifier represented as string which is derived from the <a href="https://docs.mongodb.com/manual/reference/mongodb-extended-json/">MongoDB extended JSON serialization in strict mode</a>. Consider a connector with a logical name of <code>fulfillment</code>, a replica set containing an <code>inventory</code> database with a <code>customers</code> collection containing documents such as:</p>
+<p>The following skeleton JSON shows the basic four parts of a change event. However, how you configure the Kafka Connect converter that you choose to use in your application determines the representation of these four parts in change events. A <code>schema</code> field is in a change event only when you configure the converter to produce it. Likewise, the event key and event payload are in a change event only if you configure a converter to produce it. If you use the JSON converver and you configure it to produce all four basic change event parts, change events have this structure:</p>
 </div>
 <div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
+ "schema": { <i class="conum" data-value="1"></i><b>(1)</b>
+   ...
+  },
+ "payload": { <i class="conum" data-value="2"></i><b>(2)</b>
+   ...
+ },
+ "schema": { <i class="conum" data-value="3"></i><b>(3)</b>
+   ...
+ },
+ "payload": { <i class="conum" data-value="4"></i><b>(4)</b>
+   ...
+ },
+}</code></pre>
+</div>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 1. Overview of change event basic content</caption>
+<colgroup>
+<col style="width: 10%;">
+<col style="width: 20%;">
+<col style="width: 70%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Item</th>
+<th class="tableblock halign-left valign-top">Field name</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">1</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>schema</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The first <code>schema</code> field is part of the event key. It specifies a Kafka Connect schema that describes what is in the event key&#8217;s <code>payload</code> portion. In other words, the first <code>schema</code> field describes the structure of the key for the document that was changed.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">2</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>payload</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The first <code>payload</code> field is part of the event key. It has the structure described by the previous <code>schema</code> field and it contains the key for the document that was changed.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">3</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>schema</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The second <code>schema</code> field is part of the event value. It specifies the Kafka Connect schema that describes what is in the event value&#8217;s <code>payload</code> portion. In other words, the second <code>schema</code> describes the structure of the document that was changed. Typically, this schema contains nested schemas.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">4</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>payload</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The second <code>payload</code> field is part of the event value. It has the structure described by the previous <code>schema</code> field and it contains the actual data for the document that was changed.</p></td>
+</tr>
+</tbody>
+</table>
+<div class="paragraph">
+<p>By default, the connector streams change event records to topics with names that are the same as the event&#8217;s originating collection. See <a href="#mongodb-topic-names">topic names</a>.</p>
+</div>
+<div class="admonitionblock warning">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-warning" title="Warning"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>The MongoDB connector ensures that all Kafka Connect schema names adhere to the <a href="http://avro.apache.org/docs/current/spec.html#names">Avro schema name format</a>. This means that the logical server name must start with a Latin letter or an underscore, that is, a-z, A-Z, or _. Each remaining character in the logical server name and each character in the database and collection names must be a Latin letter, a digit, or an underscore, that is, a-z, A-Z, 0-9, or \_. If there is an invalid character it is replaced with an underscore character.</p>
+</div>
+<div class="paragraph">
+<p>This can lead to unexpected conflicts if the logical server name, a database name, or a collection name contains invalid characters, and the only characters that distinguish names from one another are invalid and thus replaced with underscores.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="sect3">
+<h4 id="mongodb-change-events-key"><a class="anchor" href="#mongodb-change-events-key"></a>Change event keys</h4>
+<div class="paragraph">
+<p>A change event&#8217;s key contains the schema for the changed document&#8217;s key and the changed document&#8217;s actual key. For a given collection, both the schema and its corresponding payload contain a single <code>id</code> field.
+The value of this field is the document&#8217;s identifier represented as a string that is derived from <a href="https://docs.mongodb.com/manual/reference/mongodb-extended-json/">MongoDB extended JSON serialization strict mode</a>.</p>
+</div>
+<div class="paragraph">
+<p>Consider a connector with a logical name of <code>fulfillment</code>, a replica set containing an <code>inventory</code> database, and a <code>customers</code> collection that contains documents such as the following.</p>
+</div>
+<div class="listingblock">
+<div class="title">Example document</div>
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
   "_id": 1004,
@@ -631,16 +713,17 @@ Its value is the document&#8217;s identifier represented as string which is deri
 </div>
 </div>
 <div class="paragraph">
-<p>Every change event for the <code>customers</code> collection will feature the same key structure, which in JSON looks like this:</p>
+<div class="title">Example change event key</div>
+<p>Every change event that captures a change to the <code>customers</code> collection has the same event key schema. For as long as the <code>customers</code> collection has the previous definition, every change event that captures a change to the <code>customers</code> collection has the following key structure. In JSON, it looks like this:</p>
 </div>
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
-  "schema": {
+  "schema": { <i class="conum" data-value="1"></i><b>(1)</b>
     "type": "struct",
-    "name": "fulfillment.inventory.customers.Key",
-    "optional": false,
-    "fields": [
+    "name": "fulfillment.inventory.customers.Key" <i class="conum" data-value="2"></i><b>(2)</b>
+    "optional": false, <i class="conum" data-value="3"></i><b>(3)</b>
+    "fields": [ <i class="conum" data-value="4"></i><b>(4)</b>
       {
         "field": "id",
         "type": "string",
@@ -648,20 +731,74 @@ Its value is the document&#8217;s identifier represented as string which is deri
       }
     ]
   },
-  "payload": {
+  "payload": { <i class="conum" data-value="5"></i><b>(5)</b>
     "id": "1004"
   }
 }</code></pre>
 </div>
 </div>
-<div class="paragraph">
-<p>The <code>schema</code> portion of the key contains a Kafka Connect schema describing what is in the payload portion. In this case, it means that the <code>payload</code> value is not optional, is a structure defined by a schema named <code>fulfillment.inventory.customers.Key</code>, and has one required field named <code>id</code> of type <code>string</code>. If you look at the value of the key&#8217;s <code>payload</code> field, you can see that it is indeed a structure (which in JSON is just an object) with a single <code>id</code> field, whose value is a string containing the integer <code>1004</code>.</p>
+<table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 2. Description of change event key</caption>
+<colgroup>
+<col style="width: 10%;">
+<col style="width: 20%;">
+<col style="width: 70%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Item</th>
+<th class="tableblock halign-left valign-top">Field name</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">1</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>schema</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The schema portion of the key specifies a Kafka Connect schema that describes what is in the key&#8217;s <code>payload</code> portion.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">2</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>fulfillment.inventory.customers.Key</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Name of the schema that defines the structure of the key&#8217;s payload. This schema describes the structure of the key for the document that was changed. Key schema names have the format <em>connector-name</em>.<em>database-name</em>.<em>collection-name</em>.<code>Key</code>. In this example:<br></p>
 </div>
+<div class="ulist">
+<ul>
+<li>
+<p><code>fulfillment</code> is the name of the connector that generated this event.<br></p>
+</li>
+<li>
+<p><code>inventory</code> is the database that contains the collection that was changed.<br></p>
+</li>
+<li>
+<p><code>customers</code> is the collection that contains the document that was updated.</p>
+</li>
+</ul>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">3</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>optional</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Indicates whether the event key must contain a value in its <code>payload</code> field. In this example, a value in the key&#8217;s payload is required. A value in the key&#8217;s payload field is optional when a document does not have a key.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">4</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>fields</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Specifies each field that is expected in the <code>payload</code>, including each field&#8217;s name, type, and whether it is required.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">5</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>payload</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Contains the key for the document for which this change event was generated. In this example, the key contains a single <code>id</code> field of type <code>string</code> whose value is <code>1004</code>.</p></td>
+</tr>
+</tbody>
+</table>
 <div class="paragraph">
-<p>This example used a document with an integer identifier, but any valid MongoDB document identifier (including documents) will work. The value of the <code>id</code> field in the payload will simply be a string representing a MongoDB extended JSON serialization (strict mode) of the original document&#8217;s <code>_id</code> field. Find below a few examples showing how <code>_id</code> fields of
-different types will get encoded as the event key&#8217;s payload:</p>
+<p>This example uses a document with an integer identifier, but any valid MongoDB document identifier works the same way, including a document identifier. For a document identifier, an event key&#8217;s <code>payload.id</code> value is a string that represents the updated document&#8217;s original <code>_id</code> field as a MongoDB extended JSON serialization that uses strict mode. The following table provides examples of how different types of <code>_id</code> fields are represented.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch code-wordbreak-col2 code-wordbreak-col3">
+<caption class="title">Table 3. Examples of representing document <code>_id</code> fields in event key payloads</caption>
 <colgroup>
 <col style="width: 33.3333%;">
 <col style="width: 33.3333%;">
@@ -692,78 +829,73 @@ different types will get encoded as the event key&#8217;s payload:</p>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><p class="tableblock">Document</p></td>
-<td class="tableblock halign-left valign-top"><p class="tableblock">{ "hi" : "kafka", "nums" : [10.0, 100.0, 1000.0] }</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>{ "hi" : "kafka", "nums" : [10.0, 100.0, 1000.0] }</code></p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock"><code>{ "id" : "{\"hi\" : \"kafka\", \"nums\" : [10.0, 100.0, 1000.0]}" }</code></p></td>
 </tr>
 <tr>
-<td class="tableblock halign-left valign-top"><p class="tableblock">ObjectId</p></td>
-<td class="tableblock halign-left valign-top"><p class="tableblock">ObjectId("596e275826f08b2730779e1f")</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">`ObjectId</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">ObjectId("596e275826f08b2730779e1f")``</p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock"><code>{ "id" : "{\"$oid\" : \"596e275826f08b2730779e1f\"}" }</code></p></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><p class="tableblock">Binary</p></td>
-<td class="tableblock halign-left valign-top"><p class="tableblock">BinData("a2Fma2E=",0)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>BinData("a2Fma2E=",0)</code></p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock"><code>{ "id" : "{\"$binary\" : \"a2Fma2E=\", \"$type\" : \"00\"}" }</code></p></td>
 </tr>
 </tbody>
 </table>
-<div class="admonitionblock warning">
-<table>
-<tr>
-<td class="icon">
-<i class="fa icon-warning" title="Warning"></i>
-</td>
-<td class="content">
-<div class="paragraph">
-<p>The MongoDB connector ensures that all Kafka Connect <em>schema names</em> are <a href="http://avro.apache.org/docs/current/spec.html#names">valid Avro schema names</a>. This means that the logical server name must start with Latin letters or an underscore (e.g., [a-z,A-Z,_]), and the remaining characters in the logical server name and all characters in the database and collections names must be Latin letters, digits, or an underscore (e.g., [a-z,A-Z,0-9,\_]). If not, then all invalid characters will automatically be replaced with an underscore character.</p>
-</div>
-<div class="paragraph">
-<p>This can lead to unexpected conflicts in schemas names when the logical server name, database names, and collection names contain other characters, and the only distinguishing characters between collection full names are invalid and thus replaced with underscores. The connector attempts to produce an exception in this such cases, but only when the conflicts exist between schemas used within a single connector.</p>
-</div>
-</td>
-</tr>
-</table>
-</div>
 </div>
 <div class="sect3">
-<h4 id="mongodb-change-events-value"><a class="anchor" href="#mongodb-change-events-value"></a>Change event&#8217;s value</h4>
+<h4 id="mongodb-change-events-value"><a class="anchor" href="#mongodb-change-events-value"></a>Change event values</h4>
 <div class="paragraph">
-<p>The value of the change event message is a bit more complicated.
-Like the key message, it has a <em>schema</em> section and <em>payload</em> section.
-The payload section of every change event value produced by the MongoDB connector has an <em>envelope</em> structure with the following fields:</p>
+<p>The value in a change event is a bit more complicated than the key. Like the key, the value has a <code>schema</code> section and a <code>payload</code> section. The <code>schema</code> section contains the schema that describes the <code>Envelope</code> structure of the <code>payload</code> section, including its nested fields. Change events for operations that create, update or delete data all have a value payload with an envelope structure.</p>
+</div>
+<div class="paragraph">
+<p>Consider the same sample document that was used to show an example of a change event key:</p>
+</div>
+<div class="listingblock">
+<div class="title">Example document</div>
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
+  "_id": 1004,
+  "first_name": "Anne",
+  "last_name": "Kretchmar",
+  "email": "annek@noanswer.org"
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>The value portion of a change event for a change to this document is described for each event type:</p>
 </div>
 <div class="ulist">
 <ul>
 <li>
-<p><code>op</code> is a mandatory field that contains a string value describing the type of operation. Values for the MongoDB connector are <code>c</code> for create (or insert), <code>u</code> for update, <code>d</code> for delete, and <code>r</code> for read (in the case of a snapshot).</p>
+<p><a href="#mongodb-create-events"><em>create</em> events</a></p>
 </li>
 <li>
-<p><code>after</code> is an optional field that if present contains the state of the document <em>after</em> the event occurred. MongoDB&#8217;s oplog entries only contain the full state of a document for <em>create</em> events, so these are the only events that contain an <em>after</em> field.</p>
+<p><a href="#mongodb-update-events"><em>update</em> events</a></p>
 </li>
 <li>
-<p><code>source</code> is a mandatory field that contains a structure describing the source metadata for the event, which in the case of MongoDB contains several fields: the Debezium version, the logical name, the replica set&#8217;s name, the namespace of the collection, the MongoDB timestamp (and ordinal of the event within the timestamp) at which the event occurred, a unique identifier of the MongoDB operation (depending on the version of MongoDB, either the <code>h</code> field in the oplog event, or a field named <code>stxnid</code>, representing the <code>lsid</code> and <code>txnNumber</code> fields from the oplog event), and the <code>snapshot</code> flag if the event resulted during a snapshot.</p>
-</li>
-<li>
-<p><code>ts_ms</code> is optional and if present contains the time (using the system clock in the JVM running the Kafka Connect task) at which the connector processed the event.</p>
+<p><a href="#mongodb-delete-events"><em>delete</em> events</a></p>
 </li>
 </ul>
 </div>
-<div class="paragraph">
-<p>And of course, the <em>schema</em> portion of the event message&#8217;s value contains a schema that describes this envelope structure and the nested fields within it.</p>
 </div>
+<div class="sect3">
+<h4 id="mongodb-create-events"><a class="anchor" href="#mongodb-create-events"></a><em>create</em> events</h4>
 <div class="paragraph">
-<p>Let&#8217;s look at what a <em>create</em>/<em>read</em> event value might look like for our <code>customers</code> collection:</p>
+<p>The following example shows the value portion of a change event that the connector generates for an operation that creates data in the <code>customers</code> collection:</p>
 </div>
 <div class="listingblock">
 <div class="content">
-<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
-    "schema": {
+<pre class="highlightjs highlight nowrap"><code class="language-json hljs" data-lang="json">{
+    "schema": { <i class="conum" data-value="1"></i><b>(1)</b>
       "type": "struct",
       "fields": [
         {
           "type": "string",
           "optional": true,
-          "name": "io.debezium.data.Json",
+          "name": "io.debezium.data.Json", <i class="conum" data-value="2"></i><b>(2)</b>
           "version": 1,
           "field": "after"
         },
@@ -802,7 +934,7 @@ The payload section of every change event value produced by the MongoDB connecto
             {
               "type": "int64",
               "optional": false,
-              "field": "ts_ms"
+              "field": "ts_sec"
             },
             {
               "type": "boolean",
@@ -837,7 +969,7 @@ The payload section of every change event value produced by the MongoDB connecto
             }
           ],
           "optional": false,
-          "name": "io.debezium.connector.mongo.Source",
+          "name": "io.debezium.connector.mongo.Source", <i class="conum" data-value="3"></i><b>(3)</b>
           "field": "source"
         },
         {
@@ -852,67 +984,182 @@ The payload section of every change event value produced by the MongoDB connecto
         }
       ],
       "optional": false,
-      "name": "dbserver1.inventory.customers.Envelope"
+      "name": "dbserver1.inventory.customers.Envelope" <i class="conum" data-value="4"></i><b>(4)</b>
       },
-    "payload": {
-      "after": "{\"_id\" : {\"$numberLong\" : \"1004\"},\"first_name\" : \"Anne\",\"last_name\" : \"Kretchmar\",\"email\" : \"annek@noanswer.org\"}",
+    "payload": { <i class="conum" data-value="5"></i><b>(5)</b>
+      "after": "{\"_id\" : {\"$numberLong\" : \"1004\"},\"first_name\" : \"Anne\",\"last_name\" : \"Kretchmar\",\"email\" : \"annek@noanswer.org\"}", <i class="conum" data-value="6"></i><b>(6)</b>
       "patch": null,
-      "source": {
+      "source": { <i class="conum" data-value="7"></i><b>(7)</b>
         "version": "1.2.3.Final",
         "connector": "mongodb",
         "name": "fulfillment",
-        "ts_ms": 1558965508000,
-        "snapshot": true,
+        "ts_sec": 1558965508000,
+        "snapshot": false,
         "db": "inventory",
         "rs": "rs0",
         "collection": "customers",
         "ord": 31,
         "h": 1546547425148721999
       },
-      "op": "r",
-      "ts_ms": 1558965515240
+      "op": "c", <i class="conum" data-value="8"></i><b>(8)</b>
+      "ts_ms": 1558965515240 <i class="conum" data-value="9"></i><b>(9)</b>
     }
   }</code></pre>
 </div>
 </div>
-<div class="paragraph">
-<p>If we look at the <code>schema</code> portion of this event&#8217;s <em>value</em>, we can see the schema for the <em>envelope</em> is specific to the collection, and the schema for the <code>source</code> structure (which is specific to the MongoDB connector and reused across all events). Also note that the <code>after</code> value is always a string, and that by convention it will contain a JSON representation of the document.</p>
-</div>
-<div class="paragraph">
-<p>If we look at the <code>payload</code> portion of this event&#8217;s <em>value</em>, we can see the information in the event, namely that it is describing that the document was read as part of an snapshot (since <code>op=r</code> and <code>snapshot=true</code>), and that the <code>after</code> field value contains the JSON string representation of the document.</p>
-</div>
-<div class="admonitionblock note">
-<table>
+<table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 4. Descriptions of <em>create</em> event value fields</caption>
+<colgroup>
+<col style="width: 10%;">
+<col style="width: 20%;">
+<col style="width: 70%;">
+</colgroup>
+<thead>
 <tr>
-<td class="icon">
-<i class="fa icon-note" title="Note"></i>
-</td>
-<td class="content">
-<div class="paragraph">
-<p>It may appear that the JSON representations of the events are much larger than the rows they describe. This is true, because the JSON representation must include the <em>schema</em> and the <em>payload</em> portions of the message.
-It is possible and even recommended to use the <a href="/docs/faq/#avro-converter">Avro Converter</a> to dramatically decrease the size of the actual messages written to the Kafka topics.</p>
-</div>
-</td>
+<th class="tableblock halign-left valign-top">Item</th>
+<th class="tableblock halign-left valign-top">Field name</th>
+<th class="tableblock halign-left valign-top">Description</th>
 </tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">1</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>schema</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The value&#8217;s schema, which describes the structure of the value&#8217;s payload. A change event&#8217;s value schema is the same in every change event that the connector generates for a particular collection.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">2</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>name</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>In the <code>schema</code> section, each <code>name</code> field specifies the schema for a field in the value&#8217;s payload.<br>
+<br>
+<code>io.debezium.data.Json</code> is the schema for the payload&#8217;s <code>after</code>, <code>patch</code>, and <code>filter</code> fields. This schema is specific to the <code>customers</code> collection. A <em>create</em> event is the only kind of event that contains an <code>after</code> field. An <em>update</em> event contains a <code>filter</code> field and a <code>patch</code> field. A <em>delete</em> event contains a <code>filter</code> field, but not an <code>after</code> field nor a <code>patch</code> field.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">3</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>name</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>io.debezium.connector.mongo.Source</code> is the schema for the payload&#8217;s <code>source</code> field. This schema is specific to the MongoDB connector. The connector uses it for all events that it generates.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">4</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>name</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>dbserver1.inventory.customers.Envelope</code> is the schema for the overall structure of the payload, where <code>dbserver1</code> is the connector name, <code>inventory</code> is the database, and <code>customers</code> is the collection. This schema is specific to the collection.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">5</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>payload</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The value&#8217;s actual data. This is the information that the change event is providing.<br>
+<br>
+It may appear that the JSON representations of the events are much larger than the documents they describe. This is because the JSON representation must include the schema and the payload portions of the message.
+However, by using the <a href="../configuration/avro.html" class="page">Avro converter</a>, you can significantly decrease the size of the messages that the connector streams to Kafka topics.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">6</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>after</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">An optional field that specifies the state of the document after the event occurred. In this example, the <code>after</code> field contains the values of the new document&#8217;s <code>_id</code>, <code>first_name</code>, <code>last_name</code>, and <code>email</code> fields. The <code>after</code> value is always a string. By convention, it contains a JSON representation of the document. MongoDB&#8217;s oplog entries contain the full state of a document only for _create_ events; in other words, a <em>create</em> event is the only kind of event that contains an <em>after</em> field.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">7</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>source</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Mandatory field that describes the source metadata for the event. This field contains information that you can use to compare this event with other events, with regard to the origin of the events, the order in which the events occurred, and whether events were part of the same transaction. The source metadata includes:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>Debezium version.</p>
+</li>
+<li>
+<p>Name of the connector that generated the event.</p>
+</li>
+<li>
+<p>Logical name of the MongoDB replica set, which forms a namespace for generated events and is used in Kafka topic names to which the connector writes.</p>
+</li>
+<li>
+<p>Names of the collection and database that contain the new document.</p>
+</li>
+<li>
+<p>If the event was part of a snapshot.</p>
+</li>
+<li>
+<p>Timestamp for when the event occurred and ordinal of the event within the timestamp.</p>
+</li>
+<li>
+<p>Unique identifier of the MongoDB operation, which depends on the version of MongoDB. It is either the <code>h</code> field in the oplog event, or a field named <code>stxnid</code>, which represents the <code>lsid</code> and <code>txnNumber</code> fields from the oplog event.</p>
+</li>
+</ul>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">8</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>op</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Mandatory string that describes the type of operation that caused the connector to generate the event. In this example, <code>c</code> indicates that the operation created a document. Valid values are:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p><code>c</code> = create</p>
+</li>
+<li>
+<p><code>u</code> = update</p>
+</li>
+<li>
+<p><code>d</code> = delete</p>
+</li>
+<li>
+<p><code>r</code> = read (applies to only snapshots)</p>
+</li>
+</ul>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">9</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>ts_ms</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Optional field that displays the time at which the connector processed the event. The time is based on the system clock in the JVM running the Kafka Connect task.</p>
+</div></div></td>
+</tr>
+</tbody>
 </table>
 </div>
+<div class="sect3">
+<h4 id="mongodb-update-events"><a class="anchor" href="#mongodb-update-events"></a><em>update</em> events</h4>
 <div class="paragraph">
-<p>The value of an <em>update</em> change event on this collection will actually have the exact same <em>schema</em>, and its payload is structured the same but will hold different values. Specifically, an update event will not have an <code>after</code> value and will instead have a <code>patch</code> string containing the JSON representation of the idempotent update operation and a <code>filter</code> string containing the JSON representation of the selection criteria for the update.  The <code>filter</code> string can include multiple shard key fields for sharded collections. Here&#8217;s an example:</p>
+<p>The value of a change event for an update in the sample <code>customers</code> collection has the same schema as a <em>create</em> event for that collection. Likewise, the event value&#8217;s payload has the same structure. However, the event value payload contains different values in an <em>update</em> event. An <em>update</em> event does not have an <code>after</code> value. Instead, it has these two fields:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p><code>patch</code> is a string field that contains the JSON representation of the idempotent update operation</p>
+</li>
+<li>
+<p><code>filter</code> is a string field that contains the JSON representation of the selection criteria for the update. The <code>filter</code> string can include multiple shard key fields for sharded collections.</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>Here is an example of a change event value in an event that the connector generates for an update in the <code>customers</code> collection:</p>
 </div>
 <div class="listingblock">
 <div class="content">
-<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
+<pre class="highlightjs highlight nowrap"><code class="language-json hljs" data-lang="json">{
     "schema": { ... },
     "payload": {
-      "op": "u",
-      "ts_ms": 1465491461815,
-      "patch": "{\"$set\":{\"first_name\":\"Anne Marie\"}}",
-      "filter": "{\"_id\" : {\"$numberLong\" : \"1004\"}}",
-      "source": {
+      "op": "u", <i class="conum" data-value="1"></i><b>(1)</b>
+      "ts_ms": 1465491461815, <i class="conum" data-value="2"></i><b>(2)</b>
+      "patch": "{\"$set\":{\"first_name\":\"Anne Marie\"}}", <i class="conum" data-value="3"></i><b>(3)</b>
+      "filter": "{\"_id\" : {\"$numberLong\" : \"1004\"}}", <i class="conum" data-value="4"></i><b>(4)</b>
+      "source": { <i class="conum" data-value="5"></i><b>(5)</b>
         "version": "1.2.3.Final",
         "connector": "mongodb",
         "name": "fulfillment",
-        "ts_ms": 1558965508000,
+        "ts_sec": 1558965508000,
         "snapshot": true,
         "db": "inventory",
         "rs": "rs0",
@@ -924,31 +1171,81 @@ It is possible and even recommended to use the <a href="/docs/faq/#avro-converte
   }</code></pre>
 </div>
 </div>
-<div class="paragraph">
-<p>When we compare this to the value in the <em>insert</em> event, we see a couple of differences in the <code>payload</code> section:</p>
+<table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 5. Descriptions of <em>update</em> event value fields</caption>
+<colgroup>
+<col style="width: 10%;">
+<col style="width: 20%;">
+<col style="width: 70%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Item</th>
+<th class="tableblock halign-left valign-top">Field name</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">1</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>op</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Mandatory string that describes the type of operation that caused the connector to generate the event. In this example, <code>u</code> indicates that the operation updated a document.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">2</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>ts_ms</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Optional field that displays the time at which the connector processed the event. The time is based on the system clock in the JVM running the Kafka Connect task.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">3</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>patch</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Contains the JSON string representation of the actual MongoDB idempotent change to the document. In this example, the update changed the <code>first_name</code> field to a new value.<br>
+<br>
+An <em>update</em> event value does not contain an <code>after</code> field.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">4</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>filter</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Contains the JSON string representation of the MongoDB selection criteria that was used to identify the document to be updated.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">5</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>source</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Mandatory field that describes the source metadata for the event. This field contains the same information as a <em>create</em> event for the same collection, but the values are different since this event is from a different position in the oplog. The source metadata includes:</p>
 </div>
 <div class="ulist">
 <ul>
 <li>
-<p>The <code>op</code> field value is now <code>u</code>, signifying that this document changed because of an update</p>
+<p>Debezium version.</p>
 </li>
 <li>
-<p>The <code>patch</code> field appears and has the stringified JSON representation of the actual MongoDB idempotent change to the document, which in this example involves setting the <code>first_name</code> field to a new value</p>
+<p>Name of the connector that generated the event.</p>
 </li>
 <li>
-<p>The <code>filter</code> field appears and has the stringified JSON representation of the MongoDB selection criteria used for the update</p>
+<p>Logical name of the MongoDB replica set, which forms a namespace for generated events and is used in Kafka topic names to which the connector writes.</p>
 </li>
 <li>
-<p>The <code>after</code> field no longer appears</p>
+<p>Names of the collection and database that contain the updated document.</p>
 </li>
 <li>
-<p>The <code>source</code> field structure has the same fields as before, but the values are different since this event is from a different position in the oplog</p>
+<p>If the event was part of a snapshot.</p>
 </li>
 <li>
-<p>The <code>ts_ms</code> shows the timestamp that Debezium processed this event</p>
+<p>Timestamp for when the event occurred and ordinal of the event within the timestamp.</p>
+</li>
+<li>
+<p>Unique identifier of the MongoDB operation, which depends on the version of MongoDB. It is either the <code>h</code> field in the oplog event, or a field named <code>stxnid</code>, which represents the <code>lsid</code> and <code>txnNumber</code> fields from the oplog event.</p>
 </li>
 </ul>
-</div>
+</div></div></td>
+</tr>
+</tbody>
+</table>
 <div class="admonitionblock warning">
 <table>
 <tr>
@@ -957,11 +1254,7 @@ It is possible and even recommended to use the <a href="/docs/faq/#avro-converte
 </td>
 <td class="content">
 <div class="paragraph">
-<p>The content of the patch field is provided by MongoDB itself and its exact format depends on the specific database version.
-You should therefore be prepared for potential changes to the format when upgrading the MongoDB instance to a new version.</p>
-</div>
-<div class="paragraph">
-<p>All examples in this document were obtained from MongoDB 3.4 and might differ if you use a different one.</p>
+<p>In a Debezium change event, MongoDB provides the content of the <code>patch</code> field. The format of this field depends on the version of the MongoDB database. Consequently, be prepared for potential changes to the format when you upgrade to a newer MongoDB database version. Examples in this document were obtained from MongoDB 3.4, In your application, event formats might be different.</p>
 </div>
 </td>
 </tr>
@@ -975,31 +1268,31 @@ You should therefore be prepared for potential changes to the format when upgrad
 </td>
 <td class="content">
 <div class="paragraph">
-<p>Update events in MongoDB&#8217;s oplog do not have the <em>before</em> or <em>after</em> states of the changed document, so there&#8217;s no way for the connector to provide this information.
-However, because <em>create</em> or <em>read</em> events <em>do</em> contain the starting state, downstream consumers of the stream can actually fully-reconstruct the state by keeping the latest state for each document and applying each event to that state. Debezium connector&#8217;s are not able to keep such state, so it is not able to do this.</p>
+<p>In MongoDB&#8217;s oplog, <em>update</em> events do not contain the <em>before</em> or <em>after</em> states of the changed document. Consequently, it is not possible for a Debezium connector to provide this information. However, a Debezium connector provides a document&#8217;s starting state in <em>create</em> and <em>read</em> events. Downstream consumers of the stream can reconstruct document state by keeping the latest state for each document and comparing the state in a new event with the saved state. Debezium connector&#8217;s are not able to keep this state.</p>
 </div>
 </td>
 </tr>
 </table>
 </div>
+</div>
+<div class="sect3">
+<h4 id="mongodb-delete-events"><a class="anchor" href="#mongodb-delete-events"></a><em>delete</em> events</h4>
 <div class="paragraph">
-<p>So far, you have seen samples of <em>create</em>/<em>read</em> and <em>update</em> events. The following sample shows the value of a <em>delete</em> event for the same collection.
-The value of a <em>delete</em> event on this collection has the exact same <em>schema</em>, and its payload is structured the same but it holds different values.
-In particular, a delete event does not have an <code>after</code> value nor a <code>patch</code> value:</p>
+<p>The value in a <em>delete</em> change event has the same <code>schema</code> portion as <em>create</em> and <em>update</em> events for the same collection. The <code>payload</code> portion in a <em>delete</em> event contains values that are different from <em>create</em> and <em>update</em> events for the same collection. In particular, a <em>delete</em> event contains neither an <code>after</code> value nor a <code>patch</code> value. Here is an example of a <em>delete</em> event for a document in the <code>customers</code> collection:</p>
 </div>
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
     "schema": { ... },
     "payload": {
-      "op": "d",
-      "ts_ms": 1465495462115,
-      "filter": "{\"_id\" : {\"$numberLong\" : \"1004\"}}",
-      "source": {
+      "op": "d", <i class="conum" data-value="1"></i><b>(1)</b>
+      "ts_ms": 1465495462115, <i class="conum" data-value="2"></i><b>(2)</b>
+      "filter": "{\"_id\" : {\"$numberLong\" : \"1004\"}}", <i class="conum" data-value="3"></i><b>(3)</b>
+      "source": { <i class="conum" data-value="4"></i><b>(4)</b>
         "version": "1.2.3.Final",
         "connector": "mongodb",
         "name": "fulfillment",
-        "ts_ms": 1558965508000,
+        "ts_sec": 1558965508000,
         "snapshot": true,
         "db": "inventory",
         "rs": "rs0",
@@ -1011,50 +1304,80 @@ In particular, a delete event does not have an <code>after</code> value nor a <c
   }</code></pre>
 </div>
 </div>
-<div class="paragraph">
-<p>When we compare this to the value in the other events, we see a couple of differences in the <code>payload</code> section:</p>
+<table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 6. Descriptions of <em>delete</em> event value fields</caption>
+<colgroup>
+<col style="width: 10%;">
+<col style="width: 20%;">
+<col style="width: 70%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Item</th>
+<th class="tableblock halign-left valign-top">Field name</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">1</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>op</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Mandatory string that describes the type of operation. The <code>op</code> field value is <code>d</code>, signifying that this document was deleted.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">2</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>ts_ms</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Optional field that displays the time at which the connector processed the event. The time is based on the system clock in the JVM running the Kafka Connect task.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">3</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>filter</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Contains the JSON string representation of the MongoDB selection criteria that was used to identify the document to be deleted.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">4</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>source</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Mandatory field that describes the source metadata for the event. This field contains the same information as a <em>create</em> or <em>update</em> event for the same collection, but the values are different since this event is from a different position in the oplog. The source metadata includes:</p>
 </div>
 <div class="ulist">
 <ul>
 <li>
-<p>The <code>op</code> field value is now <code>d</code>, signifying that this document was deleted</p>
+<p>Debezium version.</p>
 </li>
 <li>
-<p>The <code>patch</code> field does not appear</p>
+<p>Name of the connector that generated the event.</p>
 </li>
 <li>
-<p>The <code>after</code> field does not appear</p>
+<p>Logical name of the MongoDB replica set, which forms a namespace for generated events and is used in Kafka topic names to which the connector writes.</p>
 </li>
 <li>
-<p>The <code>filter</code> field appears and has the stringified JSON representation of the MongoDB selection criteria used for the delete</p>
+<p>Names of the collection and database that contained the deleted document.</p>
 </li>
 <li>
-<p>The <code>source</code> field structure has the same fields as before, but the values are different since this event is from a different position in the oplog</p>
+<p>If the event was part of a snapshot.</p>
 </li>
 <li>
-<p>The <code>ts_ms</code> shows the timestamp that Debezium processed this event</p>
+<p>Timestamp for when the event occurred and ordinal of the event within the timestamp.</p>
+</li>
+<li>
+<p>Unique identifier of the MongoDB operation, which depends on the version of MongoDB. It is either the <code>h</code> field in the <code>oplog</code> event, or a field named <code>stxnid</code>, which represents the <code>lsid</code> and <code>txnNumber</code> fields from the <code>oplog</code> event.</p>
 </li>
 </ul>
-</div>
-<div class="paragraph">
-<p>The MongoDB connector provides one other kind of event. Each <em>delete</em> event is followed by a <em>tombstone</em> event that has the same key as the <em>delete</em> event but a <code>null</code> value. This provides Kafka with the information needed to run its <a href="https://kafka.apache.org/documentation/#compaction">log compaction</a> mechanism to remove <em>all</em> messages with that key.</p>
-</div>
-<div class="admonitionblock note">
-<table>
-<tr>
-<td class="icon">
-<i class="fa icon-note" title="Note"></i>
-</td>
-<td class="content">
-<div class="paragraph">
-<p>All MongoDB connector events are designed to work with <a href="https://kafka.apache.org/documentation/#compaction">Kafka log compaction</a>, which allows for the removal of older messages as long as at least the most recent message for every key is kept. This is how Kafka can reclaim storage space while ensuring that the topic contains a complete dataset and can be used for reloading key-based state.</p>
-</div>
-<div class="paragraph">
-<p>All MongoDB connector events for a uniquely identified document have exactly the same key, signaling to Kafka that only the latest event be kept. A tombstone event informs Kafka that <em>all</em> messages with that same key can be removed.</p>
-</div>
-</td>
+</div></div></td>
 </tr>
+</tbody>
 </table>
+<div class="paragraph">
+<p>MongoDB connector events are designed to work with <a href="https://kafka.apache.org/documentation/#compaction">Kafka log compaction</a>. Log compaction enables removal of some older messages as long as at least the most recent message for every key is kept. This lets Kafka reclaim storage space while ensuring that the topic contains a complete data set and can be used for reloading key-based state.</p>
+</div>
+<div id="mongodb-tombstone-events" class="paragraph">
+<div class="title">Tombstone events</div>
+<p>All MongoDB connector events for a uniquely identified document have exactly the same key. When a document is deleted, the <em>delete</em> event value still works with log compaction because Kafka can remove all earlier messages that have that same key. However, for Kafka to remove all messages that have that key, the message value must be <code>null</code>. To make this possible, after Debezium’s MongoDB connector emits a <em>delete</em> event, the connector emits a special tombstone event that has the same key but a <code>null</code> value. A tombstone event informs Kafka that all messages with that same key can be removed.</p>
 </div>
 </div>
 </div>
@@ -1169,21 +1492,23 @@ This field provides information about every event in the form of a composite of 
 <h2 id="mongodb-deploying-a-connector"><a class="anchor" href="#mongodb-deploying-a-connector"></a>Deploying the MongoDB connector</h2>
 <div class="sectionbody">
 <div class="paragraph">
-<p>If you have already installed <a href="https://zookeeper.apache.org">Zookeeper</a>, <a href="http://kafka.apache.org/">Kafka</a>, and <a href="https://kafka.apache.org/documentation.html#connect">Kafka Connect</a>, then using Debezium&#8217;s MongoDB connector is easy.
-Simply download the
+<p>With <a href="https://zookeeper.apache.org">Zookeeper</a>, <a href="http://kafka.apache.org/">Kafka</a>, and <a href="https://kafka.apache.org/documentation.html#connect">Kafka Connect</a> installed, the remaining tasks to deploy a Debezium MongoDB connector are to
+download the
 <a href="https://repo1.maven.org/maven2/io/debezium/debezium-connector-mongodb/1.2.3.Final/debezium-connector-mongodb-1.2.3.Final-plugin.tar.gz">connector&#8217;s plug-in archive</a>,
-extract the JARs into your Kafka Connect environment, and add the directory with the JARs to Kafka Connect&#8217;s <code>plugin.path</code> by using the <a href="https://kafka.apache.org/documentation/#connectconfigs">plugin.path</a> configuration property.
-Restart your Kafka Connect process to pick up the new JARs.</p>
+extract the JAR files into your Kafka Connect environment, and add the directory with the JAR files to  <a href="https://kafka.apache.org/documentation/#connectconfigs">Kafka Connect&#8217;s <code>plugin.path</code></a>. You then need to
+restart your Kafka Connect process to pick up the new JAR files.</p>
 </div>
 <div class="paragraph">
-<p>If immutable containers are your thing, then check out <a href="https://hub.docker.com/r/debezium/">Debezium&#8217;s Docker images</a> for Zookeeper, Kafka, and Kafka Connect with the MongoDB connector already pre-installed and ready to go.
-Our <a href="../tutorial.html" class="page">tutorial</a> even walks you through using these images, and this is a great way to learn what Debezium is all about. You can even <a href="/blog/2016/05/31/Debezium-on-Kubernetes/">run Debezium on Kubernetes and OpenShift</a>.</p>
+<p>If you are working with immutable containers, see <a href="https://hub.docker.com/r/debezium/">Debezium&#8217;s Container images</a> for Zookeeper, Kafka, and Kafka Connect with the MongoDB connector already installed and ready to run. You can also <a href="../operations/openshift.html" class="page">run Debezium on Kubernetes and OpenShift</a>.</p>
+</div>
+<div class="paragraph">
+<p>The Debezium <a href="../tutorial.html" class="page">tutorial</a> walks you through using these images, and this is a great way to learn about Debezium.</p>
 </div>
 <div class="sect2">
 <h3 id="mongodb-example-configuration"><a class="anchor" href="#mongodb-example-configuration"></a>Example configuration</h3>
 <div class="paragraph">
 <p>To use the connector to produce change events for a particular MongoDB replica set or sharded cluster, create a configuration file in JSON.
-When the connector starts, it will perform a snapshot of the collections in your MongoDB replica sets and start reading the replica sets' oplogs, producing events for every inserted, updated, and deleted row.
+When the connector starts, it will perform a snapshot of the collections in your MongoDB replica sets and start reading the replica sets' oplogs, producing events for every inserted, updated, and deleted document.
 Optionally filter out collections that are not needed.</p>
 </div>
 <div class="paragraph">
@@ -1193,7 +1518,7 @@ Typically, you configure the Debezium MongoDB connector in a <code>.json</code> 
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
-  "name": "inventory-connector",  <i class="conum" data-value="1"></i><b>(1)</b>
+  "name": "inventory-connector", <i class="conum" data-value="1"></i><b>(1)</b>
   "config": {
     "connector.class": "io.debezium.connector.mongodb.MongoDbConnector", <i class="conum" data-value="2"></i><b>(2)</b>
     "mongodb.hosts": "rs0/192.168.99.100:27017", <i class="conum" data-value="3"></i><b>(3)</b>
@@ -1232,6 +1557,38 @@ Typically, you configure the Debezium MongoDB connector in a <code>.json</code> 
 </div>
 <div class="paragraph">
 <p>This configuration can be sent via POST to a running Kafka Connect service, which will then record the configuration and start up the one connector task that will connect to the MongoDB replica set or sharded cluster, assign tasks for each replica set, perform a snapshot if necessary, read the oplog, and record events to Kafka topics.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="mongodb-adding-connector-configuration"><a class="anchor" href="#mongodb-adding-connector-configuration"></a>Adding connector configuration</h3>
+<div class="paragraph">
+<p>To run a Debezium MongoDB connector, create a connector configuration and add the configuration to your Kafka Connect cluster.</p>
+</div>
+<div class="ulist">
+<div class="title">Prerequisites</div>
+<ul>
+<li>
+<p>MongoDB is set up to run a Debezium connector.</p>
+</li>
+<li>
+<p>A Debezium MongoDB connector is installed.</p>
+</li>
+</ul>
+</div>
+<div class="olist arabic">
+<div class="title">Procedure</div>
+<ol class="arabic">
+<li>
+<p>Create a configuration for the MongoDB connector.</p>
+</li>
+<li>
+<p>Use the <a href="https://kafka.apache.org/documentation/#connect_rest">Kafka Connect REST API</a> to add that connector configuration to your Kafka Connect cluster.</p>
+</li>
+</ol>
+</div>
+<div class="paragraph">
+<div class="title">Results</div>
+<p>When the connector starts, it <a href="#mongodb-performing-a-snapshot">performs a consistent snapshot</a> of the MongoDB databases that the connector is configured for. The connector then starts generating data change events for document-level operations and streaming change event records to Kafka topics.</p>
 </div>
 </div>
 <div class="sect2">

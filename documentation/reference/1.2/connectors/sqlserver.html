@@ -290,15 +290,16 @@
 <li><a href="#_reading_the_change_data_tables">Reading the change data tables</a></li>
 <li><a href="#sqlserver-topic-names">Topic names</a></li>
 <li><a href="#_schema_change_topic">Schema change topic</a></li>
-<li><a href="#_events">Events</a></li>
+<li><a href="#_change_data_events">Change data events</a></li>
 <li><a href="#sqlserver-transaction-metadata">Transaction Metadata</a></li>
 <li><a href="#sqlserver-schema-evolution">Database schema evolution</a></li>
 <li><a href="#sqlserver-data-types">Data types</a></li>
 </ul>
 </li>
-<li><a href="#sqlserver-deploying-a-connector">Deploying the SQL Server connector</a>
+<li><a href="#sqlserver-deploying-a-connector">Deployment</a>
 <ul class="sectlevel2">
 <li><a href="#sqlserver-example-configuration">Example configuration</a></li>
+<li><a href="#sqlserver-adding-connector-configuration">Adding connector configuration</a></li>
 <li><a href="#sqlserver-monitoring">Monitoring</a></li>
 <li><a href="#sqlserver-connector-properties">Connector properties</a></li>
 </ul>
@@ -593,19 +594,19 @@ This ensures that the changes are replayed by Debezium in the same order as were
       "commit_lsn": "00000025:00000d98:00a2",
       "event_serial_no": null
     },
-    "databaseName": "testDB", // <1>
+    "databaseName": "testDB", <i class="conum" data-value="1"></i><b>(1)</b>
     "schemaName": "dbo",
-    "ddl": null, // <2>
-    "tableChanges": [ // <3>
+    "ddl": null, <i class="conum" data-value="2"></i><b>(2)</b>
+    "tableChanges": [ <i class="conum" data-value="3"></i><b>(3)</b>
       {
-        "type": "CREATE", // <4>
-        "id": "\"testDB\".\"dbo\".\"customers\"", // <5>
-        "table": { // <6>
+        "type": "CREATE", <i class="conum" data-value="4"></i><b>(4)</b>
+        "id": "\"testDB\".\"dbo\".\"customers\"", <i class="conum" data-value="5"></i><b>(5)</b>
+        "table": { <i class="conum" data-value="6"></i><b>(6)</b>
           "defaultCharsetName": null,
-          "primaryKeyColumnNames": [ // <7>
+          "primaryKeyColumnNames": [ <i class="conum" data-value="7"></i><b>(7)</b>
             "id"
           ],
-          "columns": [ // <8>
+          "columns": [ <i class="conum" data-value="8"></i><b>(8)</b>
             {
               "name": "id",
               "jdbcType": 4,
@@ -769,9 +770,75 @@ This ensures that the changes are replayed by Debezium in the same order as were
 </div>
 </div>
 <div class="sect2">
-<h3 id="_events"><a class="anchor" href="#_events"></a>Events</h3>
+<h3 id="_change_data_events"><a class="anchor" href="#_change_data_events"></a>Change data events</h3>
 <div class="paragraph">
-<p>All data change events produced by the SQL Server connector have a key and a value, although the structure of the key and value depend on the table from which the change events originated (see <a href="#sqlserver-topic-names">Topic names</a>).</p>
+<p>The Debezium SQL Server connector generates a data change event for each row-level <code>INSERT</code>, <code>UPDATE</code>, and <code>DELETE</code> operation. Each event contains a key and a value. The structure of the key and the value depends on the table that was changed.</p>
+</div>
+<div class="paragraph">
+<p>Debezium and Kafka Connect are designed around <em>continuous streams of event messages</em>. However, the structure of these events may change over time, which can be difficult for consumers to handle. To address this, each event contains the schema for its content or, if you are using a schema registry, a schema ID that a consumer can use to obtain the schema from the registry. This makes each event self-contained.</p>
+</div>
+<div class="paragraph">
+<p>The following skeleton JSON shows the basic four parts of a change event. However, how you configure the Kafka Connect converter that you choose to use in your application determines the representation of these four parts in change events. A <code>schema</code> field is in a change event only when you configure the converter to produce it. Likewise, the event key and event payload are in a change event only if you configure a converter to produce it. If you use the JSON converver and you configure it to produce all four basic change event parts, change events have this structure:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
+ "schema": { <i class="conum" data-value="1"></i><b>(1)</b>
+   ...
+  },
+ "payload": { <i class="conum" data-value="2"></i><b>(2)</b>
+   ...
+ },
+ "schema": { <i class="conum" data-value="3"></i><b>(3)</b>
+   ...
+ },
+ "payload": { <i class="conum" data-value="4"></i><b>(4)</b>
+   ...
+ },
+}</code></pre>
+</div>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 2. Overview of change event basic content</caption>
+<colgroup>
+<col style="width: 10%;">
+<col style="width: 20%;">
+<col style="width: 70%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Item</th>
+<th class="tableblock halign-left valign-top">Field name</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">1</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>schema</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The first <code>schema</code> field is part of the event key. It specifies a Kafka Connect schema that describes what is in the event key&#8217;s <code>payload</code> portion. In other words, the first <code>schema</code> field describes the structure of the primary key, or the unique key if the table does not have a primary key, for the table that was changed.<br>
+<br>
+It is possible to override the table&#8217;s primary key by setting the <a href="#sqlserver-property-message-key-columns"><code>message.key.columns</code> connector configuration property</a>. In this case, the first schema field describes the structure of the key identified by that property.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">2</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>payload</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The first <code>payload</code> field is part of the event key. It has the structure described by the previous <code>schema</code> field and it contains the key for the row that was changed.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">3</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>schema</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The second <code>schema</code> field is part of the event value. It specifies the Kafka Connect schema that describes what is in the event value&#8217;s <code>payload</code> portion. In other words, the second <code>schema</code> describes the structure of the row that was changed. Typically, this schema contains nested schemas.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">4</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>payload</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The second <code>payload</code> field is part of the event value. It has the structure described by the previous <code>schema</code> field and it contains the actual data for the row that was changed.</p></td>
+</tr>
+</tbody>
+</table>
+<div class="paragraph">
+<p>By default, the connector streams change event records to topics with names that are the same as the event&#8217;s originating table. See <a href="#sqlserver-topic-names">topic names</a>.</p>
 </div>
 <div class="admonitionblock warning">
 <table>
@@ -781,33 +848,25 @@ This ensures that the changes are replayed by Debezium in the same order as were
 </td>
 <td class="content">
 <div class="paragraph">
-<p>The SQL Server connector ensures that all Kafka Connect <em>schema names</em> are <a href="http://avro.apache.org/docs/current/spec.html#names">valid Avro schema names</a>.
-This means that the logical server name must start with Latin letters or an underscore (e.g., [a-z,A-Z,_]),
-and the remaining characters in the logical server name and all characters in the schema and table names must be Latin letters, digits, or an underscore (e.g., [a-z,A-Z,0-9,\_]).
-If not, then all invalid characters will automatically be replaced with an underscore character.</p>
+<p>The SQL Server connector ensures that all Kafka Connect schema names adhere to the <a href="http://avro.apache.org/docs/current/spec.html#names">Avro schema name format</a>. This means that the logical server name must start with a Latin letter or an underscore, that is, a-z, A-Z, or _. Each remaining character in the logical server name and each character in the database and table names must be a Latin letter, a digit, or an underscore, that is, a-z, A-Z, 0-9, or \_. If there is an invalid character it is replaced with an underscore character.</p>
 </div>
 <div class="paragraph">
-<p>This can lead to unexpected conflicts when the logical server name, schema names, and table names contain other characters, and the only distinguishing characters between table full names are invalid and thus replaced with underscores.</p>
+<p>This can lead to unexpected conflicts if the logical server name, a database name, or a table name contains invalid characters, and the only characters that distinguish names from one another are invalid and thus replaced with underscores.</p>
 </div>
 </td>
 </tr>
 </table>
 </div>
-<div class="paragraph">
-<p>Debezium and Kafka Connect are designed around <em>continuous streams of event messages</em>, and the structure of these events may change over time.
-This could be difficult for consumers to deal with, so to make it easy Kafka Connect makes each event self-contained.
-Every message key and value has two parts: a <em>schema</em> and <em>payload</em>.
-The schema describes the structure of the payload, while the payload contains the actual data.</p>
-</div>
 <div class="sect3">
 <h4 id="sqlserver-change-event-keys"><a class="anchor" href="#sqlserver-change-event-keys"></a>Change Event Keys</h4>
 <div class="paragraph">
-<p>For a given table, the change event&#8217;s key will have a structure that contains a field for each column in the primary key (or unique key constraint) of the table at the time the event was created.</p>
+<p>A change event&#8217;s key contains the schema for the changed table&#8217;s key and the changed row&#8217;s actual key. Both the schema and its corresponding payload contain a field for each column in the changed table&#8217;s primary key (or unique key constraint) at the time the connector created the event.</p>
 </div>
 <div class="paragraph">
-<p>Consider a <code>customers</code> table defined in the <code>inventory</code> database&#8217;s schema <code>dbo</code>:</p>
+<p>Consider the following <code>customers</code> table, which is followed by an example of a change event key for this table.</p>
 </div>
 <div class="listingblock">
+<div class="title">Example table</div>
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">CREATE TABLE customers (
   id INTEGER IDENTITY(1001,1) NOT NULL PRIMARY KEY,
@@ -818,37 +877,87 @@ The schema describes the structure of the payload, while the payload contains th
 </div>
 </div>
 <div class="paragraph">
-<p>If the <code>database.server.name</code> configuration property has the value <code>server1</code>,
-every change event for the <code>customers</code> table while it has this definition will feature the same key structure, which in JSON looks like this:</p>
+<div class="title">Example change event key</div>
+<p>Every change event that captures a change to the <code>customers</code> table has the same event key schema. For as long as the <code>customers</code> table has the previous definition, every change event that captures a change to the <code>customers</code> table has the following key structure, which in JSON, looks like this:</p>
 </div>
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
-    "schema": {
+    "schema": { <i class="conum" data-value="1"></i><b>(1)</b>
         "type": "struct",
-        "fields": [
+        "fields": [ <i class="conum" data-value="2"></i><b>(2)</b>
             {
                 "type": "int32",
                 "optional": false,
                 "field": "id"
             }
         ],
-        "optional": false,
-        "name": "server1.dbo.customers.Key"
+        "optional": false, <i class="conum" data-value="3"></i><b>(3)</b>
+        "name": "server1.dbo.customers.Key" <i class="conum" data-value="4"></i><b>(4)</b>
     },
-    "payload": {
+    "payload": { <i class="conum" data-value="5"></i><b>(5)</b>
         "id": 1004
     }
 }</code></pre>
 </div>
 </div>
-<div class="paragraph">
-<p>The <code>schema</code> portion of the key contains a Kafka Connect schema describing what is in the key portion. In this case, it means that the <code>payload</code> value is not optional, is a structure defined by a schema named <code>server1.dbo.customers.Key</code>, and has one required field named <code>id</code> of type <code>int32</code>.
-If you look at the value of the key&#8217;s <code>payload</code> field, you can see that it is indeed a structure (which in JSON is just an object) with a single <code>id</code> field, whose value is <code>1004</code>.</p>
+<table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 3. Description of change event key</caption>
+<colgroup>
+<col style="width: 10%;">
+<col style="width: 20%;">
+<col style="width: 70%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Item</th>
+<th class="tableblock halign-left valign-top">Field name</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">1</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>schema</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The schema portion of the key specifies a Kafka Connect schema that describes what is in the key&#8217;s <code>payload</code> portion.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">2</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>fields</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Specifies each field that is expected in the <code>payload</code>, including each field&#8217;s name, type, and whether it is required. In this example, there is one required field named <code>id</code> of type <code>int32</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">3</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>optional</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Indicates whether the event key must contain a value in its <code>payload</code> field. In this example, a value in the key&#8217;s payload is required. A value in the key&#8217;s payload field is optional when a table does not have a primary key.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">4</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>server1.dbo.customers.Key</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Name of the schema that defines the structure of the key&#8217;s payload. This schema describes the structure of the primary key for the table that was changed. Key schema names have the format <em>connector-name</em>.<em>database-schema-name</em>.<em>table-name</em>.<code>Key</code>. In this example:<br></p>
 </div>
-<div class="paragraph">
-<p>Therefore, you can interpret this key as describing the row in the <code>dbo.customers</code> table (output from the connector named <code>server1</code>) whose <code>id</code> primary key column had a value of <code>1004</code>.</p>
-</div>
+<div class="ulist">
+<ul>
+<li>
+<p><code>server1</code> is the name of the connector that generated this event.<br></p>
+</li>
+<li>
+<p><code>dbo</code> is the database schema for the table that was changed.<br></p>
+</li>
+<li>
+<p><code>customers</code> is the table that was updated.</p>
+</li>
+</ul>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">5</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>payload</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Contains the key for the row for which this change event was generated. In this example, the key, contains a single <code>id</code> field whose value is <code>1004</code>.</p></td>
+</tr>
+</tbody>
+</table>
 <div class="admonitionblock note">
 <table>
 <tr>
@@ -871,7 +980,7 @@ If you look at the value of the key&#8217;s <code>payload</code> field, you can 
 </td>
 <td class="content">
 <div class="paragraph">
-<p>If the table does not have a primary or unique key, then the change event&#8217;s key will be null. This makes sense since the rows in a table without a primary or unique key constraint cannot be uniquely identified.</p>
+<p>If the table does not have a primary or unique key, then the change event&#8217;s key is null. This makes sense since the rows in a table without a primary or unique key constraint cannot be uniquely identified.</p>
 </div>
 </td>
 </tr>
@@ -879,60 +988,35 @@ If you look at the value of the key&#8217;s <code>payload</code> field, you can 
 </div>
 </div>
 <div class="sect3">
-<h4 id="sqlserver-change-event-values"><a class="anchor" href="#sqlserver-change-event-values"></a>Change Event Values</h4>
+<h4 id="sqlserver-change-event-values"><a class="anchor" href="#sqlserver-change-event-values"></a>Change event values</h4>
 <div class="paragraph">
-<p>Like the message key, the value of a change event message has a <em>schema</em> section and <em>payload</em> section.
-The payload section of every change event value produced by the SQL Server connector has an <em>envelope</em> structure with the following fields:</p>
-</div>
-<div class="ulist">
-<ul>
-<li>
-<p><code>op</code> is a mandatory field that contains a string value describing the type of operation. Values for the SQL Server connector are <code>c</code> for create (or insert), <code>u</code> for update, <code>d</code> for delete, and <code>r</code> for read (in the case of a snapshot).</p>
-</li>
-<li>
-<p><code>before</code> is an optional field that if present contains the state of the row <em>before</em> the event occurred. The structure is described by the <code>server1.dbo.customers.Value</code> Kafka Connect schema, which the <code>server1</code> connector uses for all rows in the <code>dbo.customers</code> table.</p>
-</li>
-<li>
-<p><code>after</code> is an optional field that if present contains the state of the row <em>after</em> the event occurred. The structure is described by the same <code>server1.dbo.customers.Value</code> Kafka Connect schema used in <code>before</code>.</p>
-</li>
-<li>
-<p><code>source</code> is a mandatory field that contains a structure describing the source metadata for the event, which in the case of SQL Server contains these fields: the Debezium version, the connector name, whether the event is part of an ongoing snapshot or not, the commit LSN (not while snapshotting), the LSN of the change, database, schema and table where the change happened, and a timestamp representing the point in time when the record was changed in the source database (during snapshotting, this is the point in time of snapshotting).</p>
-<div class="paragraph">
-<p>Also a field <code>event_serial_no</code> is present during streaming.
-This is used to differentiate among events that have the same commit and change LSN.
-There are mostly two situations when you can see it present with value different from <code>1</code>:</p>
-</div>
-<div class="ulist">
-<ul>
-<li>
-<p>update events will have the value set to <code>2</code>, this is because the update generates two events in the CDC change table of SQL Server (<a href="https://docs.microsoft.com/en-us/sql/relational-databases/system-tables/cdc-capture-instance-ct-transact-sql?view=sql-server-2017">source documentation</a>).
-The first one contains the old values and the second one contains new values.
-So the first one is dropped and the values from it are used with the second one to create the Debezium change event.</p>
-</li>
-<li>
-<p>when a primary key is updated, then SQL Server emits two records - <code>delete</code> to remove the record with the old primary key value and <code>insert</code> to create the record with the new primary key.
-Both operations share the same commit and change LSN and their event numbers are <code>1</code> and <code>2</code>.</p>
-</li>
-</ul>
-</div>
-</li>
-<li>
-<p><code>ts_ms</code> is optional and if present contains the time (using the system clock in the JVM running the Kafka Connect task) at which the connector processed the event.</p>
-</li>
-</ul>
+<p>The value in a change event is a bit more complicated than the key. Like the key, the value has a <code>schema</code> section and a <code>payload</code> section. The <code>schema</code> section contains the schema that describes the <code>Envelope</code> structure of the <code>payload</code> section, including its nested fields. Change events for operations that create, update or delete data all have a value payload with an envelope structure.</p>
 </div>
 <div class="paragraph">
-<p>And of course, the <em>schema</em> portion of the event message&#8217;s value contains a schema that describes this envelope structure and the nested fields within it.</p>
+<p>Consider the same sample table that was used to show an example of a change event key:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">CREATE TABLE customers (
+  id INTEGER IDENTITY(1001,1) NOT NULL PRIMARY KEY,
+  first_name VARCHAR(255) NOT NULL,
+  last_name VARCHAR(255) NOT NULL,
+  email VARCHAR(255) NOT NULL UNIQUE
+);</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>The value portion of a change event for a change to this table is described for each event type.</p>
 </div>
 <div class="sect4">
-<h5 id="sqlserver-create-events"><a class="anchor" href="#sqlserver-create-events"></a>Create events</h5>
+<h5 id="sqlserver-create-events"><a class="anchor" href="#sqlserver-create-events"></a><em>create</em> events</h5>
 <div class="paragraph">
-<p>Let&#8217;s look at what a <em>create</em> event value might look like for our <code>customers</code> table:</p>
+<p>The following example shows the value portion of a change event that the connector generates for an operation that creates data in the <code>customers</code> table:</p>
 </div>
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
-  "schema": {
+  "schema": { <i class="conum" data-value="1"></i><b>(1)</b>
     "type": "struct",
     "fields": [
       {
@@ -960,7 +1044,7 @@ Both operations share the same commit and change LSN and their event numbers are
           }
         ],
         "optional": true,
-        "name": "server1.dbo.customers.Value",
+        "name": "server1.dbo.customers.Value", <i class="conum" data-value="2"></i><b>(2)</b>
         "field": "before"
       },
       {
@@ -1012,7 +1096,7 @@ Both operations share the same commit and change LSN and their event numbers are
           {
             "type": "int64",
             "optional": false,
-            "field": "ts_ms"
+            "field": "ts_sec"
           },
           {
             "type": "boolean",
@@ -1052,7 +1136,7 @@ Both operations share the same commit and change LSN and their event numbers are
           }
         ],
         "optional": false,
-        "name": "io.debezium.connector.sqlserver.Source",
+        "name": "io.debezium.connector.sqlserver.Source", <i class="conum" data-value="3"></i><b>(3)</b>
         "field": "source"
       },
       {
@@ -1067,21 +1151,21 @@ Both operations share the same commit and change LSN and their event numbers are
       }
     ],
     "optional": false,
-    "name": "server1.dbo.customers.Envelope"
+    "name": "server1.dbo.customers.Envelope" <i class="conum" data-value="4"></i><b>(4)</b>
   },
-  "payload": {
-    "before": null,
-    "after": {
+  "payload": { <i class="conum" data-value="5"></i><b>(5)</b>
+    "before": null, <i class="conum" data-value="6"></i><b>(6)</b>
+    "after": { <i class="conum" data-value="7"></i><b>(7)</b>
       "id": 1005,
       "first_name": "john",
       "last_name": "doe",
       "email": "john.doe@example.org"
     },
-    "source": {
+    "source": { <i class="conum" data-value="8"></i><b>(8)</b>
       "version": "1.2.3.Final",
       "connector": "sqlserver",
       "name": "server1",
-      "ts_ms": 1559729468470,
+      "ts_sec": 1559729468470,
       "snapshot": false,
       "db": "testDB",
       "schema": "dbo",
@@ -1090,78 +1174,167 @@ Both operations share the same commit and change LSN and their event numbers are
       "commit_lsn": "00000027:00000758:0005",
       "event_serial_no": "1"
     },
-    "op": "c",
-    "ts_ms": 1559729471739
+    "op": "c", <i class="conum" data-value="9"></i><b>(9)</b>
+    "ts_ms": 1559729471739 <i class="conum" data-value="10"></i><b>(10)</b>
   }
 }</code></pre>
 </div>
 </div>
-<div class="paragraph">
-<p>If we look at the <code>schema</code> portion of this event&#8217;s <em>value</em>, we can see the schema for the <em>envelope</em>, the schema for the <code>source</code> structure (which is specific to the SQL Server connector and reused across all events), and the table-specific schemas for the <code>before</code> and <code>after</code> fields.</p>
-</div>
-<div class="admonitionblock note">
-<table>
+<table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 4. Descriptions of <em>create</em> event value fields</caption>
+<colgroup>
+<col style="width: 10%;">
+<col style="width: 20%;">
+<col style="width: 70%;">
+</colgroup>
+<thead>
 <tr>
-<td class="icon">
-<i class="fa icon-note" title="Note"></i>
-</td>
-<td class="content">
-<div class="paragraph">
-<p>The names of the schemas for the <code>before</code> and <code>after</code> fields are of the form <em>logicalName</em>.<em>schemaName</em>.<em>tableName</em>.Value, and thus are entirely independent from all other schemas for all other tables.
-This means that when using the Avro Converter, the resulting Avro schemas for <em>each table</em> in each <em>logical source</em> have their own evolution and history.</p>
-</div>
-</td>
+<th class="tableblock halign-left valign-top">Item</th>
+<th class="tableblock halign-left valign-top">Field name</th>
+<th class="tableblock halign-left valign-top">Description</th>
 </tr>
-</table>
-</div>
-<div class="paragraph">
-<p>If we look at the <code>payload</code> portion of this event&#8217;s <em>value</em>, we can see the information in the event, namely that it is describing that the row was created (since <code>op=c</code>), and that the <code>after</code> field value contains the values of the new inserted row&#8217;s' <code>id</code>, <code>first_name</code>, <code>last_name</code>, and <code>email</code> columns.</p>
-</div>
-<div class="admonitionblock note">
-<table>
+</thead>
+<tbody>
 <tr>
-<td class="icon">
-<i class="fa icon-note" title="Note"></i>
-</td>
-<td class="content">
-<div class="paragraph">
-<p>It may appear that the JSON representations of the events are much larger than the rows they describe.
-This is true, because the JSON representation must include the <em>schema</em> and the <em>payload</em> portions of the message.
-It is possible and even recommended to use the to dramatically decrease the size of the actual messages written to the Kafka topics.</p>
-</div>
-</td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">1</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>schema</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The value&#8217;s schema, which describes the structure of the value&#8217;s payload. A change event&#8217;s value schema is the same in every change event that the connector generates for a particular table.</p></td>
 </tr>
-</table>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">2</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>name</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>In the <code>schema</code> section, each <code>name</code> field specifies the schema for a field in the value&#8217;s payload.<br>
+<br>
+<code>server1.dbo.customers.Value</code> is the schema for the payload&#8217;s <code>before</code> and <code>after</code> fields. This schema is specific to the <code>customers</code> table.<br>
+<br>
+ Names of schemas for <code>before</code> and <code>after</code> fields are of the form <code><em>logicalName</em>.<em>database-schemaName</em>.<em>tableName</em>.Value</code>, which ensures that the schema name is unique in the database. This means that when using the <a href="../configuration/avro.html" class="page">Avro converter</a>, the resulting Avro schema for each table in each logical source has its own evolution and history.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">3</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>name</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>io.debezium.connector.sqlserver.Source</code> is the schema for the payload&#8217;s <code>source</code> field. This schema is specific to the SQL Server connector. The connector uses it for all events that it generates.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">4</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>name</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>server1.dbo.customers.Envelope</code> is the schema for the overall structure of the payload, where <code>server1</code> is the connector name, <code>dbo</code> is the database schema name, and <code>customers</code> is the table.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">5</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>payload</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The value&#8217;s actual data. This is the information that the change event is providing.<br>
+<br>
+It may appear that the JSON representations of the events are much larger than the rows they describe. This is because the JSON representation must include the schema and the payload portions of the message.
+However, by using the <a href="../configuration/avro.html" class="page">Avro converter</a>, you can significantly decrease the size of the messages that the connector streams to Kafka topics.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">6</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>before</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">An optional field that specifies the state of the row before the event occurred. When the <code>op</code> field is <code>c</code> for create, as it is in this example, the <code>before</code> field is <code>null</code> since this change event is for new content.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">7</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>after</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">An optional field that specifies the state of the row after the event occurred. In this example, the <code>after</code> field contains the values of the new row&#8217;s <code>id</code>, <code>first_name</code>, <code>last_name</code>, and <code>email</code> columns.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">8</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>source</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Mandatory field that describes the source metadata for the event. This field contains information that you can use to compare this event with other events, with regard to the origin of the events, the order in which the events occurred, and whether events were part of the same transaction. The source metadata includes:</p>
 </div>
+<div class="ulist">
+<ul>
+<li>
+<p>Debezium version</p>
+</li>
+<li>
+<p>Connector type and name</p>
+</li>
+<li>
+<p>Database and schema names</p>
+</li>
+<li>
+<p>Timestamp</p>
+</li>
+<li>
+<p>If the event was part of a snapshot</p>
+</li>
+<li>
+<p>Name of the table that contains the new row</p>
+</li>
+<li>
+<p>Server log offsets</p>
+</li>
+</ul>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">9</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>op</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Mandatory string that describes the type of operation that caused the connector to generate the event. In this example, <code>c</code> indicates that the operation created a row. Valid values are:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p><code>c</code> = create</p>
+</li>
+<li>
+<p><code>u</code> = update</p>
+</li>
+<li>
+<p><code>d</code> = delete</p>
+</li>
+<li>
+<p><code>r</code> = read (applies to only snapshots)</p>
+</li>
+</ul>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">10</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>ts_ms</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Optional field that displays the time at which the connector processed the event. The time is based on the system clock in the JVM running the Kafka Connect task.</p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
 </div>
 <div class="sect4">
-<h5 id="sqlserver-update-events"><a class="anchor" href="#sqlserver-update-events"></a>Update events</h5>
+<h5 id="sqlserver-update-events"><a class="anchor" href="#sqlserver-update-events"></a><em>update</em> events</h5>
 <div class="paragraph">
-<p>The value of an <em>update</em> change event on this table will actually have the exact same <em>schema</em>, and its payload is structured the same but will hold different values.
-Here&#8217;s an example:</p>
+<p>The value of a change event for an update in the sample <code>customers</code> table has the same schema as a <em>create</em> event for that table. Likewise, the event value&#8217;s payload has the same structure. However, the event value payload contains different values in an <em>update</em> event. Here is an example of a change event value in an event that the connector generates for an update in the <code>customers</code> table:</p>
 </div>
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
   "schema": { ... },
   "payload": {
-    "before": {
+    "before": { <i class="conum" data-value="1"></i><b>(1)</b>
       "id": 1005,
       "first_name": "john",
       "last_name": "doe",
       "email": "john.doe@example.org"
     },
-    "after": {
+    "after": { <i class="conum" data-value="2"></i><b>(2)</b>
       "id": 1005,
       "first_name": "john",
       "last_name": "doe",
       "email": "noreply@example.org"
     },
-    "source": {
+    "source": { <i class="conum" data-value="3"></i><b>(3)</b>
       "version": "1.2.3.Final",
       "connector": "sqlserver",
       "name": "server1",
-      "ts_ms": 1559729995937,
+      "ts_sec": 1559729995937,
       "snapshot": false,
       "db": "testDB",
       "schema": "dbo",
@@ -1170,43 +1343,92 @@ Here&#8217;s an example:</p>
       "commit_lsn": "00000027:00000ac0:0007",
       "event_serial_no": "2"
     },
-    "op": "u",
+    "op": "u", <i class="conum" data-value="4"></i><b>(4)</b>
     "ts_ms": 1559729998706
   }
 }</code></pre>
 </div>
 </div>
-<div class="paragraph">
-<p>When we compare this to the value in the <em>insert</em> event, we see a couple of differences in the <code>payload</code> section:</p>
+<table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 5. Descriptions of <em>update</em> event value fields</caption>
+<colgroup>
+<col style="width: 10%;">
+<col style="width: 20%;">
+<col style="width: 70%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Item</th>
+<th class="tableblock halign-left valign-top">Field name</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">1</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>before</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">An optional field that specifies the state of the row before the event occurred. In an <em>update</em> event value, the <code>before</code> field contains a field for each table column and the value that was in that column before the database commit. In this example, the <code>email</code> value is <code>john.doe@example.org.</code></p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">2</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>after</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">An optional field that specifies the state of the row after the event occurred. You can compare the <code>before</code> and <code>after</code> structures to determine what the update to this row was. In the example, the <code>email</code> value is now <code>noreply@example.org</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">3</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>source</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Mandatory field that describes the source metadata for the event. The <code>source</code> field structure has the same fields as in a <em>create</em> event, but some values are different, for example, the sample <em>update</em> event has a different offset. The source metadata includes:</p>
 </div>
 <div class="ulist">
 <ul>
 <li>
-<p>The <code>op</code> field value is now <code>u</code>, signifying that this row changed because of an update</p>
+<p>Debezium version</p>
 </li>
 <li>
-<p>The <code>before</code> field now has the state of the row with the values before the database commit</p>
+<p>Connector type and name</p>
 </li>
 <li>
-<p>The <code>after</code> field now has the updated state of the row, and here was can see that the <code>email</code> value is now <code>noreply@example.org</code>.</p>
+<p>Database and schema names</p>
 </li>
 <li>
-<p>The <code>source</code> field structure has the same fields as before, but the values are different since this event is from a different position in the transaction log.</p>
+<p>Timestamp</p>
 </li>
 <li>
-<p>The <code>event_serial_no</code> field has value <code>2</code>.
-That is due to the update event composed of two events behind the scenes and we are exposing only the second one.
-If you are interested in details please check the <a href="https://docs.microsoft.com/en-us/sql/relational-databases/system-tables/cdc-capture-instance-ct-transact-sql?view=sql-server-2017">source documentation</a> and refer to the field <code>$operation</code>.</p>
+<p>If the event was part of a snapshot</p>
 </li>
 <li>
-<p>The <code>ts_ms</code> shows the timestamp that Debezium processed this event.</p>
+<p>Name of the table that contains the new row</p>
+</li>
+<li>
+<p>Server log offsets</p>
 </li>
 </ul>
 </div>
 <div class="paragraph">
-<p>There are several things we can learn by just looking at this <code>payload</code> section. We can compare the <code>before</code> and <code>after</code> structures to determine what actually changed in this row because of the commit.
-The <code>source</code> structure tells us information about SQL Server&#8217;s record of this change (providing traceability), but more importantly this has information we can compare to other events in this and other topics to know whether this event occurred before, after, or as part of the same SQL Server commit as other events.</p>
+<p>The <code>event_serial_no</code> field differentiates events that have the same commit and change LSN. Typical situations for when this field has a value other than <code>1</code>:</p>
 </div>
+<div class="ulist">
+<ul>
+<li>
+<p><em>update</em> events have the value set to <code>2</code> because the update generates two events in the CDC change table of SQL Server (<a href="https://docs.microsoft.com/en-us/sql/relational-databases/system-tables/cdc-capture-instance-ct-transact-sql?view=sql-server-2017">see the source documentation for details</a>). The first event contains the old values and the second contains contains new values. The connector uses values in the first event to create the second event. The connector drops the first event.</p>
+</li>
+<li>
+<p>When a primary key is updated SQL Server emits two evemts. A <em>delete</em> event for the removal of the record with the old primary key value and a <em>create</em> event for the addition of the record with the new primary key.
+Both operations share the same commit and change LSN and their event numbers are <code>1</code> and <code>2</code>, respectively.</p>
+</li>
+</ul>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">4</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>op</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Mandatory string that describes the type of operation. In an <em>update</em> event value, the <code>op</code> field value is <code>u</code>, signifying that this row changed because of an update.</p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
 <div class="admonitionblock note">
 <table>
 <tr>
@@ -1215,7 +1437,7 @@ The <code>source</code> structure tells us information about SQL Server&#8217;s 
 </td>
 <td class="content">
 <div class="paragraph">
-<p>When the columns for a row&#8217;s primary/unique key are updated, the value of the row&#8217;s key has changed so Debezium will output <em>three</em> events: a <code>DELETE</code> event and a <a href="#sqlserver-tombstone-events">tombstone event</a> with the old key for the row, followed by an <code>INSERT</code> event with the new key for the row.</p>
+<p>Updating the columns for a row&#8217;s primary/unique key changes the value of the row&#8217;s key. When a key changes, Debezium outputs <em>three</em> events: a <em>delete</em> event and a <a href="#sqlserver-tombstone-events">tombstone event</a> with the old key for the row, followed by a <em>create</em> event with the new key for the row.</p>
 </div>
 </td>
 </tr>
@@ -1223,10 +1445,9 @@ The <code>source</code> structure tells us information about SQL Server&#8217;s 
 </div>
 </div>
 <div class="sect4">
-<h5 id="sqlserver-delete-events"><a class="anchor" href="#sqlserver-delete-events"></a>Delete events</h5>
+<h5 id="sqlserver-delete-events"><a class="anchor" href="#sqlserver-delete-events"></a><em>delete</em> events</h5>
 <div class="paragraph">
-<p>So far, you have seen samples of <em>create</em> and <em>update</em> events.
-The following sample shows the value of a <em>delete</em> event for the same table. Once again, the <code>schema</code> portion of the value is exactly the same as with the <em>create</em> and <em>update</em> events:</p>
+<p>The value in a <em>delete</em> change event has the same <code>schema</code> portion as <em>create</em> and <em>update</em> events for the same table. The <code>payload</code> portion in a <em>delete</em> event for the sample <code>customers</code> table looks like this:</p>
 </div>
 <div class="listingblock">
 <div class="content">
@@ -1234,18 +1455,18 @@ The following sample shows the value of a <em>delete</em> event for the same tab
   "schema": { ... },
   },
   "payload": {
-    "before": {
+    "before": { &lt;&gt;
       "id": 1005,
       "first_name": "john",
       "last_name": "doe",
       "email": "noreply@example.org"
     },
-    "after": null,
-    "source": {
+    "after": null, <i class="conum" data-value="2"></i><b>(2)</b>
+    "source": { <i class="conum" data-value="3"></i><b>(3)</b>
       "version": "1.2.3.Final",
       "connector": "sqlserver",
       "name": "server1",
-      "ts_ms": 1559730445243,
+      "ts_sec": 1559730445243,
       "snapshot": false,
       "db": "testDB",
       "schema": "dbo",
@@ -1254,46 +1475,91 @@ The following sample shows the value of a <em>delete</em> event for the same tab
       "commit_lsn": "00000027:00000db0:0007",
       "event_serial_no": "1"
     },
-    "op": "d",
-    "ts_ms": 1559730450205
+    "op": "d", <i class="conum" data-value="4"></i><b>(4)</b>
+    "ts_ms": 1559730450205 <i class="conum" data-value="5"></i><b>(5)</b>
   }
 }</code></pre>
 </div>
 </div>
-<div class="paragraph">
-<p>If we look at the <code>payload</code> portion, we see a number of differences compared with the <em>create</em> or <em>update</em> event payloads:</p>
+<table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 6. Descriptions of <em>delete</em> event value fields</caption>
+<colgroup>
+<col style="width: 10%;">
+<col style="width: 20%;">
+<col style="width: 70%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Item</th>
+<th class="tableblock halign-left valign-top">Field name</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">1</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>before</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Optional field that specifies the state of the row before the event occurred. In a <em>delete</em> event value, the <code>before</code> field contains the values that were in the row before it was deleted with the database commit.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">2</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>after</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Optional field that specifies the state of the row after the event occurred. In a <em>delete</em> event value, the <code>after</code> field is <code>null</code>, signifying that the row no longer exists.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">3</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>source</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Mandatory field that describes the source metadata for the event. In a <em>delete</em> event value, the <code>source</code> field structure is the same as for <em>create</em> and <em>update</em> events for the same table. Many <code>source</code> field values are also the same. In a <em>delete</em> event value, the <code>ts_ms</code> and <code>pos</code> field values, as well as other values, might have changed. But the <code>source</code> field in a <em>delete</em> event value provides the same metadata:</p>
 </div>
 <div class="ulist">
 <ul>
 <li>
-<p>The <code>op</code> field value is now <code>d</code>, signifying that this row was deleted</p>
+<p>Debezium version</p>
 </li>
 <li>
-<p>The <code>before</code> field now has the state of the row that was deleted with the database commit.</p>
+<p>Connector type and name</p>
 </li>
 <li>
-<p>The <code>after</code> field is null, signifying that the row no longer exists</p>
+<p>Database and schema names</p>
 </li>
 <li>
-<p>The <code>source</code> field structure has many of the same values as before, except the <code>ts_ms</code>, <code>commit_lsn</code> and <code>change_lsn</code> fields have changed</p>
+<p>Timestamp</p>
 </li>
 <li>
-<p>The <code>ts_ms</code> shows the timestamp that Debezium processed this event.</p>
+<p>If the event was part of a snapshot</p>
+</li>
+<li>
+<p>Name of the table that contains the new row</p>
+</li>
+<li>
+<p>Server log offsets</p>
 </li>
 </ul>
-</div>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">4</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>op</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Mandatory string that describes the type of operation. The <code>op</code> field value is <code>d</code>, signifying that this row was deleted.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">5</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>ts_ms</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Optional field that displays the time at which the connector processed the event. The time is based on the system clock in the JVM running the Kafka Connect task.</p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
 <div class="paragraph">
-<p>This event gives a consumer all kinds of information that it can use to process the removal of this row.</p>
-</div>
-<div class="paragraph">
-<p>The SQL Server connector&#8217;s events are designed to work with <a href="https://cwiki.apache.org/confluence/display/KAFKA/Log+Compaction">Kafka log compaction</a>,
-which allows for the removal of some older messages as long as at least the most recent message for every key is kept.
-This allows Kafka to reclaim storage space while ensuring the topic contains a complete dataset and can be used for reloading key-based state.</p>
+<p>SQL Server connector events are designed to work with <a href="https://kafka.apache.org/documentation/#compaction">Kafka log compaction</a>. Log compaction enables removal of some older messages as long as at least the most recent message for every key is kept. This lets Kafka reclaim storage space while ensuring that the topic contains a complete data set and can be used for reloading key-based state.</p>
 </div>
 <div id="sqlserver-tombstone-events" class="paragraph">
-<p>When a row is deleted, the <em>delete</em> event value listed above still works with log compaction, since Kafka can still remove all earlier messages with that same key.
-But only if the message value is <code>null</code> will Kafka know that it can remove <em>all messages</em> with that same key.
-To make this possible, the SQL Server connector always follows the <em>delete</em> event with a special <em>tombstone</em> event that has the same key but <code>null</code> value.</p>
+<div class="title">Tombstone events</div>
+<p>When a row is deleted, the <em>delete</em> event value still works with log compaction, because Kafka can remove all earlier messages that have that same key. However, for Kafka to remove all messages that have that same key, the message value must be <code>null</code>. To make this possible, after Debezium’s SQL Server connector emits a <em>delete</em> event, the connector emits a special tombstone event that has the same key but a <code>null</code> value.</p>
 </div>
 </div>
 </div>
@@ -2191,16 +2457,14 @@ The <code>connect.decimal.precision</code> schema parameter contains an integer 
 </div>
 </div>
 <div class="sect1">
-<h2 id="sqlserver-deploying-a-connector"><a class="anchor" href="#sqlserver-deploying-a-connector"></a>Deploying the SQL Server connector</h2>
+<h2 id="sqlserver-deploying-a-connector"><a class="anchor" href="#sqlserver-deploying-a-connector"></a>Deployment</h2>
 <div class="sectionbody">
 <div class="paragraph">
-<p>If you have already installed <a href="https://zookeeper.apache.org">Zookeeper</a>, <a href="http://kafka.apache.org/">Kafka</a>, and <a href="https://kafka.apache.org/documentation.html#connect">Kafka Connect</a>, then using Debezium&#8217;s SQL Server` connector is easy.
-Simply download the <a href="https://repo1.maven.org/maven2/io/debezium/debezium-connector-sqlserver/1.2.3.Final/debezium-connector-sqlserver-1.2.3.Final-plugin.tar.gz">connector&#8217;s plug-in archive</a>, extract the JARs into your Kafka Connect environment, and add the directory with the JARs to <a href="https://kafka.apache.org/documentation/#connectconfigs">Kafka Connect&#8217;s <code>plugin.path</code></a>.
-Restart your Kafka Connect process to pick up the new JARs.</p>
+<p>With <a href="https://zookeeper.apache.org">Zookeeper</a>, <a href="http://kafka.apache.org/">Kafka</a>, and <a href="https://kafka.apache.org/documentation.html#connect">Kafka Connect</a> installed, the remaining tasks to deploy a Debezium SQL Server connector are to download the <a href="https://repo1.maven.org/maven2/io/debezium/debezium-connector-sqlserver/1.2.3.Final/debezium-connector-sqlserver-1.2.3.Final-plugin.tar.gz">connector&#8217;s plug-in archive</a>, extract the JAR files into your Kafka Connect environment, and add the directory with the JAR files to <a href="https://kafka.apache.org/documentation/#connectconfigs">Kafka Connect&#8217;s <code>plugin.path</code></a>.
+Restart your Kafka Connect process to pick up the new JAR files.</p>
 </div>
 <div class="paragraph">
-<p>If immutable containers are your thing, then check out <a href="https://hub.docker.com/r/debezium/">Debezium&#8217;s Docker images</a> for Zookeeper, Kafka and Kafka Connect with the SQL Server connector already pre-installed and ready to go.
-You can even <a href="/docs/openshift/">run Debezium on OpenShift</a>.</p>
+<p>If you are working with immutable containers, see <a href="https://hub.docker.com/r/debezium/">Debezium&#8217;s container images</a> for Zookeeper, Kafka, SQL Server and Kafka Connect with the SQL Server connector already installed and ready to run. You can also <a href="../operations/openshift.html" class="page">run Debezium on Kubernetes and OpenShift</a>.</p>
 </div>
 <div class="sect2">
 <h3 id="sqlserver-example-configuration"><a class="anchor" href="#sqlserver-example-configuration"></a>Example configuration</h3>
@@ -2229,7 +2493,7 @@ Typically, you configure the Debezium SQL Server connector in a <code>.json</cod
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
-  "name": "inventory-connector",  <i class="conum" data-value="1"></i><b>(1)</b>
+  "name": "inventory-connector", <i class="conum" data-value="1"></i><b>(1)</b>
   "config": {
     "connector.class": "io.debezium.connector.sqlserver.SqlServerConnector", <i class="conum" data-value="2"></i><b>(2)</b>
     "database.hostname": "192.168.99.100", <i class="conum" data-value="3"></i><b>(3)</b>
@@ -2298,6 +2562,38 @@ Typically, you configure the Debezium SQL Server connector in a <code>.json</cod
 </div>
 <div class="paragraph">
 <p>This configuration can be sent via POST to a running Kafka Connect service, which will then record the configuration and start up the one connector task that will connect to the SQL Server database, read the transaction log, and record events to Kafka topics.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="sqlserver-adding-connector-configuration"><a class="anchor" href="#sqlserver-adding-connector-configuration"></a>Adding connector configuration</h3>
+<div class="paragraph">
+<p>To run a Debezium SQL Server connector, create a connector configuration and add the configuration to your Kafka Connect cluster.</p>
+</div>
+<div class="ulist">
+<div class="title">Prerequisites</div>
+<ul>
+<li>
+<p>SQL Server is set up to run a Debezium connector.</p>
+</li>
+<li>
+<p>A Debezium SQL Server connector is installed.</p>
+</li>
+</ul>
+</div>
+<div class="olist arabic">
+<div class="title">Procedure</div>
+<ol class="arabic">
+<li>
+<p>Create a configuration for the SQL Server connector.</p>
+</li>
+<li>
+<p>Use the <a href="https://kafka.apache.org/documentation/#connect_rest">Kafka Connect REST API</a> to add that connector configuration to your Kafka Connect cluster.</p>
+</li>
+</ol>
+</div>
+<div class="paragraph">
+<div class="title">Results</div>
+<p>When the connector starts, it <a href="#sqlserver-snapshots">performs a consistent snapshot</a> of the SQL Server databases that the connector is configured for. The connector then starts generating data change events for row-level operations and streaming change event records to Kafka topics.</p>
 </div>
 </div>
 <div class="sect2">
@@ -3121,7 +3417,7 @@ For <code>read_uncommitted</code> there are no data consistency guarantees at al
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="sqlserver-property-source-timestamp-mode"></a><a href="#sqlserver-property-source-timestamp-mode">[sqlserver-property-source-timestamp-mode]</a>, <code>source.timestamp.mode</code></p>
+<p><a id="sqlserver-property-source-timestamp-mode"></a><a href="#sqlserver-property-source-timestamp-mode"><code>source.timestamp.mode</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><em>commit</em></p>

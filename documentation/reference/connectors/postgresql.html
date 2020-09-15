@@ -287,7 +287,7 @@
 <li><a href="#postgresql-replica-identity">Replica identity</a></li>
 <li><a href="#postgresql-create-events"><em>create</em> events</a></li>
 <li><a href="#postgresql-update-events"><em>update</em> events</a></li>
-<li><a href="#_primary_key_updates">Primary key updates</a></li>
+<li><a href="#postgresql-primary-key-updates">Primary key updates</a></li>
 <li><a href="#postgresql-delete-events"><em>delete</em> events</a></li>
 </ul>
 </li>
@@ -584,14 +584,25 @@ public interface Snapshotter {
      * @return true if the snapshotter should take a snapshot
      */
     boolean shouldSnapshot();
+
     /**
      * @return true if the snapshotter should stream after taking a snapshot
      */
     boolean shouldStream();
 
     /**
+     *
+     * @return true if streaming should resume from the start of the snapshot
+     * transaction, or false for when a connector resumes and takes a snapshot,
+     * streaming should resume from where streaming previously left off.
+     */
+    default boolean shouldStreamEventsStartingFromSnapshot() {
+        return true;
+    }
+
+    /**
      * @return true if when creating a slot, a snapshot should be exported, which
-     * can be used as an alternative to takFIRST BUILD OF SPLIT FILE: ing a lock
+     * can be used as an alternative to taking a lock
      */
     default boolean exportSnapshot() {
         return false;
@@ -627,7 +638,7 @@ public interface Snapshotter {
         statements.append("SET lock_timeout = ").append(lockTimeout.toMillis()).append(";").append(lineSeparator);
         // we're locking in ACCESS SHARE MODE to avoid concurrent schema changes while we're taking the snapshot
         // this does not prevent writes to the table, but prevents changes to the table's schema....
-        // DBZ-298 Quoting name in case it has been quoted originally; it does not do harm if it has not been quoted
+        // DBZ-298 Quoting name in case it has been quoted originally; it doesn't do harm if it hasn't been quoted
         tableIds.forEach(tableId -&gt; statements.append("LOCK TABLE ")
                 .append(tableId.toDoubleQuotedString())
                 .append(" IN ACCESS SHARE MODE;")
@@ -905,11 +916,71 @@ This field provides information about every event in the form of a composite of 
 <h2 id="postgresql-events"><a class="anchor" href="#postgresql-events"></a>Data change events</h2>
 <div class="sectionbody">
 <div class="paragraph">
-<p>Each data change event produced by the Debezium PostgreSQL connector contains a key and a value. The structure of the event key and event value depends on the table from which the change event originates.</p>
+<p>The Debezium PostgreSQL connector generates a data change event for each row-level <code>INSERT</code>, <code>UPDATE</code>, and <code>DELETE</code> operation. Each event contains a key and a value. The structure of the key and the value depends on the table that was changed.</p>
 </div>
 <div class="paragraph">
-<p>Debezium and Kafka Connect are designed around <em>continuous streams of event messages</em>. However, the structure of these events may change over time, which can be difficult for consumers to handle. To make it easier, Kafka Connect makes each event self-contained. Each event key and each event value has two parts: a <em>schema</em> and a <em>payload</em>. In each part, the schema describes the structure of its payload, while the payload contains the actual data.</p>
+<p>Debezium and Kafka Connect are designed around <em>continuous streams of event messages</em>. However, the structure of these events may change over time, which can be difficult for consumers to handle. To address this, each event contains the schema for its content or, if you are using a schema registry, a schema ID that a consumer can use to obtain the schema from the registry. This makes each event self-contained.</p>
 </div>
+<div class="paragraph">
+<p>The following skeleton JSON shows the basic four parts of a change event. However, how you configure the Kafka Connect converter that you choose to use in your application determines the representation of these four parts in change events. A <code>schema</code> field is in a change event only when you configure the converter to produce it. Likewise, the event key and event payload are in a change event only if you configure a converter to produce it. If you use the JSON converver and you configure it to produce all four basic change event parts, change events have this structure:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
+ "schema": { <i class="conum" data-value="1"></i><b>(1)</b>
+   ...
+  },
+ "payload": { <i class="conum" data-value="2"></i><b>(2)</b>
+   ...
+ },
+ "schema": { <i class="conum" data-value="3"></i><b>(3)</b>
+   ...
+ },
+ "payload": { <i class="conum" data-value="4"></i><b>(4)</b>
+   ...
+ },
+}</code></pre>
+</div>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 2. Overview of change event basic content</caption>
+<colgroup>
+<col style="width: 10%;">
+<col style="width: 20%;">
+<col style="width: 70%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Item</th>
+<th class="tableblock halign-left valign-top">Field name</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">1</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>schema</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The first <code>schema</code> field is part of the event key. It specifies a Kafka Connect schema that describes what is in the event key&#8217;s <code>payload</code> portion. In other words, the first <code>schema</code> field describes the structure of the primary key, or the unique key if the table does not have a primary key, for the table that was changed.<br>
+<br>
+It is possible to override the table&#8217;s primary key by setting the <a href="#postgresql-property-message-key-columns"><code>message.key.columns</code> connector configuration property</a>. In this case, the first schema field describes the structure of the key identified by that property.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">2</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>payload</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The first <code>payload</code> field is part of the event key. It has the structure described by the previous <code>schema</code> field and it contains the key for the row that was changed.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">3</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>schema</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The second <code>schema</code> field is part of the event value. It specifies the Kafka Connect schema that describes what is in the event value&#8217;s <code>payload</code> portion. In other words, the second <code>schema</code> describes the structure of the row that was changed. Typically, this schema contains nested schemas.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">4</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>payload</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The second <code>payload</code> field is part of the event value. It has the structure described by the previous <code>schema</code> field and it contains the actual data for the row that was changed.</p></td>
+</tr>
+</tbody>
+</table>
 <div class="paragraph">
 <p>By default behavior is that the connector streams change event records to <a href="#postgresql-topic-names">topics with names that are the same as the event&#8217;s originating table</a>.</p>
 </div>
@@ -964,8 +1035,6 @@ This field provides information about every event in the form of a composite of 
 );</code></pre>
 </div>
 </div>
-<div class="exampleblock">
-<div class="content">
 <div class="paragraph">
 <div class="title">Example change event key</div>
 <p>If the <code>database.server.name</code> connector configuration property has the value <code>PostgreSQL_server</code>, every change event for the <code>customers</code> table while it has this definition has the same key structure, which in JSON looks like this:</p>
@@ -994,35 +1063,63 @@ This field provides information about every event in the form of a composite of 
 }</code></pre>
 </div>
 </div>
-<div class="colist arabic">
-<table>
+<table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 3. Description of change event key</caption>
+<colgroup>
+<col style="width: 10%;">
+<col style="width: 20%;">
+<col style="width: 70%;">
+</colgroup>
+<thead>
 <tr>
-<td><i class="conum" data-value="1"></i><b>1</b></td>
-<td>The <code>schema</code> portion of the key specifies a Kafka Connect schema that describes what is in the key&#8217;s <code>payload</code> portion.</td>
+<th class="tableblock halign-left valign-top">Item</th>
+<th class="tableblock halign-left valign-top">Field name</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">1</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>schema</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The schema portion of the key specifies a Kafka Connect schema that describes what is in the key&#8217;s <code>payload</code> portion.</p></td>
 </tr>
 <tr>
-<td><i class="conum" data-value="2"></i><b>2</b></td>
-<td>The <code>PostgreSQL_server.public.customers.Key</code> schema defines the structure of the key&#8217;s payload.</td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">2</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>PostgreSQL_server.inventory.customers.Key</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Name of the schema that defines the structure of the key&#8217;s payload. This schema describes the structure of the primary key for the table that was changed. Key schema names have the format <em>connector-name</em>.<em>database-name</em>.<em>table-name</em>.<code>Key</code>. In this example:<br></p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p><code>PostgreSQL_server</code> is the name of the connector that generated this event.<br></p>
+</li>
+<li>
+<p><code>public</code> is the database that contains the table that was changed.<br></p>
+</li>
+<li>
+<p><code>customers</code> is the table that was updated.</p>
+</li>
+</ul>
+</div></div></td>
 </tr>
 <tr>
-<td><i class="conum" data-value="3"></i><b>3</b></td>
-<td>The key&#8217;s <code>payload</code> value is not optional.</td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">3</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>optional</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Indicates whether the event key must contain a value in its <code>payload</code> field. In this example, a value in the key&#8217;s payload is required. A value in the key&#8217;s payload field is optional when a table does not have a primary key.</p></td>
 </tr>
 <tr>
-<td><i class="conum" data-value="4"></i><b>4</b></td>
-<td>Specifies the type of fields expected in the <code>payload</code>.</td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">4</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>fields</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Specifies each field that is expected in the <code>payload</code>, including each field&#8217;s name, index, and schema.</p></td>
 </tr>
 <tr>
-<td><i class="conum" data-value="5"></i><b>5</b></td>
-<td>The payload itself, which in this case contains a single <code>id</code> field.</td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">5</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>payload</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Contains the key for the row for which this change event was generated. In this example, the key, contains a single <code>id</code> field whose value is <code>1</code>.</p></td>
 </tr>
+</tbody>
 </table>
-</div>
-<div class="paragraph">
-<p>This key describes output from the connector named <code>PostgreSQL_server</code>. The output is for the <code>public.customers</code> table row whose primary key, the <code>id</code> column, has a value of <code>1</code>.</p>
-</div>
-</div>
-</div>
 <div class="admonitionblock note">
 <table>
 <tr>
@@ -1055,79 +1152,24 @@ This field provides information about every event in the form of a composite of 
 <div class="sect2">
 <h3 id="postgresql-change-events-value"><a class="anchor" href="#postgresql-change-events-value"></a>Change event values</h3>
 <div class="paragraph">
-<p>The value in a change event record is a bit more complicated than the key. Like the key, the value has a <code>schema</code> section and a <code>payload</code> section. The <code>schema</code> section contains the schema that describes the <code>Envelope</code> structure of the <code>payload</code> section, including its nested fields. The <code>payload</code> section has the following nested fields:</p>
+<p>The value in a change event is a bit more complicated than the key. Like the key, the value has a <code>schema</code> section and a <code>payload</code> section. The <code>schema</code> section contains the schema that describes the <code>Envelope</code> structure of the <code>payload</code> section, including its nested fields. Change events for operations that create, update or delete data all have a value payload with an envelope structure.</p>
 </div>
-<div class="ulist">
-<ul>
-<li>
-<p><code>before</code> is an optional field. If present, it contains the state of the row <em>before</em> the event occurred. The structure of the <code>before</code> field is described by a Kafka Connect <code>Value</code> schema. For example, for each row operation in the <code>public.customers</code> table, the connector uses the <code>PostgreSQL_server.public.customers.Value</code> schema to provide the content of the <code>before</code> field.</p>
-</li>
-</ul>
-</div>
-<div class="admonitionblock note">
-<table>
-<tr>
-<td class="icon">
-<i class="fa icon-note" title="Note"></i>
-</td>
-<td class="content">
 <div class="paragraph">
-<p>Whether or not this field is available is dependent on the <a href="#postgresql-replica-identity"><code>REPLICA IDENTITY</code></a> setting for each table.</p>
+<p>Consider the same sample table that was used to show an example of a change event key:</p>
 </div>
-</td>
-</tr>
-</table>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">CREATE TABLE customers (
+  id SERIAL,
+  first_name VARCHAR(255) NOT NULL,
+  last_name VARCHAR(255) NOT NULL,
+  email VARCHAR(255) NOT NULL,
+  PRIMARY KEY(id)
+);</code></pre>
 </div>
-<div class="ulist">
-<ul>
-<li>
-<p><code>after</code> is an optional field. If present, it contains the state of the row <em>after</em> the operation occurred. The structure is described by the same Kafka Connect <code>Value</code> schema that is used for the <code>before</code> field.</p>
-</li>
-<li>
-<p><code>source</code> is a mandatory field that contains a structure that describes the source metadata for the event. For PostgreSQL connectors, the metadata provides:</p>
-<div class="ulist">
-<ul>
-<li>
-<p>Debezium version</p>
-</li>
-<li>
-<p>Connector name</p>
-</li>
-<li>
-<p>Names of the database, schema, and table that contains the change</p>
-</li>
-<li>
-<p>Whether this event is part of an ongoing snapshot</p>
-</li>
-<li>
-<p><a href="#postgresql-meta-information">Partition and offset metadata</a></p>
-</li>
-</ul>
 </div>
-</li>
-<li>
-<p><code>op</code> is a mandatory field that contains a string value that describes the type of operation. Allowed values for the PostgreSQL connector are:</p>
-<div class="ulist">
-<ul>
-<li>
-<p><code>c</code> for create or insert</p>
-</li>
-<li>
-<p><code>u</code> for update</p>
-</li>
-<li>
-<p><code>d</code> for delete</p>
-</li>
-<li>
-<p><code>r</code> for read in the case of a snapshot</p>
-</li>
-</ul>
-</div>
-</li>
-<li>
-<p><code>ts_ms</code> is an optional field. If present, it contains the time at which the connector processed the event. This value reflects the system clock in the JVM running the Kafka Connect task.</p>
-</li>
-</ul>
+<div class="paragraph">
+<p>The value portion of a change event for a change to this table varies according to the <code>REPLICA IDENTITY</code> setting and the operation that the event is for.</p>
 </div>
 </div>
 <div class="sect2">
@@ -1161,12 +1203,12 @@ This field provides information about every event in the form of a composite of 
 <div class="sect2">
 <h3 id="postgresql-create-events"><a class="anchor" href="#postgresql-create-events"></a><em>create</em> events</h3>
 <div class="paragraph">
-<p>The following example shows a <em>create</em> event value for the <code>customers</code> table:</p>
+<p>The following example shows the value portion of a change event that the connector generates for an operation that creates data in the <code>customers</code> table:</p>
 </div>
 <div class="listingblock">
 <div class="content">
-<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
-    "schema": {
+<pre class="highlightjs highlight nowrap"><code class="language-json hljs" data-lang="json">{
+    "schema": { <i class="conum" data-value="1"></i><b>(1)</b>
         "type": "struct",
         "fields": [
             {
@@ -1194,7 +1236,7 @@ This field provides information about every event in the form of a composite of 
                     }
                 ],
                 "optional": true,
-                "name": "PostgreSQL_server.inventory.customers.Value",
+                "name": "PostgreSQL_server.inventory.customers.Value", <i class="conum" data-value="2"></i><b>(2)</b>
                 "field": "before"
             },
             {
@@ -1246,7 +1288,7 @@ This field provides information about every event in the form of a composite of 
                     {
                         "type": "int64",
                         "optional": false,
-                        "field": "ts_ms"
+                        "field": "ts_sec"
                     },
                     {
                         "type": "boolean",
@@ -1286,7 +1328,7 @@ This field provides information about every event in the form of a composite of 
                     }
                 ],
                 "optional": false,
-                "name": "io.debezium.connector.postgresql.Source",
+                "name": "io.debezium.connector.postgresql.Source", <i class="conum" data-value="3"></i><b>(3)</b>
                 "field": "source"
             },
             {
@@ -1301,21 +1343,21 @@ This field provides information about every event in the form of a composite of 
             }
         ],
         "optional": false,
-        "name": "PostgreSQL_server.inventory.customers.Envelope"
+        "name": "PostgreSQL_server.inventory.customers.Envelope" <i class="conum" data-value="4"></i><b>(4)</b>
     },
-    "payload": {
-        "before": null,
-        "after": {
+    "payload": { <i class="conum" data-value="5"></i><b>(5)</b>
+        "before": null, <i class="conum" data-value="6"></i><b>(6)</b>
+        "after": { <i class="conum" data-value="7"></i><b>(7)</b>
             "id": 1,
             "first_name": "Anne",
             "last_name": "Kretchmar",
             "email": "annek@noanswer.org"
         },
-        "source": {
+        "source": { <i class="conum" data-value="8"></i><b>(8)</b>
             "version": "1.3.0.Beta1",
             "connector": "postgresql",
             "name": "PostgreSQL_server",
-            "ts_ms": 1559033904863,
+            "ts_sec": 1559033904863,
             "snapshot": true,
             "db": "postgres",
             "schema": "public",
@@ -1324,49 +1366,71 @@ This field provides information about every event in the form of a composite of 
             "lsn": 24023128,
             "xmin": null
         },
-        "op": "c",
-        "ts_ms": 1559033904863
+        "op": "c", <i class="conum" data-value="9"></i><b>(9)</b>
+        "ts_ms": 1559033904863 <i class="conum" data-value="10"></i><b>(10)</b>
     }
 }</code></pre>
 </div>
 </div>
-<div class="paragraph">
-<p>In the <code>schema</code> portion of this event&#8217;s value, you can see schemas for:</p>
-</div>
-<div class="ulist">
-<ul>
-<li>
-<p><code>customers.Envelope</code></p>
-</li>
-<li>
-<p>The <code>source</code> structure, which is specific to the PostgreSQL connector and reused across all events.</p>
-</li>
-<li>
-<p>The <code>before</code> and <code>after</code> fields, whose schemas are specific to the table.</p>
-<div class="paragraph">
-<p>The names of the schemas for the <code>before</code> and <code>after</code> fields are of the form <code><em>logicalName</em>.<em>schemaName</em>.<em>tableName</em>.Value</code>, and thus are entirely independent from all other schemas for all other tables. This means that when using the Avro converter, the resulting Avro schemas for <em>each table</em> in each <em>logical source</em> have their own evolution and history.</p>
-</div>
-</li>
-</ul>
-</div>
-<div class="paragraph">
-<p>In the <code>payload</code> portion of this event&#8217;s value, you can see:</p>
-</div>
-<div class="ulist">
-<ul>
-<li>
-<p>The <code>before</code> field is null, which means that the event does not contain any previous row values.</p>
-</li>
-<li>
-<p>The <code>after</code> field contains values for the inserted row&#8217;s <code>id</code>, <code>first_name</code>, <code>last_name</code>, and <code>email</code> columns.</p>
-</li>
-<li>
-<p>The <code>source</code> field contains metadata.</p>
-</li>
-<li>
-<p>The <code>op</code> field contains <code>c</code> to indicate that a row was created.</p>
-</li>
-</ul>
+<table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 4. Descriptions of <em>create</em> event value fields</caption>
+<colgroup>
+<col style="width: 10%;">
+<col style="width: 20%;">
+<col style="width: 70%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Item</th>
+<th class="tableblock halign-left valign-top">Field name</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">1</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>schema</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The value&#8217;s schema, which describes the structure of the value&#8217;s payload. A change event&#8217;s value schema is the same in every change event that the connector generates for a particular table.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">2</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>name</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>In the <code>schema</code> section, each <code>name</code> field specifies the schema for a field in the value&#8217;s payload.<br>
+<br>
+<code>PostgreSQL_server.inventory.customers.Value</code> is the schema for the payload&#8217;s <code>before</code> and <code>after</code> fields. This schema is specific to the <code>customers</code> table.<br>
+<br>
+Names of schemas for <code>before</code> and <code>after</code> fields are of the form <code><em>logicalName</em>.<em>tableName</em>.Value</code>, which ensures that the schema name is unique in the database. This means that when using the <a href="../configuration/avro.html" class="page">Avro converter</a>, the resulting Avro schema for each table in each logical source has its own evolution and history.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">3</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>name</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>io.debezium.connector.postgresql.Source</code> is the schema for the payload&#8217;s <code>source</code> field. This schema is specific to the PostgreSQL connector. The connector uses it for all events that it generates.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">4</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>name</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>PostgreSQL_server.inventory.customers.Envelope</code> is the schema for the overall structure of the payload, where <code>PostgreSQL_server</code> is the connector name, <code>inventory</code> is the database, and <code>customers</code> is the table.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">5</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>payload</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The value&#8217;s actual data. This is the information that the change event is providing.<br>
+<br>
+It may appear that the JSON representations of the events are much larger than the rows they describe. This is because the JSON representation must include the schema and the payload portions of the message.
+However, by using the <a href="../configuration/avro.html" class="page">Avro converter</a>, you can significantly decrease the size of the messages that the connector streams to Kafka topics.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">6</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>before</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>An optional field that specifies the state of the row before the event occurred. When the <code>op</code> field is <code>c</code> for create, as it is in this example, the <code>before</code> field is <code>null</code> since this change event is for new content. <br>
+<br></p>
 </div>
 <div class="admonitionblock note">
 <table>
@@ -1376,38 +1440,110 @@ This field provides information about every event in the form of a composite of 
 </td>
 <td class="content">
 <div class="paragraph">
-<p>JSON representations of events are much larger than the rows they describe. This is because the JSON representation must include the <code>schema</code> and the <code>payload</code> portions of the change event record.
-It is possible and even recommended that you use the Avro converter to dramatically decrease the size of the records written to the Kafka topics.</p>
+<p>Whether or not this field is available is dependent on the <a href="#postgresql-replica-identity"><code>REPLICA IDENTITY</code></a> setting for each table.</p>
 </div>
 </td>
 </tr>
 </table>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">7</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>after</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">An optional field that specifies the state of the row after the event occurred. In this example, the <code>after</code> field contains the values of the new row&#8217;s <code>id</code>, <code>first_name</code>, <code>last_name</code>, and <code>email</code> columns.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">8</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>source</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Mandatory field that describes the source metadata for the event. This field contains information that you can use to compare this event with other events, with regard to the origin of the events, the order in which the events occurred, and whether events were part of the same transaction. The source metadata includes:</p>
 </div>
+<div class="ulist">
+<ul>
+<li>
+<p>Debezium version</p>
+</li>
+<li>
+<p>Connector type and name</p>
+</li>
+<li>
+<p>Database and table that contains the new row</p>
+</li>
+<li>
+<p>Schema name</p>
+</li>
+<li>
+<p>If the event was part of a snapshot</p>
+</li>
+<li>
+<p>ID of the transaction in which the operation was performed</p>
+</li>
+<li>
+<p>Offset of the operation in the database log</p>
+</li>
+<li>
+<p>Timestamp</p>
+</li>
+</ul>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">9</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>op</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Mandatory string that describes the type of operation that caused the connector to generate the event. In this example, <code>c</code> indicates that the operation created a row. Valid values are:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p><code>c</code> = create</p>
+</li>
+<li>
+<p><code>u</code> = update</p>
+</li>
+<li>
+<p><code>d</code> = delete</p>
+</li>
+<li>
+<p><code>r</code> = read (applies to only snapshots)</p>
+</li>
+</ul>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">10</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>ts_ms</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Optional field that displays the time at which the connector processed the event. The time is based on the system clock in the JVM running the Kafka Connect task.</p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
 </div>
 <div class="sect2">
 <h3 id="postgresql-update-events"><a class="anchor" href="#postgresql-update-events"></a><em>update</em> events</h3>
 <div class="paragraph">
-<p>The value of an <em>update</em> event on the sample <code>customers</code> table has the same <code>schema</code> specification as the <em>create</em> event example. An <em>update</em> event&#8217;s payload has the same structure as a <em>create</em> event for the same table. However, the <em>update</em> event&#8217;s payload contains different values, as shown in this example:</p>
+<p>The value of a change event for an update in the sample <code>customers</code> table has the same schema as a <em>create</em> event for that table. Likewise, the event value&#8217;s payload has the same structure. However, the event value payload contains different values in an <em>update</em> event. Here is an example of a change event value in an event that the connector generates for an update in the <code>customers</code> table:</p>
 </div>
 <div class="listingblock">
 <div class="content">
-<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
+<pre class="highlightjs highlight nowrap"><code class="language-json hljs" data-lang="json">{
     "schema": { ... },
     "payload": {
-        "before": {
+        "before": { // <1>
             "id": 1
         },
-        "after": {
+        "after": { // <2>
             "id": 1,
             "first_name": "Anne Marie",
             "last_name": "Kretchmar",
             "email": "annek@noanswer.org"
         },
-        "source": {
+        "source": { // <3>
             "version": "1.3.0.Beta1",
             "connector": "postgresql",
             "name": "PostgreSQL_server",
-            "ts_ms": 1559033904863,
+            "ts_sec": 1559033904863,
             "snapshot": null,
             "db": "postgres",
             "schema": "public",
@@ -1416,40 +1552,83 @@ It is possible and even recommended that you use the Avro converter to dramatica
             "lsn": 24023128,
             "xmin": null
         },
-        "op": "u",
+        "op": "u", // <4>
         "ts_ms": 1465584025523
     }
 }</code></pre>
 </div>
 </div>
-<div class="paragraph">
-<p>As compared with the payload section in the <em>create</em> event, you can see the following differences in the payload section of the <em>update</em> event:</p>
+<table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 5. Descriptions of <em>update</em> event value fields</caption>
+<colgroup>
+<col style="width: 10%;">
+<col style="width: 20%;">
+<col style="width: 70%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Item</th>
+<th class="tableblock halign-left valign-top">Field name</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">1</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>before</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">An optional field that contains values that were in the row before the database commit. In this example, only the primary key column, <code>id</code>, is present because the table&#8217;s <a href="#postgresql-replica-identity"><code>REPLICA IDENTITY</code></a> setting is, by default, <code>DEFAULT</code>.
++
+For an <em>update</em> event to contain the previous values of all columns in the row, you would have to change the <code>customers</code> table by running <code>ALTER TABLE customers REPLICA IDENTITY FULL</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">2</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>after</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">An optional field that specifies the state of the row after the event occurred. In this example, the <code>first_name</code> value is now <code>Anne Marie</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">3</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>source</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Mandatory field that describes the source metadata for the event. The <code>source</code> field structure has the same fields as in a <em>create</em> event, but some values are different. The source metadata includes:</p>
 </div>
 <div class="ulist">
 <ul>
 <li>
-<p>The <code>op</code> field value is <code>u</code> to indicate that the row changed because of an <code>UPDATE</code>.</p>
+<p>Debezium version</p>
 </li>
 <li>
-<p>The <code>before</code> field contains the values that were in the row before the database commit. In this example, only the primary key column, <code>id</code>, is present because the table&#8217;s <a href="#postgresql-replica-identity"><code>REPLICA IDENTITY</code></a> setting is, by default, <code>DEFAULT</code>.</p>
-<div class="paragraph">
-<p>For an <em>update</em> event to contain the previous values of all columns in the row, you would have to change the <code>customers</code> table by running <code>ALTER TABLE customers REPLICA IDENTITY FULL</code>.</p>
-</div>
+<p>Connector type and name</p>
 </li>
 <li>
-<p>The <code>after</code> field has the updated state of the row. As you can see, the <code>first_name</code> value is now <code>Anne Marie</code>.</p>
+<p>Database and table that contains the new row</p>
 </li>
 <li>
-<p>The <code>source</code> field structure has the same fields as the <em>create</em> event, but the values are different since this event is from a different position in the WAL.</p>
+<p>Schema name</p>
 </li>
 <li>
-<p>The <code>ts_ms</code> shows the timestamp that Debezium processed this event.</p>
+<p>If the event was part of a snapshot</p>
+</li>
+<li>
+<p>ID of the transaction in which the operation was performed</p>
+</li>
+<li>
+<p>Offset of the operation in the database log</p>
+</li>
+<li>
+<p>Timestamp</p>
 </li>
 </ul>
-</div>
-<div class="paragraph">
-<p>There are several things to learn by looking at this <code>payload</code> section. You can compare the <code>before</code> and <code>after</code> structures to determine what changed in this row because of the commit. The <code>source</code> structure provides information about PostgreSQL&#8217;s record of this change, which enables tracing. Perhaps more importantly, this payload has information that you can compare to other events. For example, a comparison typically indicates whether this event occurred before, after, or as part of the same PostgreSQL commit as another event.</p>
-</div>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">4</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>op</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Mandatory string that describes the type of operation. In an <em>update</em> event value, the <code>op</code> field value is <code>u</code>, signifying that this row changed because of an update.</p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
 <div class="admonitionblock note">
 <table>
 <tr>
@@ -1466,7 +1645,7 @@ It is possible and even recommended that you use the Avro converter to dramatica
 </div>
 </div>
 <div class="sect2">
-<h3 id="_primary_key_updates"><a class="anchor" href="#_primary_key_updates"></a>Primary key updates</h3>
+<h3 id="postgresql-primary-key-updates"><a class="anchor" href="#postgresql-primary-key-updates"></a>Primary key updates</h3>
 <div class="paragraph">
 <p>An <code>UPDATE</code> operation that changes a row&#8217;s primary key field(s) is known
 as a primary key change. For a primary key change, in place of sending an <code>UPDATE</code> event record, the connector sends a <code>DELETE</code> event record for the old key and a <code>CREATE</code> event record for the new (updated) key. These events have the usual structure and content, and in addition, each one has a message header related to the primary key change:</p>
@@ -1485,18 +1664,18 @@ as a primary key change. For a primary key change, in place of sending an <code>
 <div class="sect2">
 <h3 id="postgresql-delete-events"><a class="anchor" href="#postgresql-delete-events"></a><em>delete</em> events</h3>
 <div class="paragraph">
-<p>The value in a <em>delete</em> event has the same <code>schema</code> portion as <em>create</em> and <em>update</em> events for the same table. The <code>payload</code> portion in a <em>delete</em> event for the sample <code>customers</code> table looks like this:</p>
+<p>The value in a <em>delete</em> change event has the same <code>schema</code> portion as <em>create</em> and <em>update</em> events for the same table. The <code>payload</code> portion in a <em>delete</em> event for the sample <code>customers</code> table looks like this:</p>
 </div>
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
     "schema": { ... },
     "payload": {
-        "before": {
+        "before": { <i class="conum" data-value="1"></i><b>(1)</b>
             "id": 1
         },
-        "after": null,
-        "source": {
+        "after": null, <i class="conum" data-value="2"></i><b>(2)</b>
+        "source": { <i class="conum" data-value="3"></i><b>(3)</b>
             "version": "1.3.0.Beta1",
             "connector": "postgresql",
             "name": "PostgreSQL_server",
@@ -1509,36 +1688,92 @@ as a primary key change. For a primary key change, in place of sending an <code>
             "lsn": 46523128,
             "xmin": null
         },
-        "op": "d",
-        "ts_ms": 1465581902461
+        "op": "d", <i class="conum" data-value="4"></i><b>(4)</b>
+        "ts_ms": 1465581902461 <i class="conum" data-value="5"></i><b>(5)</b>
     }
 }</code></pre>
 </div>
 </div>
-<div class="paragraph">
-<p>Compared with the <em>create</em> or <em>update</em> event payloads, the differences in a <em>delete</em> event are:</p>
+<table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 6. Descriptions of <em>delete</em> event value fields</caption>
+<colgroup>
+<col style="width: 10%;">
+<col style="width: 20%;">
+<col style="width: 70%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Item</th>
+<th class="tableblock halign-left valign-top">Field name</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">1</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>before</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Optional field that specifies the state of the row before the event occurred. In a <em>delete</em> event value, the <code>before</code> field contains the values that were in the row before it was deleted with the database commit.<br>
+<br>
+In this example, the <code>before</code> field contains only the primary key column because the table&#8217;s <a href="#postgresql-replica-identity"><code>REPLICA IDENTITY</code></a> setting is <code>DEFAULT</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">2</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>after</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Optional field that specifies the state of the row after the event occurred. In a <em>delete</em> event value, the <code>after</code> field is <code>null</code>, signifying that the row no longer exists.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">3</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>source</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Mandatory field that describes the source metadata for the event. In a <em>delete</em> event value, the <code>source</code> field structure is the same as for <em>create</em> and <em>update</em> events for the same table. Many <code>source</code> field values are also the same. In a <em>delete</em> event value, the <code>ts_ms</code> and <code>lsn</code> field values, as well as other values, might have changed. But the <code>source</code> field in a <em>delete</em> event value provides the same metadata:</p>
 </div>
 <div class="ulist">
 <ul>
 <li>
-<p>The <code>before</code> field has the state of the row that was deleted by the database commit. In this example, the <code>before</code> field contains only the primary key column because the table&#8217;s <a href="#postgresql-replica-identity"><code>REPLICA IDENTITY</code></a> setting is <code>DEFAULT</code>.</p>
+<p>Debezium version</p>
 </li>
 <li>
-<p>The <code>after</code> field is null to indicate that the row no longer exists.</p>
+<p>Connector type and name</p>
 </li>
 <li>
-<p>The <code>source</code> field structure has many of the same values as in the <em>create</em> and <em>update</em> events, except the <code>ts_ms</code>, <code>lsn</code> and <code>txId</code> fields have changed.</p>
+<p>Database and table that contains the new row</p>
 </li>
 <li>
-<p>The <code>op</code> field value is <code>d</code> to indicate that this row was deleted.</p>
+<p>Schema name</p>
 </li>
 <li>
-<p>The <code>ts_ms</code> shows the timestamp that Debezium processed this event.</p>
+<p>If the event was part of a snapshot</p>
+</li>
+<li>
+<p>ID of the transaction in which the operation was performed</p>
+</li>
+<li>
+<p>Offset of the operation in the database log</p>
+</li>
+<li>
+<p>Timestamp</p>
 </li>
 </ul>
-</div>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">4</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>op</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Mandatory string that describes the type of operation. The <code>op</code> field value is <code>d</code>, signifying that this row was deleted.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">5</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>ts_ms</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Optional field that displays the time at which the connector processed the event. The time is based on the system clock in the JVM running the Kafka Connect task.</p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
 <div class="paragraph">
-<p>This event gives a consumer all kinds of information that it can use to process the removal of this row.</p>
+<p>A <em>delete</em> change event record provides a consumer with the information it needs to process the removal of this row.</p>
 </div>
 <div class="admonitionblock warning">
 <table>
@@ -1555,7 +1790,7 @@ as a primary key change. For a primary key change, in place of sending an <code>
 </table>
 </div>
 <div class="paragraph">
-<p>PostgreSQL connector events are designed to work with <a href="https://kafka.apache.org/documentation/#compaction">Kafka log compaction</a>. Log compaction enables removal of some older messages as long as at least the most recent message for every key is kept. This lets Kafka reclaim storage space while ensuring that the topic contains a complete data set and can be used for reloading key-based state.</p>
+<p>PostgreSQL connector events are designed to work with <a href="https://kafka.apache.org/documentation#compaction">Kafka log compaction</a>. Log compaction enables removal of some older messages as long as at least the most recent message for every key is kept. This lets Kafka reclaim storage space while ensuring that the topic contains a complete data set and can be used for reloading key-based state.</p>
 </div>
 <div id="postgresql-tombstone-events" class="paragraph">
 <div class="title">Tombstone events</div>
@@ -1586,7 +1821,7 @@ as a primary key change. For a primary key change, in place of sending an <code>
 </ul>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 2. Mappings for PostgreSQL basic data types</caption>
+<caption class="title">Table 7. Mappings for PostgreSQL basic data types</caption>
 <colgroup>
 <col style="width: 20%;">
 <col style="width: 15%;">
@@ -2052,7 +2287,7 @@ as a primary key change. For a primary key change, in place of sending an <code>
 <p>When the <code>time.precision.mode</code> property is set to <code>adaptive</code>, the default, the connector determines the literal type and semantic type based on the column&#8217;s data type definition. This ensures that events <em>exactly</em> represent the values in the database.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 3. Mappings when <code>time.precision.mode</code> is <code>adaptive</code></caption>
+<caption class="title">Table 8. Mappings when <code>time.precision.mode</code> is <code>adaptive</code></caption>
 <colgroup>
 <col style="width: 20%;">
 <col style="width: 15%;">
@@ -2145,7 +2380,7 @@ as a primary key change. For a primary key change, in place of sending an <code>
 <p>When the <code>time.precision.mode</code> configuration property is set to <code>adaptive_time_microseconds</code>, the connector determines the literal type and semantic type for temporal types based on the column&#8217;s data type definition. This ensures that events <em>exactly</em> represent the values in the database, except all <code>TIME</code> fields are captured as microseconds.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 4. Mappings when <code>time.precision.mode</code> is <code>adaptive_time_microseconds</code></caption>
+<caption class="title">Table 9. Mappings when <code>time.precision.mode</code> is <code>adaptive_time_microseconds</code></caption>
 <colgroup>
 <col style="width: 20%;">
 <col style="width: 15%;">
@@ -2224,7 +2459,7 @@ as a primary key change. For a primary key change, in place of sending an <code>
 <p>When the <code>time.precision.mode</code> configuration property is set to <code>connect</code>, the connector uses Kafka Connect logical types. This may be useful when consumers can handle only the built-in Kafka Connect logical types and are unable to handle variable-precision time values. However, since PostgreSQL supports microsecond precision, the events generated by a connector with the <code>connect</code> time precision mode <strong>results in a loss of precision</strong> when the database column has a <em>fractional second precision</em> value that is greater than 3.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 5. Mappings when <code>time.precision.mode</code> is <code>connect</code></caption>
+<caption class="title">Table 10. Mappings when <code>time.precision.mode</code> is <code>connect</code></caption>
 <colgroup>
 <col style="width: 20%;">
 <col style="width: 15%;">
@@ -2304,7 +2539,7 @@ Such columns are converted into an equivalent Kafka Connect value based on UTC. 
 <p>When the <code>decimal.handling.mode</code> property is set to <code>precise</code>, the connector uses the Kafka Connect <code>org.apache.kafka.connect.data.Decimal</code> logical type for all <code>DECIMAL</code> and <code>NUMERIC</code> columns. This is the default mode.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 6. Mappings when <code>decimal.handling.mode</code> is <code>precise</code></caption>
+<caption class="title">Table 11. Mappings when <code>decimal.handling.mode</code> is <code>precise</code></caption>
 <colgroup>
 <col style="width: 15%;">
 <col style="width: 15%;">
@@ -2355,7 +2590,7 @@ Such columns are converted into an equivalent Kafka Connect value based on UTC. 
 When the <code>NUMERIC</code> or <code>DECIMAL</code> types are used without scale constraints, the values coming from the database have a different (variable) scale for each value. In this case, the connector uses <code>io.debezium.data.VariableScaleDecimal</code>, which contains both the value and the scale of the transferred value.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 7. Mappings of decimal types when there are no scale constraints</caption>
+<caption class="title">Table 12. Mappings of decimal types when there are no scale constraints</caption>
 <colgroup>
 <col style="width: 15%;">
 <col style="width: 15%;">
@@ -2405,7 +2640,7 @@ When the <code>NUMERIC</code> or <code>DECIMAL</code> types are used without sca
 <p>When the <code>decimal.handling.mode</code> property is set to <code>double</code>, the connector represents all <code>DECIMAL</code> and <code>NUMERIC</code> values as Java double values and encodes them as shown in the following table.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 8. Mappings when <code>decimal.handling.mode</code> is <code>double</code></caption>
+<caption class="title">Table 13. Mappings when <code>decimal.handling.mode</code> is <code>double</code></caption>
 <colgroup>
 <col style="width: 15%;">
 <col style="width: 15%;">
@@ -2447,7 +2682,7 @@ When the <code>NUMERIC</code> or <code>DECIMAL</code> types are used without sca
 <p>The last possible setting for the <code>decimal.handling.mode</code> configuration property is <code>string</code>. In this case, the connector represents <code>DECIMAL</code> and <code>NUMERIC</code> values as their formatted string representation, and encodes them as shown in the following table.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 9. Mappings when <code>decimal.handling.mode</code> is <code>string</code></caption>
+<caption class="title">Table 14. Mappings when <code>decimal.handling.mode</code> is <code>string</code></caption>
 <colgroup>
 <col style="width: 15%;">
 <col style="width: 15%;">
@@ -2495,7 +2730,7 @@ When the <code>NUMERIC</code> or <code>DECIMAL</code> types are used without sca
 <p>When the <code>hstore.handling.mode</code> connector configuration property is set to <code>json</code> (the default), the connector represents <code>HSTORE</code> values as string representations of JSON values and encodes them as shown in the following table. When the <code>hstore.handling.mode</code> property is set to <code>map</code>, the connector uses the <code>MAP</code> schema type for <code>HSTORE</code> values.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 10. Mappings for <code>HSTORE</code> data type</caption>
+<caption class="title">Table 15. Mappings for <code>HSTORE</code> data type</caption>
 <colgroup>
 <col style="width: 15%;">
 <col style="width: 15%;">
@@ -2569,7 +2804,7 @@ When the <code>NUMERIC</code> or <code>DECIMAL</code> types are used without sca
 <p>PostgreSQL has data types that can store IPv4, IPv6, and MAC addresses. It is better to use these types instead of plain text types to store network addresses. Network address types offer input error checking and specialized operators and functions.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 11. Mappings for network address types</caption>
+<caption class="title">Table 16. Mappings for network address types</caption>
 <colgroup>
 <col style="width: 15%;">
 <col style="width: 15%;">
@@ -2642,7 +2877,7 @@ When the <code>NUMERIC</code> or <code>DECIMAL</code> types are used without sca
 <p>The PostgreSQL connector supports all <a href="http://postgis.net">PostGIS data types</a>.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 12. Mappings of PostGIS data types</caption>
+<caption class="title">Table 17. Mappings of PostGIS data types</caption>
 <colgroup>
 <col style="width: 20%;">
 <col style="width: 15%;">
@@ -3200,7 +3435,7 @@ Again, regularly emitting events solves the problem.</p>
 <p>With <a href="https://zookeeper.apache.org">Zookeeper</a>, <a href="http://kafka.apache.org/">Kafka</a>, and <a href="https://kafka.apache.org/documentation.html#connect">Kafka Connect</a> installed, the remaining tasks to deploy a Debezium PostgreSQL connector are to download the <a href="https://repo1.maven.org/maven2/io/debezium/debezium-connector-postgres/1.3.0.Beta1/debezium-connector-postgres-1.3.0.Beta1-plugin.tar.gz">connector&#8217;s plug-in archive</a>, extract the JAR files into your Kafka Connect environment, and add the directory with the JAR files to <a href="https://kafka.apache.org/documentation/#connectconfigs">Kafka Connect&#8217;s <code>plugin.path</code></a>. You then need to restart your Kafka Connect process to pick up the new JAR files.</p>
 </div>
 <div class="paragraph">
-<p>If you need immutable containers, see <a href="https://hub.docker.com/r/debezium/">Debezium&#8217;s Container images</a> for Zookeeper, Kafka, PostgreSQL and Kafka Connect with the PostgreSQL connector already installed and ready to run. You can also <a href="/blog/2016/05/31/Debezium-on-Kubernetes/">run Debezium on Kubernetes and OpenShift</a>.</p>
+<p>If you are working with immutable containers, see <a href="https://hub.docker.com/r/debezium/">Debezium&#8217;s Container images</a> for Zookeeper, Kafka, PostgreSQL and Kafka Connect with the PostgreSQL connector already installed and ready to run. You can also <a href="../operations/openshift.html" class="page">run Debezium on Kubernetes and OpenShift</a>.</p>
 </div>
 <div class="sect2">
 <h3 id="postgresql-example-configuration"><a class="anchor" href="#postgresql-example-configuration"></a>Connector configuration example</h3>
@@ -3278,7 +3513,7 @@ Again, regularly emitting events solves the problem.</p>
 <div class="sect2">
 <h3 id="postgresql-adding-connector-configuration"><a class="anchor" href="#postgresql-adding-connector-configuration"></a>Adding connector configuration</h3>
 <div class="paragraph">
-<p>To start running a PostgreSQL connector, create a connector configuration file and add it to your Kafka Connect cluster.</p>
+<p>To start running a PostgreSQL connector, create a connector configuration and add the configuration to your Kafka Connect cluster.</p>
 </div>
 <div class="ulist">
 <div class="title">Prerequisites</div>
@@ -3298,7 +3533,7 @@ Again, regularly emitting events solves the problem.</p>
 <div class="title">Procedure</div>
 <ol class="arabic">
 <li>
-<p>Create a configuration file for the PostgreSQL connector.</p>
+<p>Create a configuration for the PostgreSQL connector.</p>
 </li>
 <li>
 <p>Use the <a href="https://kafka.apache.org/documentation/#connect_rest">Kafka Connect REST API</a> to add that connector configuration to your Kafka Connect cluster.</p>
@@ -3684,7 +3919,7 @@ The values will incoporate any differences between the clocks on the machines wh
 <p>The following configuration properties are <em>required</em> unless a default value is available.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 13. Required connector configuration properties</caption>
+<caption class="title">Table 18. Required connector configuration properties</caption>
 <colgroup>
 <col style="width: 30%;">
 <col style="width: 25%;">
@@ -4187,7 +4422,7 @@ If <code>table_a</code> has a an <code>id</code> column, and <code>regex_1</code
 <p>The following <em>advanced</em> configuration properties have defaults that work in most situations and therefore rarely need to be specified in the connector&#8217;s configuration.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 14. Advanced connector configuration properties</caption>
+<caption class="title">Table 19. Advanced connector configuration properties</caption>
 <colgroup>
 <col style="width: 30%;">
 <col style="width: 25%;">
