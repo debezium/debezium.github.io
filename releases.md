@@ -1,7 +1,7 @@
 ---
-layout: release
+layout: releases
 title: Debezium Releases Overview
-permalink: /release/
+permalink: /releases/
 pagination: 
   enabled: true
 ---
