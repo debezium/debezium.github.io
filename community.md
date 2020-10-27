@@ -1,5 +1,5 @@
 ---
 layout: community
-permalink: /community
+permalink: /community/
 ---
 
