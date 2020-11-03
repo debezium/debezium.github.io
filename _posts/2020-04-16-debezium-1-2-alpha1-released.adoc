@@ -1,0 +1,168 @@
+---
+layout: post
+title:  Debezium 1.2.0.Alpha1 Released
+date:   2020-04-16 10:19:59 -0600
+tags: [ releases, mysql, postgres, mongodb, sqlserver, cassandra ]
+author: gmorling
+---
+= Debezium 1.2.0.Alpha1 Released
+gmorling
+:awestruct-tags: [ releases, mysql, postgres, mongodb, sqlserver, cassandra ]
+:awestruct-layout: blog-post
+
+I'm very happy to announce the release of Debezium *1.2.0.Alpha1*!
+
+This first drop of the 1.2 release line provides a number of useful new features:
+
+* Support for message transformations (SMTs) and converters in the Debezium embedded engine API
+* A new SMT for filtering out change events using scripting languages
+* Automatic reconnects for the SQL Server connector
+* A new column masking mode using consistent hash values
+
+Overall, the community fixed not less than https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20AND%20fixVersion%20%3D%201.2.0.Alpha1%20ORDER%20BY%20issuetype%20DESC[41 issues] for this release.
+Let's take a closer look at some of them in the remainder of this post.
+
+== Embedded Engine Improvements
+
+Debezium's link:/documentation/reference/1.2/development/engine.html[embedded engine] is a very useful tool for handling change events in cases where Apache Kafka and Kafka Connect are not available.
+For instance it allows to use Debezium's CDC capabilities and stream change events to alternative messaging infrastructure such as Amazon Kinesis or Google Pub/Sub.
+
+To further improve the experience when working with this API, it supports the serialization of change events into different formats now
+(https://issues.redhat.com/browse/DBZ-1807[DBZ-1807]): JSON, Avro and CloudEvents.
+This spares developers from having to deal with record serialization themselves.
+As an example, here is how to use JSON as serialization format:
+
+[source,java]
+----
+Properties props = new Properties();
+
+// don't include schema in message
+props.setProperty("converter.schemas.enable", "false"); // <1>
+// further properties as needed...
+
+DebeziumEngine<ChangeEvent<String>> engine = DebeziumEngine.create(Json.class) // <2>
+    .using(props)
+    .notifying((records, committer) -> { // <3>
+        for (ChangeEvent<String> r : records) {
+            System.out.println("Key = '" + key + "' value = '" + value + "'");
+            committer.markProcessed(r);
+        }
+    })
+    .build();
+----
+<1> All the options of the underlying converter can be used
+<2> `Json.class` is a type token requesting serialization into JSON
+<3> `records` is a batch of change events, represented as JSON strings
+
+The embedded engine now also supports the usage of Kafka Connect SMTs
+(https://issues.redhat.com/browse/DBZ-1930[DBZ-1930]).
+They can be simply configured via the properties passed to the engine builder:
+
+[source,java]
+----
+Properties props = new Properties();
+
+props.setProperty("transforms", "router");
+props.setProperty("transforms.router.type", "org.apache.kafka.connect.transforms.RegexRouter");
+props.setProperty("transforms.router.regex", "(.*)");
+props.setProperty("transforms.router.replacement", "trf$1"); 
+----
+
+This allows to use any existing Kafka Connect SMT, such as the ones coming with Kafka Connect itself, or Debezium's SMTs,
+e.g. for link:/documentation/reference/1.2/configuration/topic-routing.html[topic routing],
+link:/documentation/reference/1.2/configuration/event-flattening.html[new record state extraction] and link:/documentation/reference/1.2/configuration/outbox-event-router.html[outbox event routing].
+
+These improvements lay the foundation to the upcoming stand-alone Debezium runtime,
+which will be based on the embedded engine and make its functionality available as a ready-to-use service.
+
+== Content-based Event Filtering
+
+This release also adds another very versatile transformation to Debezium:
+the link:/documentation/reference/1.2/configuration/filtering.html[message filter SMT].
+Applied to the Debezium connectors on the source side of a Kafka Connect data streaming pipeline,
+it allows to filter out specific change events based on their field values.
+
+E.g. you could use this to filter out any change events of a specific customer type or product category.
+Filters are given as script expressions,
+using any language compatible with the javax.scripting API
+(https://jcp.org/en/jsr/detail?id=223[JSR 223]).
+Note Debezium doesn't provide any such scripting language implementation itself;
+instead you can choose from a wide range of available options such as Groovy, MVEL or graal.js (JavaScript via GraalVM) and add it to the Kafka Connect plug-in path yourself.
+
+Here's an example using Groovy:
+
+[source]
+----
+...
+transforms=filter
+transforms.filter.type=io.debezium.transforms.Filter
+transforms.filter.language=jsr223.groovy
+transforms.filter.condition=value.after.customerType != 42
+...
+----
+
+`value` is the change event's value; you could also refer to the event's key and even the corresponding schema objects.
+Groovy automatically resolves property paths such as `value.after.customerType` to look-ups in map-like data structures such as Kafka Connect's `Struct` type.
+This allows for very concise filtering conditions.
+
+Note this SMT is incubating state for now, i.e. details around its API and configuration surface may still change.
+Please give it a try and share your experiences.
+
+== Other Features
+
+Besides these key features, there's a number of other new functionalities coming with the 1.2.0.Alpha1 release:
+
+* New metrics `NumberOfDisconnects` and `NumberOfPrimaryElections` for the MongoDB connector (https://issues.redhat.com/browse/DBZ-1859[DBZ-1859]) 
+* Support for automatic reconnects after connection losses in the SQL Server connector (https://issues.redhat.com/browse/DBZ-1882[DBZ-1882])
+* New column masking mode "consistent hashing" (https://issues.redhat.com/browse/DBZ-1692[DBZ-1692]):
+Debezium allows to mask specific column values,
+e.g. to satisfy concerns around data privacy and protection.
+Using the new "consistent hashing" mode it's now possible to not only use asterisks as masking characters,
+but also hash values based on the masked data contents.
+Quoting the original issue reporter, this "will be useful for [anonymizing] data but in this case it still needs to be relatable between topics. It’s a typical requirement for warehouses where you want to anonymize sensitive data but still need to keep referential integrity of your data"
+* Allowing to link update change events in case of primary key updates (https://issues.redhat.com/browse/DBZ-1531[DBZ-1531]): most relational Debezium connectors represent an update to the primary key of a record by a delete event using the old key and a subsequent insert event using the updated key; using the new record headers `\__debezium.newkey` and `__debezium.oldkey`,
+it is now possible for consumers to link these change events together when working with change data from the MySQL and Postgres connectors
+* Upgrade of Debezium's container images to Apache Kafka 2.4.1 (https://issues.redhat.com/browse/DBZ-1925[DBZ-1925])
+
+== Bugfixes
+
+Also a number of bugs were fixed, e.g.:
+
+* High CPU usage when the Postgres connector is idle (https://issues.redhat.com/browse/DBZ-1960[DBZ-1960])
+* Empty wal2json empty change event could cause NPE (https://issues.redhat.com/browse/DBZ-1922[DBZ-1922])
+* Cassandra Connector: unable to deserialize column mutation with reversed type
+ (https://issues.redhat.com/browse/DBZ-1967[DBZ-1967])
+* Outbox Quarkus Extension throws NPE in quarkus:dev mode (https://issues.redhat.com/browse/DBZ-1966[DBZ-1966])
+* Validation of binlog_row_image is not compatible with MySQL 5.5 (https://issues.redhat.com/browse/DBZ-1950[DBZ-1950])
+
+Please refer to the link:/releases/1.2/release-notes/#release-1.2.0-alpha1[release notes] for the complete list of resolved issues as well as procedures for upgrading from earlier Debezium versions.
+We've also backported the critical bugfixes to the 1.1 branch and will release Debezium 1.1.1 tomorrow.
+
+A big thank you to all the contributors from the community who worked on this release:
+https://github.com/Iskuskov[Alexander Iskuskov],
+https://github.com/ahus1[Alexander Schwartz],
+https://github.com/bingqinzhou[Bingqin Zhou],
+https://github.com/fgakk[Fatih Güçlü Akkaya],
+https://github.com/grantcooksey[Grant Cooksey],
+https://github.com/JanHendrikDolling[Jan-Hendrik Dolling],
+https://github.com/lga-zurich[Luis Garcés-Erice],
+https://github.com/devzer01[Nayana Hettiarachchi] and
+https://github.com/rk3rn3r[René Kerner]!
+
+== About Debezium
+
+Debezium is an open source distributed platform that turns your existing databases into event streams,
+so applications can see and respond almost instantly to each committed row-level change in the databases.
+Debezium is built on top of http://kafka.apache.org/[Kafka] and provides http://kafka.apache.org/documentation.html#connect[Kafka Connect] compatible connectors that monitor specific database management systems.
+Debezium records the history of data changes in Kafka logs, so your application can be stopped and restarted at any time and can easily consume all of the events it missed while it was not running,
+ensuring that all events are processed correctly and completely.
+Debezium is link:/license/[open source] under the http://www.apache.org/licenses/LICENSE-2.0.html[Apache License, Version 2.0].
+
+== Get involved
+
+We hope you find Debezium interesting and useful, and want to give it a try.
+Follow us on Twitter https://twitter.com/debezium[@debezium], https://gitter.im/debezium/user[chat with us on Gitter],
+or join our https://groups.google.com/forum/#!forum/debezium[mailing list] to talk with the community.
+All of the code is open source https://github.com/debezium/[on GitHub],
+so build the code locally and help us improve ours existing connectors and add even more connectors.
+If you find problems or have ideas how we can improve Debezium, please let us know or https://issues.redhat.com/projects/DBZ/issues/[log an issue].

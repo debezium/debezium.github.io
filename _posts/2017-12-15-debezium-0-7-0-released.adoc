@@ -1,0 +1,116 @@
+---
+tags: [ releases, mysql, mongodb, postgres, docker ]
+---
+= Debezium 0.7.0 Is Released
+jpechane
+:awestruct-tags: [ releases, mysql, mongodb, postgres, docker ]
+:awestruct-layout: blog-post
+
+It's not Christmas yet, but we already got a present for you: Debezium  *0.7.0* is here, full of new features as well as many bug fixes!
+A big thank you goes out to all the community members who contributed to this release.
+It is very encouraging for us to see not only more and more issues and feature requests being reported, but also pull requests coming in.
+
+Note that this release comes with a small number of changes to the default mappings for some data types.
+We try to avoid this sort of changes as far as possible, but in some cases it is required,
+e.g. if the previous mapping could have caused potential value losses.
+Please see below for the details and also make sure to check out the link:/docs/releases/#release-0-7-0[full change log] which describes these changes in detail.
+
+Now let's take a closer look at some of new features.
+
+== Based on Apache Kafka 1.0
+
+A few weeks ago the Apache Kafka team has https://www.confluent.io/blog/apache-kafka-goes-1-0/[released version 1.0.0].
+This was an important milestone for the Kafka community,
+and we now can happily declare that Debezium is https://issues.redhat.com/browse/DBZ-432[built] against and runs on that Apache Kafka version.
+Our Docker images were also https://issues.redhat.com/browse/DBZ-433[promoted] to contain Apache Kafka and Kafka Connect 1.0.0.
+
+== PostgreSQL Connector
+
+The big news for the PostgreSQL connector is that it now https://issues.redhat.com/browse/DBZ-258[supports] the https://github.com/eulerto/wal2json[wal2json] logical decoding plugin as an alternative to the existing https://github.com/debezium/postgres-decoderbufs[DecoderBufs plug-in].
+This means that you now can use Debezium to stream changes out of PostgreSQL on https://aws.amazon.com/rds/postgresql/[Amazon RDS], as wal2json is the logical decoding plugin used in this environment.
+Many thanks to https://github.com/rcoup[Robert Coup] who significantly contributed to this feature.
+
+Working on this plug-in, we noticed that there was a https://issues.redhat.com/browse/DBZ-379[potential race condition] when it comes to applying changes to the schema of captured tables.
+In that case it could have happened that a number of messages pertaining to data changes done before the schema change were emitted using the new schema.
+With the exception of a few corner cases (which are described link:/docs/releases/#release-0-7-0[here]), this has been addressed when using Debezium's own DecoderBufs plug-in.
+So it's highly recommended to upgrade the DecoderBufs plug-in to the new version before upgrading the Debezium connector.
+We've also worked closely with the author of the wal2json plug-in (big thanks for the quick help!) to prevent the issue when using the wal2json plug-in.
+
+While the Debezium Docker images for Postgres already come with the latest version of DecoderBufs and wal2json,
+RDS for now is still using an older version of wal2json.
+Until this has been updated, special attention must be paid when applying schema changes to captured tables.
+Please see link:/docs/releases/#release-0-7-0[the changelog] for a in-depth description of this issue and ways to mitigate it.
+
+There are new daily running https://issues.redhat.com/browse/DBZ-495[CI jobs] that verify that the wal2json plugin passes our test suite.
+For the foreseeable future we'll support both, wal2json as well as the existing DecoderBufs plug-in.
+The latter should be more efficient due to the usage of the Protocol Buffers binary format,
+whereas the former comes in handy for RDS or other cloud environments where you don't have control over the installed logical decoding plug-ins, but wal2json is available.
+
+In other news on the Postgres connector, https://github.com/jchipmunk[Andrey Pustovetov] discovered and proposed a fix for a https://issues.redhat.com/browse/DBZ-501[multi-threading bug] that could have put the connector into an undefined state if a rebalance in the Connect cluster was triggered during snapshotting.
+Thanks, Andrey!
+
+== MySQL Connector
+
+In the MySQL connector we've fixed two issues which affect the default mapping of certain column types.
+
+Following up to the new `BIGINT UNSIGNED` mapping introduced in link:/blog/2017/10/26/debezium-0-6-1-released/[Debezium 0.6.1], this type is now encoded as `int64` in Debezium messages https://issues.redhat.com/browse/DBZ-461[by default] as it is easier for (polyglot) clients to work with.
+This is a reasonable mapping for the vast majority of cases.
+Only when using values > 2^63, you should switch it back to the `Decimal` logical type
+which is a bit more cumbersome to handle, though.
+This should be a rare situation, as MySQL https://dev.mysql.com/doc/refman/5.7/en/numeric-type-overview.html[advices against] using unsigned values > 2^63 due to potential value losses when performing DB-side calculations.
+Please see the link:/docs/connectors/mysql/[connector documentation] for the details.
+
+https://github.com/rk3rn3r[Rene Kerner] has improved the support for the MySQL `TIME` type.
+MySQL allows to store values larger than `23:59:59` in such columns, and the type `int32` which was previously used for `TIME(0-3)` columns isn't enough to convey the entire possible value range.
+Therefore all `TIME` columns in MySQL are by default represented as `int64` now,
+using the `io.debezium.time.MicroTime` logical type, i.e. the value represents micro-seconds.
+If needed, you can switch to the previous mapping by setting `time.precision.mode` to `adaptive`,
+but you should only do so if you're sure that you only ever will have values that fit into `int32`.
+This option is only kept for a transitioning period and will be removed in a future release.
+
+Recently we got a https://issues.redhat.com/browse/DBZ-390[report] that MySQL's binlog can contain `ROLLBACK` statements and thus transactions that are actually not committed.
+Of course no data change messages should be emitted in this situation.
+This e.g. can be the case when temporary tables are dropped.
+So we introduced a https://issues.redhat.com/browse/DBZ-406[look-ahead buffer] functionality that reads the binlog by transaction and excludes those that were rolled back.
+This feature should be considered incubating and is disabled by default for the time being.
+We'd like to gather your feedback on this, so if you'd benefit from this feature, please give it a try and let us know if you run into any issues.
+For further details please refer to the `binlog.buffer.size` setting in the MySQL connector docs.
+
+https://github.com/ainagy[Andras Istvan Nagy] came with the idea and https://issues.redhat.com/browse/DBZ-349[implemented] a way for explicitly selecting the rows from each table that will be part of the snapshotting process.
+This can for instance be very useful if you work with soft deletes and would like to exclude all logically deleted records from snapshotting.
+
+Please see the link:/docs/releases/#release-0-7-0[full change log] for more details and the complete list of fixed issues.
+
+== What's next?
+
+The Debezium 0.7.1 release is planned to be out roughly two weeks after Christmas.
+
+It will contain a new SMT that will unwind MongoDB change events into a regular JSON consumable by sink connectors.
+
+A big overhaul of `GEOMETRY` types is in progress.
+When completed, all `GEOMETRY` types will be supported by both MySQL and PostgreSQL connectors and they will be available in standard `WKB` format for easy consumption by polyglot clients.
+
+There is ongoing work for the MySQL connector to allow dynamic update of `table.whitelist` option.
+This will allow the user to re-configure the set of tables captured without need to re-create connector.
+
+If you'd like to contribute, please let us know.
+We're happy about any help and will work with you to get you started quickly.
+Check out the details below on how to get in touch.
+
+== About Debezium
+
+Debezium is an open source distributed platform that turns your existing databases into event streams,
+so applications can see and respond almost instantly to each committed row-level change in the databases.
+Debezium is built on top of http://kafka.apache.org/[Kafka] and provides http://kafka.apache.org/documentation.html#connect[Kafka Connect] compatible connectors that monitor specific database management systems.
+Debezium records the history of data changes in Kafka logs, so your application can be stopped and restarted at any time and can easily consume all of the events it missed while it was not running,
+ensuring that all events are processed correctly and completely.
+Debezium is link:/license/[open source] under the http://www.apache.org/licenses/LICENSE-2.0.html[Apache License, Version 2.0].
+
+== Get involved
+
+We hope you find Debezium interesting and useful, and want to give it a try.
+Follow us on Twitter https://twitter.com/debezium[@debezium], https://gitter.im/debezium/user[chat with us on Gitter],
+or join our https://groups.google.com/forum/#!forum/debezium[mailing list] to talk with the community.
+All of the code is open source https://github.com/debezium/[on GitHub],
+so build the code locally and help us improve ours existing connectors and add even more connectors.
+If you find problems or have ideas how we can improve Debezium, please let us know or https://issues.redhat.com/projects/DBZ/issues/[log an issue].

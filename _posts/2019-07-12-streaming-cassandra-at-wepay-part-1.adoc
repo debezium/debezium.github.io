@@ -1,0 +1,113 @@
+---
+tags: [ cassandra ]
+featured: true
+---
+= Streaming Cassandra at WePay - Part 1
+joygao
+:awestruct-tags: [ cassandra, featured ]
+:awestruct-layout: blog-post
+
+**_This post originally appeared on the https://wecode.wepay.com/posts/streaming-cassandra-at-wepay-part-1[WePay Engineering blog]._**
+
+Historically, MySQL had been the de-facto database of choice for microservices at WePay. As WePay scales, the sheer volume of data written into some of our microservice databases demanded us to make a scaling decision between sharded MySQL (i.e. link:https://vitess.io[Vitess]) and switching to a natively sharded NoSQL database. After a series of evaluations, we picked Cassandra, a NoSQL database, primarily because of its high availability, horizontal scalability, and ability to handle high write throughput.
+
+== Batch ETL Options
+
+After introducing Cassandra to our infrastructure, our next challenge was to figure out a way to expose data in Cassandra to link:https://cloud.google.com/bigquery/[BigQuery], our data warehouse, for analytics and reporting. We quickly built an Airflow link:https://github.com/apache/airflow/blob/master/airflow/contrib/hooks/cassandra_hook.py[hook] and link:https://github.com/apache/airflow/blob/master/airflow/contrib/operators/cassandra_to_gcs.py[operator] to execute full loads. This obviously doesn’t scale, as it rewrites the entire database on each load. To scale the pipeline, we evaluated two incremental load approaches, but both have their shortcomings:
+
+. Range query. This is a common ETL approach where data is extracted via a range query at regular intervals, such as hourly or daily. Anyone familiar with link:https://www.datastax.com/dev/blog/the-most-important-thing-to-know-in-cassandra-data-modeling-the-primary-key[Cassandra data modelling] would quickly realize how unrealistic this approach is. Cassandra tables need to be modeled to optimize query patterns used in production. Adding this query pattern for analytics in most cases means cloning the table with different clustering keys. RDBMS folks might suggest secondary index to support this query pattern, but link:https://pantheon.io/blog/cassandra-scale-problem-secondary-indexes[secondary index in Cassandra are local], therefore this approach would pose performance and scaling issues of its own.
+. Process unmerged SSTables. SSTables are Cassandra’s immutable storage files. Cassandra offers a link:https://docs.datastax.com/en/archived/cassandra/3.0/cassandra/tools/ToolsSSTabledump.html[sstabledump] CLI command that converts SSTable content into human-readable JSON. However, Cassandra is built on top of the concept of link:https://en.wikipedia.org/wiki/Log-structured_merge-tree[Log-Structured Merge (LSM) Tree], meaning SSTables merge periodically into new compacted files. Depending on the compaction strategy, detecting unmerged SSTable files out-of-band may be challenging (we later learned about the link:https://docs.datastax.com/en/archived/cassandra/3.0/cassandra/operations/opsBackupIncremental.html[incremental backup] feature in Cassandra which only backs up uncompacted SSTables; so this approach would have worked as well.)
+
+Given these challenges, and having built and operated a link:https://wecode.wepay.com/posts/streaming-databases-in-realtime-with-mysql-debezium-kafka[streaming data pipeline for MySQL], we began to explore streaming options for Cassandra.
+
+== Streaming Options
+
+=== Double-Writing
+
+++++
+<div class="imageblock centered-image">
+    <img src="/images/cassandra/double-write.png" class="responsive-image" alt="Image showing writer send two distinct writes">
+</div>
+++++
+
+The idea is to publish to Kafka every time a write is performed on Cassandra. This double-writing could be performed via the built-in trigger or a custom wrapper around the client. There are performance problems with this approach. First, due to the fact that we now need to write to two systems instead of one, write latency is increased. More importantly, when a write to one system fails due to a timeout, whether the write is successful or not is indeterministic. To guarantee data consistency on both systems, we would have to implement link:https://en.wikipedia.org/wiki/Distributed_transaction[distributed transactions], but multiple roundtrips for consensus will increase latency and reduce throughput further. This defeats the purpose of a high write-throughput database.
+
+=== Kafka as Event Source
+
+++++
+<div class="imageblock centered-image">
+    <img src="/images/cassandra/event-source.png" class="responsive-image" alt="Image showing writes sent to Kafka and then downstream DB">
+</div>
+++++
+
+The idea is to write to Kafka rather than directly writing to Cassandra; and then apply the writes to Cassandra by consuming events from Kafka. Event sourcing is a pretty popular approach these days. However, if you already have existing services directly writing to Cassandra, it would require a change in application code and a nontrivial migration. This approach also violates link:https://docs.oracle.com/cd/E17076_05/html/gsg_db_rep/C/rywc.html[read-your-writes consistency]: the requirement that if a process performs a write, then the same process performing a subsequent read must observe the write’s effects. Since writes are routed through Kafka, there will be a lag between when the write is issued and when it is applied; during this time, reads to Cassandra will result in stale data. This may cause unforeseeable production issues.
+
+=== Parsing Commit Logs
+
+++++
+<div class="imageblock centered-image">
+    <img src="/images/cassandra/commit-log.png" class="responsive-image" alt="Image showing commit logs sent to Kafka">
+</div>
+++++
+
+Cassandra introduced a link:http://cassandra.apache.org/doc/3.11.3/operating/cdc.html[change data capture (CDC) feature] in 3.0 to expose its commit logs. Commit logs are write-ahead logs in Cassandra designed to provide durability in case of machine crashes. They are typically discarded upon flush. With CDC enabled, they are instead transferred to a local CDC directory upon flush, which is then readable by other processes on the Cassandra node. This allows us to use the same CDC mechanism as in our MySQL streaming pipeline. It decouples production operations from analytics, and thus does not require additional work from application engineers.
+
+Ultimately, after considering throughput, consistency, and separation of concerns, the final option – parsing commit logs – became the top contender.
+
+== Commit Log Deep Dive
+
+Aside from exposing commit logs, Cassandra also provides `CommitLogReader` and `CommitLogReadHandler` classes to help with the deserialization of logs. It seems like the hard work has been done, and what’s left is applying transformations – converting deserialized representations into Avro records and publish them to Kafka. However, as we dug further into the implementation of the CDC feature and of Cassandra itself, we realized that there are many new challenges.
+
+=== Delayed Processing
+
+Commit logs only arrive in the CDC directory when it is full, in which case it would be flushed/discarded. This implies there is a delay between when the event is logged and when the event is captured. If little to no writes are executed, then the delay in event capturing could be arbitrarily long.
+
+=== Space Management
+
+In MySQL you can set binlog retention such that the logs will be automatically deleted after the configured retention period. However in Cassandra there is no such option. Once the commit logs are transferred to CDC directory, consumption must be in place to clean up commit logs after processing. If the available disk space for CDC directory exceeds a given threshold, further writes to the database will be rejected.
+
+=== Duplicated Events
+
+Commit logs on an individual Cassandra node do not reflect all writes to the cluster; they only reflect writes to the node. This makes it necessary to process commit logs on all nodes. But with a replication factor of N, N copies of each event are sent downstream.
+
+=== Out-of-Order Events
+
+Writes to an individual Cassandra node are logged serially as they arrive. However, these events may arrive out-of-order from when they are issued. Downstream consumers of these events must understand the event time and implement last write wins logic similar to link:https://docs.datastax.com/en/archived/cassandra/3.0/cassandra/dml/dmlAboutReads.html[Cassandra’s read path] to get the correct result.
+
+=== Out-of-Band Schema Change
+
+Schema changes of tables are communicated via a link:https://en.wikipedia.org/wiki/Gossip_protocol[gossip protocol] and are not recorded in commit logs. Therefore changes in schema could only be detected on a best-effort basis.
+
+=== Incomplete Row Data
+
+Cassandra does not perform read before write, as a result change events do not capture the state of every column, they only capture the state of modified columns. This makes the change event less useful than if the full row is available.
+
+Once we acquired a deep understanding of Cassandra commit logs, we re-assessed our requirements against the given constraints in order to design a link:https://riccomini.name/minimum-viable-infrastructure[minimum viable infrastructure].
+
+== Minimum Viable Infrastructure
+
+Borrowing from the link:https://en.wikipedia.org/wiki/Minimum_viable_product[minimum viable product] philosophy, we want to design a data pipeline with a minimum set of features and requirements to satisfy our immediate customers. For Cassandra CDC, this means:
+
+* Production database’s health and performance should not be negatively impacted by introducing CDC; slowed operations and system downtimes are much costlier than a delay in the analytics pipeline
+* Querying Cassandra tables in our data warehouse should match the results of querying the production database (barring delays); having duplicate and/or incomplete rows amplifies post-processing workload for every end user
+With these criteria in front of us, we began to brainstorm for solutions, and ultimately came up with three approaches:
+
+=== Stateless Stream Processing
+
+This solution is inspired by Datastax’s link:https://www.datastax.com/dev/blog/advanced-replication-in-dse-5-1[advanced replication blog post]. The idea is to deploy an agent on each Cassandra node to process local commit logs. Each agent is considered as “primary” for a subset of writes based on partition keys, such that every event has exactly one primary agent. Then during CDC, in order to avoid duplicate events, each agent only sends an event to Kafka if it is the primary agent for the event. To handle eventual consistency, each agent would sort events into per-table time-sliced windows as they arrive (but doesn’t publish them right away); when a window expires, events in that window are hashed, and the hash is compared against other nodes. If they don’t match, data is fetched from the inconsistent node so the correct value could be resolved by last write wins. Finally the corrected events in that window will be sent to Kafka. Any out-of-order event beyond the time-sliced windows would have to be logged into an out-of-sequence file and handled separately. Since deduplication and ordering are done in-memory, concerns with agent failover causing data loss, OOM issues impacting production database, and the overall complexity of this implementation stopped us from exploring it further.
+
+=== Stateful Stream Processing
+
+This solution is the most feature rich. The idea is that the agent on each Cassandra node will process commit logs and publish events to Kafka without deduplication and ordering. Then a stream processing engine will consume these raw events and do the heavy lifting (such as filtering out duplicate events with a cache, managing event orders with event-time windowing, and capturing state of unmodified columns by performing read before write on a state store), and then publish these derived events to a separate Kafka topic. Finally, link:https://github.com/wepay/kafka-connect-bigquery[KCBQ] will be used to consume events from this topic and upload them to BigQuery. This approach is appealing because it solves the problem generically – anyone can subscribe to the latter Kafka topic without needing to handle deduplication and ordering on their own. However, this approach introduces a nontrivial amount of operational overhead; we would have to maintain a stream processing engine, a database, and a cache.
+
+=== Processing-On-Read
+
+Similar to the previous approach, the idea is to process commit logs on each Cassandra node and send events to Kafka without deduplication and ordering. Unlike the previous approach, the stream processing portion is completely eliminated. Instead the raw events will be directly uploaded to BigQuery via KCBQ. link:https://cloud.google.com/bigquery/docs/views-intro[Views] are created on top of the raw tables to handle deduplication, ordering, and merging of columns to form complete rows. Because BigQuery views are virtual tables, the processing is done lazily each time the view is queried. To prevent the view query from getting too expensive, the views would be materialized periodically. This approach removes both operational complexity and code complexity by leveraging BigQuery’s link:https://cloud.google.com/blog/products/gcp/bigquery-under-the-hood[massively parallel query engine]. However, the drawback is that non-KCBQ downstream consumers must do all the work on their own.
+
+Given that our main purpose of streaming Cassandra is data warehousing, we ultimately decided to implement _processing-on-read_. It provides the essential features for our existing use case, and offers the flexibility to expand into the other two more generic solutions mentioned above in the future.
+
+== Open Source
+
+During this process of building a real-time data pipeline for Cassandra, we have received a substantial amount of interest on this project. As a result, we have decided to open-source the Cassandra CDC agent under the link:https://debezium.io[Debezium] umbrella as an link:https://github.com/debezium/debezium-incubator[incubating connector]. If you would like to learn more or contribute, check out the work-in-progress pull request for link:https://github.com/debezium/debezium-incubator/pull/98[source code] and link:https://github.com/debezium/debezium.github.io/pull/325[documentation].
+
+In the second half of this blog post series, we will elaborate on the CDC implementation itself in more details. Stay tuned!
