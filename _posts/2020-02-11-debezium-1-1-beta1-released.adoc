@@ -1,0 +1,141 @@
+---
+layout: post
+title:  Debezium 1.1.0.Beta1 Released
+date:   2020-02-11 10:19:59 -0600
+tags: [ releases, mysql, postgres, mongodb, cassandra, db2 ]
+author: gmorling
+---
+= Debezium 1.1.0.Beta1 Released
+gmorling
+:awestruct-tags: [ releases, mysql, postgres, mongodb, cassandra, db2 ]
+:awestruct-layout: blog-post
+
+It's my pleasure to announce the release of Debezium *1.1.0.Beta1*!
+
+This release adds support for transaction marker events,
+an incubating connector for the IBM Db2 database as well as a wide range of bug fixes.
+As the 1.1 release still is under active development,
+we've backported an asorted set of bug fixes to the 1.0 branch and released Debezium *1.0.1.Final*, too.
+
+At the time of writing this, not all connector archives have been synched to Maven Central yet;
+this should be the case within the next few others.
+
+== Transaction Markers
+
+A common requirements for Debezium users is to materialize some kind of "aggregate" made up of change events from multiple change data topics.
+
+Consider for instance an e-commerce application which manages purchase orders.
+In a relational database, the information representing such order will typically be spread across multiple tables, e.g. `PURCHASE_ORDER`, `ORDER_LINE` and `SHIPMENT_ADDRESS`.
+To examine the complete state of a purchase order in the database itself, you'd run a JOIN query against the three tables. 
+
+Things get more challenging when looking at the change event topics produced by CDC connectors such as Debezium.
+For instance https://kafka.apache.org/documentation/streams/[Kafka Streams] could be used to join the change event streams for the three tables and materialize an aggregate view.
+
+We've https://debezium.io/blog/2018/03/08/creating-ddd-aggregates-with-debezium-and-kafka-streams/[explored a possible implementation] of this some time ago here on this blog.
+This approach was prone to exposing intermediary aggregates, though.
+The reason being that the joining logic had no insight into the transaction boundaries that applied in the source database.
+So when for instance inserting a purchase order with 10 order lines,
+it could happen that an aggregate gets materialized which contains the order and the first five lines,
+shortly followed thereafter by the complete aggregate view with all 10 order lines.
+Depending on your use case exposing such intermediary aggregates to downstream consumers 
+(e.g. a search index) might not be desirable.
+
+In Debezium 1.1 this situation can be addressed by leveraging the new transaction metadata topic supported by most connectors.
+When enabled,
+a separate topic will be published which contains events indicating the begin and end of transactions:
+
+[source,json]
+----
+{
+  "status": "BEGIN",
+  "id": "571",
+  "event_count": null,
+  "data_collections": null
+}
+...
+{
+  "status": "END",
+  "id": "571",
+  "event_count": "11",
+  "data_collections": [
+    {
+      "data_collection": "inventory.purchaseorder",
+      "event_count": "1"
+    },
+    {
+      "data_collection": "inventory.orderline",
+      "event_count": "10"
+    }
+  ]
+}
+----
+
+`END` events contain the total number of change events originating from this transaction as well as the number of event per affected table.
+Actual data change events in the topics for the purchase order and order line tables contain the transaction id, too.
+These two things together enable a stream processing application to buffer all the change events originating from one transaction.
+Only once it has received all the events of a transaction, it may produce the final aggregate view and publish it to downstream consumers,
+avoiding the issue of exposing intermediary aggregate views.
+
+Stay tuned for an in-depth example of such an implementation coming soon!
+
+== IBM Db2 Connector
+
+Support for the https://www.ibm.com/products/db2-database[IBM Db2] database has been on
+https://issues.redhat.com/browse/DBZ-695[the wishlist] for many Debezium users for quite some time.
+That's why we were very excited when a group of IBM engineers reached out to us a while ago,
+offering to implement this connector under the Debezium umbrella.
+This connector is released in "incubating" state in Debezium 1.1.
+
+Note that at this point a license for the IBM IIDR product is required in order to use the "ASN Capture" API leveraged by the connector.
+A post with more details around this connector should follow soon;
+in the mean time please refer to the connector https://debezium.io/documentation/reference/1.1/connectors/db2.html[reference documentation] to learn more.
+
+== Further Changes and Bugfixes
+
+Besides the transaction metadata topic and the Db2 connector, a few more improvements and fixes have been completed for Debezium 1.1 Beta1:
+
+* The message transformation for extracting the `after` state from change events allows to route change events to a specific topic based on a configurable record field
+(https://issues.redhat.com/browse/DBZ-1715[DBZ-1715])
+* The `ExtractNewDocumentState` SMT to be used with the Debezium MongoDB connector will convert `Date` and `Timestamp` fields now into the `org.apache.kafka.connect.data.Timestamp` logical type, clarifying its semantics (https://issues.redhat.com/browse/DBZ-1717[DBZ-1717])
+* The MySQL connector won't log the dabase password in DEBUG level any longer (https://issues.redhat.com/browse/DBZ-1748[DBZ-1748])
+* The Antlr DDL parser of the MySQL connector handles the `TRANSACTIONAL` keyword of MariaDB (https://issues.redhat.com/browse/DBZ-1733[DBZ-1733]) as well as the `GET DIAGNOSTICS` statement
+(https://issues.redhat.com/browse/DBZ-1740[DBZ-1740])
+* The Postgres connector can be used with proxied connections (https://issues.redhat.com/browse/DBZ-1738[DBZ-1738])
+
+Overall, https://debezium.io/releases/1.1/release-notes/#release-1.1.0-beta1[27 issues] were fixed for this release.
+https://debezium.io/releases/1.0/release-notes/#release-1.0.1-final[16] bugfixes from 1.1 Alpha1 and Beta1 were backported to 1.0.1.Final.
+Please make sure to read the upgrade notes when upgrading the Postgres connector and the accompanying decoderbufs logical decoding plugin to 1.1 Beta1, as a specific order of upgrading the two is needed.
+
+Many thanks to
+https://github.com/oscerd[Andrea Cosentino],
+https://github.com/ahus1[Alexander Schwartz],
+https://github.com/bingqinzhou[Bingqin Zhou],
+https://github.com/igabaydulin[Igor Gabaydulin],
+https://github.com/juyttenh[Jan Uyttenhove],
+https://github.com/jhuiting[Jos Huiting],
+https://github.com/lga-zurich[Luis Garcés-Erice],
+https://github.com/mzbyszynski[Marc Zbyszynski],
+https://github.com/zrlurb[Peter Urbanetz] and
+https://github.com/SeanRooooney[Sean Rooney]
+for their contributions to this release!
+
+On our road towards Debezium 1.1, we'll likely do another Beta release before going to the candidate release phase in a few weeks from now.
+To see what's coming, take a look at the link:/roadmap/[roadmap], or get in touch to tell us about your specific feature requirements!
+
+== About Debezium
+
+Debezium is an open source distributed platform that turns your existing databases into event streams,
+so applications can see and respond almost instantly to each committed row-level change in the databases.
+Debezium is built on top of http://kafka.apache.org/[Kafka] and provides http://kafka.apache.org/documentation.html#connect[Kafka Connect] compatible connectors that monitor specific database management systems.
+Debezium records the history of data changes in Kafka logs, so your application can be stopped and restarted at any time and can easily consume all of the events it missed while it was not running,
+ensuring that all events are processed correctly and completely.
+Debezium is link:/license/[open source] under the http://www.apache.org/licenses/LICENSE-2.0.html[Apache License, Version 2.0].
+
+== Get involved
+
+We hope you find Debezium interesting and useful, and want to give it a try.
+Follow us on Twitter https://twitter.com/debezium[@debezium], https://gitter.im/debezium/user[chat with us on Gitter],
+or join our https://groups.google.com/forum/#!forum/debezium[mailing list] to talk with the community.
+All of the code is open source https://github.com/debezium/[on GitHub],
+so build the code locally and help us improve ours existing connectors and add even more connectors.
+If you find problems or have ideas how we can improve Debezium, please let us know or https://issues.redhat.com/projects/DBZ/issues/[log an issue].
