@@ -1,16 +1,17 @@
 #!/bin/bash
 set -e
 
+# TODO
 if [ ! -f Gemfile ]; then
   echo "NOTE: hmm, I don't see a Gemfile so I don't think there's a jekyll site here"
   echo "Either you didn't mount a volume, or you mounted it incorrectly."
   echo "Be sure you're in your jekyll site root and use something like this to launch"
   echo ""
-  echo "docker run -p 80:4000 -v \$(pwd):/site uidoyen/jekyll-serve"
+  echo "docker run -p 80:4000 -v \$(pwd):/site uidoyen/newjekyll"
   echo ""
   echo "NOTE: To create a new site, you can use the sister image uidoyen/jekyll like:"
   echo ""
-  echo "docker run -v \$(pwd):/site uidoyen/jekyll new ."
+  echo "docker run -v \$(pwd):/site uidoyen/newjekyll new ."
   exit 1
 fi
 
