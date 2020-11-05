@@ -26,7 +26,7 @@ export PATH=$SITE_HOME/_bin:$PATH
 # Rakefile takes BIND into account
 # used to bind awestruct to 0.0.0.0 instead of localhost
 # otherwise the port is not exposed out of docker
-export BIND="-b 0.0.0.0"
+export BIND="-P 0.0.0.0"
 
 # Check to see if the site has any files ...
 if [ $(find $SITE_HOME -maxdepth 0 -type d -empty 2>/dev/null) ]; then

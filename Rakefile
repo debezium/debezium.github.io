@@ -114,7 +114,7 @@ end
 desc 'Clean out generated site and temporary files'
 task :clean, :spec do |task, args|
   require 'fileutils'
-  dirs = ['.awestruct', '.sass-cache', '_site']
+  dirs = ['.jekyll-cache', '.sass-cache', '_site']
   if args[:spec] == 'all'
     dirs << '_tmp'
   end
@@ -187,7 +187,7 @@ def run_awestruct(args)
   else
     augmented_args = "#{args}"
   end
-  system "#{$use_bundle_exec ? 'bundle exec ' : ''}jekyll serve --watch" or raise "Jekyll build failed"
+  system "#{$use_bundle_exec ? 'bundle exec ' : ''}jekyll serve --host 0.0.0.0" or raise "Jekyll build failed"
 end
 
 # Print a message to STDOUT

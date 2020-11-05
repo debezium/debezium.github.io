@@ -32,7 +32,7 @@ RUN apt-get install git
 RUN gem install rdoc -v 6.2.0
 RUN gem install rake bundler
 RUN gem install bundler
-RUN gem install bundler jekyll
+RUN gem install jekyll
  
 WORKDIR $SITE_HOME
 VOLUME [ $SITE_HOME ]
