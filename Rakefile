@@ -39,8 +39,8 @@
 #  rake -T
 #
 # Now you're Awestruct with rake!
-
-$use_bundle_exec = true
+require 'jekyll'
+$use_bundle_exec = false
 $awestruct_cmd = nil
 $antora_config = "playbook.yml"
 task :default => :preview
@@ -68,12 +68,6 @@ desc 'Build and preview the site locally in development mode'
 task :preview => :check do
   run_antora
   run_awestruct '-d'
-end
-
-desc 'Generate the site using the development profile'
-task :gen => :check do
-  run_antora
-  run_awestruct '-P development -g --force'
 end
 
 desc 'Push local commits to upstream/develop'
@@ -141,11 +135,10 @@ end
 desc 'Check to ensure the environment is properly configured'
 task :check => :init do
   if !File.exist? 'Gemfile'
-    if which('awestruct').nil?
-      msg 'Could not find awestruct.', :warn
+    if which('jekyll').nil?
+      msg 'Could not find jekyll.', :warn
       msg 'Run `rake setup` or `rake setup[local]` to install from RubyGems.'
       # Enable once the rubygem-awestruct RPM is available
-      #msg 'Run `sudo yum install rubygem-awestruct` to install via RPM. (Fedora >= 18)'
       exit 1
     else
       $use_bundle_exec = false
@@ -160,18 +153,13 @@ task :check => :init do
     $use_bundle_exec = true
   rescue StandardError => e
     msg e.message, :warn
-    if which('awestruct').nil?
+    if which('jekyll').nil?
       msg 'Run `rake setup` to install required gems from RubyGems.'
     else
       msg 'Run `rake update` to install additional required gems from RubyGems.'
     end
     exit e.status_code
   end
-  # https://github.com/awestruct/awestruct/issues/549
-  # that debug log statement causes a "no implicit conversion of nil into String" error
-  # Let's just remove it...
-  system 'sed -i "/.LOG.debug .inherit_front_matter_from for/d" .bundle/ruby/2.4.0/gems/awestruct-0.6.0.alpha4/lib/awestruct/page.rb'
-  system 'sed -i "/.LOG.debug .inherit_front_matter_from for/d" vendor/bundle/ruby/2.4.0/gems/awestruct-0.6.0.alpha4/lib/awestruct/page.rb'
 end
 
 desc 'Configures Antora build process to use authoring mode, allowing changes to documentation files locally without needing to push changes to github'
@@ -199,31 +187,7 @@ def run_awestruct(args)
   else
     augmented_args = "#{args}"
   end
-  system "#{$use_bundle_exec ? 'bundle exec ' : ''}jekyll serve" or raise "Awestruct build failed"
-end
-
-# A cross-platform means of finding an executable in the $PATH.
-# Respects $PATHEXT, which lists valid file extensions for executables on Windows
-#
-#  which 'awestruct'
-#  => /usr/bin/awestruct
-def which(cmd, opts = {})
-  unless $awestruct_cmd.nil? || opts[:clear_cache]
-    return $awestruct_cmd
-  end
-
-  $awestruct_cmd = nil
-  exts = ENV['PATHEXT'] ? ENV['PATHEXT'].split(';') : ['']
-  ENV['PATH'].split(File::PATH_SEPARATOR).each do |path|
-    exts.each do |ext|
-      candidate = File.join path, "#{cmd}#{ext}"
-      if File.executable? candidate
-        $awestruct_cmd = candidate
-        return $awestruct_cmd
-      end
-    end
-  end
-  return $awestruct_cmd
+  system "#{$use_bundle_exec ? 'bundle exec ' : ''}jekyll serve --watch" or raise "Jekyll build failed"
 end
 
 # Print a message to STDOUT

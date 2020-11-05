@@ -28,16 +28,6 @@ RUN yarn global add @antora/cli@2.3.4 @antora/site-generator-default@2.3.4 \
 
 RUN apt-get install git
 
-# Set up a user to run Awestruct and own all of its files (including the gems)
-RUN useradd -m awestruct && \
-    mkdir -p $SITE_HOME && \
-    mkdir -p $CACHE_HOME/gems/bin && \
-    chown -R awestruct:awestruct $HOME && \
-    chown -R awestruct:awestruct $CACHE_HOME && \
-    chown -R awestruct:awestruct $SITE_HOME
-USER awestruct
-WORKDIR $HOME
- 
 # Install Rake and Bundler. This is the minimum needed to generate the site ...
 RUN gem install rdoc -v 6.2.0
 RUN gem install rake bundler
@@ -47,7 +37,7 @@ RUN gem install bundler jekyll
 WORKDIR $SITE_HOME
 VOLUME [ $SITE_HOME ]
  
-EXPOSE 4242
+EXPOSE 4000
  
 # Install the entry point that will be called by default ...
 COPY ./docker-entrypoint.sh /
