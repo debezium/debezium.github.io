@@ -1,9 +1,9 @@
 # This file is a rake build file. The purpose of this file is to simplify
-# setting up and using Awestruct. It's not required to use Awestruct, though it
+# setting up and using Jekyll. It's not required to use Jekyll, though it
 # does save you time (hopefully). If you don't want to use rake, just ignore or
 # delete this file.
 #
-# If you're just getting started, execute this command to install Awestruct and
+# If you're just getting started, execute this command to install Jekyll and
 # the libraries on which it depends:
 #
 #  rake setup
@@ -18,11 +18,11 @@
 # which include a C compiler, the Ruby development libraries and some other
 # development libraries as well.
 #
-# There are also tasks for running Awestruct. The build will auto-detect
-# whether you are using Bundler and, if you are, wrap calls to awestruct in
+# There are also tasks for running Jekyll. The build will auto-detect
+# whether you are using Bundler and, if you are, wrap calls to Jekyll in
 # `bundle exec`.
 #
-# To run in Awestruct in development mode, execute:
+# To run in Jekyll in development mode, execute:
 #
 #  rake
 #
@@ -38,47 +38,38 @@
 #
 #  rake -T
 #
-# Now you're Awestruct with rake!
-require 'jekyll'
+# Now you're Jekyll with rake!
+require "rubygems"
+require "tmpdir"
+require "bundler/setup"
+require "jekyll"
+
 $use_bundle_exec = false
-$awestruct_cmd = nil
 $antora_config = "playbook.yml"
 task :default => :preview
 
-desc 'Setup the environment to run Awestruct'
-task :setup, [:env] => :init do |task, args|
-  next if !which('awestruct').nil?
 
-  require 'fileutils'
-  FileUtils.remove_dir '.bundle', true
-  system 'bundle install --binstubs=_bin --path=.bundle'
-  msg 'Run awestruct using `awestruct` or `rake`'
-  # Don't execute any more tasks, need to reset env
-  exit 0
-end
-
-desc 'Update the environment to run Awestruct'
+desc 'Update the environment to run Jekyll'
 task :update => :init do
   system 'bundle update'
-  # Don't execute any more tasks, need to reset env
   exit 0
 end
 
 desc 'Build and preview the site locally in development mode'
 task :preview => :check do
   run_antora
-  run_awestruct '-d'
+  system "#{$use_bundle_exec ? 'bundle exec ' : ''}jekyll serve --host 0.0.0.0" or raise "Jekyll build failed"
 end
 
-desc 'Push local commits to upstream/develop'
+desc 'Push local commits to origin/website-migration'
 task :push do
-  system 'git push upstream develop'
+  system 'git push origin website-migration'
 end
 
 desc 'Generate the site and deploy to production branch using local dev environment'
 task :deploy => [:check, :push] do
   run_antora
-  run_awestruct '-P production -g --force --deploy'
+  system "jekyll build" or raise "Jekyll build failed"
 end
 
 desc 'Generate site using Travis CI and, if not a pull request, publish site to production (GitHub Pages).  Antora content will be built by Travis directly rather than this task.'
@@ -86,7 +77,7 @@ task :travis => :check do
   # if this is a pull request, do a simple build of the site and stop
   if ENV['TRAVIS_PULL_REQUEST'].to_s.to_i > 0
     msg 'Building pull request using production profile...'
-    run_awestruct '-P production -g'
+    system "bundle exec jekyll build" or raise "Jekyll build failed"
     next
   end
 
@@ -107,7 +98,7 @@ task :travis => :check do
   end
   system "git branch #{deploy_branch} origin/#{deploy_branch}"
   system "git status"
-  run_awestruct '-P production -g --deploy'
+  system "bundle exec jekyll build" or raise "Jekyll build failed"
   File.delete '.git/credentials'
 end
 
@@ -123,6 +114,11 @@ task :clean, :spec do |task, args|
   end
 end
 
+desc 'Configures Antora build process to use authoring mode, allowing changes to documentation files locally without needing to push changes to github'
+task :author => :check do
+  $antora_config = "playbook_author.yml"
+end
+
 # Perform initialization steps, such as setting up the PATH
 task :init do
   # Detect using gems local to project
@@ -135,10 +131,9 @@ end
 desc 'Check to ensure the environment is properly configured'
 task :check => :init do
   if !File.exist? 'Gemfile'
-    if which('jekyll').nil?
-      msg 'Could not find jekyll.', :warn
-      msg 'Run `rake setup` or `rake setup[local]` to install from RubyGems.'
-      # Enable once the rubygem-awestruct RPM is available
+    if which('jekyl').nil?
+      msg 'Could not find jekyl.', :warn
+      msg 'Run `rake setup` to install from RubyGems.'
       exit 1
     else
       $use_bundle_exec = false
@@ -153,7 +148,7 @@ task :check => :init do
     $use_bundle_exec = true
   rescue StandardError => e
     msg e.message, :warn
-    if which('jekyll').nil?
+    if which('jekyl').nil?
       msg 'Run `rake setup` to install required gems from RubyGems.'
     else
       msg 'Run `rake update` to install additional required gems from RubyGems.'
@@ -176,18 +171,6 @@ def run_antora()
     puts "Antora failed"
     exit -1
   end
-end
-
-# Execute Awestruct
-def run_awestruct(args)
-  # used to bind Awestruct to 0.0.0.0
-  # do export BIND="-b 0.0.0.0"
-  if ENV['BIND'] && ENV['BIND'] != ''
-    augmented_args = "#{ENV['BIND']} #{args}"
-  else
-    augmented_args = "#{args}"
-  end
-  system "#{$use_bundle_exec ? 'bundle exec ' : ''}jekyll serve --host 0.0.0.0" or raise "Jekyll build failed"
 end
 
 # Print a message to STDOUT
