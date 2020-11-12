@@ -1,12 +1,14 @@
 ---
+layout: post
+title: Capturing changes from MySQL
+date:   2016-08-02 10:19:59 -0600
 tags: [ mysql ]
+author: rhauch
 ---
-= Capturing changes from MySQL
-rhauch
-:awestruct-tags: [ mysql ]
-:awestruct-layout: blog-post
 
 Change data capture is a hot topic. Debezium's goal is to make change data capture easy for multiple DBMSes, but admittedly we're still a young open source project and so far we've only released a link:/docs/connectors/mysql/[connector for MySQL] with a link:/docs/connectors/mongodb/[connector for MongoDB] that's just around the corner. So it's great to see how others are using and implementing change data capture. In this post, we'll review Yelp's approach and see how it is strikingly similar to Debezium's MySQL connector.
+
++++<!-- more -->+++
 
 == Streaming data at Yelp
 
@@ -22,7 +24,7 @@ Yelp's Real-Time Data Pipeline records changes to data on totally ordered distri
 
 == How Yelp captures MySQL changes
 
-Perhaps most interesting for Debezium is how Yelp captures the committed changes in their MySQL databases and write them to Kafka topics. Their http://engineeringblog.yelp.com/2016/08/streaming-mysql-tables-in-real-time-to-kafka.html[second post in the series] goes into a lot more detail about their MySQLStreamer process that reads the MySQL binary log and continously processes the DDL statements and DML operations that appear in the log, generating the corresponding _insert_, _update_, _delete_, and _refresh_ events, and writing these event messages to a separate Kafka topic for each MySQL table. We've link:/blog/2016-04-15-parsing-ddl/[mentioned before] that MySQL's row-level binlog events that result from the DML operation don't include the full definition of the columns, so knowing what the columns mean in each event requires process the DDL statements that also appear in the binlog. Yelp uses a separate MySQL instance it calls the _schema tracker database_, which behaves like a MySQL slave to which are applied only the DDL statements they read from the binlog. This technique lets Yelp's MySQLStreamer system know the state of the database schema and the structure of its tables at the point in the binlog where they are processing events. This is pretty interesting, because it uses the MySQL engine to handle the DDL parsing.
+Perhaps most interesting for Debezium is how Yelp captures the committed changes in their MySQL databases and write them to Kafka topics. Their http://engineeringblog.yelp.com/2016/08/streaming-mysql-tables-in-real-time-to-kafka.html[second post in the series] goes into a lot more detail about their MySQLStreamer process that reads the MySQL binary log and continously processes the DDL statements and DML operations that appear in the log, generating the corresponding _insert_, _update_, _delete_, and _refresh_ events, and writing these event messages to a separate Kafka topic for each MySQL table. We've link:/blog/2016/04/15/parsing-ddl/[mentioned before] that MySQL's row-level binlog events that result from the DML operation don't include the full definition of the columns, so knowing what the columns mean in each event requires process the DDL statements that also appear in the binlog. Yelp uses a separate MySQL instance it calls the _schema tracker database_, which behaves like a MySQL slave to which are applied only the DDL statements they read from the binlog. This technique lets Yelp's MySQLStreamer system know the state of the database schema and the structure of its tables at the point in the binlog where they are processing events. This is pretty interesting, because it uses the MySQL engine to handle the DDL parsing.
 
 Yelp's MySQLStreamer process uses another MySQL database to track internal state describing its position in the binlog, what events have been successfully published to Kafka, and, because the binlog position varies on each replica, replica-independent information about each transaction. This latter information is similar to MySQL GTIDs, although Yelp is using earlier versions of MySQL that do not support GTIDs.
 
@@ -32,7 +34,7 @@ Yelp's MySQLStreamer mechanism is quite ingenious in its use of MySQL and multip
 
 == Similar purpose, similar approach
 
-Debezium is an open source project that is building a change data capture for a variety of DBMSes. Like Yelp's MySQLStreamer, Debezium's link:/docs/connectors/mysql/[MySQL Connector] can continously capture the committed changes to MySQL database rows and record these events in a separate Kafka topic for each table. When first started, Debezium's MySQL Connector can perform an initial consistent snapshot and then begin reading the MySQL binlog. It uses both DDL and DML operations that appear in the binlog, directly link:/blog/2016-04-15-parsing-ddl/[parsing and using the DDL statements] to learn the changes to each table's structure and the mapping of each insert, update, and delete binlog event. And each resulting change event written to Kafka includes information about the originating MySQL server and its binlog position, as well as the before and/or after states of the affected row.
+Debezium is an open source project that is building a change data capture for a variety of DBMSes. Like Yelp's MySQLStreamer, Debezium's link:/docs/connectors/mysql/[MySQL Connector] can continously capture the committed changes to MySQL database rows and record these events in a separate Kafka topic for each table. When first started, Debezium's MySQL Connector can perform an initial consistent snapshot and then begin reading the MySQL binlog. It uses both DDL and DML operations that appear in the binlog, directly link:/blog/2016/04/15/parsing-ddl/[parsing and using the DDL statements] to learn the changes to each table's structure and the mapping of each insert, update, and delete binlog event. And each resulting change event written to Kafka includes information about the originating MySQL server and its binlog position, as well as the before and/or after states of the affected row.
 
 However, unlike Yelp's MySQLStreamer, the Debezium MySQL connector doesn't need or use extra MySQL databases to parse DDL or to store the connector's state. Instead, Debezium is built on top of Kafka Connect, which is a new Kafka library that provides much of the generic functionality of reliably pulling data from external systems, pushing it into Kafka topics, and tracking what data has already been processed. Kafka Connect stores this state inside Kafka itself, simplifying the operational footprint. Debezium's MySQL connector can then focus on the details of performing a consistent snapshot when required, reading the binlog, and converting the binlog events into useful change events.
 
