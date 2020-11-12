@@ -57,7 +57,7 @@ With the integration with Antora, the above command will now also fetch the main
 
 ### 2. View the site
 
-Point your browser to [http://localhost:4242](http://localhost:4242) to view the site. You may notice some delay during development, since the site is generated somewhat lazily.
+Point your browser to [http://localhost:4000](http://localhost:4000) to view the site. You may notice some delay during development, since the site is generated somewhat lazily.
 
 ## Deployment on GitHub Pages
 
