@@ -36,14 +36,28 @@ These instructions will get you a copy of the project up and running on your loc
 
 _For more information regarding the use of Jekyll, please refer to the [Jekyll Step by Step Tutorial](https://jekyllrb.com/docs/step-by-step/01-setup/)._
 
-### 2. Start the development webserver
+### 1. Start the development webserver
 
 In a new terminal initialized with the Docker host environment, start a Docker container that has the build environment for our website:
 
-    $ docker run -it --rm -p 4242:4242 -e LC_ALL=C.UTF-8 -e LANG=C.UTF-8 -v $(pwd):/site uidoyen/newjekyll:latest bash
+    $ docker run --privileged -it --rm -p 4000:4000 -e LC_ALL=C.UTF-8 -e LANG=C.UTF-8 -v $(pwd):/site uidoyen/newjekyll bash
 
-This command tells Docker to start a container using the `uidoyen/jekyll` image (downloading it if necessary) with an interactive terminal (via `-it` flag) to the container so that you will see the output of the process running in the container. The `--rm` flag will remove the container when it stops, while the `-p 4242` flag maps the container's 4242 port to the same port on the Docker host (which is the local machine on Linux or the virtual machine if running Boot2Docker or Docker Machine on OS X and Windows). The `-v $(pwd):/site` option mounts your current working directory (where the website's code is located) into the `/site` directory within the container.
+This command tells Docker to start a container using the `uidoyen/newjekyll` image (downloading it if necessary) with an interactive terminal (via `-it` flag) to the container so that you will see the output of the process running in the container. The `--rm` flag will remove the container when it stops, while the `-p 4000` flag maps the container's 4000 port to the same port on the Docker host (which is the local machine on Linux or the virtual machine if running Boot2Docker or Docker Machine on OS X and Windows). The `-v $(pwd):/site` option mounts your current working directory (where the website's code is located) into the `/site` directory within the container.
 
+Next, in the shell in the container, run the following commands to update and then (re)install all of the Ruby libraries required by the website:
+
+    awestruct@49d06009e1fa:/site$ bundle update
+    awestruct@49d06009e1fa:/site$ bundle install
+
+This should only need to be performed once. After the libraries are installed, we can then build the site from the code so you can preview it in a browser:
+
+    awestruct@49d06009e1fa:/site$ rake clean preview
+    
+With the integration with Antora, the above command will now also fetch the main codebase repository and will invoke the Antora build process to build the version-specific documentation prior to invoking Awestruct.  For information on Antora and how we've integrated it into the build process, please see ANTORA.md.
+
+### 2. View the site
+
+Point your browser to [http://localhost:4000](http://localhost:4000) to view the site. You may notice some delay during development, since the site is generated somewhat lazily.
 
 ## Deployment on GitHub Pages
 
