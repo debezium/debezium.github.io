@@ -1,6 +1,6 @@
 ## Contribute to Debezium's website
 
-Our website is a community effort, and we welcome suggestions, fixes, improvements, and even new blog posts related to Debezium. The website is statically generated from [source code](https://github.com/debezium/debezium.io) using [Awestruct](http://awestruct.org) and [Bootstrap](http://twitter.github.com/bootstrap). This document outlines the basic steps require to get the latest source code for the website, modify it, test it locally, and create pull requests. And, yes, this process is intentionally very similar to how we [contribute code](https://github.com/debezium/debezium/blob/develop/CONTRIBUTE.md).
+Our website is a community effort, and we welcome suggestions, fixes, improvements, and even new blog posts related to Debezium. The website is statically generated from [source code](https://github.com/debezium/debezium.io) using [Jekyll](https://jekyllrb.com) and [Bootstrap](http://twitter.github.com/bootstrap). This document outlines the basic steps require to get the latest source code for the website, modify it, test it locally, and create pull requests. And, yes, this process is intentionally very similar to how we [contribute code](https://github.com/debezium/debezium/blob/develop/CONTRIBUTE.md).
 
 ### Talk to us
 
@@ -72,29 +72,29 @@ To build the source code locally, checkout and update the `develop` branch:
     $ git checkout develop
     $ git pull upstream develop
 
-Then use Docker to run a container that initializes the Awestruct tooling. Start a new terminal, configure it with the Docker environment (if required), and run the following command:
+Then use Docker to run a container that initializes the Jekyll tooling. Start a new terminal, configure it with the Docker environment (if required), and run the following command:
 
-    $ docker run -it --rm -p 4242:4242 -e LC_ALL=C.UTF-8 -e LANG=C.UTF-8 -v $(pwd):/site debezium/awestruct setup
+    $ docker run --privileged -it --rm -p 4000:4000 -e LC_ALL=C.UTF-8 -e LANG=C.UTF-8 -v $(pwd):/site uidoyen/newjekyll setup
     
 *Note:* Some times you may wish to use the `root` user of your linux machine to run docker (as docker needs elevated privileges to run). It's probably a better idea to run docker containers while [running as a user other than root and using sudo](http://www.projectatomic.io/blog/2015/08/why-we-dont-let-non-root-users-run-docker-in-centos-fedora-or-rhel/) or adding the [user to the group that has privileges](https://developer.fedoraproject.org/tools/docker/docker-installation.html) to run docker. When you checkout the code for this project don't clone the source code and try running this command as the `root` user. When you do this, all of the code (and the entire folder) then gets owned by the `root` user. The reason why this is undesirable is when we run `docker run -v $(pwd):/site` we are actually mounting the local file system where the source code lives _into_ the docker container. If this directory is owned by `root`, the image cannot create the necessary directories for running `rake` and `bundle`.     
 
 This should download all of the Ruby Gems the tooling uses, as defined in the `Gemfile` file. After it completes, run a container using the same image but with a different command:
 
-    $ docker run -it --rm -p 4242:4242 -e LC_ALL=C.UTF-8 -e LANG=C.UTF-8 -v $(pwd):/site debezium/awestruct bash
+    $ docker run --privileged -it --rm -p 4000:4000 -e LC_ALL=C.UTF-8 -e LANG=C.UTF-8 -v $(pwd):/site uidoyen/newjekyll bash
 
-This command will start a container using the `debezium/awestruct` Docker image, first downloading the image if necessary. It also mounts the current directory (where the website code is located) into the container's `/site` directory. 
+This command will start a container using the `debezium/jekyll` Docker image, first downloading the image if necessary. It also mounts the current directory (where the website code is located) into the container's `/site` directory. 
 
 Next, at the command line of that container run the following command:
 
     /site$ rake clean preview
 
-This cleans up any previously-generated files in the `_site` directory, (re)generates the files for the website, and runs a local webserver to access the site by pointing your browser to [http://localhost:4242]().
+This cleans up any previously-generated files in the `_site` directory, (re)generates the files for the website, and runs a local webserver to access the site by pointing your browser to [http://localhost:4000]().
 
 Note: With documentation maintained in the main Debezium code repository you may want to edit documentation locally and review how it renders prior to committing changes.  In order to use author mode, two things must be done:
 
 1. The docker container must have an additional volume mapped that points to the main Debezium repository that you've checked out locally.  In this example, we've checked out the https://github.com/debezium/debezium repository to `~/github/debezium`.  So in order to map that directory as a volume on the docker container, you will additionally need to provide the argument `-v ~/github/debezium:/debezium` when starting the container.  Below is an example of how it should look:
 
-        $ docker run -it --rm -p 4242:4242 -e LC_ALL=C.UTF-8 -e LANG=C.UTF-8 -v $(pwd):/site -v ~/github/debezium:/debezium debezium/awestruct bash
+        $ docker run --privileged -it --rm -p 4000:4000 -e LC_ALL=C.UTF-8 -e LANG=C.UTF-8 -v $(pwd):/site -v ~/github/debezium:/debezium uidoyen/newjekyll bash
         
       When inside the docker container, you should notice a `/debezium` directory now exists and its contents is that of the checked out repository.  In the event you do not see a `/debezium` directory or that its contents are empty or incorrect, please review how you mapped the volume above.
       
@@ -108,14 +108,14 @@ Note: With documentation maintained in the main Debezium code repository you may
         
       If it reports that its using `playbook.yml` instead, then author mode was not properly requested and you should check how you invoked rake.                     
 
-Note: If you're running Docker on Windows or OS X, you must use [port forwarding](https://debezium.io/docs/docker#port-forwarding) so that requests get forwarded properly to the Docker host virtual machine. For example, to port forward when using a Vagrant based VM (virtualbox, etc), you can port forward the `4242` port easily like this:
+Note: If you're running Docker on Windows or OS X, you must use [port forwarding](https://debezium.io/docs/docker#port-forwarding) so that requests get forwarded properly to the Docker host virtual machine. For example, to port forward when using a Vagrant based VM (virtualbox, etc), you can port forward the `4000` port easily like this:
 
 
-    vagrant ssh -- -vnNTL *:4242:$DOCKER_HOST_IP:4242    
+    vagrant ssh -- -vnNTL *:4000:$DOCKER_HOST_IP:4000    
 
 #### Changing the source
 
-You can edit and change the source files at any time. For small modifications, Awestruct will often recognize the changes and then regenerate the affected static pages. However, this recognition may not work for additions, deletions, or even larger modifications. In this case, use CTRL-C to stop the Awestruct webserver in the Docker container, and rerun the same command:
+You can edit and change the source files at any time. For small modifications, Jekyll will often recognize the changes and then regenerate the affected static pages. However, this recognition may not work for additions, deletions, or even larger modifications. In this case, use CTRL-C to stop the Jekyll webserver in the Docker container, and rerun the same command:
 
     /site$ rake clean preview
 
@@ -190,9 +190,7 @@ and in your fork:
 
 ### Site characteristics
 
-When you build the site, the Awestruct tools will generate all of the static files for the site and place them into a local `_site` directory. These are the only files that will appear on the public website.
-
-We want the site to have nice URLs, so Awestruct has an _indexer_ that will transform each file into a folder with the same root name as the file and placing the content into an `index.hmtl` inside that folder. For example, the content from the `/community.html.haml` source file is placed into the `_site/community/index.html` file, which can be viewed on the website with the URL `https://debezium.io/community`.
+When you build the site, the Jekyll tools will generate all of the static files for the site and place them into a local `_site` directory. These are the only files that will appear on the public website.
 
 ### Common changes
 
@@ -200,14 +198,17 @@ Some changes to the website are fairly common, so they're described here.
 
 #### Add a blog post
 
-Anyone can write a blog post that is related to Debezium. Simply add a new AsciiDoc file to the `blog` directory, including the date in the filename using the same format as the other files (e.g., "2016-03-18-title-of-blog-post.adoc"). The file should also contain a header like the following:
+Anyone can write a blog post that is related to Debezium. Simply add a new AsciiDoc file to the `blog` directory, including the date in the filename using the same format as the other files (e.g., "2016-03-18-title-of-blog-post.adoc"). The file should also contain jekyll front matter like the following:
 
-    = Title Of Blog Post
-    rhauch
-    :awestruct-tags: [ mysql, sql ]
-    :awestruct-layout: blog-post
+    ---
+    layout: post
+    title:  Title of Blog Post
+    date:   yyyy-mm-dd
+    tags: [ tag1, tag2 ]
+    author: theAuthor
+    ---
 
-The second line is the key to an entry in the `_config/authors.yml` file, so the first time be sure to add an entry for yourself (avatar images go in the `images` directory). Specify the appropriate lowercase tags, surrounding multi-word tags with double quotes. The `:awestruct-layout` line should remain the same.
+The author is the key to an entry in the `_data/authors.yaml` file, so the first time be sure to add an entry for yourself (avatar images go in the `assets/images` directory). Specify the appropriate lowercase tags, surrounding multi-word tags with double quotes.
 
 Then, rebuild the site and make sure your post is formatted correctly and appears in the [blog](https://debezium.io/blog/).
 
@@ -295,7 +296,7 @@ For connector entries, specify the `database -> versions` and `driver -> version
 _Note that since a series.yml file describes a release series and not a specific bugfix release, the contents of the file should reflect what the latest test compatibility is for the most recent release within the series._
 _So as new releases are added to a given series, its important to update the series.yml file with the pertinent connector and driver tested versions_.
 
-The _hidden_ attribute describes whether or not the series should be exposed on the website at all.   In general, when a series is considered legacy/old and no longer relevant, this attribute can be set to _true_ and no reference to this version will be included in the awestruct output.
+The _hidden_ attribute describes whether or not the series should be exposed on the website at all.   In general, when a series is considered legacy/old and no longer relevant, this attribute can be set to _true_ and no reference to this version will be included in the jekyll output.
 
 The _displayed_ attribute describes whether or not the series is considered _active_.  On the Releases Overview, we render boxes for all displayed (e.g. active) series.  There is a subsection that is hidden initially for older releases.  If _hidden=false_ and _displayed=false_, then that series will show up under the "Show Older Series" button.
 
@@ -349,7 +350,7 @@ Note: There are two Antora playbook configuration files used by this repository,
 
 #### Update the front page
 
-The site's main page is located in the `/index.html.haml` file.
+The site's main page is defined in `/index.md`, which utilizes `_layouts/index.html` layout.
 
 ### Summary
 
