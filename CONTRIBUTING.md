@@ -212,17 +212,26 @@ The author is the key to an entry in the `_data/authors.yaml` file, so the first
 
 Then, rebuild the site and make sure your post is formatted correctly and appears in the [blog](https://debezium.io/blog/).
 
-#### Releasing software
-
-When a release is made, write a blog post and add a new yaml file in `_data\releases` that describes the release. The site will use this information to drive certain dynamic content in a data-driven way.
-
-When releasing a new major or minor version, a new directory should be added under `_data\releases`.  For example, when releasing version `1.0`, there should be a directory added at `_data\releases\1.0`.  
-
-Inside the major/minor directory, a set of YAML should exist that describe both the version series and the specific fully qualified version being released.  For example, when releasing `1.0.0.Alpha1`, make sure that a directory `_data\releases\1.0` exists, creating it if it does not.  Inside that directory, create a `series.yml` file as well as a `1.0.0.Alpha1.yml` file.
+#### Software release process
+   
+   __New release in existing `<major>.<minor>` series__
+   - Write a blog post announcing the release
+   - Add a new yml file for the release under the appropriate `_data\releases\<major>.<minor>` directory.  For example `_data\releases\1.0\1.0.0.Final.yml`
+   - Add the new series version to `_data\releases\<major>.<minor>\versions.yml`
+   - Update the release notes in `releases\<major>.<minor>\release-notes.asciidoc`
+   
+   __New `<major>.<minor>` release__
+   - Write a blog post announcing the release
+   - Create a new directory under `_data\releases` - for example for a 1.0 release, add directory `_data\releases\1.0`
+   - Add a new yml file for the release under the appropriate `_data\releases\<major>.<minor>` directory.  For example `_data\releases\1.0\1.0.0.Final.yml`
+   - Create a `versions.yml` file:  `_data\releases\<major>.<minor>\versions.yml`, and add the series version to the file
+   - Create a `series.yml` file: `_data\releases\<major>.<minor>\series.yml` **(described in the next section)**
+   - Create a new directory under `releases` - for example for a 1.0 release, add directory `releases\1.0`
+   - Create and update `index.asciidoc` and `release-notes.asciidoc` under the `releases\<major>.<minor>` directory.
 
 ##### Series YAML
 
-This file describes an overview of the series.  For `1.0.0.Alpha1` the `series.yml` would look like:
+The `series.yml` file describes an overview of the entire series.  For `1.0.0.Alpha1` the `series.yml` would look like:
 
 ```yaml
 summary: Version 1.0
@@ -289,7 +298,7 @@ compatibility:
 The `summary` attribute describes a brief overview/highlight of changes in this series.
 
 The contents under _compatibility_ are meant to reflect what this version was tested with.
-If new compatibility types are added, be sure to update the `_config/site.yml` file accordingly.
+If new compatibility types are added, be sure to update the `_config.yml` file under `integrations` accordingly.
 For non-connector entries, specifying the compatibility-type and its associated version string is sufficient.
 For connector entries, specify the `database -> versions` and `driver -> versions` arrays accordingly.
 
@@ -310,7 +319,7 @@ This file describes a specific version.  For `1.0.0.Alpha1` the file would be ca
 date: 2019-05-29
 stable: false
 summary: First alpha release for 0.10 - Code cleanup
-announcement_url: https://debezium.io/blog/2019/05/29/debezium-0-10-0-alpha1-released/
+announcement_url: `/blog/2019/05/29/debezium-0-10-0-alpha1-released/`
 ```
 
 The `date` attribute is written in a `yyyy-mm-dd` format and should be the date when the release was published.
@@ -319,7 +328,7 @@ The `stable` attribute describes whether or not the version is considered stable
 
 The `summary` describes a brief overview of the changes in this specific release.
 
-The `annoncement_url` is the fully qualified URL to the blog post about the release.
+The `announcement_url` is the relative URL to the blog post about the release.
 
 ##### Update playbook attributes
 
@@ -338,9 +347,9 @@ At the time of writing the following table illustrates the mappings:
 At the time of writing this, 1.2 has not yet been published as _Final_ and therefore the `page-version-current` asciidoc attribute in the playbook files should reference the Antora Version value of `1.1`.
 Once version 1.2.0.Final has been released, the playbooks should reference `1.2`.
 
-##### Updating docs hierarchy
+##### Updating release documents
 
-Be sure when a new major/minor release is added that a new `docs/<major>.</minor>` directory is created and contains an `index.asciidoc` and `release-notes.asciidoc`.  See prior version directories for examples.
+Be sure when a new major/minor release is added that a new `releases/<major>.</minor>` directory is created and contains an `index.asciidoc` and `release-notes.asciidoc`.  See prior version directories for examples.  Update `release-notes.asciidoc` for each release.
 
 #### Edit documentation
 
