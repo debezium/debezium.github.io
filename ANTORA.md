@@ -1,10 +1,10 @@
 # Antora Integration
 
-Debezium now makes use of the [Antora framework](http://www.antora.org) to build parts of website documentation.  The Antora framework is bundled as part of the published `debezium/awestruct` docker image found on Docker hub that this repository uses for building the site's contents.
+Debezium now makes use of the [Antora framework](http://www.antora.org) to build parts of website documentation.  The Antora framework is bundled as part of the published `debezium/website-builder` docker image found on Docker hub that this repository uses for building the site's contents.
 
 ## How it works
 
-The build process now includes one additional step prior to calling awestruct, which is to call:
+The build process now includes one additional step prior to calling jekyll, which is to call:
 
 ```
 antora playbook.yml
@@ -19,10 +19,10 @@ The Debezium Antora integration currently uses the [antora-default-ui](https://g
 ## Running Antora manually
 
 There are times where one may find it useful to regenerate just the Antora documentation while running the website in preview mode.
-In order to run Antora manually, simply open a bash session to the already running Awestruct docker container:
+In order to run Antora manually, simply open a bash session to the already running Jekyll docker container:
 
 ```
-docker exec -it <dynamic name of awestruct container> bash
+docker exec -it <dynamic name of jekyll container> bash
 ```
 
 Once in the container, navigate to the `/site` directory and execute:
