@@ -1,5 +1,5 @@
 [![Build Status](https://travis-ci.org/debezium/debezium.github.io.svg?branch=develop)](https://travis-ci.org/debezium/debezium.github.io)
-[![License](http://img.shields.io/:license-CC%20BY%203.0-brightgreen.svg)](http://creativecommons.org/licenses/by/3.0/)
+[![License](http://img.shields.io/:license-apache%202.0-brightgreen.svg)](http://www.apache.org/licenses/LICENSE-2.0.html)
 [![Developer chat](https://img.shields.io/badge/chat-devs-brightgreen.svg)](https://gitter.im/debezium/dev)
 [![Google Group](https://img.shields.io/:mailing%20list-debezium-brightgreen.svg)](https://groups.google.com/forum/#!forum/debezium)
 
