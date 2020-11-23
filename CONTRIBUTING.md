@@ -217,14 +217,13 @@ Then, rebuild the site and make sure your post is formatted correctly and appear
    __New release in existing `<major>.<minor>` series__
    - Write a blog post announcing the release
    - Add a new yml file for the release under the appropriate `_data\releases\<major>.<minor>` directory.  For example `_data\releases\1.0\1.0.0.Final.yml`
-   - Add the new series version to `_data\releases\<major>.<minor>\versions.yml`
    - Update the release notes in `releases\<major>.<minor>\release-notes.asciidoc`
    
    __New `<major>.<minor>` release__
    - Write a blog post announcing the release
+   - Add the new `<major>.<minor>` version to the end of the `_data\versions.yml` file.
    - Create a new directory under `_data\releases` - for example for a 1.0 release, add directory `_data\releases\1.0`
    - Add a new yml file for the release under the appropriate `_data\releases\<major>.<minor>` directory.  For example `_data\releases\1.0\1.0.0.Final.yml`
-   - Create a `versions.yml` file:  `_data\releases\<major>.<minor>\versions.yml`, and add the series version to the file
    - Create a `series.yml` file: `_data\releases\<major>.<minor>\series.yml` **(described in the next section)**
    - Create a new directory under `releases` - for example for a 1.0 release, add directory `releases\1.0`
    - Create and update `index.asciidoc` and `release-notes.asciidoc` under the `releases\<major>.<minor>` directory.
