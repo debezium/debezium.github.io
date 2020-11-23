@@ -38,6 +38,11 @@ Then check out the `develop` branch and get the latest. If you're going to make 
 
 ### 2. Start the development webserver
 
+There are two recommended ways for previewing the website locally, either via the container environment that's also used on CI for publishing the website, or via a Jekyll install on your machine.
+The latter is a bit quicker, but requires Ruby/Jekyll to be set up correctly, whereas you get this "for free" via the container image.
+
+#### 2.1 Using the container image
+
 In a new terminal initialized with the Docker host environment, start a Docker container that has the build environment for our website:
 
     $ docker run --privileged -it --rm -p 4000:4000 -e LC_ALL=C.UTF-8 -e LANG=C.UTF-8 -v $(pwd):/site debezium/website-builder bash
@@ -55,13 +60,46 @@ This should only need to be performed once. After the libraries are installed, w
     
 With the integration with Antora, the above command will now also fetch the main codebase repository and will invoke the Antora build process to build the version-specific documentation prior to invoking Jekyll.  For information on Antora and how we've integrated it into the build process, please see ANTORA.md.
 
+##### 2.2 Using a local Ruby and Jekyll installation
+
+Run the following steps once to set up your local Jekyll installation.
+
+* Install [RVM](https://rvm.io/), the Ruby version manager
+(see [here](http://bootstrap.me.uk/2016/10/07/ruby-rvm-gemsets-and-bundler.html) why to use RVM _and_ Bundler).
+* Install Ruby:
+
+        rvm install ruby-2.7.2
+
+* Create a _gemset_ for all the dependencies to be installed:
+
+        rvm ruby-2.7.2 do rvm gemset create debezium.io
+
+* Create a file named _.rvmrc_ in this directory (_debezium.github.io_) with the following contents:
+
+        rvm use 2.7.2@debezium.io
+
+* Change out of this directory and back in again, it should display a message like this:
+
+        cd .. && cd debezium.github.io
+        Using /Users/gunnar/.rvm/gems/ruby-2.7.2 with gemset debezium.io
+
+* Install all dependencies
+
+        bundle update
+        bundle install
+
+With this set-up in place, you can preview the website by running Jekyll like so:
+
+    bundle exec jekyll serve --livereload --incremental
+
 ### 3. View the site
 
 Point your browser to [http://localhost:4000](http://localhost:4000) to view the site. You may notice some delay during development, since the site is generated somewhat lazily.
 
 ### 4. Edit the site
 
-Use any development tools on your local machine to edit the source files for the site. For very minor modifications, Jekyll will detect the changes and may regenerate the corresponding static file(s). However, we generally recommend that you use CNTRL-C in the container shell to stop the preview server, re-run the `rake clean preview` command, and refresh your browser.
+Use any development tools on your local machine to edit the source files for the site.
+Jekyll will detect the changes and may regenerate the corresponding static file(s).
 
 If you have to change the Gemfile to use different libraries, you will need to let the container download the new versions. The simplest way to do this is to stop the container (using CTRL-C), use `rm -rf bundler` to remove the directory where the gem files are stored, and then restart the container. This ensures that you're always using the exact files that are specified in the Gemfile.lock file.
 
