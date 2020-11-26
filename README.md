@@ -109,4 +109,4 @@ Use Git on your local machine to commit the changes to the site's codebase to yo
 
 ### 6. Publish the website
 
-Review the pull request and merge onto the `develop` branch. The [Travis-CI build](https://travis-ci.org/debezium/debezium.github.io) will then build the `develop` branch and, if successful, store the generated site in the `master` branch and publish to the GitHub Pages.
+Review the pull request and merge onto the `develop` branch. The [GitHub Actions](https://github.com/features/actions) will then build the `develop` branch and, if successful, store the generated site in the `master` branch and publish to the GitHub Pages.
