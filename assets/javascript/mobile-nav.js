@@ -1,1 +1,22 @@
-!function(i){i(function(){i("nav ul li a:not(:only-child)").click(function(n){i(this).siblings(".nav-dropdown").toggle(),i(".nav-dropdown").not(i(this).siblings()).hide(),n.stopPropagation()}),i("html").click(function(){i(".nav-dropdown").hide()}),i("#nav-toggle").click(function(){i("nav ul").slideToggle()}),i("#nav-toggle").on("click",function(){this.classList.toggle("active")})})}(jQuery);
+(function($) {
+  $(function() {
+    $('nav ul li a:not(:only-child)').click(function(e) {
+      $(this).siblings('.nav-dropdown').toggle();
+
+      $('.nav-dropdown').not($(this).siblings()).hide();
+      e.stopPropagation();
+    });
+
+    $('html').click(function() {
+      $('.nav-dropdown').hide();
+    });
+
+    $('#nav-toggle').click(function() {
+      $('nav ul').slideToggle();
+    });
+
+    $('#nav-toggle').on('click', function() {
+      this.classList.toggle('active');
+    });
+  });
+})(jQuery);
