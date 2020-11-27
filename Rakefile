@@ -59,11 +59,13 @@ task :preview do
   system "#{$use_bundle_exec ? 'bundle exec ' : ''}jekyll serve --host 0.0.0.0 --livereload" or raise "Jekyll build failed"
 end
 
-desc 'Build the site for production'
-task :build do
+desc 'Build the site for the given environment: development (the default), staging, or production'
+task :build, [:environment] do |task, args|
+  args.with_defaults(:environment => 'development')
+
   run_antora
   system 'bundle install'
-  system 'JEKYLL_ENV=production bundle exec jekyll build'
+  system "JEKYLL_ENV=#{args[:environment]} bundle exec jekyll build"
 end
 
 desc 'Clean out generated site and temporary files'
