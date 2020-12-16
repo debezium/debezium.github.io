@@ -293,41 +293,44 @@
 <div id="toctitle" class="title">Table of Contents</div>
 <ul class="sectlevel1">
 <li><a href="#sqlserver-overview">Overview</a></li>
-<li><a href="#setting-up-sqlserver">Setting up SQL Server</a>
-<ul class="sectlevel2">
-<li><a href="#sqlserver-on-azure">SQL Server on Azure</a></li>
-<li><a href="#sqlserver-always-on-replica">SQL Server Always On</a></li>
-</ul>
-</li>
 <li><a href="#how-the-sqlserver-connector-works">How the SQL Server connector works</a>
 <ul class="sectlevel2">
 <li><a href="#sqlserver-snapshots">Snapshots</a></li>
 <li><a href="#_reading_the_change_data_tables">Reading the change data tables</a></li>
 <li><a href="#sqlserver-topic-names">Topic names</a></li>
 <li><a href="#_schema_change_topic">Schema change topic</a></li>
-<li><a href="#_change_data_events">Change data events</a></li>
-<li><a href="#sqlserver-transaction-metadata">Transaction Metadata</a></li>
-<li><a href="#sqlserver-schema-evolution">Database schema evolution</a></li>
-<li><a href="#sqlserver-data-types">Data types</a></li>
+<li><a href="#_data_change_events">Data change events</a></li>
+<li><a href="#sqlserver-transaction-metadata">Transaction metadata</a></li>
+<li><a href="#sqlserver-data-types">Data type mappings</a></li>
 </ul>
 </li>
-<li><a href="#sqlserver-deploying-a-connector">Deployment</a>
+<li><a href="#setting-up-sqlserver">Setting up SQL Server</a>
 <ul class="sectlevel2">
-<li><a href="#sqlserver-example-configuration">Example configuration</a></li>
-<li><a href="#sqlserver-adding-connector-configuration">Adding connector configuration</a></li>
+<li><a href="#_enabling_cdc_on_the_sql_server_database">Enabling CDC on the SQL Server database</a></li>
+<li><a href="#_enabling_cdc_on_a_sql_server_table">Enabling CDC on a SQL Server table</a></li>
+<li><a href="#_verifying_that_the_user_has_access_to_the_cdc_table">Verifying that the user has access to the CDC table</a></li>
+<li><a href="#sqlserver-on-azure">SQL Server on Azure</a></li>
+<li><a href="#sqlserver-always-on-replica">SQL Server Always On</a></li>
+</ul>
+</li>
+<li><a href="#_deployment_and_management_of_debezium_sql_server_connectors">Deployment and management of Debezium SQL Server connectors</a>
+<ul class="sectlevel2">
+<li><a href="#sqlserver-deploying-a-connector">Deployment</a></li>
+<li><a href="#sqlserver-schema-evolution">Database schema evolution</a></li>
 <li><a href="#sqlserver-monitoring">Monitoring</a></li>
-<li><a href="#sqlserver-connector-properties">Connector properties</a></li>
 </ul>
 </li>
 </ul>
 </div>
 <div class="paragraph">
-<p>Debezium&#8217;s SQL Server Connector can monitor and record the row-level changes in the schemas of a SQL Server database.</p>
+<p>The Debezium SQL Server connector captures row-level changes that occur in the schemas of a SQL Server database.</p>
 </div>
 <div class="paragraph">
-<p>The first time it connects to a SQL Server database/cluster, it reads a consistent snapshot of all of the schemas.
-When that snapshot is complete, the connector continuously streams the changes that were committed to SQL Server and generates corresponding insert, update and delete events.
-All of the events for each table are recorded in a separate Kafka topic, where they can be easily consumed by applications and services.</p>
+<p>The first time that the Debezium SQL Server connector connects to a SQL Server database or cluster, it takes a consistent snapshot of the schemas in the database.
+After the initial snapshot is complete, the connector continuously captures row-level changes for <code>INSERT</code>, <code>UPDATE</code>, or <code>DELETE</code> operations that are committed to the SQL Server databases that are enabled for CDC.
+The connector produces events for each data change operation, and streams them to Kafka topics.
+The connector streams all of the events for a table to a dedicated Kafka topic.
+Applications and services can then consume data change event records from that topic.</p>
 </div>
 </div>
 </div>
@@ -335,162 +338,96 @@ All of the events for each table are recorded in a separate Kafka topic, where t
 <h2 id="sqlserver-overview"><a class="anchor" href="#sqlserver-overview"></a>Overview</h2>
 <div class="sectionbody">
 <div class="paragraph">
-<p>The functionality of the connector is based upon <a href="https://docs.microsoft.com/en-us/sql/relational-databases/track-changes/about-change-data-capture-sql-server?view=sql-server-2017">change data capture</a> feature provided by SQL Server Standard (<a href="https://blogs.msdn.microsoft.com/sqlreleaseservices/sql-server-2016-service-pack-1-sp1-released/">since SQL Server 2016 SP1</a>) or Enterprise edition.
-Using this mechanism a SQL Server capture process monitors all databases and tables the user is interested in and stores the changes into specifically created <em>CDC</em> tables that have stored procedure facade.</p>
+<p>The Debezium SQL Server connector is based on the <a href="https://docs.microsoft.com/en-us/sql/relational-databases/track-changes/about-change-data-capture-sql-server?view=sql-server-2017">change data capture</a>
+feature that is available in <a href="https://blogs.msdn.microsoft.com/sqlreleaseservices/sql-server-2016-service-pack-1-sp1-released/">SQL Server 2016 Service Pack 1 (SP1) and later</a> Standard edition or Enterprise edition.
+The SQL Server capture process monitors designated databases and tables, and stores the changes into specifically created <em>change tables</em> that have stored procedure facades.</p>
 </div>
 <div class="paragraph">
-<p>The database operator must <a href="https://docs.microsoft.com/en-us/sql/relational-databases/track-changes/enable-and-disable-change-data-capture-sql-server?view=sql-server-2017">enable</a> <em>CDC</em> for the table(s) that should be captured by the connector.
-The connector then produces a <em>change event</em> for every row-level insert, update, and delete operation that was published via the <em>CDC API</em>, recording all the change events for each table in a separate Kafka topic.
-The client applications read the Kafka topics that correspond to the database tables they&#8217;re interested in following, and react to every row-level event it sees in those topics.</p>
+<p>To enable the Debezium SQL Server connector to capture change event records for database operations,
+you must first enable change data capture on the SQL Server database.
+CDC must be enabled on both the database and on each table that you want to capture.
+After you set up CDC on the source database, the connector can capture row-level <code>INSERT</code>, <code>UPDATE</code>, and <code>DELETE</code> operations
+that occur in the database.
+The connector writes event records for each source table to a Kafka topic especially dedicated to that table.
+One topic exists for each captured table.
+Client applications read the Kafka topics for the database tables that they follow, and can respond to the row-level events they they consume from those topics.</p>
 </div>
 <div class="paragraph">
-<p>The database operator normally enables <em>CDC</em> in the mid-life of a database an/or table.
-This means that the connector does not have the complete history of all changes that have been made to the database.
-Therefore, when the SQL Server connector first connects to a particular SQL Server database, it starts by performing a <em>consistent snapshot</em> of each of the database schemas.
-After the connector completes the snapshot, it continues streaming changes from the exact point at which the snapshot was made.
-This way, we start with a consistent view of all of the data, yet continue reading without having lost any of the changes made while the snapshot was taking place.</p>
+<p>The first time that the connector connects to a SQL Server database or cluster, it takes a consistent snapshot of the schemas for all tables for which it is configured to capture changes,
+and streams this state to Kafka.
+After the snapshot is complete, the connector continuously captures subsequent row-level changes that occur.
+By first establishing a consistent view of all of the data, the connector can continue reading without having lost any of the changes that were made while the snapshot was taking place.</p>
 </div>
 <div class="paragraph">
-<p>The connector is also tolerant of failures.
-As the connector reads changes and produces events, it records the position in the database log (<em>LSN / Log Sequence Number</em>), that is associated with <em>CDC</em> record, with each event.
-If the connector stops for any reason (including communication failures, network problems, or crashes), upon restart it simply continues reading the <em>CDC</em> tables where it last left off.
-This includes snapshots: if the snapshot was not completed when the connector is stopped, upon restart it begins a new snapshot.</p>
+<p>The Debezium SQL Server connector is tolerant of failures.
+As the connector reads changes and produces events, it periodically records the position of events in the database log (<em>LSN / Log Sequence Number</em>).
+If the connector stops for any reason (including communication failures, network problems, or crashes), after a restart the connector resumes reading the SQL Server <em>CDC</em> tables from the last point that it read.</p>
 </div>
-</div>
-</div>
-<div class="sect1">
-<h2 id="setting-up-sqlserver"><a class="anchor" href="#setting-up-sqlserver"></a>Setting up SQL Server</h2>
-<div class="sectionbody">
-<div class="paragraph">
-<p>Before using the SQL Server connector to monitor the changes committed on SQL Server, first enable <em>CDC</em> on a monitored database.
-Please bear in mind that <em>CDC</em> cannot be enabled for the <code>primary</code> database.</p>
-</div>
-<div class="listingblock">
-<div class="content">
-<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">-- ====
--- Enable Database for CDC template
--- ====
-USE MyDB
-GO
-EXEC sys.sp_cdc_enable_db
-GO</code></pre>
-</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+Offsets are committed periodically.
+They are not committed at the time that a change event occurs.
+As a result, following an outage, duplicate events might be generated.
+</td>
+</tr>
+</table>
 </div>
 <div class="paragraph">
-<p>Then enable <em>CDC</em> for each table that you plan to monitor.</p>
-</div>
-<div class="listingblock">
-<div class="content">
-<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">-- ====
--- Enable a Table Specifying Filegroup Option Template
--- ====
-USE MyDB
-GO
-
-EXEC sys.sp_cdc_enable_table
-@source_schema = N'dbo',
-@source_name   = N'MyTable',
-@role_name     = N'MyRole',
-@filegroup_name = N'MyDB_CT',
-@supports_net_changes = 0
-GO</code></pre>
-</div>
-</div>
-<div class="paragraph">
-<p>Verify that the user have access to the <em>CDC</em> table.</p>
-</div>
-<div class="listingblock">
-<div class="content">
-<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">-- ====
--- Verify the user of the connector have access, this query should not have empty result
--- ====
-
-EXEC sys.sp_cdc_help_change_data_capture
-GO</code></pre>
-</div>
-</div>
-<div class="paragraph">
-<p>If the result is empty then please make sure that the user has privileges to access both the capture instance and <em>CDC</em> tables.</p>
-</div>
-<div class="sect2">
-<h3 id="sqlserver-on-azure"><a class="anchor" href="#sqlserver-on-azure"></a>SQL Server on Azure</h3>
-<div class="paragraph">
-<p>The SQL Server plug-in has not been tested with SQL Server on Azure.
-We welcome any feedback from a user to try the plug-in with database in managed environments.</p>
-</div>
-</div>
-<div class="sect2">
-<h3 id="sqlserver-always-on-replica"><a class="anchor" href="#sqlserver-always-on-replica"></a>SQL Server Always On</h3>
-<div class="paragraph">
-<p>The SQL Server plug-in can capture changes from an Always On read-only replica.
-A few pre-requisities are necessary to be fulfilled:</p>
-</div>
-<div class="ulist">
-<ul>
-<li>
-<p>Change data capture is configured and enabled on the primary node.
-SQL Server does not support CDC directly on replicas.</p>
-</li>
-<li>
-<p>The configuration option <code>database.applicationIntent</code> must be set to <code>ReadOnly</code>.
-This is required by SQL Server.
-When Debezium detects this configuration option then it will:</p>
-<div class="ulist">
-<ul>
-<li>
-<p>set <code>snapshot.isolation.mode</code> to <code>snapshot</code> as this is the only one transaction isolation mode supported by read-only replicas</p>
-</li>
-<li>
-<p>commit the (read-only) transaction in every execution of the streaming query loop, as this is necessary to get the latest view on CDC data</p>
-</li>
-</ul>
-</div>
-</li>
-</ul>
-</div>
+<p>Fault tolerance also applies to snapshots.
+That is, if the connector stops during a snapshot, the connector begins a new snapshot when it restarts.</p>
 </div>
 </div>
 </div>
 <div class="sect1">
 <h2 id="how-the-sqlserver-connector-works"><a class="anchor" href="#how-the-sqlserver-connector-works"></a>How the SQL Server connector works</h2>
 <div class="sectionbody">
+<div class="paragraph">
+<p>To optimally configure and run a Debezium SQL Server connector, it is helpful to understand how the connector performs snapshots, streams change events, determines Kafka topic names, and uses metadata.</p>
+</div>
 <div class="sect2">
 <h3 id="sqlserver-snapshots"><a class="anchor" href="#sqlserver-snapshots"></a>Snapshots</h3>
 <div class="paragraph">
-<p>SQL Server CDC is not designed to store the complete history of database changes.
-It is thus necessary that Debezium establishes the baseline of current database content and streams it to the Kafka.
-This is achieved via a process called snapshotting.</p>
+<p>SQL Server CDC is not designed to store a complete history of database changes.
+For the Debezium SQL Server connector to establish a baseline for the current state of the database,
+it uses a process called <em>snapshotting</em>.</p>
 </div>
 <div class="paragraph">
-<p>By default (snapshotting mode <strong>initial</strong>) the connector will upon the first startup perform an initial <em>consistent snapshot</em> of the database
-(meaning the structure and data within any tables to be captured as per the connector&#8217;s filter configuration).</p>
+<p>You can configure how the connector creates snapshots.
+By default, the connector&#8217;s snapshot mode is set to <code>initial</code>.
+Based on this <code>initial</code> snapshot mode, the first time that the connector starts, it performs an initial <em>consistent snapshot</em> of the database.
+This initial snapshot captures the structure and data for any tables that match the criteria defined by the <code>include</code> and <code>exclude</code> properties that are configured for the connector (for example, <code>table.include.list</code>, <code>column.include.list</code>, <code>table.exclude.list</code>, and so forth).</p>
 </div>
 <div class="paragraph">
-<p>Each snapshot consists of the following steps:</p>
+<p>When the connector creates a snapshot, it completes the following tasks:</p>
 </div>
 <div class="olist arabic">
 <ol class="arabic">
 <li>
-<p>Determine the tables to be captured</p>
+<p>Determines the tables to be captured.</p>
 </li>
 <li>
-<p>Obtain a lock on each of the monitored tables to ensure that no structural changes can occur to any of the tables.
+<p>Obtains a lock on each table for which CDC is enabled to ensure that no structural changes occur in the tables.
 The level of the lock is determined by <code>snapshot.isolation.mode</code> configuration option.</p>
 </li>
 <li>
-<p>Read the maximum LSN ("log sequence number") position in the server&#8217;s transaction log.</p>
+<p>Reads the maximum log sequence number (LSN) position in the server&#8217;s transaction log.</p>
 </li>
 <li>
-<p>Capture the structure of all relevant tables.</p>
+<p>Captures the structure of all relevant tables.</p>
 </li>
 <li>
-<p>Optionally release the locks obtained in step 2, i.e. the locks are held usually only for a short period of time.</p>
+<p>Releases the locks obtained in Step 2, if necessary. In most cases, locks are held for only a short period of time.</p>
 </li>
 <li>
-<p>Scan all of the relevant database tables and schemas as valid at the LSN position read in step 3, and generate a <code>READ</code> event for each row and write that event to the appropriate table-specific Kafka topic.</p>
+<p>Scans all of the relevant database tables and schemas based on the LSN position that it read in Step 3, generates a <code>READ</code> event for each row, and writes the events to the Kafka topic for the table.</p>
 </li>
 <li>
-<p>Record the successful completion of the snapshot in the connector offsets.</p>
+<p>Records the successful completion of the snapshot in the connector offsets.</p>
 </li>
 </ol>
 </div>
@@ -498,29 +435,29 @@ The level of the lock is determined by <code>snapshot.isolation.mode</code> conf
 <div class="sect2">
 <h3 id="_reading_the_change_data_tables"><a class="anchor" href="#_reading_the_change_data_tables"></a>Reading the change data tables</h3>
 <div class="paragraph">
-<p>Upon first start-up, the connector takes a structural snapshot of the structure of the captured tables
-and persists this information in its internal database history topic.
-Then the connector identifies a change table for each of the source tables and executes the main loop</p>
+<p>When the connector first starts, it takes a structural snapshot of the structure of the captured tables
+and persists this information to its internal database history topic.
+The connector then identifies a change table for each source table, and completes the following steps.</p>
 </div>
 <div class="olist arabic">
 <ol class="arabic">
 <li>
-<p>For each change table read all changes that were created between last stored maximum LSN and current maximum LSN</p>
+<p>For each change table, the connector read all of the changes that were created between the last stored maximum LSN and the current maximum LSN.</p>
 </li>
 <li>
-<p>Order the read changes incrementally according to commit LSN and change LSN.
-This ensures that the changes are replayed by Debezium in the same order as were made to the database.</p>
+<p>The connector sorts the changes that it reads in ascending order, based on the values of their commit LSN and change LSN.
+This sorting order ensures that the changes are replayed by Debezium in the same order in which they occurred in the database.</p>
 </li>
 <li>
-<p>Pass commit and change LSNs as offsets to Kafka Connect.</p>
+<p>The connector passes the commit and change LSNs as offsets to Kafka Connect.</p>
 </li>
 <li>
-<p>Store the maximum LSN and repeat the loop.</p>
+<p>The connector stores the maximum LSN and restarts the process from Step 1.</p>
 </li>
 </ol>
 </div>
 <div class="paragraph">
-<p>After a restart, the connector will resume from the offset (commit and change LSNs) where it left off before.</p>
+<p>After a restart, the connector resumes processing from the last offset (commit and change LSNs) that it read.</p>
 </div>
 <div class="paragraph">
 <p>The connector is able to detect whether CDC is enabled or disabled for included source tables and adjust its behavior.</p>
@@ -529,10 +466,30 @@ This ensures that the changes are replayed by Debezium in the same order as were
 <div class="sect2">
 <h3 id="sqlserver-topic-names"><a class="anchor" href="#sqlserver-topic-names"></a>Topic names</h3>
 <div class="paragraph">
-<p>The SQL Server connector writes events for all insert, update, and delete operations on a single table to a single Kafka topic. The name of the Kafka topics always takes the form <em>serverName</em>.<em>schemaName</em>.<em>tableName</em>, where <em>serverName</em> is the logical name of the connector as specified with the <code>database.server.name</code> configuration property, <em>schemaName</em> is the name of the schema where the operation occurred, and <em>tableName</em> is the name of the database table on which the operation occurred.</p>
+<p>The SQL Server connector writes events for all <code>INSERT</code>, <code>UPDATE</code>, and <code>DELETE</code> operations for a specific table to a single Kafka topic.
+By default, the Kafka topic name takes the form <em>serverName</em>.<em>schemaName</em>.<em>tableName</em>.
+The following list provides definitions for the components of the default name:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><em>serverName</em></dt>
+<dd>
+<p>The logical name of the connector, as specified by the <code>database.server.name</code> configuration property.</p>
+</dd>
+<dt class="hdlist1"><em>schemaName</em></dt>
+<dd>
+<p>The name of the database schema in which the change event occurred.</p>
+</dd>
+<dt class="hdlist1"><em>tableName</em></dt>
+<dd>
+<p>The name of the database table in which the change event occurred.</p>
+</dd>
+</dl>
 </div>
 <div class="paragraph">
-<p>For example, consider a SQL Server installation with an <code>inventory</code> database that contains four tables: <code>products</code>, <code>products_on_hand</code>, <code>customers</code>, and <code>orders</code> in schema <code>dbo</code>. If the connector monitoring this database were given a logical server name of <code>fulfillment</code>, then the connector would produce events on these four Kafka topics:</p>
+<p>For example, suppose that <code>fulfillment</code> is the logical server name in the configuration for a connector that is capturing changes in a SQL Server installation.
+The server has an <code>inventory</code> database with the schema name <code>dbo</code>, and the database contains tables with the names <code>products</code>, <code>products_on_hand</code>, <code>customers</code>, and <code>orders</code>.
+The connector would stream records to the following Kafka topics:</p>
 </div>
 <div class="ulist">
 <ul>
@@ -550,11 +507,19 @@ This ensures that the changes are replayed by Debezium in the same order as were
 </li>
 </ul>
 </div>
+<div class="paragraph">
+<p>If the default topic name do not meet your requirements, you can configure custom topic names.
+To configure custom topic names, you specify regular expressions in the logical topic routing SMT.
+For more information about using the logical topic routing SMT to customize topic naming, see <a href="../configuration/topic-routing.html#topic-routing" class="page">Topic routing</a>.</p>
+</div>
 </div>
 <div class="sect2">
 <h3 id="_schema_change_topic"><a class="anchor" href="#_schema_change_topic"></a>Schema change topic</h3>
 <div class="paragraph">
-<p>For a table for which CDC is enabled, the Debezium SQL Server connector stores the history of schema changes to that table in a database history topic. This topic reflects an internal connector state and you should not use it. If your application needs to track schema changes, there is a public schema change topic. The name of the schema change topic is the same as the logical server name specified in the connector configuration.</p>
+<p>For each table for which CDC is enabled, the Debezium SQL Server connector stores a history of schema changes in a database history topic.
+This topic reflects an internal connector state and you should not use it directly.
+Application that require notifications about schema changes, should obtain the information from the public schema change topic.
+The connector writes all of these events to a Kafka topic named <code>&lt;serverName&gt;</code>, where <code>serverName</code> is the name of the connector that is specified in the database.server.name configuration property.</p>
 </div>
 <div class="admonitionblock warning">
 <table>
@@ -564,14 +529,14 @@ This ensures that the changes are replayed by Debezium in the same order as were
 </td>
 <td class="content">
 <div class="paragraph">
-<p>The format of messages that a connector emits to its schema change topic is in an incubating state and can change without notice.</p>
+<p>The format of the messages that a connector emits to its schema change topic is in an incubating state and can change without notice.</p>
 </div>
 </td>
 </tr>
 </table>
 </div>
 <div class="paragraph">
-<p>Debezium emits a message to the schema change topic when:</p>
+<p>Debezium emits a message to the schema change topic when the following events occur:</p>
 </div>
 <div class="ulist">
 <ul>
@@ -597,7 +562,7 @@ This ensures that the changes are replayed by Debezium in the same order as were
   },
   "payload": {
     "source": {
-      "version": "1.4.0.Alpha1",
+      "version": "1.4.0.Beta1",
       "connector": "sqlserver",
       "name": "server1",
       "ts_ms": 1588252618953,
@@ -760,7 +725,8 @@ This ensures that the changes are replayed by Debezium in the same order as were
 </tbody>
 </table>
 <div class="paragraph">
-<p>In messages to the schema change topic, the key is the name of the database that contains the schema change. In the following example, the <code>payload</code> field contains the key:</p>
+<p>In messages that the connector sends to the schema change topic, the key is the name of the database that contains the schema change.
+In the following example, the <code>payload</code> field contains the key:</p>
 </div>
 <div class="listingblock">
 <div class="content">
@@ -785,7 +751,7 @@ This ensures that the changes are replayed by Debezium in the same order as were
 </div>
 </div>
 <div class="sect2">
-<h3 id="_change_data_events"><a class="anchor" href="#_change_data_events"></a>Change data events</h3>
+<h3 id="_data_change_events"><a class="anchor" href="#_data_change_events"></a>Data change events</h3>
 <div class="paragraph">
 <p>The Debezium SQL Server connector generates a data change event for each row-level <code>INSERT</code>, <code>UPDATE</code>, and <code>DELETE</code> operation. Each event contains a key and a value. The structure of the key and the value depends on the table that was changed.</p>
 </div>
@@ -873,7 +839,7 @@ It is possible to override the table&#8217;s primary key by setting the <a href=
 </table>
 </div>
 <div class="sect3">
-<h4 id="sqlserver-change-event-keys"><a class="anchor" href="#sqlserver-change-event-keys"></a>Change Event Keys</h4>
+<h4 id="sqlserver-change-event-keys"><a class="anchor" href="#sqlserver-change-event-keys"></a>Change event keys</h4>
 <div class="paragraph">
 <p>A change event&#8217;s key contains the schema for the changed table&#8217;s key and the changed row&#8217;s actual key. Both the schema and its corresponding payload contain a field for each column in the changed table&#8217;s primary key (or unique key constraint) at the time the connector created the event.</p>
 </div>
@@ -1177,7 +1143,7 @@ It is possible to override the table&#8217;s primary key by setting the <a href=
       "email": "john.doe@example.org"
     },
     "source": { <i class="conum" data-value="8"></i><b>(8)</b>
-      "version": "1.4.0.Alpha1",
+      "version": "1.4.0.Beta1",
       "connector": "sqlserver",
       "name": "server1",
       "ts_ms": 1559729468470,
@@ -1348,7 +1314,7 @@ In the <code>source</code> object, <code>ts_ms</code> indicates the time that th
       "email": "noreply@example.org"
     },
     "source": { <i class="conum" data-value="3"></i><b>(3)</b>
-      "version": "1.4.0.Alpha1",
+      "version": "1.4.0.Beta1",
       "connector": "sqlserver",
       "name": "server1",
       "ts_ms": 1559729995937,
@@ -1489,7 +1455,7 @@ In the <code>source</code> object, <code>ts_ms</code> indicates the time that th
     },
     "after": null, <i class="conum" data-value="2"></i><b>(2)</b>
     "source": { <i class="conum" data-value="3"></i><b>(3)</b>
-      "version": "1.4.0.Alpha1",
+      "version": "1.4.0.Beta1",
       "connector": "sqlserver",
       "name": "server1",
       "ts_ms": 1559730445243,
@@ -1593,36 +1559,40 @@ In the <code>source</code> object, <code>ts_ms</code> indicates the time that th
 </div>
 </div>
 <div class="sect2">
-<h3 id="sqlserver-transaction-metadata"><a class="anchor" href="#sqlserver-transaction-metadata"></a>Transaction Metadata</h3>
+<h3 id="sqlserver-transaction-metadata"><a class="anchor" href="#sqlserver-transaction-metadata"></a>Transaction metadata</h3>
 <div class="paragraph">
-<p>Debezium can generate events that represents tranaction metadata boundaries and enrich data messages.</p>
-</div>
-<div class="sect3">
-<h4 id="_transaction_boundaries"><a class="anchor" href="#_transaction_boundaries"></a>Transaction boundaries</h4>
-<div class="paragraph">
-<p>Debezium generates events for every transaction <code>BEGIN</code> and <code>END</code>.
-Every event contains</p>
-</div>
-<div class="ulist">
-<ul>
-<li>
-<p><code>status</code> - <code>BEGIN</code> or <code>END</code></p>
-</li>
-<li>
-<p><code>id</code> - string representation of unique transaction identifier</p>
-</li>
-<li>
-<p><code>event_count</code> (for <code>END</code> events) - total number of events emmitted by the transaction</p>
-</li>
-<li>
-<p><code>data_collections</code> (for <code>END</code> events) - an array of pairs of <code>data_collection</code> and <code>event_count</code> that provides number of events emitted by changes originating from given data collection</p>
-</li>
-</ul>
+<p>Debezium can generate events that represent transaction boundaries and that enrich data change event messages.</p>
 </div>
 <div class="paragraph">
-<p>Following is an example of what a message looks like:</p>
+<p>Database transactions are represented by a statement block that is enclosed between the <code>BEGIN</code> and <code>END</code> keywords.
+Debezium generates transaction boundary events for the <code>BEGIN</code> and <code>END</code> delimiters in every transaction.
+Transaction boundary events contain the following fields:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>status</code></dt>
+<dd>
+<p><code>BEGIN</code> or <code>END</code></p>
+</dd>
+<dt class="hdlist1"><code>id</code></dt>
+<dd>
+<p>String representation of unique transaction identifier.</p>
+</dd>
+<dt class="hdlist1"><code>event_count</code> (for <code>END</code> events)</dt>
+<dd>
+<p>Total number of events emitted by the transaction.</p>
+</dd>
+<dt class="hdlist1"><code>data_collections</code> (for <code>END</code> events)</dt>
+<dd>
+<p>An array of pairs of <code>data_collection</code> and <code>event_count</code> that provides the number of events emitted by changes originating from given data collection.</p>
+</dd>
+</dl>
+</div>
+<div class="paragraph">
+<p>The following example shows a typical transaction boundary message:</p>
 </div>
 <div class="listingblock">
+<div class="title">Example: SQL Server connector transaction boundary event</div>
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
   "status": "BEGIN",
@@ -1651,28 +1621,30 @@ Every event contains</p>
 <div class="paragraph">
 <p>The transaction events are written to the topic named <code>&lt;database.server.name&gt;.transaction</code>.</p>
 </div>
-</div>
 <div class="sect3">
-<h4 id="_data_events_enrichment"><a class="anchor" href="#_data_events_enrichment"></a>Data events enrichment</h4>
+<h4 id="_change_data_event_enrichment"><a class="anchor" href="#_change_data_event_enrichment"></a>Change data event enrichment</h4>
 <div class="paragraph">
-<p>When transaction metadata is enabled the data message <code>Envelope</code> is enriched with a new <code>transaction</code> field.
+<p>When transaction metadata is enabled, the data message <code>Envelope</code> is enriched with a new <code>transaction</code> field.
 This field provides information about every event in the form of a composite of fields:</p>
 </div>
-<div class="ulist">
-<ul>
-<li>
-<p><code>id</code> - string representation of unique transaction identifier</p>
-</li>
-<li>
-<p><code>total_order</code> - the absolute position of the event among all events generated by the transaction</p>
-</li>
-<li>
-<p><code>data_collection_order</code> - the per-data collection position of the event among all events that were emitted by the transaction</p>
-</li>
-</ul>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>id</code></dt>
+<dd>
+<p>String representation of unique transaction identifier</p>
+</dd>
+<dt class="hdlist1"><code>total_order</code></dt>
+<dd>
+<p>The absolute position of the event among all events generated by the transaction</p>
+</dd>
+<dt class="hdlist1"><code>data_collection_order</code></dt>
+<dd>
+<p>The per-data collection position of the event among all events that were emitted by the transaction</p>
+</dd>
+</dl>
 </div>
 <div class="paragraph">
-<p>Following is an example of what a message looks like:</p>
+<p>The following example shows what a typical message looks like:</p>
 </div>
 <div class="listingblock">
 <div class="content">
@@ -1698,222 +1670,35 @@ This field provides information about every event in the form of a composite of 
 </div>
 </div>
 <div class="sect2">
-<h3 id="sqlserver-schema-evolution"><a class="anchor" href="#sqlserver-schema-evolution"></a>Database schema evolution</h3>
+<h3 id="sqlserver-data-types"><a class="anchor" href="#sqlserver-data-types"></a>Data type mappings</h3>
 <div class="paragraph">
-<p>Debezium is able to capture schema changes over time.
-Due to the way CDC is implemented in SQL Server, it is necessary to work in co-operation with a database operator in order to ensure the connector continues to produce data change events when the schema is updated.</p>
-</div>
-<div class="paragraph">
-<p>As was already mentioned before, Debezium uses SQL Server&#8217;s change data capture functionality.
-This means that SQL Server creates a capture table that contains all changes executed on the source table.
-Unfortunately, the capture table is static and needs to be updated when the source table structure changes.
-This update is not done by the connector itself but must be executed by an operator with elevated privileges.</p>
+<p>The Debezium SQL Server connector represents changes to table row data by producing events that are structured like the table in which the row exists.
+Each event contains fields to represent the column values for the row.
+The way in which an event represents the column values for an operation depends on the SQL data type of the column.
+In the event, the connector maps the fields for each SQL Server data type to both a <em>literal type</em> and a <em>semantic type</em>.</p>
 </div>
 <div class="paragraph">
-<p>There are generally two procedures how to execute the schema change:</p>
+<p>The connector can map SQL Server data types to both <em>literal</em> and <em>semantic</em> types.</p>
 </div>
-<div class="ulist">
-<ul>
-<li>
-<p>cold - this is executed when Debezium is stopped</p>
-</li>
-<li>
-<p>hot - executed while Debezium is running</p>
-</li>
-</ul>
-</div>
-<div class="paragraph">
-<p>Both approaches have their own advantages and disadvantages.</p>
-</div>
-<div class="admonitionblock warning">
-<table>
-<tr>
-<td class="icon">
-<i class="fa icon-warning" title="Warning"></i>
-</td>
-<td class="content">
-<div class="paragraph">
-<p>In both cases, it is critically important to execute the procedure completely before a new schema update on the same source table is made.
-It is thus recommended to execute all DDLs in a single batch so the procedure is done only once.</p>
-</div>
-</td>
-</tr>
-</table>
-</div>
-<div class="admonitionblock note">
-<table>
-<tr>
-<td class="icon">
-<i class="fa icon-note" title="Note"></i>
-</td>
-<td class="content">
-<div class="paragraph">
-<p>Not all schema changes are supported when CDC is enabled for a source table.
-One such exception identified is renaming a column or changing its type, SQL Server will not allow executing the operation.</p>
-</div>
-</td>
-</tr>
-</table>
-</div>
-<div class="admonitionblock note">
-<table>
-<tr>
-<td class="icon">
-<i class="fa icon-note" title="Note"></i>
-</td>
-<td class="content">
-<div class="paragraph">
-<p>Although not required by SQL Server&#8217;s CDC mechanism itself, a new capture instance must be created when altering a column from <code>NULL</code> to <code>NOT NULL</code> or vice versa.
-This is required so that the SQL Server connector can pick up that changed information.
-Otherwise, emitted change events will have the <code>optional</code> value for the corresponding field (<code>true</code> or <code>false</code>) set to match the original value.</p>
-</div>
-</td>
-</tr>
-</table>
+<div class="dlist">
+<dl>
+<dt class="hdlist1">Literal type</dt>
+<dd>
+<p>Describes how the value is literally represented by using Kafka Connect schema types, namely <code>INT8</code>, <code>INT16</code>, <code>INT32</code>, <code>INT64</code>, <code>FLOAT32</code>, <code>FLOAT64</code>, <code>BOOLEAN</code>, <code>STRING</code>, <code>BYTES</code>, <code>ARRAY</code>, <code>MAP</code>, and <code>STRUCT</code>.</p>
+</dd>
+<dt class="hdlist1">Semantic type</dt>
+<dd>
+<p>Describes how the Kafka Connect schema captures the <em>meaning</em> of the field using the name of the Kafka Connect schema for the field.</p>
+</dd>
+</dl>
 </div>
 <div class="sect3">
-<h4 id="_cold_schema_update"><a class="anchor" href="#_cold_schema_update"></a>Cold schema update</h4>
+<h4 id="sql-server-basic-values"><a class="anchor" href="#sql-server-basic-values"></a>Basic types</h4>
 <div class="paragraph">
-<p>This is the safest procedure but might not be feasible for applications with high-availability requirements.
-The operator should follow this sequence of steps</p>
-</div>
-<div class="olist arabic">
-<ol class="arabic">
-<li>
-<p>Suspend the application that generates the database records</p>
-</li>
-<li>
-<p>Wait for Debezium to stream all unstreamed changes</p>
-</li>
-<li>
-<p>Stop the connector</p>
-</li>
-<li>
-<p>Apply all changes to the source table schema</p>
-</li>
-<li>
-<p>Create a new capture table for the update source table using <code>sys.sp_cdc_enable_table</code> procedure with a unique value for parameter <code>@capture_instance</code></p>
-</li>
-<li>
-<p>Resume the application</p>
-</li>
-<li>
-<p>Start the connector</p>
-</li>
-<li>
-<p>When Debezium starts streaming from the new capture table it is possible to drop the old one using <code>sys.sp_cdc_disable_table</code> stored procedure with parameter <code>@capture_instance</code> set to the old capture instance name</p>
-</li>
-</ol>
-</div>
-</div>
-<div class="sect3">
-<h4 id="_hot_schema_update"><a class="anchor" href="#_hot_schema_update"></a>Hot schema update</h4>
-<div class="paragraph">
-<p>The hot schema update does not require any downtime in application and data processing.
-The procedure itself is also much simpler than in case of cold schema update</p>
-</div>
-<div class="olist arabic">
-<ol class="arabic">
-<li>
-<p>Apply all changes to the source table schema</p>
-</li>
-<li>
-<p>Create a new capture table for the update source table using <code>sys.sp_cdc_enable_table</code> procedure with a unique value for parameter <code>@capture_instance</code></p>
-</li>
-<li>
-<p>When Debezium starts streaming from the new capture table it is possible to drop the old one using <code>sys.sp_cdc_disable_table</code> stored procedure with parameter <code>@capture_instance</code> set to the old capture instance name</p>
-</li>
-</ol>
-</div>
-<div class="paragraph">
-<p>The hot schema update has one drawback.
-There is a period of time between the database schema update and creating the new capture instance.
-All changes that will arrive during this period are captured by the old instance with the old structure.
-For instance this means that in case of a newly added column any change event produced during this time will not yet contain a field for that new column.
-If your application does not tolerate such a transition period we recommend to follow the cold schema update.</p>
-</div>
-</div>
-<div class="sect3">
-<h4 id="_example"><a class="anchor" href="#_example"></a>Example</h4>
-<div class="paragraph">
-<p>Let&#8217;s deploy the SQL Server based <a href="https://github.com/debezium/debezium-examples/tree/master/tutorial#using-sql-server">Debezium tutorial</a> to demonstrate the hot schema update.</p>
-</div>
-<div class="paragraph">
-<p>In this example, a column <code>phone_number</code> is added to the <code>customers</code> table.</p>
-</div>
-<div class="listingblock">
-<div class="content">
-<pre class="highlightjs highlight"><code class="language-shell hljs" data-lang="shell"># Start the database shell
-docker-compose -f docker-compose-sqlserver.yaml exec sqlserver bash -c '/opt/mssql-tools/bin/sqlcmd -U sa -P $SA_PASSWORD -d testDB'</code></pre>
-</div>
-</div>
-<div class="listingblock">
-<div class="content">
-<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">-- Modify the source table schema
-ALTER TABLE customers ADD phone_number VARCHAR(32);
-
--- Create the new capture instance
-EXEC sys.sp_cdc_enable_table @source_schema = 'dbo', @source_name = 'customers', @role_name = NULL, @supports_net_changes = 0, @capture_instance = 'dbo_customers_v2';
-GO
-
--- Insert new data
-INSERT INTO customers(first_name,last_name,email,phone_number) VALUES ('John','Doe','john.doe@example.com', '+1-555-123456');
-GO</code></pre>
-</div>
-</div>
-<div class="paragraph">
-<p>Kafka Connect log will contain messages like these:</p>
-</div>
-<div class="listingblock">
-<div class="content">
-<pre class="highlightjs highlight"><code class="language-shell hljs" data-lang="shell">connect_1    | 2019-01-17 10:11:14,924 INFO   ||  Multiple capture instances present for the same table: Capture instance "dbo_customers" [sourceTableId=testDB.dbo.customers, changeTableId=testDB.cdc.dbo_customers_CT, startLsn=00000024:00000d98:0036, changeTableObjectId=1525580473, stopLsn=00000025:00000ef8:0048] and Capture instance "dbo_customers_v2" [sourceTableId=testDB.dbo.customers, changeTableId=testDB.cdc.dbo_customers_v2_CT, startLsn=00000025:00000ef8:0048, changeTableObjectId=1749581271, stopLsn=NULL]   [io.debezium.connector.sqlserver.SqlServerStreamingChangeEventSource]
-connect_1    | 2019-01-17 10:11:14,924 INFO   ||  Schema will be changed for ChangeTable [captureInstance=dbo_customers_v2, sourceTableId=testDB.dbo.customers, changeTableId=testDB.cdc.dbo_customers_v2_CT, startLsn=00000025:00000ef8:0048, changeTableObjectId=1749581271, stopLsn=NULL]   [io.debezium.connector.sqlserver.SqlServerStreamingChangeEventSource]
-...
-connect_1    | 2019-01-17 10:11:33,719 INFO   ||  Migrating schema to ChangeTable [captureInstance=dbo_customers_v2, sourceTableId=testDB.dbo.customers, changeTableId=testDB.cdc.dbo_customers_v2_CT, startLsn=00000025:00000ef8:0048, changeTableObjectId=1749581271, stopLsn=NULL]   [io.debezium.connector.sqlserver.SqlServerStreamingChangeEventSource]</code></pre>
-</div>
-</div>
-<div class="paragraph">
-<p>Eventually, there is a new field in the schema and value of the messages written to the Kafka topic.</p>
-</div>
-<div class="listingblock">
-<div class="content">
-<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">...
-     {
-        "type": "string",
-        "optional": true,
-        "field": "phone_number"
-     }
-...
-    "after": {
-      "id": 1005,
-      "first_name": "John",
-      "last_name": "Doe",
-      "email": "john.doe@example.com",
-      "phone_number": "+1-555-123456"
-    },</code></pre>
-</div>
-</div>
-<div class="listingblock">
-<div class="content">
-<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">-- Drop the old capture instance
-EXEC sys.sp_cdc_disable_table @source_schema = 'dbo', @source_name = 'dbo_customers', @capture_instance = 'dbo_customers';
-GO</code></pre>
-</div>
-</div>
-</div>
-</div>
-<div class="sect2">
-<h3 id="sqlserver-data-types"><a class="anchor" href="#sqlserver-data-types"></a>Data types</h3>
-<div class="paragraph">
-<p>As described above, the SQL Server connector represents the changes to rows with events that are structured like the table in which the row exist.
-The event contains a field for each column value, and how that value is represented in the event depends on the SQL data type of the column. This section describes this mapping.</p>
-</div>
-<div class="paragraph">
-<p>The following table describes how the connector maps each of the SQL Server data types to a <em>literal type</em> and <em>semantic type</em> within the events' fields.
-Here, the <em>literal type</em> describes how the value is literally represented using Kafka Connect schema types, namely <code>INT8</code>, <code>INT16</code>, <code>INT32</code>, <code>INT64</code>, <code>FLOAT32</code>, <code>FLOAT64</code>, <code>BOOLEAN</code>, <code>STRING</code>, <code>BYTES</code>, <code>ARRAY</code>, <code>MAP</code>, and <code>STRUCT</code>.
-The <em>semantic type</em> describes how the Kafka Connect schema captures the <em>meaning</em> of the field using the name of the Kafka Connect schema for the field.</p>
+<p>The following table shows how the connector maps basic SQL Server data types.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 7. Data type mappings used by the SQL Server connector</caption>
 <colgroup>
 <col style="width: 30%;">
 <col style="width: 25%;">
@@ -2107,8 +1892,9 @@ Change messages will contain the field&#8217;s default value
 (unless an explicit column value had been given), so there should rarely be the need to obtain the default value from the schema.
 Passing the default value helps though with satisfying the compatibility rules when <a href="../configuration/avro.html" class="page">using Avro</a> as serialization format together with the Confluent schema registry.</p>
 </div>
+</div>
 <div class="sect3">
-<h4 id="sqlserver-temporal-values"><a class="anchor" href="#sqlserver-temporal-values"></a>Temporal values</h4>
+<h4 id="sql-server-temporal-values"><a class="anchor" href="#sql-server-temporal-values"></a>Temporal values</h4>
 <div class="paragraph">
 <p>Other than SQL Server&#8217;s <code>DATETIMEOFFSET</code> data type (which contain time zone information), the other temporal types depend on the value of the <code>time.precision.mode</code> configuration property.  When the <code>time.precision.mode</code> configuration property is set to <code>adaptive</code> (the default), then the connector will determine the literal type and semantic type for the temporal types based on the column&#8217;s data type definition so that events <em>exactly</em> represent the values in the database:</p>
 </div>
@@ -2330,7 +2116,7 @@ Represents the number of milliseconds since the epoch, and does not include time
 </tbody>
 </table>
 <div class="sect4">
-<h5 id="sqlserver-timestamp-values"><a class="anchor" href="#sqlserver-timestamp-values"></a>Timestamp values</h5>
+<h5 id="sql-server-timestamp-values"><a class="anchor" href="#sql-server-timestamp-values"></a>Timestamp values</h5>
 <div class="paragraph">
 <p>The <code>DATETIME</code>, <code>SMALLDATETIME</code> and <code>DATETIME2</code> types represent a timestamp without time zone information.
 Such columns are converted into an equivalent Kafka Connect value based on UTC.
@@ -2342,7 +2128,7 @@ So for instance the <code>DATETIME2</code> value "2018-06-20 15:13:16.945104" is
 </div>
 </div>
 <div class="sect3">
-<h4 id="_decimal_values"><a class="anchor" href="#_decimal_values"></a>Decimal values</h4>
+<h4 id="sql-server-decimal-values"><a class="anchor" href="#sql-server-decimal-values"></a>Decimal values</h4>
 <table class="tableblock frame-all grid-all stretch">
 <colgroup>
 <col style="width: 30%;">
@@ -2412,17 +2198,276 @@ The <code>connect.decimal.precision</code> schema parameter contains an integer 
 </div>
 </div>
 <div class="sect1">
-<h2 id="sqlserver-deploying-a-connector"><a class="anchor" href="#sqlserver-deploying-a-connector"></a>Deployment</h2>
+<h2 id="setting-up-sqlserver"><a class="anchor" href="#setting-up-sqlserver"></a>Setting up SQL Server</h2>
 <div class="sectionbody">
 <div class="paragraph">
-<p>With <a href="https://zookeeper.apache.org">Zookeeper</a>, <a href="http://kafka.apache.org/">Kafka</a>, and <a href="https://kafka.apache.org/documentation.html#connect">Kafka Connect</a> installed, the remaining tasks to deploy a Debezium SQL Server connector are to download the <a href="https://repo1.maven.org/maven2/io/debezium/debezium-connector-sqlserver/1.4.0.Alpha1/debezium-connector-sqlserver-1.4.0.Alpha1-plugin.tar.gz">connector&#8217;s plug-in archive</a>, extract the JAR files into your Kafka Connect environment, and add the directory with the JAR files to <a href="https://kafka.apache.org/documentation/#connectconfigs">Kafka Connect&#8217;s <code>plugin.path</code></a>.
+<p>For Debezium to capture change events from SQL Server tables, a SQL Server administrator with the necessary privileges must first run a query to enable CDC on the database.
+The administrator must then enable CDC for each table that you want Debezium to capture.</p>
+</div>
+<div class="paragraph">
+<p>After CDC is applied, it captures all of the <code>INSERT</code>, <code>UPDATE</code>, and <code>DELETE</code> operations that are committed to the tables for which CDD is enabled.
+The Debezium connector can then capture these events and emit them to Kafka topics.</p>
+</div>
+<div class="sect2">
+<h3 id="_enabling_cdc_on_the_sql_server_database"><a class="anchor" href="#_enabling_cdc_on_the_sql_server_database"></a>Enabling CDC on the SQL Server database</h3>
+<div class="paragraph">
+<p>Before you can enable CDC for a table, you must enable it for the SQL Server database.
+A SQL Server administrator enables CDC by running a system stored procedure.
+System stored procedures can be run by using SQL Server Management Studio, or by using Transact-SQL.</p>
+</div>
+<div class="ulist">
+<div class="title">Prerequisites</div>
+<ul>
+<li>
+<p>You are a member of the <em>sysadmin</em> fixed server role for the SQL Server.</p>
+</li>
+<li>
+<p>You are a db_owner of the database.</p>
+</li>
+<li>
+<p>The SQL Server Agent is running.</p>
+</li>
+</ul>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+The SQL Server CDC feature processes changes that occur in user-created tables only. You cannot enable CDC on the SQL Server <code>master</code> database.
+</td>
+</tr>
+</table>
+</div>
+<div class="olist arabic">
+<div class="title">Procedure</div>
+<ol class="arabic">
+<li>
+<p>From the <strong>View</strong> menu in SQL Server Management Studio, click <strong>Template Explorer</strong>.</p>
+</li>
+<li>
+<p>In the <strong>Template Browser</strong>, expand <strong>SQL Server Templates</strong>.</p>
+</li>
+<li>
+<p>Expand <strong>Change Data Capture &gt; Configuration</strong> and then click <strong>Enable Database for CDC</strong>.</p>
+</li>
+<li>
+<p>In the template, replace the database name in the <code>USE</code> statement with the name of the database that you want to enable for CDC.</p>
+</li>
+<li>
+<p>Run the stored procedure <code>sys.sp_cdc_enable_db</code> to enable the database for CDC.</p>
+<div class="paragraph">
+<p>After the database is enabled for CDC, a schema with the name <code>cdc</code> is created, along with a CDC user, metadata tables, and other system objects.</p>
+</div>
+<div class="paragraph">
+<p>The following example shows how to enable CDC for the database <code>MyDB</code>:</p>
+</div>
+<div class="listingblock">
+<div class="title">Example: Enabling a SQL Server database for the CDC template</div>
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">USE MyDB
+GO
+EXEC sys.sp_cdc_enable_db
+GO</code></pre>
+</div>
+</div>
+</li>
+</ol>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_enabling_cdc_on_a_sql_server_table"><a class="anchor" href="#_enabling_cdc_on_a_sql_server_table"></a>Enabling CDC on a SQL Server table</h3>
+<div class="paragraph">
+<p>A SQL Server administrator must enable change data capture on the source tables that you want to Debezium to capture.
+The database must already be enabled for CDC.
+To enable CDC on a table, a SQL Server administrator runs the stored procedure <code>sys.sp_cdc_enable_table</code> for the table.
+The stored procedures can be run by using SQL Server Management Studio, or by using Transact-SQL.
+SQL Server CDC must be enabled for every table that you want to capture.</p>
+</div>
+<div class="ulist">
+<div class="title">Prerequisites</div>
+<ul>
+<li>
+<p>CDC is enabled on the SQL Server database.</p>
+</li>
+<li>
+<p>The SQL Server Agent is running.</p>
+</li>
+<li>
+<p>You are a member of the <code>db_owner</code> fixed database role for the database.</p>
+</li>
+</ul>
+</div>
+<div class="olist arabic">
+<div class="title">Procedure</div>
+<ol class="arabic">
+<li>
+<p>From the <strong>View</strong> menu in SQL Server Management Studio, click <strong>Template Explorer</strong>.</p>
+</li>
+<li>
+<p>In the <strong>Template Browser</strong>, expand <strong>SQL Server Templates</strong>.</p>
+</li>
+<li>
+<p>Expand <strong>Change Data Capture &gt; Configuration</strong>, and then click <strong>Enable Table Specifying Filegroup Option</strong>.</p>
+</li>
+<li>
+<p>In the template, replace the table name in the <code>USE</code> statement with the name of the table that you want to capture.</p>
+</li>
+<li>
+<p>Run the stored procedure <code>sys.sp_cdc_enable_table</code>.</p>
+<div class="paragraph">
+<p>The following example shows how to enable CDC for the table <code>MyTable</code>:</p>
+</div>
+<div class="listingblock">
+<div class="title">Example: Enabling CDC for a SQL Server table</div>
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">USE MyDB
+GO
+
+EXEC sys.sp_cdc_enable_table
+@source_schema = N'dbo',
+@source_name   = N'MyTable', <i class="conum" data-value="1"></i><b>(1)</b>
+@role_name     = N'MyRole',  <i class="conum" data-value="2"></i><b>(2)</b>
+@filegroup_name = N'MyDB_CT',<i class="conum" data-value="3"></i><b>(3)</b>
+@supports_net_changes = 0
+GO</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<table>
+<tr>
+<td><i class="conum" data-value="1"></i><b>1</b></td>
+<td>Specifies the name of the table that you want to capture.</td>
+</tr>
+<tr>
+<td><i class="conum" data-value="2"></i><b>2</b></td>
+<td>Specifies a role <code>MyRole</code> to which you can add users to whom you want to grant <code>SELECT</code> permission on the captured columns of the source table.
+Users in the <code>sysadmin</code> or <code>db_owner</code> role also have access to the specified change tables. Set the value of <code>@role_name</code> to <code>NULL</code>, to allow only members in the <code>sysadmin</code> or <code>db_owner</code> to have full access to captured information.</td>
+</tr>
+<tr>
+<td><i class="conum" data-value="3"></i><b>3</b></td>
+<td>Specifies the <code>filegroup</code> where SQL Server places the change table for the captured table.
+The named <code>filegroup</code> must already exist.
+It is best not to locate change tables in the same <code>filegroup</code> that you use for source tables.</td>
+</tr>
+</table>
+</div>
+</li>
+</ol>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_verifying_that_the_user_has_access_to_the_cdc_table"><a class="anchor" href="#_verifying_that_the_user_has_access_to_the_cdc_table"></a>Verifying that the user has access to the CDC table</h3>
+<div class="paragraph">
+<p>A SQL Server administrator can run a system stored procedure to query a database or table to retrieve its CDC configuration information.
+The stored procedures can be run by using SQL Server Management Studio, or by using Transact-SQL.</p>
+</div>
+<div class="ulist">
+<div class="title">Prerequisites</div>
+<ul>
+<li>
+<p>You have <code>SELECT</code> permission on all of the captured columns of the capture instance.
+Members of the <code>db_owner</code> database role can view information for all of the defined capture instances.</p>
+</li>
+<li>
+<p>You have membership in any gating roles that are defined for the table information that the query includes.</p>
+</li>
+</ul>
+</div>
+<div class="olist arabic">
+<div class="title">Procedure</div>
+<ol class="arabic">
+<li>
+<p>From the <strong>View</strong> menu in SQL Server Management Studio, click <strong>Object Explorer</strong>.</p>
+</li>
+<li>
+<p>From the Object Explorer, expand <strong>Databases</strong>, and then expand your database object, for example, <strong>MyDB</strong>.</p>
+</li>
+<li>
+<p>Expand <strong>Programmability &gt; Stored Procedures &gt; System Stored Procedures</strong>.</p>
+</li>
+<li>
+<p>Run the <code>sys.sp_cdc_help_change_data_capture</code> stored procedure to query the table.</p>
+<div class="paragraph">
+<p>Queries should not return empty results.</p>
+</div>
+<div class="paragraph">
+<p>The following example runs the stored precedure <code>sys.sp_cdc_help_change_data_capture</code> on the database <code>MyDB</code>:</p>
+</div>
+<div class="listingblock">
+<div class="title">Example: Querying a table for CDC configuration information</div>
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">USE MyDB;
+GO
+EXEC sys.sp_cdc_help_change_data_capture
+GO</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>The query returns configuration information for each table in the database that is enabled for CDC and that contains change data that the caller is authorized to access.
+If the result is empty, verify that the user has privileges to access both the capture instance and the CDC tables.</p>
+</div>
+</li>
+</ol>
+</div>
+</div>
+<div class="sect2">
+<h3 id="sqlserver-on-azure"><a class="anchor" href="#sqlserver-on-azure"></a>SQL Server on Azure</h3>
+<div class="paragraph">
+<p>The Debezium SQL Server connector has not been tested with SQL Server on Azure.</p>
+</div>
+<div class="paragraph">
+<p>We welcome any feedback from users who try the connector with SQL Server databases in managed environments.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="sqlserver-always-on-replica"><a class="anchor" href="#sqlserver-always-on-replica"></a>SQL Server Always On</h3>
+<div class="paragraph">
+<p>The SQL Server connector can capture changes from an Always On read-only replica.
+A few pre-requisities are necessary to be fulfilled:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>Change data capture is configured and enabled on the primary node.
+SQL Server does not support CDC directly on replicas.</p>
+</li>
+<li>
+<p>The configuration option <code>database.applicationIntent</code> must be set to <code>ReadOnly</code>.
+This is required by SQL Server.
+When Debezium detects this configuration option then it will:</p>
+<div class="ulist">
+<ul>
+<li>
+<p>set <code>snapshot.isolation.mode</code> to <code>snapshot</code> as this is the only one transaction isolation mode supported by read-only replicas</p>
+</li>
+<li>
+<p>commit the (read-only) transaction in every execution of the streaming query loop, as this is necessary to get the latest view on CDC data</p>
+</li>
+</ul>
+</div>
+</li>
+</ul>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_deployment_and_management_of_debezium_sql_server_connectors"><a class="anchor" href="#_deployment_and_management_of_debezium_sql_server_connectors"></a>Deployment and management of Debezium SQL Server connectors</h2>
+<div class="sectionbody">
+<div class="sect2">
+<h3 id="sqlserver-deploying-a-connector"><a class="anchor" href="#sqlserver-deploying-a-connector"></a>Deployment</h3>
+<div class="paragraph">
+<p>With <a href="https://zookeeper.apache.org">Zookeeper</a>, <a href="http://kafka.apache.org/">Kafka</a>, and <a href="https://kafka.apache.org/documentation.html#connect">Kafka Connect</a> installed, the remaining tasks to deploy a Debezium SQL Server connector are to download the <a href="https://repo1.maven.org/maven2/io/debezium/debezium-connector-sqlserver/1.4.0.Beta1/debezium-connector-sqlserver-1.4.0.Beta1-plugin.tar.gz">connector&#8217;s plug-in archive</a>, extract the JAR files into your Kafka Connect environment, and add the directory with the JAR files to <a href="https://kafka.apache.org/documentation/#connectconfigs">Kafka Connect&#8217;s <code>plugin.path</code></a>.
 Restart your Kafka Connect process to pick up the new JAR files.</p>
 </div>
 <div class="paragraph">
 <p>If you are working with immutable containers, see <a href="https://hub.docker.com/r/debezium/">Debezium&#8217;s container images</a> for Zookeeper, Kafka, SQL Server and Kafka Connect with the SQL Server connector already installed and ready to run. You can also <a href="../operations/openshift.html" class="page">run Debezium on Kubernetes and OpenShift</a>.</p>
 </div>
-<div class="sect2">
-<h3 id="sqlserver-example-configuration"><a class="anchor" href="#sqlserver-example-configuration"></a>Example configuration</h3>
+<div class="sect3">
+<h4 id="sqlserver-example-configuration"><a class="anchor" href="#sqlserver-example-configuration"></a>Example configuration</h4>
 <div class="paragraph">
 <p>To use the connector to produce change events for a particular SQL Server database or cluster:</p>
 </div>
@@ -2437,12 +2482,12 @@ Restart your Kafka Connect process to pick up the new JAR files.</p>
 </ol>
 </div>
 <div class="paragraph">
-<p>When the connector starts, it will grab a consistent snapshot of the schemas in your SQL Server database and start streaming changes, producing events for every inserted, updated, and deleted row.
-You can also choose to produce events for a subset of the schemas and tables.
-Optionally ignore, mask, or truncate columns that are sensitive, too large, or not needed.</p>
+<p>When the connector starts, it will create a consistent snapshot of the schemas in your SQL Server database and start streaming changes, producing change event records for every row in which data was inserted, updated, or deleted.
+Optionally, you can configure the connector to produce change events for a subset of the schemas and tables in a database.
+For example you can ignore, mask, or truncate columns that contain sensitive data, that are larger than a specified size, or that you do not need.</p>
 </div>
 <div class="paragraph">
-<p>Following is an example of the configuration for a connector instance that monitors a SQL Server server at port 1433 on 192.168.99.100, which we logically name <code>fullfillment</code>.
+<p>Following is an example of the configuration for a connector instance that captures data from a SQL Server server at port 1433 on 192.168.99.100, which we logically name <code>fullfillment</code>.
 Typically, you configure the Debezium SQL Server connector in a <code>.json</code> file using the configuration properties available for the connector.</p>
 </div>
 <div class="listingblock">
@@ -2519,8 +2564,8 @@ Typically, you configure the Debezium SQL Server connector in a <code>.json</cod
 <p>This configuration can be sent via POST to a running Kafka Connect service, which will then record the configuration and start up the one connector task that will connect to the SQL Server database, read the transaction log, and record events to Kafka topics.</p>
 </div>
 </div>
-<div class="sect2">
-<h3 id="sqlserver-adding-connector-configuration"><a class="anchor" href="#sqlserver-adding-connector-configuration"></a>Adding connector configuration</h3>
+<div class="sect3">
+<h4 id="sqlserver-adding-connector-configuration"><a class="anchor" href="#sqlserver-adding-connector-configuration"></a>Adding connector configuration</h4>
 <div class="paragraph">
 <p>To run a Debezium SQL Server connector, create a connector configuration and add the configuration to your Kafka Connect cluster.</p>
 </div>
@@ -2551,473 +2596,8 @@ Typically, you configure the Debezium SQL Server connector in a <code>.json</cod
 <p>When the connector starts, it <a href="#sqlserver-snapshots">performs a consistent snapshot</a> of the SQL Server databases that the connector is configured for. The connector then starts generating data change events for row-level operations and streaming change event records to Kafka topics.</p>
 </div>
 </div>
-<div class="sect2">
-<h3 id="sqlserver-monitoring"><a class="anchor" href="#sqlserver-monitoring"></a>Monitoring</h3>
-<div class="paragraph">
-<p>The Debezium SQL Server connector has three metric types in addition to the built-in support for JMX metrics that Zookeeper, Kafka, and Kafka Connect have.</p>
-</div>
-<div class="ulist">
-<ul>
-<li>
-<p><a href="#sqlserver-snapshot-metrics">snapshot metrics</a>; for monitoring the connector when performing snapshots</p>
-</li>
-<li>
-<p><a href="#sqlserver-streaming-metrics">streaming metrics</a>; for monitoring the connector when reading CDC table data</p>
-</li>
-<li>
-<p><a href="#sqlserver-schema-history-metrics">schema history metrics</a>; for monitoring the status of the connector&#8217;s schema history</p>
-</li>
-</ul>
-</div>
-<div class="paragraph">
-<p>Please refer to the <a href="../operations/monitoring.html" class="page">monitoring documentation</a> for details of how to expose these metrics via JMX.</p>
-</div>
 <div class="sect3">
-<h4 id="sqlserver-snapshot-metrics"><a class="anchor" href="#sqlserver-snapshot-metrics"></a>Snapshot Metrics</h4>
-<div class="paragraph">
-<p>The <strong>MBean</strong> is <code>debezium.sql_server:type=connector-metrics,context=snapshot,server=<em>&lt;database.server.name&gt;</em></code>.</p>
-</div>
-<table class="tableblock frame-all grid-all stretch">
-<colgroup>
-<col style="width: 45%;">
-<col style="width: 25%;">
-<col style="width: 30%;">
-</colgroup>
-<thead>
-<tr>
-<th class="tableblock halign-left valign-top">Attributes</th>
-<th class="tableblock halign-left valign-top">Type</th>
-<th class="tableblock halign-left valign-top">Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-snaps-metric-lastevent_sqlserver"></a><a href="#connectors-snaps-metric-lastevent_sqlserver"><code>LastEvent</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>string</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The last snapshot event that the connector has read.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-snaps-metric-millisecondssincelastevent_sqlserver"></a><a href="#connectors-snaps-metric-millisecondssincelastevent_sqlserver"><code>MilliSecondsSinceLastEvent</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>long</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The number of milliseconds since the connector has read and processed the most recent event.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-snaps-metric-totalnumberofeventsseen_sqlserver"></a><a href="#connectors-snaps-metric-totalnumberofeventsseen_sqlserver"><code>TotalNumberOfEventsSeen</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>long</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The total number of events that this connector has seen since last started or reset.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-snaps-metric-numberofeventsfiltered_sqlserver"></a><a href="#connectors-snaps-metric-numberofeventsfiltered_sqlserver"><code>NumberOfEventsFiltered</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>long</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The number of events that have been filtered by include/exclude list filtering rules configured on the connector.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-snaps-metric-monitoredtables_sqlserver"></a><a href="#connectors-snaps-metric-monitoredtables_sqlserver"><code>MonitoredTables</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>string[]</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The list of tables that are monitored by the connector.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-snaps-metric-queuetotalcapacity_sqlserver"></a><a href="#connectors-snaps-metric-queuetotalcapacity_sqlserver"><code>QueueTotalCapacity</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>int</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The length the queue used to pass events between the snapshotter and the main Kafka Connect loop.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-snaps-metric-queueremainingcapacity_sqlserver"></a><a href="#connectors-snaps-metric-queueremainingcapacity_sqlserver"><code>QueueRemainingCapacity</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>int</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The free capacity of the queue used to pass events between the snapshotter and the main Kafka Connect loop.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-snaps-metric-totaltablecount_sqlserver"></a><a href="#connectors-snaps-metric-totaltablecount_sqlserver"><code>TotalTableCount</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>int</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The total number of tables that are being included in the snapshot.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-snaps-metric-remainingtablecount_sqlserver"></a><a href="#connectors-snaps-metric-remainingtablecount_sqlserver"><code>RemainingTableCount</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>int</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The number of tables that the snapshot has yet to copy.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-snaps-metric-snapshotrunning_sqlserver"></a><a href="#connectors-snaps-metric-snapshotrunning_sqlserver"><code>SnapshotRunning</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>boolean</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Whether the snapshot was started.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-snaps-metric-snapshotaborted_sqlserver"></a><a href="#connectors-snaps-metric-snapshotaborted_sqlserver"><code>SnapshotAborted</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>boolean</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Whether the snapshot was aborted.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-snaps-metric-snapshotcompleted_sqlserver"></a><a href="#connectors-snaps-metric-snapshotcompleted_sqlserver"><code>SnapshotCompleted</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>boolean</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Whether the snapshot completed.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-snaps-metric-snapshotdurationinseconds_sqlserver"></a><a href="#connectors-snaps-metric-snapshotdurationinseconds_sqlserver"><code>SnapshotDurationInSeconds</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>long</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The total number of seconds that the snapshot has taken so far, even if not complete.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-snaps-metric-rowsscanned_sqlserver"></a><a href="#connectors-snaps-metric-rowsscanned_sqlserver"><code>RowsScanned</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>Map&lt;String, Long&gt;</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Map containing the number of rows scanned for each table in the snapshot.
-Tables are incrementally added to the Map during processing.
-Updates every 10,000 rows scanned and upon completing a table.</p>
-</div></div></td>
-</tr>
-</tbody>
-</table>
-</div>
-<div class="sect3">
-<h4 id="sqlserver-streaming-metrics"><a class="anchor" href="#sqlserver-streaming-metrics"></a>Streaming Metrics</h4>
-<div class="paragraph">
-<p>The <strong>MBean</strong> is <code>debezium.sql_server:type=connector-metrics,context=streaming,server=<em>&lt;database.server.name&gt;</em></code>.</p>
-</div>
-<table class="tableblock frame-all grid-all stretch">
-<colgroup>
-<col style="width: 45%;">
-<col style="width: 25%;">
-<col style="width: 30%;">
-</colgroup>
-<thead>
-<tr>
-<th class="tableblock halign-left valign-top">Attributes</th>
-<th class="tableblock halign-left valign-top">Type</th>
-<th class="tableblock halign-left valign-top">Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-strm-metric-lastevent_sqlserver"></a><a href="#connectors-strm-metric-lastevent_sqlserver"><code>LastEvent</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>string</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The last streaming event that the connector has read.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-strm-metric-millisecondssincelastevent_sqlserver"></a><a href="#connectors-strm-metric-millisecondssincelastevent_sqlserver"><code>MilliSecondsSinceLastEvent</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>long</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The number of milliseconds since the connector has read and processed the most recent event.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-strm-metric-totalnumberofeventsseen_sqlserver"></a><a href="#connectors-strm-metric-totalnumberofeventsseen_sqlserver"><code>TotalNumberOfEventsSeen</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>long</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The total number of events that this connector has seen since last started or reset.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-strm-metric-numberofeventsfiltered_sqlserver"></a><a href="#connectors-strm-metric-numberofeventsfiltered_sqlserver"><code>NumberOfEventsFiltered</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>long</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The number of events that have been filtered by include/exclude list filtering rules configured on the connector.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-strm-metric-monitoredtables_sqlserver"></a><a href="#connectors-strm-metric-monitoredtables_sqlserver"><code>MonitoredTables</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>string[]</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The list of tables that are monitored by the connector.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-strm-metric-queuetotalcapacity_sqlserver"></a><a href="#connectors-strm-metric-queuetotalcapacity_sqlserver"><code>QueueTotalCapacity</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>int</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The length the queue used to pass events between the streamer and the main Kafka Connect loop.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-strm-metric-queueremainingcapacity_sqlserver"></a><a href="#connectors-strm-metric-queueremainingcapacity_sqlserver"><code>QueueRemainingCapacity</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>int</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The free capacity of the queue used to pass events between the streamer and the main Kafka Connect loop.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-strm-metric-connected_sqlserver"></a><a href="#connectors-strm-metric-connected_sqlserver"><code>Connected</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>boolean</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Flag that denotes whether the connector is currently connected to the database server.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-strm-metric-millisecondsbehindsource_sqlserver"></a><a href="#connectors-strm-metric-millisecondsbehindsource_sqlserver"><code>MilliSecondsBehindSource</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>long</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The number of milliseconds between the last change event&#8217;s timestamp and the connector processing it.
-The values will incoporate any differences between the clocks on the machines where the database server and the connector are running.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-strm-metric-numberofcommittedtransactions_sqlserver"></a><a href="#connectors-strm-metric-numberofcommittedtransactions_sqlserver"><code>NumberOfCommittedTransactions</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>long</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The number of processed transactions that were committed.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-strm-metric-sourceeventposition_sqlserver"></a><a href="#connectors-strm-metric-sourceeventposition_sqlserver"><code>SourceEventPosition</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>Map&lt;String, String&gt;</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The coordinates of the last received event.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-strm-metric-lasttransactionid_sqlserver"></a><a href="#connectors-strm-metric-lasttransactionid_sqlserver"><code>LastTransactionId</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>string</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Transaction identifier of the last processed transaction.</p>
-</div></div></td>
-</tr>
-</tbody>
-</table>
-</div>
-<div class="sect3">
-<h4 id="sqlserver-schema-history-metrics"><a class="anchor" href="#sqlserver-schema-history-metrics"></a>Schema History Metrics</h4>
-<div class="paragraph">
-<p>The <strong>MBean</strong> is <code>debezium.sql_server:type=connector-metrics,context=schema-history,server=<em>&lt;database.server.name&gt;</em></code>.</p>
-</div>
-<table class="tableblock frame-all grid-all stretch">
-<colgroup>
-<col style="width: 45%;">
-<col style="width: 25%;">
-<col style="width: 30%;">
-</colgroup>
-<thead>
-<tr>
-<th class="tableblock halign-left valign-top">Attributes</th>
-<th class="tableblock halign-left valign-top">Type</th>
-<th class="tableblock halign-left valign-top">Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-shist-metric-status_sqlserver"></a><a href="#connectors-shist-metric-status_sqlserver"><code>Status</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>string</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>One of <code>STOPPED</code>, <code>RECOVERING</code> (recovering history from the storage), <code>RUNNING</code> describing the state of the database history.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-shist-metric-recoverystarttime_sqlserver"></a><a href="#connectors-shist-metric-recoverystarttime_sqlserver"><code>RecoveryStartTime</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>long</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The time in epoch seconds at what recovery has started.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-shist-metric-changesrecovered_sqlserver"></a><a href="#connectors-shist-metric-changesrecovered_sqlserver"><code>ChangesRecovered</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>long</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The number of changes that were read during recovery phase.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-shist-metric-changesapplied_sqlserver"></a><a href="#connectors-shist-metric-changesapplied_sqlserver"><code>ChangesApplied</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>long</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>the total number of schema changes applied during recovery and runtime.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-shist-metric-millisecondssincelastrecoveredchange_sqlserver"></a><a href="#connectors-shist-metric-millisecondssincelastrecoveredchange_sqlserver"><code>MilliSecondsSinceLast&#8203;RecoveredChange</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>long</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The number of milliseconds that elapsed since the last change was recovered from the history store.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-shist-metric-millisecondssincelastappliedchange_sqlserver"></a><a href="#connectors-shist-metric-millisecondssincelastappliedchange_sqlserver"><code>MilliSecondsSinceLast&#8203;AppliedChange</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>long</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The number of milliseconds that elapsed since the last change was applied.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-shist-metric-lastrecoveredchange_sqlserver"></a><a href="#connectors-shist-metric-lastrecoveredchange_sqlserver"><code>LastRecoveredChange</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>string</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The string representation of the last change recovered from the history store.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-shist-metric-lastappliedchange_sqlserver"></a><a href="#connectors-shist-metric-lastappliedchange_sqlserver"><code>LastAppliedChange</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>string</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The string representation of the last applied change.</p>
-</div></div></td>
-</tr>
-</tbody>
-</table>
-</div>
-</div>
-<div class="sect2">
-<h3 id="sqlserver-connector-properties"><a class="anchor" href="#sqlserver-connector-properties"></a>Connector properties</h3>
+<h4 id="sqlserver-connector-properties"><a class="anchor" href="#sqlserver-connector-properties"></a>Connector properties</h4>
 <div class="paragraph">
 <p>The following configuration properties are <em>required</em> unless a default value is available.</p>
 </div>
@@ -3117,7 +2697,7 @@ The values will incoporate any differences between the clocks on the machines wh
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Logical name that identifies and provides a namespace for the particular SQL Server database server being monitored. The logical name should be unique across all other connectors, since it is used as a prefix for all Kafka topic names emanating from this connector.
+<p>Logical name that identifies and provides a namespace for the SQL Server database server that you want Debezium to capture. The logical name should be unique across all other connectors, since it is used as a prefix for all Kafka topic names emanating from this connector.
 Only alphanumeric characters and underscores should be used.</p>
 </div></div></td>
 </tr>
@@ -3136,7 +2716,7 @@ Only alphanumeric characters and underscores should be used.</p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>A list of host/port pairs that the connector will use for establishing an initial connection to the Kafka cluster.
+<p>A list of host and port pairs that the connector will use for establishing an initial connection to the Kafka cluster.
 This connection is used for retrieving database schema history previously stored by the connector, and for writing each DDL statement read from the source database. This should point to the same Kafka cluster used by the Kafka Connect process.</p>
 </div></div></td>
 </tr>
@@ -3146,7 +2726,8 @@ This connection is used for retrieving database schema history previously stored
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>An optional comma-separated list of regular expressions that match fully-qualified table identifiers for tables to be monitored; any table not included in <code>table.include.list</code> is excluded from monitoring. Each identifier is of the form <em>schemaName</em>.<em>tableName</em>. By default the connector will monitor every non-system table in each monitored schema.
+<p>An optional comma-separated list of regular expressions that match fully-qualified table identifiers for tables that you want Debezium to capture; any table that is not included in <code>table.include.list</code> is excluded from capture. Each identifier is of the form <em>schemaName</em>.<em>tableName</em>.
+By default, the connector captures all non-system tables for the designated schemas.
 Must not be used with <code>table.exclude.list</code>.</p>
 </div></div></td>
 </tr>
@@ -3156,7 +2737,7 @@ Must not be used with <code>table.exclude.list</code>.</p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>An optional comma-separated list of regular expressions that match fully-qualified table identifiers for tables to be excluded from monitoring; any table not included in <code>table.exclude.list</code> is monitored.
+<p>An optional comma-separated list of regular expressions that match fully-qualified table identifiers for the tables that you want to exclude from being captured; Debezium captures all tables that are not included in <code>table.exclude.list</code>.
 Each identifier is of the form <em>schemaName</em>.<em>tableName</em>. Must not be used with <code>table.include.list</code>.</p>
 </div></div></td>
 </tr>
@@ -3372,7 +2953,7 @@ Supported values are:<br>
 <p><em>repeatable_read</em></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Mode to control which transaction isolation level is used and how long the connector locks the monitored tables.
+<p>Mode to control which transaction isolation level is used and how long the connector locks tables that are designated for capture.
 There are five possible values: <code>read_uncommitted</code>, <code>read_committed</code>, <code>repeatable_read</code>, <code>snapshot</code>, and <code>exclusive</code> (
 in fact, <code>exclusive</code> mode uses repeatable read isolation level, however, it takes the exclusive lock on all tables
 to be read).<br></p>
@@ -3459,8 +3040,8 @@ For <code>read_uncommitted</code> there are no data consistency guarantees at al
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>Controls how frequently heartbeat messages are sent.<br>
-This property contains an interval in milli-seconds that defines how frequently the connector sends messages into a heartbeat topic.
-This can be used to monitor whether the connector is still receiving change events from the database.
+This property contains an interval in milliseconds that defines how frequently the connector sends messages to a heartbeat topic.
+The property can be used to confirm whether the connector is still receiving change events from the database.
 You also should leverage heartbeat messages in cases where only records in non-captured tables are changed for a longer period of time.
 In such situation the connector would proceed to read the log from the database but never emit any change messages into Kafka,
 which in turn means that no offset updates are committed to Kafka.
@@ -3631,6 +3212,769 @@ database.history.consumer.ssl.key.password=test1234</code></pre>
 </div>
 <div class="paragraph">
 <p>Be sure to consult the <a href="https://kafka.apache.org/documentation.html">Kafka documentation</a> for all of the configuration properties for Kafka producers and consumers. (The SQL Server connector does use the <a href="https://kafka.apache.org/documentation.html#newconsumerconfigs">new consumer</a>.)</p>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="sqlserver-schema-evolution"><a class="anchor" href="#sqlserver-schema-evolution"></a>Database schema evolution</h3>
+<div class="paragraph">
+<p>When change data capture is enabled for a SQL Server table, as changes occur in the table, event records are persisted to a capture table on the server.
+If you introduce a change in the structure of the source table change, for example, by adding a new column, that change is not dynamically reflected in the change table.
+For as long as the capture table continues to use the outdated schema, the Debezium connector is unable to emit data change events for the table correctly.
+You must intervene to refresh the capture table to enable the connector to resume processing change events.</p>
+</div>
+<div class="paragraph">
+<p>Because of the way that CDC is implemented in SQL Server, you cannot use Debezium to update capture tables.
+To refresh capture tables, one must be a SQL Server database operator with elevated privileges.
+As a Debezium user, you must coordinate tasks with the SQL Server database operator to complete the schema refresh and restore streaming to Kafka topics.</p>
+</div>
+<div class="paragraph">
+<p>You can use one of the following methods to update capture tables after a schema change:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p><a href="#offline-schema-updates">Offline schema updates</a>. In offline schema updates, capture tables are updated after you stop the Debezium connector.</p>
+</li>
+<li>
+<p><a href="#online-schema-updates">Online schema updates</a>. In online schema updates, capture tables are updated while the Debezium connector is running.</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>There are advantages and disadvantages to using each type of procedure.</p>
+</div>
+<div class="admonitionblock warning">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-warning" title="Warning"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>Whether you use the online or offline update method, you must complete the entire schema update process before you apply subsequent schema updates on the same source table.
+The best practice is to execute all DDLs in a single batch so the procedure can be run only once.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>Some schema changes are not supported on source tables that have CDC enabled.
+For example, if CDC is enabled on a table, SQL Server does not allow you to change the schema of the table if you renamed one of its columns or changed the column type.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>After you change a column in a source table from <code>NULL</code> to <code>NOT NULL</code> or vice versa, the SQL Server connector cannot correctly capture the changed information until after you create a new capture instance.
+If you do not create a new capture table after a change to the column designation, change event records that the connector emits do not correctly indicate whether the column is optional.
+That is, columns that were previously defined as optional (or <code>NULL</code>) continue to be, despite now being defined as <code>NOT NULL</code>.
+Similarly, columns that had been defined as required (<code>NOT NULL</code>), retain that designation, although they are now defined as <code>NULL</code>.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="sect3">
+<h4 id="offline-schema-updates"><a class="anchor" href="#offline-schema-updates"></a>Offline schema updates</h4>
+<div class="paragraph">
+<p>Offline schema updates provide the safest method for updating capture tables.
+However, offline updates might not be feasible for use with applications that require high-availability.</p>
+</div>
+<div class="ulist">
+<div class="title">Prerequisites</div>
+<ul>
+<li>
+<p>An update was committed to the schema of a SQL Server table that has CDC enabled.</p>
+</li>
+<li>
+<p>You are a SQL Server database operator with elevated privileges.</p>
+</li>
+</ul>
+</div>
+<div class="olist arabic">
+<div class="title">Procedure</div>
+<ol class="arabic">
+<li>
+<p>Suspend the application that updates the database.</p>
+</li>
+<li>
+<p>Wait for the Debezium connector to stream all unstreamed change event records.</p>
+</li>
+<li>
+<p>Stop the Debezium connector.</p>
+</li>
+<li>
+<p>Apply all changes to the source table schema.</p>
+</li>
+<li>
+<p>Create a new capture table for the update source table using <code>sys.sp_cdc_enable_table</code> procedure with a unique value for parameter <code>@capture_instance</code>.</p>
+</li>
+<li>
+<p>Resume the application that you suspended in Step 1.</p>
+</li>
+<li>
+<p>Start the Debezium connector.</p>
+</li>
+<li>
+<p>After the Debezium connector starts streaming from the new capture table, drop the old capture table by running the stored procedure <code>sys.sp_cdc_disable_table</code> with the parameter <code>@capture_instance</code> set to the old capture instance name.</p>
+</li>
+</ol>
+</div>
+</div>
+<div class="sect3">
+<h4 id="online-schema-updates"><a class="anchor" href="#online-schema-updates"></a>Online schema updates</h4>
+<div class="paragraph">
+<p>The procedure for completing an online schema updates is simpler than the procedure for running an offline schema update,
+and you can complete it without requiring any downtime in application and data processing.
+However, with online schema updates, a potential processing gap can occur after you update the schema in the source database,
+but before you create the new capture instance.
+During that interval, change events continue to be captured by the old instance of the change table, Q
+and the change data that is saved to the old table retains the structure of the earlier schema.
+So, for example, if you added a new column to a source table, change events that are produced before the new capture table is ready, do not contain a field for the new column.
+If your application does not tolerate such a transition period, it is best to use the offline schema update procedure.</p>
+</div>
+<div class="ulist">
+<div class="title">Prerequisites</div>
+<ul>
+<li>
+<p>An update was committed to the schema of a SQL Server table that has CDC enabled.</p>
+</li>
+<li>
+<p>You are a SQL Server database operator with elevated privileges.</p>
+</li>
+</ul>
+</div>
+<div class="olist arabic">
+<div class="title">Procedure</div>
+<ol class="arabic">
+<li>
+<p>Apply all changes to the source table schema.</p>
+</li>
+<li>
+<p>Create a new capture table for the update source table by running the <code>sys.sp_cdc_enable_table</code> stored procedure with a unique value for the parameter <code>@capture_instance</code>.</p>
+</li>
+<li>
+<p>When Debezium starts streaming from the new capture table, you can drop the old capture table by running the <code>sys.sp_cdc_disable_table</code> stored procedure with the parameter <code>@capture_instance</code> set to the old capture instance name.</p>
+</li>
+</ol>
+</div>
+<div class="paragraph">
+<div class="title">Example: Running an online schema update after a database schema change</div>
+<p>Let&#8217;s deploy the SQL Server based <a href="https://github.com/debezium/debezium-examples/tree/master/tutorial#using-sql-server">Debezium tutorial</a> to demonstrate the online schema update.</p>
+</div>
+<div class="paragraph">
+<p>In the following example, a column <code>phone_number</code> is added to the <code>customers</code> table.</p>
+</div>
+<div class="olist arabic">
+<ol class="arabic">
+<li>
+<p>Type the following command to start the database shell:</p>
+</li>
+</ol>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre>docker-compose -f docker-compose-sqlserver.yaml exec sqlserver bash -c '/opt/mssql-tools/bin/sqlcmd -U sa -P $SA_PASSWORD -d testDB'</pre>
+</div>
+</div>
+<div class="olist arabic">
+<ol class="arabic">
+<li>
+<p>Modify the schema of the <code>customers</code> source table by running the following query to add the <code>phone_number</code> field:</p>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">ALTER TABLE customers ADD phone_number VARCHAR(32);</code></pre>
+</div>
+</div>
+</li>
+<li>
+<p>Create the new capture instance by running the <code>sys.sp_cdc_enable_table</code> stored procedure.</p>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">EXEC sys.sp_cdc_enable_table @source_schema = 'dbo', @source_name = 'customers', @role_name = NULL, @supports_net_changes = 0, @capture_instance = 'dbo_customers_v2';
+GO</code></pre>
+</div>
+</div>
+</li>
+<li>
+<p>Insert new data into the <code>customers</code> table by running the following query:</p>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">INSERT INTO customers(first_name,last_name,email,phone_number) VALUES ('John','Doe','john.doe@example.com', '+1-555-123456');
+GO</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>The Kafka Connect log reports on configuration updates through entries similar to the following message:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-shell hljs" data-lang="shell">connect_1    | 2019-01-17 10:11:14,924 INFO   ||  Multiple capture instances present for the same table: Capture instance "dbo_customers" [sourceTableId=testDB.dbo.customers, changeTableId=testDB.cdc.dbo_customers_CT, startLsn=00000024:00000d98:0036, changeTableObjectId=1525580473, stopLsn=00000025:00000ef8:0048] and Capture instance "dbo_customers_v2" [sourceTableId=testDB.dbo.customers, changeTableId=testDB.cdc.dbo_customers_v2_CT, startLsn=00000025:00000ef8:0048, changeTableObjectId=1749581271, stopLsn=NULL]   [io.debezium.connector.sqlserver.SqlServerStreamingChangeEventSource]
+connect_1    | 2019-01-17 10:11:14,924 INFO   ||  Schema will be changed for ChangeTable [captureInstance=dbo_customers_v2, sourceTableId=testDB.dbo.customers, changeTableId=testDB.cdc.dbo_customers_v2_CT, startLsn=00000025:00000ef8:0048, changeTableObjectId=1749581271, stopLsn=NULL]   [io.debezium.connector.sqlserver.SqlServerStreamingChangeEventSource]
+...
+connect_1    | 2019-01-17 10:11:33,719 INFO   ||  Migrating schema to ChangeTable [captureInstance=dbo_customers_v2, sourceTableId=testDB.dbo.customers, changeTableId=testDB.cdc.dbo_customers_v2_CT, startLsn=00000025:00000ef8:0048, changeTableObjectId=1749581271, stopLsn=NULL]   [io.debezium.connector.sqlserver.SqlServerStreamingChangeEventSource]</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Eventually, the <code>phone_number</code> field is added to the schema and its value appears in messages written to the Kafka topic.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">...
+     {
+        "type": "string",
+        "optional": true,
+        "field": "phone_number"
+     }
+...
+    "after": {
+      "id": 1005,
+      "first_name": "John",
+      "last_name": "Doe",
+      "email": "john.doe@example.com",
+      "phone_number": "+1-555-123456"
+    },</code></pre>
+</div>
+</div>
+</li>
+<li>
+<p>Drop the old capture instance by running the <code>sys.sp_cdc_disable_table</code> stored procedure.</p>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">EXEC sys.sp_cdc_disable_table @source_schema = 'dbo', @source_name = 'dbo_customers', @capture_instance = 'dbo_customers';
+GO</code></pre>
+</div>
+</div>
+</li>
+</ol>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="sqlserver-monitoring"><a class="anchor" href="#sqlserver-monitoring"></a>Monitoring</h3>
+<div class="paragraph">
+<p>The Debezium SQL Server connector provides three types of metrics that are in addition to the built-in support for JMX metrics that Zookeeper, Kafka, and Kafka Connect provide.
+The connector provides the following metrics:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p><a href="#sqlserver-snapshot-metrics">snapshot metrics</a>; for monitoring the connector when performing snapshots.</p>
+</li>
+<li>
+<p><a href="#sqlserver-streaming-metrics">streaming metrics</a>; for monitoring the connector when reading CDC table data.</p>
+</li>
+<li>
+<p><a href="#sqlserver-schema-history-metrics">schema history metrics</a>; for monitoring the status of the connector&#8217;s schema history.</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>For information about how to expose the preceding metrics through JMX, see the <a href="../operations/monitoring.html" class="page">Debezium monitoring documentation</a>.</p>
+</div>
+<div class="sect3">
+<h4 id="sqlserver-snapshot-metrics"><a class="anchor" href="#sqlserver-snapshot-metrics"></a>Snapshot metrics</h4>
+<div class="paragraph">
+<p>The <strong>MBean</strong> is <code>debezium.sql_server:type=connector-metrics,context=snapshot,server=<em>&lt;database.server.name&gt;</em></code>.</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 45%;">
+<col style="width: 25%;">
+<col style="width: 30%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Attributes</th>
+<th class="tableblock halign-left valign-top">Type</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-snaps-metric-lastevent_sqlserver"></a><a href="#connectors-snaps-metric-lastevent_sqlserver"><code>LastEvent</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>string</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The last snapshot event that the connector has read.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-snaps-metric-millisecondssincelastevent_sqlserver"></a><a href="#connectors-snaps-metric-millisecondssincelastevent_sqlserver"><code>MilliSecondsSinceLastEvent</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of milliseconds since the connector has read and processed the most recent event.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-snaps-metric-totalnumberofeventsseen_sqlserver"></a><a href="#connectors-snaps-metric-totalnumberofeventsseen_sqlserver"><code>TotalNumberOfEventsSeen</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The total number of events that this connector has seen since last started or reset.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-snaps-metric-numberofeventsfiltered_sqlserver"></a><a href="#connectors-snaps-metric-numberofeventsfiltered_sqlserver"><code>NumberOfEventsFiltered</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of events that have been filtered by include/exclude list filtering rules configured on the connector.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-snaps-metric-monitoredtables_sqlserver"></a><a href="#connectors-snaps-metric-monitoredtables_sqlserver"><code>MonitoredTables</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>string[]</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The list of tables that are monitored by the connector.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-snaps-metric-queuetotalcapacity_sqlserver"></a><a href="#connectors-snaps-metric-queuetotalcapacity_sqlserver"><code>QueueTotalCapacity</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>int</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The length the queue used to pass events between the snapshotter and the main Kafka Connect loop.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-snaps-metric-queueremainingcapacity_sqlserver"></a><a href="#connectors-snaps-metric-queueremainingcapacity_sqlserver"><code>QueueRemainingCapacity</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>int</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The free capacity of the queue used to pass events between the snapshotter and the main Kafka Connect loop.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-snaps-metric-totaltablecount_sqlserver"></a><a href="#connectors-snaps-metric-totaltablecount_sqlserver"><code>TotalTableCount</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>int</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The total number of tables that are being included in the snapshot.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-snaps-metric-remainingtablecount_sqlserver"></a><a href="#connectors-snaps-metric-remainingtablecount_sqlserver"><code>RemainingTableCount</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>int</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of tables that the snapshot has yet to copy.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-snaps-metric-snapshotrunning_sqlserver"></a><a href="#connectors-snaps-metric-snapshotrunning_sqlserver"><code>SnapshotRunning</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>boolean</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Whether the snapshot was started.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-snaps-metric-snapshotaborted_sqlserver"></a><a href="#connectors-snaps-metric-snapshotaborted_sqlserver"><code>SnapshotAborted</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>boolean</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Whether the snapshot was aborted.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-snaps-metric-snapshotcompleted_sqlserver"></a><a href="#connectors-snaps-metric-snapshotcompleted_sqlserver"><code>SnapshotCompleted</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>boolean</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Whether the snapshot completed.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-snaps-metric-snapshotdurationinseconds_sqlserver"></a><a href="#connectors-snaps-metric-snapshotdurationinseconds_sqlserver"><code>SnapshotDurationInSeconds</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The total number of seconds that the snapshot has taken so far, even if not complete.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-snaps-metric-rowsscanned_sqlserver"></a><a href="#connectors-snaps-metric-rowsscanned_sqlserver"><code>RowsScanned</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>Map&lt;String, Long&gt;</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Map containing the number of rows scanned for each table in the snapshot.
+Tables are incrementally added to the Map during processing.
+Updates every 10,000 rows scanned and upon completing a table.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-strm-metric-maxqueuesizeinbytes_sqlserver"></a><a href="#connectors-strm-metric-maxqueuesizeinbytes_sqlserver"><code>MaxQueueSizeInBytes</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The maximum buffer of the queue in bytes. It will be enabled if <code>max.queue.size.in.bytes</code> is passed with a positive long value.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-strm-metric-currentqueuesizeinbytes_sqlserver"></a><a href="#connectors-strm-metric-currentqueuesizeinbytes_sqlserver"><code>CurrentQueueSizeInBytes</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The current data of records in the queue in bytes.</p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="sect3">
+<h4 id="sqlserver-streaming-metrics"><a class="anchor" href="#sqlserver-streaming-metrics"></a>Streaming metrics</h4>
+<div class="paragraph">
+<p>The <strong>MBean</strong> is <code>debezium.sql_server:type=connector-metrics,context=streaming,server=<em>&lt;database.server.name&gt;</em></code>.</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 45%;">
+<col style="width: 25%;">
+<col style="width: 30%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Attributes</th>
+<th class="tableblock halign-left valign-top">Type</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-strm-metric-lastevent_sqlserver"></a><a href="#connectors-strm-metric-lastevent_sqlserver"><code>LastEvent</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>string</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The last streaming event that the connector has read.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-strm-metric-millisecondssincelastevent_sqlserver"></a><a href="#connectors-strm-metric-millisecondssincelastevent_sqlserver"><code>MilliSecondsSinceLastEvent</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of milliseconds since the connector has read and processed the most recent event.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-strm-metric-totalnumberofeventsseen_sqlserver"></a><a href="#connectors-strm-metric-totalnumberofeventsseen_sqlserver"><code>TotalNumberOfEventsSeen</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The total number of events that this connector has seen since last started or reset.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-strm-metric-numberofeventsfiltered_sqlserver"></a><a href="#connectors-strm-metric-numberofeventsfiltered_sqlserver"><code>NumberOfEventsFiltered</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of events that have been filtered by include/exclude list filtering rules configured on the connector.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-strm-metric-monitoredtables_sqlserver"></a><a href="#connectors-strm-metric-monitoredtables_sqlserver"><code>MonitoredTables</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>string[]</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The list of tables that are monitored by the connector.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-strm-metric-queuetotalcapacity_sqlserver"></a><a href="#connectors-strm-metric-queuetotalcapacity_sqlserver"><code>QueueTotalCapacity</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>int</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The length the queue used to pass events between the streamer and the main Kafka Connect loop.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-strm-metric-queueremainingcapacity_sqlserver"></a><a href="#connectors-strm-metric-queueremainingcapacity_sqlserver"><code>QueueRemainingCapacity</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>int</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The free capacity of the queue used to pass events between the streamer and the main Kafka Connect loop.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-strm-metric-connected_sqlserver"></a><a href="#connectors-strm-metric-connected_sqlserver"><code>Connected</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>boolean</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Flag that denotes whether the connector is currently connected to the database server.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-strm-metric-millisecondsbehindsource_sqlserver"></a><a href="#connectors-strm-metric-millisecondsbehindsource_sqlserver"><code>MilliSecondsBehindSource</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of milliseconds between the last change event&#8217;s timestamp and the connector processing it.
+The values will incoporate any differences between the clocks on the machines where the database server and the connector are running.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-strm-metric-numberofcommittedtransactions_sqlserver"></a><a href="#connectors-strm-metric-numberofcommittedtransactions_sqlserver"><code>NumberOfCommittedTransactions</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of processed transactions that were committed.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-strm-metric-sourceeventposition_sqlserver"></a><a href="#connectors-strm-metric-sourceeventposition_sqlserver"><code>SourceEventPosition</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>Map&lt;String, String&gt;</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The coordinates of the last received event.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-strm-metric-lasttransactionid_sqlserver"></a><a href="#connectors-strm-metric-lasttransactionid_sqlserver"><code>LastTransactionId</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>string</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Transaction identifier of the last processed transaction.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-strm-metric-maxqueuesizeinbytes_sqlserver"></a><a href="#connectors-strm-metric-maxqueuesizeinbytes_sqlserver"><code>MaxQueueSizeInBytes</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The maximum buffer of the queue in bytes.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-strm-metric-currentqueuesizeinbytes_sqlserver"></a><a href="#connectors-strm-metric-currentqueuesizeinbytes_sqlserver"><code>CurrentQueueSizeInBytes</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The current data of records in the queue in bytes.</p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="sect3">
+<h4 id="sqlserver-schema-history-metrics"><a class="anchor" href="#sqlserver-schema-history-metrics"></a>Schema history metrics</h4>
+<div class="paragraph">
+<p>The <strong>MBean</strong> is <code>debezium.sql_server:type=connector-metrics,context=schema-history,server=<em>&lt;database.server.name&gt;</em></code>.</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 45%;">
+<col style="width: 25%;">
+<col style="width: 30%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Attributes</th>
+<th class="tableblock halign-left valign-top">Type</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-shist-metric-status_sqlserver"></a><a href="#connectors-shist-metric-status_sqlserver"><code>Status</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>string</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>One of <code>STOPPED</code>, <code>RECOVERING</code> (recovering history from the storage), <code>RUNNING</code> describing the state of the database history.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-shist-metric-recoverystarttime_sqlserver"></a><a href="#connectors-shist-metric-recoverystarttime_sqlserver"><code>RecoveryStartTime</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The time in epoch seconds at what recovery has started.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-shist-metric-changesrecovered_sqlserver"></a><a href="#connectors-shist-metric-changesrecovered_sqlserver"><code>ChangesRecovered</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of changes that were read during recovery phase.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-shist-metric-changesapplied_sqlserver"></a><a href="#connectors-shist-metric-changesapplied_sqlserver"><code>ChangesApplied</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>the total number of schema changes applied during recovery and runtime.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-shist-metric-millisecondssincelastrecoveredchange_sqlserver"></a><a href="#connectors-shist-metric-millisecondssincelastrecoveredchange_sqlserver"><code>MilliSecondsSinceLast&#8203;RecoveredChange</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of milliseconds that elapsed since the last change was recovered from the history store.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-shist-metric-millisecondssincelastappliedchange_sqlserver"></a><a href="#connectors-shist-metric-millisecondssincelastappliedchange_sqlserver"><code>MilliSecondsSinceLast&#8203;AppliedChange</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of milliseconds that elapsed since the last change was applied.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-shist-metric-lastrecoveredchange_sqlserver"></a><a href="#connectors-shist-metric-lastrecoveredchange_sqlserver"><code>LastRecoveredChange</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>string</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The string representation of the last change recovered from the history store.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-shist-metric-lastappliedchange_sqlserver"></a><a href="#connectors-shist-metric-lastappliedchange_sqlserver"><code>LastAppliedChange</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>string</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The string representation of the last applied change.</p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
 </div>
 </div>
 </div>
