@@ -1,0 +1,153 @@
+---
+layout: post
+title:  Distributed Tracing with Debezium
+date:   2020-12-16 12:00:00 +0100
+tags: [ tracing, jaeger ]
+author: jpechane
+---
+
+= Distributed Tracing with Debezium
+
+The current pattern in application development gravitates toward microservices and microservices architecture.
+While this approach gives the developer teams great flexibility in independent deployment and development velocity the drawback is at hand when you try to track a bug in production.
+
+Monolithic applications sit nicely at a single place so you can introspect the code-flows and their runtime state.
+This is a problem with microservice architecture as a single business transaction can span across tens of services deployed in separate processes and nodes.
+
+You can rely on traditional methods like logging where you need to collect and correlate logs at a single place so you can try to reconstruct the business transaction path.
+This is one of the tool in the toolbox we need to use but it still can be crude and it will not provide the necessary context.
+https://microservices.io/patterns/observability/distributed-tracing.html[Distributed Tracing] comes here to the rescue.
+
+== Distributed Tracing
+
+Distributed tracing allows services to leave breadcrumbs during the execution with enough information to create an execution path of the business transaction enriched with contextual data like who, what,  and where.
+A developer can then use it to browse through the recorded executions and check for errors or anomalies in execution that can signify either problem in deployment (services unavailability) or even a bug.
+
+== OpenTracing
+
+There are multiple solutions for distributed tracing but we have decided to follow and use open standard specification https://opentracing.io/[OpenTracing].
+OpenTracing is an incubating project of https://www.cncf.io/[Cloud Native Computing Foundation] which guarantees that the user will be free of any vendor lock-in by adhering to an open standard.
+
+[NOTE]
+====
+OpenTracing project will in future be replaced with an improved https://opentelemetry.io/[OpenTelemtry] standard.
+Debezium will use it in the future too.
+====
+
+A distributed trace in OpenTracing consists of a set of spans.
+Each span represents a logical unit of work executed.
+The spans can form a tree when a larger part of the business transaction represented by one span can be compounded of multiple tasks represented by additional spans that have a parent-child relationship to the main span.
+
+OpenTracing is only the specification.
+To use it you need to have an implementation too.
+Debezium could use any OpenTracing client implementation but examples and documentation is based on https://www.jaegertracing.io/[Jaeger] distributed tracing.
+
+Jaeger consists of multiple components responsible for data collection and storage and also a graphical user interface available as a web application.
+https://www.jaegertracing.io/docs/1.21/getting-started/#all-in-one[All In One] container image will be used to simplify the deployment.
+
+== Debezium and OpenTracing
+
+Debezium integration with OpenTracing consists of three distinct components
+
+* `EventDispatcher` in Debezium outbox extension
+* `EventRouter` SMT
+* `ActivateTracingSpan` SMT
+
+The first two must be used hand-in-hand when a service using the outbox pattern should be traced.
+The third one is intended for general use.
+
+=== Outbox Distributed Tracing
+
+The biggest problem with tracing integration is keeping the trace across process boundaries so the additional spans are recorded in the same trace to enable end-to-end tracing.
+Opentracing specification provides a way how to export and import trace related metadata so the trace could be passed among different processes.
+In the outbox extension we use this approach to export the metadata into a new database column in the outbox table and then event router SMT imports them and resumes the trace.
+
+In each of the steps executed one or more spans are created
+
+* When an event arrives at `EventDispatcher` a new span `outbox-write` is created.
+It is created as a child of a current active span or as a root span if no parent span is available.
+* The span metadata is exported into a distinct field of the outbox event.
+* Outbox event is written to and deleted from the outbox table.
+* Event Router SMT receives the event and imports the span metadata from the field
+* Two new spans are created
+** `db-log-write` with start timestamp to database write timestamp.
+Fields from the `source` block are added to the span as *tags*.
+** `debezium-read` with start time set to the processing timestamp.
+Fields from the envelope are added to the span as *tags*.
+* Optionally if OpenTracing integration is enabled at the Kafka producer level a new span is created by the Kafka producer representing the write of the message to a Kafka topic with relevant metadata.
+
+
+==== Demo
+
+The https://github.com/debezium/debezium-examples/tree/master/outbox[outbox example] was extended with distributed tracing support to demonstrate the functionality.
+
+[NOTE]
+====
+This demo uses https://strimzi.io/[Strimzi] container image for Kafka Connect as it already contains baked-in integration of OpenTracing at Kafka producer level.
+====
+
+To try it yourself you need to:
+
+* checkout the repository and switch to the `outbox` directory
+* build the services
+----
+$ mvn clean install
+----
+* deploy application
+----
+export DEBEZIUM_VERSION=1.4
+docker-compose up --build
+----
+* register Debezium connector to listen on an outbox table
+----
+$ http PUT http://localhost:8083/connectors/outbox-connector/config < register-postgres.json
+HTTP/1.1 201 Created
+----
+* execute multiple business requests
+----
+$ http POST http://localhost:8080/orders < resources/data/create-order-request.json
+$ http PUT http://localhost:8080/orders/1/lines/2 < resources/data/cancel-order-line-request.json
+----
+* check the http://localhost:16686/[Jaeger UI]
+
+After all the steps above were completed you should see an introduction screen of the Jaeger UI:
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/tracing-tutorial/tracing-main.png" class="responsive-image" alt="Jaeger intro">
+</div>
+++++
+
+Select `order-service` service and click on `Find Traces`.
+Two traces should be available:
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/tracing-tutorial/tracing-service.png" class="responsive-image" alt="Service traces">
+</div>
+++++
+
+Click on the `...addOrder` service.
+A tree will open that will display how the initial request incoming via REST API was
+
+* written to the database by the outbox extension
+* read by Debezium and processed by outbox SMT
+* written to a Kafka topic
+* read from a Kafka topic by `shipment-service`
+* processed in the multiple `shipment-service` business methods
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/tracing-tutorial/tracing-trace.png" class="responsive-image" alt="Service traces">
+</div>
+++++
+
+Click on `db-log-write` and `debezium-read` spans.
+The *tags* of each of them contain extracted Debezium related metadata like `operation` or `source` fields:
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/tracing-tutorial/tracing-debezium-details.png" class="responsive-image" alt="Service traces">
+</div>
+++++
+
+== Conclusion
+
+In this blogpost, we have discussed what the distributed tracing is and why it is useful to use it.
+We have seen how the distributed tracing integration is done at the Debezium level to enable end-to-end tracing and tried a demo application together with Jaeger UI exploration.
