@@ -198,7 +198,7 @@ Some changes to the website are fairly common, so they're described here.
 
 #### Add a blog post
 
-Anyone can write a blog post that is related to Debezium. Simply add a new AsciiDoc file to the `blog` directory, including the date in the filename using the same format as the other files (e.g., "2016-03-18-title-of-blog-post.adoc"). The file should also contain jekyll front matter like the following:
+Anyone can write a blog post that is related to Debezium. Simply add a new AsciiDoc file to the `_posts` directory, including the date in the filename using the same format as the other files (e.g., "2016-03-18-title-of-blog-post.adoc"). The file should also contain jekyll front matter like the following:
 
     ---
     layout: post
