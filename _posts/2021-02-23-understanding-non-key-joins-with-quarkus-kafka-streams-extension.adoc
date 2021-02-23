@@ -1,7 +1,7 @@
 ---
 layout: post
 title: Understanding Non-Key Joins With the Quarkus Kafka Streams Extension
-date: 2021-02-22
+date: 2021-02-23
 tags: [ kafka streams, quarkus, examples ]
 author: anmohant
 ---
@@ -93,11 +93,11 @@ We have an aggregator application that will read from the two Kafka topics and p
 
 - the two topics are joined on customer id
 - each customer is enriched with its addresses depending upon upsert/delete
-- this aggregated data is written out to a third topic, `customersWithAddressesTopic?
+- this aggregated data is written out to a third topic, `customersWithAddressesTopic`
 
 When using the Quarkus extension for Kafka Streams all we need to do for that is to declare a CDI producer method, which returns the `Topology` of our stream processing application.
 This method must be annotated with `@Produces`, and it must return a `Topology` instance.
-The Quarkus extension will take care of configuring, starting and stopping the Kafka Streams engine.
+The Quarkus extension is responsible for configuring, starting, and stopping the Kafka Streams engine.
 Now let's take a look at the actual streaming query implementation itself.
 
 [source,java]
@@ -174,7 +174,7 @@ public class TopologyProducer {
 }
 ----
 <1> The topic names are injected using the https://microprofile.io/project/eclipse/microprofile-config[MicroProfile Config API], with the values being provided in the Quarkus `application.properties` configuration file (they could be overridden using environment variables for instance)
-<2> Create an instance of `StreamsBuilder`, which is the helper object that lets us build our topology.
+<2> Create an instance of `StreamsBuilder`, which helps us to build our topology.
 <3> For serializing and deserializing Java types used in the streaming pipeline into/from JSON, Quarkus provides the `class io.quarkus.kafka.client.serialization.JsonbSerde`.
 The Serde implementation based is on https://github.com/quarkusio/quarkus/blob/master/extensions/kafka-client/runtime/src/main/java/io/quarkus/kafka/client/serialization/JsonbSerde.java[JSON-B].
 <4> The `KTable`-`KTable` foreign-key join functionality is used to extract the `customer#id` and perform the join.
@@ -305,9 +305,11 @@ kafkacat -b kafka:9092 -C -o beginning -q \
 ----
 
 == Running Natively
-Kafka Streams applications can easily be scaled out i.e. the load will be shared amongst multiple instances of the application, each processing just a subset of the partitions of the input topic(s).
-"Running Quarkus applications in native code via GraalVM has a very fast start-up time, the applications use significantly less memory when compiled to native code. This allows you to start as many instances of a Kafka Streams pipeline in parallel in a very memory-efficient way".
-If you want to run this application in `native` mode, set the `QUARKUS_MODE` as `native` and run:
+Kafka Streams applications can easily be scaled out i.e. the load is going to be shared amongst multiple instances of the application, each processing is simply a set of the partitions of the input topics.
+When the Quarkus application gets compiled into native code via GraalVM it takes considerably less memory and has a very fast start-up time.
+Without any concern about the memory management, you can start multiple instances of a Kafka Streams pipeline in parallel.
+
+If you want to run this application in `native` mode, set the `QUARKUS_MODE` as `native` and run.
 
 ----
 mvn clean package -Pnative
@@ -320,19 +322,17 @@ To learn more about running Kafka Streams applications as a native binary, pleas
 The Quarkus extension can also help you address some of the common requirements when building microservices.
 For running your Kafka Streams application in production, you can for instance easily add health checks and metrics for the data pipeline.
 
-https://quarkus.io/guides/microprofile-metrics[Micrometer Metrics] allow applications to gather various metrics and statistics that provide insights into what is happening inside the application.
+https://quarkus.io/guides/microprofile-metrics[Micrometer Metrics] provides rich metrics about your Quarkus application i.e. what is happening inside your application by monitoring the performance of your application.
 Via the MicroProfile Metrics API, these metrics can be exposed via HTTP using JSON format or the OpenMetrics format.
 From there they can be scraped by tools such as https://prometheus.io/[Prometheus] and stored for analysis and visualization.
-"Apart from application-specific metrics, you can utilize built-in metrics exposed by various Quarkus extensions".
 
 To monitor your application using Prometheus registry for an existing Quarkus application you can add the `micrometer-registry-prometheus` extension.
-"This extension loads core micrometer extension as well as additional dependencies required to support Prometheus".
+This extension is a combination of core micrometer extension and new dependencies required to support Prometheus.
 ----
 mvn quarkus:add-extension -Dextensions="micrometer-registry-prometheus"
 ----
 
-This extension uses `https://github.com/micrometer-metrics/micrometer/blob/master/micrometer-core/src/main/java/io/micrometer/core/instrument/config/MeterFilter.java[MeterFilter]` instances to customize the metrics emitted by `MeterRegistry` instances.
-The Micrometer extension will detect MeterFilter CDI beans and use them when initializing MeterRegistry instances.
+Here is a piece of code to expose the metrics:
 
 [source,java]
 ----
@@ -342,58 +342,45 @@ public class ApplicationMetrics {
     @ConfigProperty(name = "status.env")
     String statusEnv;
 
-    @Produces
-    @Singleton
-    @MeterFilterConstraint(applyTo = PrometheusMeterRegistry.class)
-    public MeterFilter configurePrometheusRegistries() {
-        return MeterFilter.commonTags(Arrays.asList(
-                Tag.of("registry", "prometheus")));
+    @Inject
+    MeterRegistry meterRegistry; // <1>
+
+    public void startEvent(@Observes StartupEvent event) {
+        exportMetrics();
     }
 
-    @Produces
-    @Singleton
-    public MeterFilter configureAllRegistries() {
-        return MeterFilter.commonTags(Arrays.asList(
-                Tag.of("status", statusEnv)));
+    public void exportMetrics() {
+        meterRegistry.config().commonTags("status", statusEnv); // <2>
+        if (!meterRegistry.isClosed()) {
+            registerCounter(); // <3>
+        }
     }
 
-    @Produces
-    @Singleton
-    public MeterFilter showConfig() {
-        return new MeterFilter() {
-            @Override
-            public DistributionStatisticConfig configure(Meter.Id id, DistributionStatisticConfig config) {
-                if (id.getName().startsWith("myservice")) {
-                    return DistributionStatisticConfig.builder()
-                            .percentiles(0.95)
-                            .build()
-                            .merge(config);
-                }
-                return config;
-            }
-        };
+    public void registerCounter() {
+        meterRegistry.counter("http.requests", "uri", "/api/customers");
     }
 }
 ----
+<1> The `MeterRegistry` will hold a set of application-specific metrics and customized metrics
+<2> Adds a tag, `status` to every metric that would be reported
+<3> Expose a counter type metrics to count the number of http calls (if any)
+
 Once the application is started, the metrics will be exposed under `q/metrics`, returning the data in the OpenMetrics format by default:
 [source,properties]
 ----
-# HELP kafka_producer_network_io_rate The number of network operations (reads or writes) on all connections per second
-# TYPE kafka_producer_network_io_rate gauge
-kafka_producer_network_io_rate{client_id="kstreams-fkjoin-aggregator-a724641a-e56e-43d9-a3e9-77af14049fbc-StreamThread-1-producer",status="up",kafka_version="2.5.0",registry="prometheus",} 5.071346890071099
-# HELP kafka_consumer_request_rate The number of requests sent per second
-# TYPE kafka_consumer_request_rate gauge
-kafka_consumer_request_rate{client_id="kstreams-fkjoin-aggregator-a724641a-e56e-43d9-a3e9-77af14049fbc-StreamThread-1-restore-consumer",status="up",kafka_version="2.5.0",registry="prometheus",} 0.0
-kafka_consumer_request_rate{client_id="kstreams-fkjoin-aggregator-a724641a-e56e-43d9-a3e9-77af14049fbc-StreamThread-1-consumer",status="up",kafka_version="2.5.0",registry="prometheus",} 0.0
-# HELP kafka_admin_client_network_io_total The total number of network operations (reads or writes) on all connections
-# TYPE kafka_admin_client_network_io_total counter
-kafka_admin_client_network_io_total{client_id="kstreams-fkjoin-aggregator-a724641a-e56e-43d9-a3e9-77af14049fbc-admin",status="up",kafka_version="2.5.0",registry="prometheus",} 44.0
-# HELP jvm_gc_max_data_size_bytes Max size of long-lived heap memory pool
-# TYPE jvm_gc_max_data_size_bytes gauge
-jvm_gc_max_data_size_bytes{status="up",registry="prometheus",} 8.334082048E9
-# HELP kafka_consumer_coordinator_join_rate The number of group joins per second
-# TYPE kafka_consumer_coordinator_join_rate gauge
-kafka_consumer_coordinator_join_rate{client_id="kstreams-fkjoin-aggregator-a724641a-e56e-43d9-a3e9-77af14049fbc-StreamThread-1-consumer",status="up",kafka_version="2.5.0",registry="prometheus",} 0.0
+# HELP kafka_producer_node_request_total The total number of requests sent
+# TYPE kafka_producer_node_request_total counter
+kafka_producer_node_request_total{client_id="kstreams-fkjoin-aggregator-b4ac1384-0e0a-4f19-8d52-8cc1ee4c6dfe-StreamThread-1-producer",kafka_version="2.5.0",node_id="node--1",status="up",} 83.0
+# HELP kafka_producer_record_send_rate The average number of records sent per second.
+# TYPE kafka_producer_record_send_rate gauge
+kafka_producer_record_send_rate{client_id="kstreams-fkjoin-aggregator-b4ac1384-0e0a-4f19-8d52-8cc1ee4c6dfe-StreamThread-1-producer",kafka_version="2.5.0",status="up",} 0.0
+# HELP jvm_gc_memory_allocated_bytes_total Incremented for an increase in the size of the (young) heap memory pool after one GC to before the next
+# TYPE jvm_gc_memory_allocated_bytes_total counter
+jvm_gc_memory_allocated_bytes_total 1.1534336E8
+# ...
+# HELP http_requests_total
+# TYPE http_requests_total counter
+http_requests_total{status="up",uri="/api/customers",} 0.0
 # ...
 ----
 
@@ -438,6 +425,6 @@ We're looking forward to your suggestions!
 
 === References
 
- - https://quarkus.io/blog/kafka-streams-applications-with-quarkus-and-microprofile/[Building Kafka Streams applications with Quarkus and Eclipse MicroProfile]
+ - https://quarkus.io/guides/kafka-streams[Building Kafka Streams applications with Quarkus]
  - https://speakerdeck.com/gunnarmorling/change-data-capture-pipelines-with-debezium-and-kafka-streams-jokerconf[Change Data Capture Pipelines With Debezium and Kafka Streams]
  - https://micrometer.io/docs/concepts[Micrometer Application Monitor]
