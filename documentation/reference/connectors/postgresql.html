@@ -330,6 +330,8 @@
 <li><a href="#postgresql-differences-between-plugins">Plug-in differences</a></li>
 <li><a href="#postgresql-server-configuration">Configuring the PostgreSQL server</a></li>
 <li><a href="#postgresql-permissions">Setting up permissions</a></li>
+<li><a href="#postgresql-replication-user-privileges">Setting privileges to enable Debezium to create PostgreSQL publications when you use <code>pgoutput</code></a></li>
+<li><a href="#postgresql-host-replication-permissions">Configuring PostgreSQL to allow replication with the Debezium connector host</a></li>
 <li><a href="#supported-postgresql-topologies">Supported PostgreSQL topologies</a></li>
 <li><a href="#postgresql-wal-disk-space">WAL disk space consumption</a></li>
 </ul>
@@ -462,7 +464,13 @@ With a single byte character encoding, it is not possible to correctly process s
 <div class="sect2">
 <h3 id="postgresql-security"><a class="anchor" href="#postgresql-security"></a>Security</h3>
 <div class="paragraph">
-<p>See the <a href="https://www.postgresql.org/docs/current/logical-replication-security.html">Logical Replication Security</a> guide for details, but in general the Debezium user needs to have <code>replication</code> privileges. It is possible to just provide the user with <code>superuser</code> privileges but that allows the user complete control of the PostgreSQL instance. Instead create the Debezium user with <code>replication</code> privileges and add SELECT privileges on the table(s) as well as CREATE privileges on the database.</p>
+<p>To use the Debezium connector to stream changes from a PostgreSQL database, the connector must operate with specific privileges in the database.
+Although one way to grant the necessary privileges is to provide the user with <code>superuser</code> privileges, doing so potentially exposes your PostgreSQL data to unauthorized access.
+Rather than granting excessive privileges to the Debezium user, it is best to create a dedicated Debezium replication user to which you grant specific privileges.</p>
+</div>
+<div class="paragraph">
+<p>For more information about configuring privileges for the Debezium PostgreSQL user, see <a href="#postgresql-permissions">Setting up permissions</a>.
+For more information about PostgreSQL logical replication security, see the <a href="https://www.postgresql.org/docs/current/logical-replication-security.html">PostgreSQL documentation</a>.</p>
 </div>
 </div>
 <div class="sect2">
@@ -3297,7 +3305,7 @@ See the documentation of <code>columns_diff_exclude_unchanged_toast</code> furth
 <div class="sect2">
 <h3 id="postgresql-server-configuration"><a class="anchor" href="#postgresql-server-configuration"></a>Configuring the PostgreSQL server</h3>
 <div class="paragraph">
-<p>If you are using one of the supported <a href="#postgresql-output-plugin">logical decoding plug-ins</a>, that is, not <code>pgoutput</code>, and it has been installed, configure the PostgreSQL server as follows:</p>
+<p>If you are using a <a href="#postgresql-output-plugin">logical decoding plug-in</a> other than pgoutput, after installing it, configure the PostgreSQL server as follows:</p>
 </div>
 <div class="olist arabic">
 <ol class="arabic">
@@ -3375,7 +3383,12 @@ Otherwise, its default value is applied, which adds a latency of about 200 milli
 <div class="sect2">
 <h3 id="postgresql-permissions"><a class="anchor" href="#postgresql-permissions"></a>Setting up permissions</h3>
 <div class="paragraph">
-<p>Setting up a PostgreSQL server to run a Debezium connector requires a database user who can perform replications. Replication can be performed only by a database user who has appropriate permissions and only for a configured number of hosts. Also, you must configure the PostgreSQL server to allow replication to take place between the server machine and the host on which the PostgreSQL connector is running.</p>
+<p>Setting up a PostgreSQL server to run a Debezium connector requires a database user who can perform replications.
+Replication can be performed only by a database user who has appropriate permissions and only for a configured number of hosts.</p>
+</div>
+<div class="paragraph">
+<p>Although, by default, superusers have the necessary <code>REPLICATION</code> and <code>LOGIN</code> roles, as mentioned in <a href="#postgresql-security">Security</a>, it is best not to provide the Debezium replication user with elevated privileges.
+Instead, create a Debezium user that has the the minimum required privileges.</p>
 </div>
 <div class="ulist">
 <div class="title">Prerequisites</div>
@@ -3389,29 +3402,113 @@ Otherwise, its default value is applied, which adds a latency of about 200 milli
 <div class="title">Procedure</div>
 <ol class="arabic">
 <li>
-<p>To give replication permissions to a user, define a PostgreSQL role that has <em>at least</em> the <code>REPLICATION</code> and <code>LOGIN</code> permissions. For example:</p>
+<p>To provide a user with replication permissions, define a PostgreSQL role that has <em>at least</em> the <code>REPLICATION</code> and <code>LOGIN</code> permissions, and then grant that role to the user.
+For example:</p>
 <div class="listingblock">
 <div class="content">
-<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">CREATE ROLE name REPLICATION LOGIN;</code></pre>
+<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">CREATE ROLE <em>&lt;name&gt;</em> REPLICATION LOGIN;</code></pre>
 </div>
 </div>
-<div class="admonitionblock note">
-<table>
-<tr>
-<td class="icon">
-<i class="fa icon-note" title="Note"></i>
-</td>
-<td class="content">
+</li>
+</ol>
+</div>
+</div>
+<div class="sect2">
+<h3 id="postgresql-replication-user-privileges"><a class="anchor" href="#postgresql-replication-user-privileges"></a>Setting privileges to enable Debezium to create PostgreSQL publications when you use <code>pgoutput</code></h3>
 <div class="paragraph">
-<p>By default, superusers have both of the above roles.</p>
+<p>If you use <code>pgoutput</code> as the logical decoding plugin, Debezium must operate in the database as a user with specific privileges.</p>
 </div>
-</td>
-</tr>
-</table>
+<div class="paragraph">
+<p>Debezium streams change events for PostgreSQL source tables from <em>publications</em> that are created for the tables.
+Publications contain a filtered set of change events that are generated from one or more tables.
+The data in each publication is filtered based on the publication specification.
+The specification can be created by the PostgreSQL database administrator or by the Debezium connector.
+To permit the Debezium PostgreSQL connector to create publications and specify the data to replicate to them, the connector must operate with specific privileges in the database.</p>
+</div>
+<div class="paragraph">
+<p>There are several options for determining how publications are created.
+In general, it is best to manually create publications for the tables that you want to capture, before you set up the connector.
+However, you can configure your environment in a way that permits Debezium to create publications automatically, and to specify the data that is added to them.</p>
+</div>
+<div class="paragraph">
+<p>Debezium uses include list and exclude list properties to specify how data is inserted in the publication.
+For more information about the options for enabling Debezium to create publications, see <a href="#postgresql-publication-autocreate-mode"><code>publication.autocreate.mode</code></a>.</p>
+</div>
+<div class="paragraph">
+<p>For Debezium to create a PostgreSQL publication, it must run as a user that has the following privileges:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>Replication privileges in the database to add the table to a publication.</p>
+</li>
+<li>
+<p><code>CREATE</code> privileges on the database to add publications.</p>
+</li>
+<li>
+<p><code>SELECT</code> privileges on the tables to copy the initial table data. Table owners automatically have <code>SELECT</code> permission for the table.</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>To add tables to a publication, the user be an owner of the table.
+But because the source table already exists, you need a mechanism to share ownership with the original owner.
+To enable shared ownership, you create a PostgreSQL replication group, and then add the existing table owner and the replication user to the group.</p>
+</div>
+<div class="olist arabic">
+<div class="title">Procedure</div>
+<ol class="arabic">
+<li>
+<p>Create a replication group.</p>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">CREATE ROLE <em>&lt;replication_group&gt;</em>;</code></pre>
+</div>
 </div>
 </li>
 <li>
-<p>Configure the PostgreSQL server to allow replication to take place between the server machine and the host on which the PostgreSQL connector is running.</p>
+<p>Add the original owner of the table to the group.</p>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">GRANT REPLICATION_GROUP TO <em>&lt;original_owner&gt;</em>;</code></pre>
+</div>
+</div>
+</li>
+<li>
+<p>Add the Debezium replication user to the group.</p>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">GRANT REPLICATION_GROUP TO <em>&lt;replication_user&gt;</em>;</code></pre>
+</div>
+</div>
+</li>
+<li>
+<p>Transfer ownership of the table to <code>&lt;replication_group&gt;</code>.</p>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">ALTER TABLE <em>&lt;table_name&gt;</em> OWNER TO REPLICATION_GROUP;</code></pre>
+</div>
+</div>
+</li>
+</ol>
+</div>
+<div class="paragraph">
+<p>For Debezium to specify the capture configuration, the value of <a href="#postgresql-publication-autocreate-mode"><code>publication.autocreate.mode</code></a> must be set to <code>filtered</code>.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="postgresql-host-replication-permissions"><a class="anchor" href="#postgresql-host-replication-permissions"></a>Configuring PostgreSQL to allow replication with the Debezium connector host</h3>
+<div class="paragraph">
+<p>To enable {prodname] to replicate PostgreSQL data, you must configure the database to permit replication with the host that runs the PostgreSQL connector.
+To specify the clients that are permitted to replicate with the database, add entries to the PostgreSQL host-based authentication file, <code>pg_hba.conf</code>.
+For more information about the <code>pg_hba.conf</code> file, see <a href="https://www.postgresql.org/docs/10/auth-pg-hba-conf.html">the PostgreSQL</a> documentation.</p>
+</div>
+<div class="ulist">
+<div class="title">Procedure</div>
+<ul>
+<li>
+<p>Add entries to the <code>pg_hba.conf</code> file to specify the Debezium connector hosts that can replicate with the database host.
+For example,</p>
 <div class="listingblock">
 <div class="title"><code>pg_hba.conf</code> file example:</div>
 <div class="content">
@@ -3437,7 +3534,7 @@ host    replication     &lt;youruser&gt;  ::1/128                 trust   <i cla
 </table>
 </div>
 </li>
-</ol>
+</ul>
 </div>
 <div class="admonitionblock note">
 <table>
