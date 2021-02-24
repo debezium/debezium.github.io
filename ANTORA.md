@@ -4,7 +4,7 @@ Debezium now makes use of the [Antora framework](http://www.antora.org) to build
 
 ## How it works
 
-The build process now includes one additional step prior to calling jekyll, which is to call:
+The build process now includes one additional step prior to calling Jekyll, which is to call:
 
 ```
 antora playbook.yml
@@ -19,29 +19,34 @@ The Debezium Antora integration currently uses the [antora-default-ui](https://g
 ## Running Antora manually
 
 There are times where one may find it useful to regenerate just the Antora documentation while running the website in preview mode.
-In order to run Antora manually, simply open a bash session to the already running Jekyll docker container:
+
+You must first start the docker container for previewing the website, as described in this [README section](./README.md#22-using-the-container-image---generate-debezium-docs-from-local-repo).  If you want Antora to generate docs from your local Debezium repo, it is **important** to include the volume mapping for the local Debezium repo as described.
+
+To run Antora manually, simply open a bash session to the already running website-builder container:
 
 ```
-docker exec -it <dynamic name of jekyll container> bash
+docker exec -it website-builder bash
 ```
 
-Once in the container, navigate to the `/site` directory and execute:
+Once in the container, navigate to the `/site` directory.
+
+To regenerate the documentation from the local checked-out copy of the Debezium repo (author mode), enter the following.
+
 
 ```
 antora playbook_author.yml
 ```
-or
+
+To regenerate the documentation by cloning the remote Debezium repository from GitHub, enter the following:
+
 
 ```
 antora playbook.yml
 ```
 
-The author mode regenerates the site from a local checked out copy of the Debezium repository, which in most cases is exactly what you'd want.
-The non-author mode regenerates the site by cloning the remote Debezium repository from Github.
-
 ## Release process
 
-What is important for the release process is to make sure that the `playbook.yml` file references the correct branches or tags for building the Debezium documentation on github pages that also aligns with the displayed series (See CONTRIBUTING.md for more details on series configuration). For example, if series `0.8`, `0.9`, and `0.10` are all displayed, then Antora should technically be building 3 differing combinations of either branches or tags.
+What is important for the release process is to make sure that the `playbook.yml` file references the correct branches or tags for building the Debezium documentation on GitHub pages that also aligns with the displayed series (See CONTRIBUTING.md for more details on series configuration). For example, if series `0.8`, `0.9`, and `0.10` are all displayed, then Antora should technically be building 3 differing combinations of either branches or tags.
 
 In `playbook.yml`, the `content` section is what drives what branch/tags will be rendered.
 

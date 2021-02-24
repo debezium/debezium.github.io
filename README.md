@@ -45,7 +45,7 @@ The latter is a bit quicker, but requires Ruby/Jekyll to be set up correctly, wh
 
 In a new terminal initialized with the Docker host environment, start a Docker container that has the build environment for our website:
 
-    $ docker run --privileged -it --rm -p 4000:4000 -e LC_ALL=C.UTF-8 -e LANG=C.UTF-8 -v $(pwd):/site debezium/website-builder bash
+    $ docker run --privileged -it --rm -p 4000:4000 -e LC_ALL=C.UTF-8 -e LANG=C.UTF-8 -v $(pwd):/site --name website-builder debezium/website-builder bash
 
 This command tells Docker to start a container using the `debezium/website-builder` image (downloading it if necessary) with an interactive terminal (via `-it` flag) to the container so that you will see the output of the process running in the container. The `--rm` flag will remove the container when it stops, while the `-p 4000` flag maps the container's 4000 port to the same port on the Docker host (which is the local machine on Linux or the virtual machine if running Boot2Docker or Docker Machine on OS X and Windows). The `-v $(pwd):/site` option mounts your current working directory (where the website's code is located) into the `/site` directory within the container.
 
@@ -58,10 +58,32 @@ This should only need to be performed once. After the libraries are installed, w
 
     jekyll@49d06009e1fa:/site$ rake clean preview
     
-With the integration with Antora, the above command will now also fetch the main codebase repository and will invoke the Antora build process to build the version-specific documentation prior to invoking Jekyll.  For information on Antora and how we've integrated it into the build process, please see [ANTORA.md](./ANTORA.md).
-Also see [CONTRIBUTING.md](./CONTRIBUTING.md) to learn about running the Antora build based on a local check out of the main codebase instead of fetching it from upstream.s
+The site generation process is integrated with Antora.  Antora generates the version-specific documentation from the main Debezium GitHub repository, and is invoked prior to Jekyll for inclusion in the website.  The default mode using the above commands will fetch the Debezium codebase from GitHub.  If you wish to generate the Debezium documentation using your local Debezium git repository, see the next section. For more specifics on the Antora build, please see [ANTORA.md](./ANTORA.md)
 
-##### 2.2 Using a local Ruby and Jekyll installation
+#### 2.2 Using the container image - (generate Debezium docs from local repo)
+
+The default process (outlined in the previous section) will generate the Debezium version-specific documentation from the Debezium repository on GitHub.  However you may want to view or edit the documentation found in your local Debezium git repository.  In this case, the steps are slightly different.
+
+First, you must have a local clone of the [Debezium repository](https://github.com/debezium/debezium).
+
+Then start the Docker container:
+
+    $ docker run --privileged -it --rm -p 4000:4000 -e LC_ALL=C.UTF-8 -e LANG=C.UTF-8 -v $(pwd):/site -v ~/<PATH_TO_REPOS>/debezium:/debezium --name website-builder debezium/website-builder bash
+
+**Note** the addition of the volume mapping **-v ~/<PATH_TO_REPO_DIR>/debezium:/debezium**  -  ( replace <PATH_TO_REPO_DIR> with the actual location on your system ).
+
+Next, in the shell in the container, run the following commands to update and then (re)install all of the Ruby libraries required by the website:
+
+    jekyll@49d06009e1fa:/site$ bundle update
+    jekyll@49d06009e1fa:/site$ bundle install
+
+This should only need to be performed once. After the libraries are installed, we can then build the site from the code so you can preview it in a browser:
+
+    jekyll@49d06009e1fa:/site$ rake clean author preview
+
+The additional **author** arg above sets the environment to use *playbook_author.yml* instead of *playbook.yml* for Antora, which then builds the Debezium docs from the local repo. For more specifics on the Antora build, please see [ANTORA.md](./ANTORA.md)
+
+#### 2.3 Using a local Ruby and Jekyll installation
 
 Run the following steps once to set up your local Jekyll installation.
 
