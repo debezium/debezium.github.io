@@ -283,6 +283,7 @@
 <li><a href="#postgresql-overview">Overview</a></li>
 <li><a href="#how-the-postgresql-connector-works">How the connector works</a>
 <ul class="sectlevel2">
+<li><a href="#postgresql-security">Security</a></li>
 <li><a href="#postgresql-snapshots">Snapshots</a></li>
 <li><a href="#postgresql-custom-snapshot">Custom snapshotter SPI</a></li>
 <li><a href="#postgresql-streaming-changes">Streaming changes</a></li>
@@ -301,6 +302,7 @@
 <li><a href="#postgresql-update-events"><em>update</em> events</a></li>
 <li><a href="#postgresql-primary-key-updates">Primary key updates</a></li>
 <li><a href="#postgresql-delete-events"><em>delete</em> events</a></li>
+<li><a href="#postgresql-truncate-events"><em>truncate</em> events</a></li>
 </ul>
 </li>
 <li><a href="#postgresql-data-types">Data type mappings</a>
@@ -323,6 +325,8 @@
 <li><a href="#postgresql-differences-between-plugins">Plug-in differences</a></li>
 <li><a href="#postgresql-server-configuration">Configuring the PostgreSQL server</a></li>
 <li><a href="#postgresql-permissions">Setting up permissions</a></li>
+<li><a href="#postgresql-replication-user-privileges">Setting privileges to enable Debezium to create PostgreSQL publications when you use <code>pgoutput</code></a></li>
+<li><a href="#postgresql-host-replication-permissions">Configuring PostgreSQL to allow replication with the Debezium connector host</a></li>
 <li><a href="#supported-postgresql-topologies">Supported PostgreSQL topologies</a></li>
 <li><a href="#postgresql-wal-disk-space">WAL disk space consumption</a></li>
 </ul>
@@ -451,6 +455,18 @@ With a single byte character encoding, it is not possible to correctly process s
 <div class="sectionbody">
 <div class="paragraph">
 <p>To optimally configure and run a Debezium PostgreSQL connector, it is helpful to understand how the connector performs snapshots, streams change events, determines Kafka topic names, and uses metadata.</p>
+</div>
+<div class="sect2">
+<h3 id="postgresql-security"><a class="anchor" href="#postgresql-security"></a>Security</h3>
+<div class="paragraph">
+<p>To use the Debezium connector to stream changes from a PostgreSQL database, the connector must operate with specific privileges in the database.
+Although one way to grant the necessary privileges is to provide the user with <code>superuser</code> privileges, doing so potentially exposes your PostgreSQL data to unauthorized access.
+Rather than granting excessive privileges to the Debezium user, it is best to create a dedicated Debezium replication user to which you grant specific privileges.</p>
+</div>
+<div class="paragraph">
+<p>For more information about configuring privileges for the Debezium PostgreSQL user, see <a href="#postgresql-permissions">Setting up permissions</a>.
+For more information about PostgreSQL logical replication security, see the <a href="https://www.postgresql.org/docs/current/logical-replication-security.html">PostgreSQL documentation</a>.</p>
+</div>
 </div>
 <div class="sect2">
 <h3 id="postgresql-snapshots"><a class="anchor" href="#postgresql-snapshots"></a>Snapshots</h3>
@@ -1109,7 +1125,7 @@ It is possible to override the table&#8217;s primary key by setting the <a href=
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><p class="tableblock">2</p></td>
-<td class="tableblock halign-left valign-top"><p class="tableblock"><code>PostgreSQL_server&#8203;.inventory.customers&#8203;.Key</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>PostgreSQL_server.inventory.customers.Key</code></p></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>Name of the schema that defines the structure of the key&#8217;s payload. This schema describes the structure of the primary key for the table that was changed. Key schema names have the format <em>connector-name</em>.<em>database-name</em>.<em>table-name</em>.<code>Key</code>. In this example:<br></p>
 </div>
@@ -1378,7 +1394,7 @@ It is possible to override the table&#8217;s primary key by setting the <a href=
             "email": "annek@noanswer.org"
         },
         "source": { <i class="conum" data-value="8"></i><b>(8)</b>
-            "version": "1.4.1.Final",
+            "version": "1.4.2.Final",
             "connector": "postgresql",
             "name": "PostgreSQL_server",
             "ts_ms": 1559033904863,
@@ -1566,7 +1582,7 @@ In the <code>source</code> object, <code>ts_ms</code> indicates the time that th
             "email": "annek@noanswer.org"
         },
         "source": { <i class="conum" data-value="3"></i><b>(3)</b>
-            "version": "1.4.1.Final",
+            "version": "1.4.2.Final",
             "connector": "postgresql",
             "name": "PostgreSQL_server",
             "ts_ms": 1559033904863,
@@ -1711,7 +1727,7 @@ as a primary key change. For a primary key change, in place of sending an <code>
         },
         "after": null, <i class="conum" data-value="2"></i><b>(2)</b>
         "source": { <i class="conum" data-value="3"></i><b>(3)</b>
-            "version": "1.4.1.Final",
+            "version": "1.4.2.Final",
             "connector": "postgresql",
             "name": "PostgreSQL_server",
             "ts_ms": 1559033904863,
@@ -1834,6 +1850,116 @@ In the <code>source</code> object, <code>ts_ms</code> indicates the time that th
 <p>When a row is deleted, the <em>delete</em> event value still works with log compaction, because Kafka can remove all earlier messages that have that same key. However, for Kafka to remove all messages that have that same key, the message value must be <code>null</code>. To make this possible, the PostgreSQL connector follows a <em>delete</em> event with a special <em>tombstone</em> event that has the same key but a <code>null</code> value.</p>
 </div>
 </div>
+<div class="sect2">
+<h3 id="postgresql-truncate-events"><a class="anchor" href="#postgresql-truncate-events"></a><em>truncate</em> events</h3>
+<div class="paragraph">
+<p>A  <em>truncate</em> change event signals that a table has been truncated.
+The message key is <code>null</code> in this case, the message value looks like this:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
+    "schema": { ... },
+    "payload": {
+        "source": { <i class="conum" data-value="1"></i><b>(1)</b>
+            "version": "1.4.2.Final",
+            "connector": "postgresql",
+            "name": "PostgreSQL_server",
+            "ts_ms": 1559033904863,
+            "snapshot": false,
+            "db": "postgres",
+            "schema": "public",
+            "table": "customers",
+            "txId": 556,
+            "lsn": 46523128,
+            "xmin": null
+        },
+        "op": "t", <i class="conum" data-value="2"></i><b>(2)</b>
+        "ts_ms": 1559033904961 <i class="conum" data-value="3"></i><b>(3)</b>
+    }
+}</code></pre>
+</div>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 7. Descriptions of <em>truncate</em> event value fields</caption>
+<colgroup>
+<col style="width: 10%;">
+<col style="width: 20%;">
+<col style="width: 70%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Item</th>
+<th class="tableblock halign-left valign-top">Field name</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">1</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>source</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Mandatory field that describes the source metadata for the event. In a <em>truncate</em> event value, the <code>source</code> field structure is the same as for <em>create</em>, <em>update</em>, and <em>delete</em> events for the same table, provides this metadata:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>Debezium version</p>
+</li>
+<li>
+<p>Connector type and name</p>
+</li>
+<li>
+<p>Database and table that contains the new row</p>
+</li>
+<li>
+<p>Schema name</p>
+</li>
+<li>
+<p>If the event was part of a snapshot (alwas <code>false</code> for <em>delete</em> events)</p>
+</li>
+<li>
+<p>ID of the transaction in which the operation was performed</p>
+</li>
+<li>
+<p>Offset of the operation in the database log</p>
+</li>
+<li>
+<p>Timestamp for when the change was made in the database</p>
+</li>
+</ul>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">2</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>op</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Mandatory string that describes the type of operation. The <code>op</code> field value is <code>t</code>, signifying that this table was truncated.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">3</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>ts_ms</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Optional field that displays the time at which the connector processed the event. The time is based on the system clock in the JVM running the Kafka Connect task. <br>
+<br>
+In the <code>source</code> object, <code>ts_ms</code> indicates the time that the change was made in the database. By comparing the value for <code>payload.source.ts_ms</code> with the value for <code>payload.ts_ms</code>, you can determine the lag between the source database update and Debezium.</p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
+<div class="paragraph">
+<p>In case a single <code>TRUNCATE</code> statement applies to multiple tables,
+one <em>truncate</em> change event record for each truncated table will be emitted.</p>
+</div>
+<div class="paragraph">
+<p>Note that since <em>truncate</em> events represent a change made to an entire table and don&#8217;t have a message key,
+unless you&#8217;re working with topics with a single partition,
+there are no ordering guarantees for the change events pertaining to a table (<em>create</em>, <em>update</em>, etc.) and <em>truncate</em> events for that table.
+For instance a consumer may receive an <em>update</em> event only after a <em>truncate</em> event for that table,
+when those events are read from different partitions.</p>
+</div>
+</div>
 </div>
 </div>
 <div class="sect1">
@@ -1858,7 +1984,7 @@ In the <code>source</code> object, <code>ts_ms</code> indicates the time that th
 <p>The following table describes how the connector maps basic types.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 7. Mappings for PostgreSQL basic data types</caption>
+<caption class="title">Table 8. Mappings for PostgreSQL basic data types</caption>
 <colgroup>
 <col style="width: 25%;">
 <col style="width: 20%;">
@@ -2290,7 +2416,7 @@ Contains the string representation of the PostgreSQL <code>ENUM</code> value. Th
 <p>When the <code>time.precision.mode</code> property is set to <code>adaptive</code>, the default, the connector determines the literal type and semantic type based on the column&#8217;s data type definition. This ensures that events <em>exactly</em> represent the values in the database.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 8. Mappings when <code>time.precision.mode</code> is <code>adaptive</code></caption>
+<caption class="title">Table 9. Mappings when <code>time.precision.mode</code> is <code>adaptive</code></caption>
 <colgroup>
 <col style="width: 25%;">
 <col style="width: 20%;">
@@ -2376,7 +2502,7 @@ Represents the number of microseconds since the epoch, and does not include time
 <p>When the <code>time.precision.mode</code> configuration property is set to <code>adaptive_time_microseconds</code>, the connector determines the literal type and semantic type for temporal types based on the column&#8217;s data type definition. This ensures that events <em>exactly</em> represent the values in the database, except all <code>TIME</code> fields are captured as microseconds.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 9. Mappings when <code>time.precision.mode</code> is <code>adaptive_time_microseconds</code></caption>
+<caption class="title">Table 10. Mappings when <code>time.precision.mode</code> is <code>adaptive_time_microseconds</code></caption>
 <colgroup>
 <col style="width: 25%;">
 <col style="width: 20%;">
@@ -2449,7 +2575,7 @@ Represents the number of microseconds past the epoch, and does not include timez
 <p>When the <code>time.precision.mode</code> configuration property is set to <code>connect</code>, the connector uses Kafka Connect logical types. This may be useful when consumers can handle only the built-in Kafka Connect logical types and are unable to handle variable-precision time values. However, since PostgreSQL supports microsecond precision, the events generated by a connector with the <code>connect</code> time precision mode <strong>results in a loss of precision</strong> when the database column has a <em>fractional second precision</em> value that is greater than 3.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 10. Mappings when <code>time.precision.mode</code> is <code>connect</code></caption>
+<caption class="title">Table 11. Mappings when <code>time.precision.mode</code> is <code>connect</code></caption>
 <colgroup>
 <col style="width: 25%;">
 <col style="width: 20%;">
@@ -2524,7 +2650,7 @@ Such columns are converted into an equivalent Kafka Connect value based on UTC. 
 <p>When the <code>decimal.handling.mode</code> property is set to <code>precise</code>, the connector uses the Kafka Connect <code>org.apache.kafka.connect.data.Decimal</code> logical type for all <code>DECIMAL</code> and <code>NUMERIC</code> columns. This is the default mode.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 11. Mappings when <code>decimal.handling.mode</code> is <code>precise</code></caption>
+<caption class="title">Table 12. Mappings when <code>decimal.handling.mode</code> is <code>precise</code></caption>
 <colgroup>
 <col style="width: 28%;">
 <col style="width: 17%;">
@@ -2571,7 +2697,7 @@ The <code>scale</code> schema parameter contains an integer representing how man
 When the <code>NUMERIC</code> or <code>DECIMAL</code> types are used without scale constraints, the values coming from the database have a different (variable) scale for each value. In this case, the connector uses <code>io.debezium.data.VariableScaleDecimal</code>, which contains both the value and the scale of the transferred value.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 12. Mappings of decimal types when there are no scale constraints</caption>
+<caption class="title">Table 13. Mappings of decimal types when there are no scale constraints</caption>
 <colgroup>
 <col style="width: 25%;">
 <col style="width: 20%;">
@@ -2617,7 +2743,7 @@ Contains a structure with two fields: <code>scale</code> of type <code>INT32</co
 <p>When the <code>decimal.handling.mode</code> property is set to <code>double</code>, the connector represents all <code>DECIMAL</code> and <code>NUMERIC</code> values as Java double values and encodes them as shown in the following table.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 13. Mappings when <code>decimal.handling.mode</code> is <code>double</code></caption>
+<caption class="title">Table 14. Mappings when <code>decimal.handling.mode</code> is <code>double</code></caption>
 <colgroup>
 <col style="width: 30%;">
 <col style="width: 30%;">
@@ -2655,7 +2781,7 @@ Contains a structure with two fields: <code>scale</code> of type <code>INT32</co
 <p>The last possible setting for the <code>decimal.handling.mode</code> configuration property is <code>string</code>. In this case, the connector represents <code>DECIMAL</code> and <code>NUMERIC</code> values as their formatted string representation, and encodes them as shown in the following table.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 14. Mappings when <code>decimal.handling.mode</code> is <code>string</code></caption>
+<caption class="title">Table 15. Mappings when <code>decimal.handling.mode</code> is <code>string</code></caption>
 <colgroup>
 <col style="width: 30%;">
 <col style="width: 30%;">
@@ -2699,7 +2825,7 @@ Contains a structure with two fields: <code>scale</code> of type <code>INT32</co
 <p>When the <code>hstore.handling.mode</code> connector configuration property is set to <code>json</code> (the default), the connector represents <code>HSTORE</code> values as string representations of JSON values and encodes them as shown in the following table. When the <code>hstore.handling.mode</code> property is set to <code>map</code>, the connector uses the <code>MAP</code> schema type for <code>HSTORE</code> values.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 15. Mappings for <code>HSTORE</code> data type</caption>
+<caption class="title">Table 16. Mappings for <code>HSTORE</code> data type</caption>
 <colgroup>
 <col style="width: 25%;">
 <col style="width: 20%;">
@@ -2771,7 +2897,7 @@ Example: output representation  using the JSON converter is <code>{"key" : "val"
 <p>PostgreSQL has data types that can store IPv4, IPv6, and MAC addresses. It is better to use these types instead of plain text types to store network addresses. Network address types offer input error checking and specialized operators and functions.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 16. Mappings for network address types</caption>
+<caption class="title">Table 17. Mappings for network address types</caption>
 <colgroup>
 <col style="width: 25%;">
 <col style="width: 20%;">
@@ -2846,7 +2972,7 @@ MAC addresses in EUI-64 format</p>
 <p>The PostgreSQL connector supports all <a href="http://postgis.net">PostGIS data types</a>.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 17. Mappings of PostGIS data types</caption>
+<caption class="title">Table 18. Mappings of PostGIS data types</caption>
 <colgroup>
 <col style="width: 25%;">
 <col style="width: 20%;">
@@ -3163,7 +3289,7 @@ See the documentation of <code>columns_diff_exclude_unchanged_toast</code> furth
 <div class="sect2">
 <h3 id="postgresql-server-configuration"><a class="anchor" href="#postgresql-server-configuration"></a>Configuring the PostgreSQL server</h3>
 <div class="paragraph">
-<p>If you are using one of the supported <a href="#postgresql-output-plugin">logical decoding plug-ins</a>, that is, not <code>pgoutput</code>, and it has been installed, configure the PostgreSQL server as follows:</p>
+<p>If you are using a <a href="#postgresql-output-plugin">logical decoding plug-in</a> other than pgoutput, after installing it, configure the PostgreSQL server as follows:</p>
 </div>
 <div class="olist arabic">
 <ol class="arabic">
@@ -3241,7 +3367,12 @@ Otherwise, its default value is applied, which adds a latency of about 200 milli
 <div class="sect2">
 <h3 id="postgresql-permissions"><a class="anchor" href="#postgresql-permissions"></a>Setting up permissions</h3>
 <div class="paragraph">
-<p>Setting up a PostgreSQL server to run a Debezium connector requires a database user who can perform replications. Replication can be performed only by a database user who has appropriate permissions and only for a configured number of hosts. Also, you must configure the PostgreSQL server to allow replication to take place between the server machine and the host on which the PostgreSQL connector is running.</p>
+<p>Setting up a PostgreSQL server to run a Debezium connector requires a database user that can perform replications.
+Replication can be performed only by a database user that has appropriate permissions and only for a configured number of hosts.</p>
+</div>
+<div class="paragraph">
+<p>Although, by default, superusers have the necessary <code>REPLICATION</code> and <code>LOGIN</code> roles, as mentioned in <a href="#postgresql-security">Security</a>, it is best not to provide the Debezium replication user with elevated privileges.
+Instead, create a Debezium user that has the the minimum required privileges.</p>
 </div>
 <div class="ulist">
 <div class="title">Prerequisites</div>
@@ -3255,29 +3386,113 @@ Otherwise, its default value is applied, which adds a latency of about 200 milli
 <div class="title">Procedure</div>
 <ol class="arabic">
 <li>
-<p>To give replication permissions to a user, define a PostgreSQL role that has <em>at least</em> the <code>REPLICATION</code> and <code>LOGIN</code> permissions. For example:</p>
+<p>To provide a user with replication permissions, define a PostgreSQL role that has <em>at least</em> the <code>REPLICATION</code> and <code>LOGIN</code> permissions, and then grant that role to the user.
+For example:</p>
 <div class="listingblock">
 <div class="content">
-<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">CREATE ROLE name REPLICATION LOGIN;</code></pre>
+<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">CREATE ROLE <em>&lt;name&gt;</em> REPLICATION LOGIN;</code></pre>
 </div>
 </div>
-<div class="admonitionblock note">
-<table>
-<tr>
-<td class="icon">
-<i class="fa icon-note" title="Note"></i>
-</td>
-<td class="content">
+</li>
+</ol>
+</div>
+</div>
+<div class="sect2">
+<h3 id="postgresql-replication-user-privileges"><a class="anchor" href="#postgresql-replication-user-privileges"></a>Setting privileges to enable Debezium to create PostgreSQL publications when you use <code>pgoutput</code></h3>
 <div class="paragraph">
-<p>By default, superusers have both of the above roles.</p>
+<p>If you use <code>pgoutput</code> as the logical decoding plugin, Debezium must operate in the database as a user with specific privileges.</p>
 </div>
-</td>
-</tr>
-</table>
+<div class="paragraph">
+<p>Debezium streams change events for PostgreSQL source tables from <em>publications</em> that are created for the tables.
+Publications contain a filtered set of change events that are generated from one or more tables.
+The data in each publication is filtered based on the publication specification.
+The specification can be created by the PostgreSQL database administrator or by the Debezium connector.
+To permit the Debezium PostgreSQL connector to create publications and specify the data to replicate to them, the connector must operate with specific privileges in the database.</p>
+</div>
+<div class="paragraph">
+<p>There are several options for determining how publications are created.
+In general, it is best to manually create publications for the tables that you want to capture, before you set up the connector.
+However, you can configure your environment in a way that permits Debezium to create publications automatically, and to specify the data that is added to them.</p>
+</div>
+<div class="paragraph">
+<p>Debezium uses include list and exclude list properties to specify how data is inserted in the publication.
+For more information about the options for enabling Debezium to create publications, see <a href="#postgresql-publication-autocreate-mode"><code>publication.autocreate.mode</code></a>.</p>
+</div>
+<div class="paragraph">
+<p>For Debezium to create a PostgreSQL publication, it must run as a user that has the following privileges:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>Replication privileges in the database to add the table to a publication.</p>
+</li>
+<li>
+<p><code>CREATE</code> privileges on the database to add publications.</p>
+</li>
+<li>
+<p><code>SELECT</code> privileges on the tables to copy the initial table data. Table owners automatically have <code>SELECT</code> permission for the table.</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>To add tables to a publication, the user be an owner of the table.
+But because the source table already exists, you need a mechanism to share ownership with the original owner.
+To enable shared ownership, you create a PostgreSQL replication group, and then add the existing table owner and the replication user to the group.</p>
+</div>
+<div class="olist arabic">
+<div class="title">Procedure</div>
+<ol class="arabic">
+<li>
+<p>Create a replication group.</p>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">CREATE ROLE <em>&lt;replication_group&gt;</em>;</code></pre>
+</div>
 </div>
 </li>
 <li>
-<p>Configure the PostgreSQL server to allow replication to take place between the server machine and the host on which the PostgreSQL connector is running.</p>
+<p>Add the original owner of the table to the group.</p>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">GRANT REPLICATION_GROUP TO <em>&lt;original_owner&gt;</em>;</code></pre>
+</div>
+</div>
+</li>
+<li>
+<p>Add the Debezium replication user to the group.</p>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">GRANT REPLICATION_GROUP TO <em>&lt;replication_user&gt;</em>;</code></pre>
+</div>
+</div>
+</li>
+<li>
+<p>Transfer ownership of the table to <code>&lt;replication_group&gt;</code>.</p>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">ALTER TABLE <em>&lt;table_name&gt;</em> OWNER TO REPLICATION_GROUP;</code></pre>
+</div>
+</div>
+</li>
+</ol>
+</div>
+<div class="paragraph">
+<p>For Debezium to specify the capture configuration, the value of <a href="#postgresql-publication-autocreate-mode"><code>publication.autocreate.mode</code></a> must be set to <code>filtered</code>.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="postgresql-host-replication-permissions"><a class="anchor" href="#postgresql-host-replication-permissions"></a>Configuring PostgreSQL to allow replication with the Debezium connector host</h3>
+<div class="paragraph">
+<p>To enable {prodname] to replicate PostgreSQL data, you must configure the database to permit replication with the host that runs the PostgreSQL connector.
+To specify the clients that are permitted to replicate with the database, add entries to the PostgreSQL host-based authentication file, <code>pg_hba.conf</code>.
+For more information about the <code>pg_hba.conf</code> file, see <a href="https://www.postgresql.org/docs/10/auth-pg-hba-conf.html">the PostgreSQL</a> documentation.</p>
+</div>
+<div class="ulist">
+<div class="title">Procedure</div>
+<ul>
+<li>
+<p>Add entries to the <code>pg_hba.conf</code> file to specify the Debezium connector hosts that can replicate with the database host.
+For example,</p>
 <div class="listingblock">
 <div class="title"><code>pg_hba.conf</code> file example:</div>
 <div class="content">
@@ -3303,7 +3518,7 @@ host    replication     &lt;youruser&gt;  ::1/128                 trust   <i cla
 </table>
 </div>
 </li>
-</ol>
+</ul>
 </div>
 <div class="admonitionblock note">
 <table>
@@ -3394,7 +3609,7 @@ Again, regularly emitting events solves the problem.</p>
 <h2 id="postgresql-deployment"><a class="anchor" href="#postgresql-deployment"></a>Deployment</h2>
 <div class="sectionbody">
 <div class="paragraph">
-<p>With <a href="https://zookeeper.apache.org">Zookeeper</a>, <a href="http://kafka.apache.org/">Kafka</a>, and <a href="https://kafka.apache.org/documentation.html#connect">Kafka Connect</a> installed, the remaining tasks to deploy a Debezium PostgreSQL connector are to download the <a href="https://repo1.maven.org/maven2/io/debezium/debezium-connector-postgres/1.4.1.Final/debezium-connector-postgres-1.4.1.Final-plugin.tar.gz">connector&#8217;s plug-in archive</a>, extract the JAR files into your Kafka Connect environment, and add the directory with the JAR files to <a href="https://kafka.apache.org/documentation/#connectconfigs">Kafka Connect&#8217;s <code>plugin.path</code></a>. You then need to restart your Kafka Connect process to pick up the new JAR files.</p>
+<p>With <a href="https://zookeeper.apache.org">Zookeeper</a>, <a href="http://kafka.apache.org/">Kafka</a>, and <a href="https://kafka.apache.org/documentation.html#connect">Kafka Connect</a> installed, the remaining tasks to deploy a Debezium PostgreSQL connector are to download the <a href="https://repo1.maven.org/maven2/io/debezium/debezium-connector-postgres/1.4.2.Final/debezium-connector-postgres-1.4.2.Final-plugin.tar.gz">connector&#8217;s plug-in archive</a>, extract the JAR files into your Kafka Connect environment, and add the directory with the JAR files to <a href="https://kafka.apache.org/documentation/#connectconfigs">Kafka Connect&#8217;s <code>plugin.path</code></a>. You then need to restart your Kafka Connect process to pick up the new JAR files.</p>
 </div>
 <div class="paragraph">
 <p>If you are working with immutable containers, see <a href="https://hub.docker.com/r/debezium/">Debezium&#8217;s Container images</a> for Zookeeper, Kafka, PostgreSQL and Kafka Connect with the PostgreSQL connector already installed and ready to run. You can also <a href="../operations/openshift.html" class="page">run Debezium on Kubernetes and OpenShift</a>.</p>
@@ -3525,7 +3740,7 @@ Again, regularly emitting events solves the problem.</p>
 <p>The following configuration properties are <em>required</em> unless a default value is available.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 18. Required connector configuration properties</caption>
+<caption class="title">Table 19. Required connector configuration properties</caption>
 <colgroup>
 <col style="width: 30%;">
 <col style="width: 25%;">
@@ -3618,7 +3833,7 @@ Again, regularly emitting events solves the problem.</p>
 <p><a id="postgresql-property-publication-name"></a><a href="#postgresql-property-publication-name"><code>publication.name</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>dbz_&#8203;publication</code></p>
+<p><code>dbz_publication</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>The name of the PostgreSQL publication created for streaming changes when using <code>pgoutput</code>.</p>
@@ -3682,7 +3897,7 @@ so it is usually preferable to create the publication before starting the connec
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="postgresql-property-database-server-name"></a><a href="#postgresql-property-database-server-name"><code>database.server&#8203;.name</code></a></p>
+<p><a id="postgresql-property-database-server-name"></a><a href="#postgresql-property-database-server-name"><code>database.server.name</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -3690,8 +3905,8 @@ so it is usually preferable to create the publication before starting the connec
 </div></div></td>
 </tr>
 <tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div id="postgresql-property-schema-include-list" class="paragraph">
-<p><a id="postgresql-property-schema-include-list"></a><a href="#postgresql-property-schema-include-list"><code>schema.include&#8203;.list</code></a></p>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="postgresql-property-schema-include-list"></a><a href="#postgresql-property-schema-include-list"><code>schema.include.list</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -3699,8 +3914,8 @@ so it is usually preferable to create the publication before starting the connec
 </div></div></td>
 </tr>
 <tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div id="postgresql-property-schema-exclude-list" class="paragraph">
-<p><a id="postgresql-property-schema-exclude-list"></a><a href="#postgresql-property-schema-exclude-list"><code>schema.exclude&#8203;.list</code></a></p>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="postgresql-property-schema-exclude-list"></a><a href="#postgresql-property-schema-exclude-list"><code>schema.exclude.list</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -3708,8 +3923,8 @@ so it is usually preferable to create the publication before starting the connec
 </div></div></td>
 </tr>
 <tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div id="postgresql-property-table-include-list" class="paragraph">
-<p><a id="postgresql-property-table-include-list"></a><a href="#postgresql-property-table-include-list"><code>table.include&#8203;.list</code></a></p>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="postgresql-property-table-include-list"></a><a href="#postgresql-property-table-include-list"><code>table.include.list</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -3717,8 +3932,8 @@ so it is usually preferable to create the publication before starting the connec
 </div></div></td>
 </tr>
 <tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div id="postgresql-property-table-exclude-list" class="paragraph">
-<p><a id="postgresql-property-table-exclude-list"></a><a href="#postgresql-property-table-exclude-list"><code>table.exclude&#8203;.list</code></a></p>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="postgresql-property-table-exclude-list"></a><a href="#postgresql-property-table-exclude-list"><code>table.exclude.list</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -3726,8 +3941,8 @@ so it is usually preferable to create the publication before starting the connec
 </div></div></td>
 </tr>
 <tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div id="postgresql-property-column-include-list" class="paragraph">
-<p><a id="postgresql-property-column-include-list"></a><a href="#postgresql-property-column-include-list"><code>column.include&#8203;.list</code></a></p>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="postgresql-property-column-include-list"></a><a href="#postgresql-property-column-include-list"><code>column.include.list</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -3735,8 +3950,8 @@ so it is usually preferable to create the publication before starting the connec
 </div></div></td>
 </tr>
 <tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div id="postgresql-property-column-exclude-list" class="paragraph">
-<p><a id="postgresql-property-column-exclude-list"></a><a href="#postgresql-property-column-exclude-list"><code>column.exclude&#8203;.list</code></a></p>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="postgresql-property-column-exclude-list"></a><a href="#postgresql-property-column-exclude-list"><code>column.exclude.list</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -3762,7 +3977,7 @@ so it is usually preferable to create the publication before starting the connec
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="postgresql-property-decimal-handling-mode"></a><a href="#postgresql-property-decimal-handling-mode"><code>decimal.handling&#8203;.mode</code></a></p>
+<p><a id="postgresql-property-decimal-handling-mode"></a><a href="#postgresql-property-decimal-handling-mode"><code>decimal.handling.mode</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>precise</code></p>
@@ -3779,7 +3994,7 @@ so it is usually preferable to create the publication before starting the connec
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="postgresql-property-hstore-handling-mode"></a><a href="#postgresql-property-hstore-handling-mode"><code>hstore.handling&#8203;.mode</code></a></p>
+<p><a id="postgresql-property-hstore-handling-mode"></a><a href="#postgresql-property-hstore-handling-mode"><code>hstore.handling.mode</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>map</code></p>
@@ -3794,7 +4009,7 @@ so it is usually preferable to create the publication before starting the connec
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="postgresql-property-interval-handling-mode"></a><a href="#postgresql-property-interval-handling-mode"><code>interval.handling&#8203;.mode</code></a></p>
+<p><a id="postgresql-property-interval-handling-mode"></a><a href="#postgresql-property-interval-handling-mode"><code>interval.handling.mode</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>numeric</code></p>
@@ -3846,7 +4061,7 @@ so it is usually preferable to create the publication before starting the connec
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="postgresql-property-database-sslpassword"></a><a href="#postgresql-property-database-sslpassword"><code>database&#8203;.sslpassword</code></a></p>
+<p><a id="postgresql-property-database-sslpassword"></a><a href="#postgresql-property-database-sslpassword"><code>database.sslpassword</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -3855,7 +4070,7 @@ so it is usually preferable to create the publication before starting the connec
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="postgresql-property-database-sslrootcert"></a><a href="#postgresql-property-database-sslrootcert"><code>database&#8203;.sslrootcert</code></a></p>
+<p><a id="postgresql-property-database-sslrootcert"></a><a href="#postgresql-property-database-sslrootcert"><code>database.sslrootcert</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -3864,7 +4079,7 @@ so it is usually preferable to create the publication before starting the connec
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="postgresql-property-database-tcpkeepalive"></a><a href="#postgresql-property-database-tcpkeepalive"><code>database&#8203;.tcpKeepAlive</code></a></p>
+<p><a id="postgresql-property-database-tcpkeepalive"></a><a href="#postgresql-property-database-tcpkeepalive"><code>database.tcpKeepAlive</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>true</code></p>
@@ -3875,7 +4090,7 @@ so it is usually preferable to create the publication before starting the connec
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="postgresql-property-tombstones-on-delete"></a><a href="#postgresql-property-tombstones-on-delete"><code>tombstones.on&#8203;.delete</code></a></p>
+<p><a id="postgresql-property-tombstones-on-delete"></a><a href="#postgresql-property-tombstones-on-delete"><code>tombstones.on.delete</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>true</code></p>
@@ -3892,18 +4107,18 @@ After a <em>delete</em> operation, emitting a tombstone event enables Kafka to d
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="postgresql-property-column-truncate-to-length-chars"></a><a href="#postgresql-property-column-truncate-to-length-chars"><code>column.truncate.to&#8203;.<em>length</em>.chars</code></a></p>
+<p><a id="postgresql-property-column-truncate-to-length-chars"></a><a href="#postgresql-property-column-truncate-to-length-chars"><code>column.truncate.to._length_.chars</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><em>n/a</em></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>An optional, comma-separated list of regular expressions that match the fully-qualified names of character-based columns. Fully-qualified names for columns are of the form <em>schemaName</em>.<em>tableName</em>.<em>columnName</em>. In change event records, values in these columns are truncated if they are longer than the number of characters specified by <em>length</em> in the property name. You can specify multiple properties with different lengths in a single configuration. Length must be a positive integer, for example, <code>column.truncate.to.20.chars</code>.</p>
+<p>An optional, comma-separated list of regular expressions that match the fully-qualified names of character-based columns. Fully-qualified names for columns are of the form <em>schemaName</em>.<em>tableName</em>.<em>columnName</em>. In change event records, values in these columns are truncated if they are longer than the number of characters specified by <em>length</em> in the property name. You can specify multiple properties with different lengths in a single configuration. Length must be a positive integer, for example, <code>+column.truncate.to.20.chars</code>.</p>
 </div></div></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="postgresql-property-column-mask-with-length-chars"></a><a href="#postgresql-property-column-mask-with-length-chars"><code>column.mask.with&#8203;.<em>length</em>.chars</code></a></p>
+<p><a id="postgresql-property-column-mask-with-length-chars"></a><a href="#postgresql-property-column-mask-with-length-chars"><code>column.mask.with._length_.chars</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><em>n/a</em></p>
@@ -3914,7 +4129,7 @@ After a <em>delete</em> operation, emitting a tombstone event enables Kafka to d
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="postgresql-property-column-mask-hash"></a><a href="#postgresql-property-column-mask-hash"><code>column.mask&#8203;.hash.<em>hashAlgorithm</em>&#8203;.with.salt.<em>salt</em></code></a></p>
+<p><a id="postgresql-property-column-mask-hash"></a><a href="#postgresql-property-column-mask-hash"><code>column.mask.hash._hashAlgorithm_.with.salt._salt_</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><em>n/a</em></p>
@@ -3933,7 +4148,7 @@ Depending on the <em>hashAlgorithm</em> used, the <em>salt</em> selected, and th
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="postgresql-property-column-propagate-source-type"></a><a href="#postgresql-property-column-propagate-source-type"><code>column.propagate&#8203;.source.type</code></a></p>
+<p><a id="postgresql-property-column-propagate-source-type"></a><a href="#postgresql-property-column-propagate-source-type"><code>column.propagate.source.type</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><em>n/a</em></p>
@@ -3950,7 +4165,7 @@ This property is useful for properly sizing corresponding columns in sink databa
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="postgresql-property-datatype-propagate-source-type"></a><a href="#postgresql-property-datatype-propagate-source-type"><code>datatype.propagate&#8203;.source.type</code></a></p>
+<p><a id="postgresql-property-datatype-propagate-source-type"></a><a href="#postgresql-property-datatype-propagate-source-type"><code>datatype.propagate.source.type</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><em>n/a</em></p>
@@ -3969,7 +4184,7 @@ See the <a href="#postgresql-data-types">list of PostgreSQL-specific data type n
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="postgresql-property-message-key-columns"></a><a href="#postgresql-property-message-key-columns"><code>message.key&#8203;.columns</code></a></p>
+<p><a id="postgresql-property-message-key-columns"></a><a href="#postgresql-property-message-key-columns"><code>message.key.columns</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><em>empty string</em></p>
@@ -3990,7 +4205,7 @@ If <code>table_a</code> has a an <code>id</code> column, and <code>regex_1</code
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="postgresql-publication-autocreate-mode"></a><a href="#postgresql-publication-autocreate-mode"><code>publication&#8203;.autocreate.mode</code></a></p>
+<p><a id="postgresql-publication-autocreate-mode"></a><a href="#postgresql-publication-autocreate-mode"><code>publication.autocreate.mode</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><em>all_tables</em></p>
@@ -3998,7 +4213,7 @@ If <code>table_a</code> has a an <code>id</code> column, and <code>regex_1</code
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>Applies only when streaming changes by using <a href="https://www.postgresql.org/docs/current/sql-createpublication.html">the <code>pgoutput</code> plug-in</a>. The setting determines how creation of a <a href="https://www.postgresql.org/docs/current/logical-replication-publication.html">publication</a> should work. Possible settings are:<br>
 <br>
-<code>all_tables</code> - If a publication exists, the connector uses it. If a publication does not exist, the connector creates a publication for all tables in the database for which the connector is capturing changes. This requires that the database user who has permission to perform replications also has permission to create a publication. This is granted with <code>CREATE PUBLICATION &lt;publication_name&gt; FOR ALL TABLES;</code>.<br>
+<code>all_tables</code> - If a publication exists, the connector uses it. If a publication does not exist, the connector creates a publication for all tables in the database for which the connector is capturing changes. This requires that the database user that has permission to perform replications also has permission to create a publication. This is granted with <code>CREATE PUBLICATION &lt;publication_name&gt; FOR ALL TABLES;</code>.<br>
 <br>
 <code>disabled</code> - The connector does not attempt to create a publication. A database administrator or the user configured to perform replications must have created the publication before running the connector. If the connector cannot find the publication, the connector throws an exception and stops.<br>
 <br>
@@ -4007,7 +4222,7 @@ If <code>table_a</code> has a an <code>id</code> column, and <code>regex_1</code
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="postgresql-property-binary-handling-mode"></a><a href="#postgresql-property-binary-handling-mode"><code>binary.handling&#8203;.mode</code></a></p>
+<p><a id="postgresql-property-binary-handling-mode"></a><a href="#postgresql-property-binary-handling-mode"><code>binary.handling.mode</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>bytes</p>
@@ -4019,7 +4234,26 @@ If <code>table_a</code> has a an <code>id</code> column, and <code>regex_1</code
 <br>
 <code>base64</code> represents binary data as base64-encoded strings.<br>
 <br>
-<code>hex</code> represents binary data as hex-encoded (base16) strings.<br></p>
+<code>hex</code> represents binary data as hex-encoded (base16) strings.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="postgresql-property-truncate-handling-mode"></a><a href="#postgresql-property-truncate-handling-mode"><code>truncate.handling.mode</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>bytes</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies how whether <code>TRUNCATE</code> events should be propagated or not (only available when using the <code>pgoutput</code> plug-in with Postgres 11 or later):<br>
+<br>
+<code>skip</code> causes those event to be omitted (the default).<br>
+<br>
+<code>include</code> causes hos events to be included.<br></p>
+</div>
+<div class="paragraph">
+<p>+
+Please see <a href="#postgresql-truncate-events"><em>truncate</em> events</a> for the structure of <em>truncate</em> events and their ordering semantics.</p>
 </div></div></td>
 </tr>
 </tbody>
@@ -4028,7 +4262,7 @@ If <code>table_a</code> has a an <code>id</code> column, and <code>regex_1</code
 <p>The following <em>advanced</em> configuration properties have defaults that work in most situations and therefore rarely need to be specified in the connector&#8217;s configuration.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 19. Advanced connector configuration properties</caption>
+<caption class="title">Table 20. Advanced connector configuration properties</caption>
 <colgroup>
 <col style="width: 30%;">
 <col style="width: 28%;">
@@ -4089,7 +4323,7 @@ The<a href="#snapshot-mode-settings">reference table for snapshot mode settings<
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="postgresql-property-snapshot-lock-timeout-ms"></a><a href="#postgresql-property-snapshot-lock-timeout-ms"><code>snapshot.lock&#8203;.timeout.ms</code></a></p>
+<p><a id="postgresql-property-snapshot-lock-timeout-ms"></a><a href="#postgresql-property-snapshot-lock-timeout-ms"><code>snapshot.lock.timeout.ms</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>10000</code></p>
@@ -4100,20 +4334,20 @@ The<a href="#snapshot-mode-settings">reference table for snapshot mode settings<
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="postgresql-property-snapshot-select-statement-overrides"></a><a href="#postgresql-property-snapshot-select-statement-overrides"><code>snapshot.select&#8203;.statement&#8203;.overrides</code></a></p>
+<p><a id="postgresql-property-snapshot-select-statement-overrides"></a><a href="#postgresql-property-snapshot-select-statement-overrides"><code>snapshot.select.statement.overrides</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>Controls which table rows are included in snapshots. This property affects snapshots only. It does not affect events that are generated by the logical decoding plug-in. Specify a comma-separated list of fully-qualified table names in the form <em>databaseName.tableName</em>.<br>
 <br>
-For each table that you specify, also specify another configuration property: <code>snapshot.select.statement&#8203;.overrides.<em>DB_NAME</em>.<em>TABLE_NAME</em></code>, for example: <code>snapshot.select.statement&#8203;.overrides.customers.orders</code>. Set this property to a <code>SELECT</code> statement that obtains only the rows that you want in the snapshot. When the connector performs a snapshot, it executes this <code>SELECT</code> statement to retrieve data from that table.<br>
+For each table that you specify, also specify another configuration property: <code>snapshot.select.statement.overrides.<em>DB_NAME</em>.<em>TABLE_NAME</em></code>, for example: <code>snapshot.select.statement.overrides.customers.orders</code>. Set this property to a <code>SELECT</code> statement that obtains only the rows that you want in the snapshot. When the connector performs a snapshot, it executes this <code>SELECT</code> statement to retrieve data from that table.<br>
 <br>
 A possible use case for setting these properties is large, append-only tables. You can specify a <code>SELECT</code> statement that sets a specific point for where to start a snapshot, or where to resume a snapshot if a previous snapshot was interrupted.</p>
 </div></div></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="postgresql-property-event-processing-failure-handling-mode"></a><a href="#postgresql-property-event-processing-failure-handling-mode"><code>event.processing&#8203;.failure.handling&#8203;.mode</code></a></p>
+<p><a id="postgresql-property-event-processing-failure-handling-mode"></a><a href="#postgresql-property-event-processing-failure-handling-mode"><code>event.processing.failure.handling.mode</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>fail</code></p>
@@ -4174,7 +4408,7 @@ A possible use case for setting these properties is large, append-only tables. Y
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="postgresql-property-include-unknown-datatypes"></a><a href="#postgresql-property-include-unknown-datatypes"><code>include.unknown&#8203;.datatypes</code></a></p>
+<p><a id="postgresql-property-include-unknown-datatypes"></a><a href="#postgresql-property-include-unknown-datatypes"><code>include.unknown.datatypes</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>false</code></p>
@@ -4199,7 +4433,7 @@ Consumers risk backward compatibility issues when <code>include.unknown.datatype
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="postgresql-property-database-initial-statements"></a><a href="#postgresql-property-database-initial-statements"><code>database.initial&#8203;.statements</code></a></p>
+<p><a id="postgresql-property-database-initial-statements"></a><a href="#postgresql-property-database-initial-statements"><code>database.initial.statements</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -4212,7 +4446,7 @@ The connector does not execute these statements when it creates a connection for
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="postgresql-property-heartbeat-interval-ms"></a><a href="#postgresql-property-heartbeat-interval-ms"><code>heartbeat.interval&#8203;.ms</code></a></p>
+<p><a id="postgresql-property-heartbeat-interval-ms"></a><a href="#postgresql-property-heartbeat-interval-ms"><code>heartbeat.interval.ms</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>0</code></p>
@@ -4227,7 +4461,7 @@ Heartbeat messages are needed when there are many updates in a database that is 
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="postgresql-property-heartbeat-topics-prefix"></a><a href="#postgresql-property-heartbeat-topics-prefix"><code>heartbeat.topics&#8203;.prefix</code></a></p>
+<p><a id="postgresql-property-heartbeat-topics-prefix"></a><a href="#postgresql-property-heartbeat-topics-prefix"><code>heartbeat.topics.prefix</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>__debezium-heartbeat</code></p>
@@ -4242,7 +4476,7 @@ For example, if the database server name is <code>fulfillment</code>, the defaul
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="postgresql-property-heartbeat-action-query"></a><a href="#postgresql-property-heartbeat-action-query"><code>heartbeat.action&#8203;.query</code></a></p>
+<p><a id="postgresql-property-heartbeat-action-query"></a><a href="#postgresql-property-heartbeat-action-query"><code>heartbeat.action.query</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -4307,7 +4541,7 @@ become outdated if TOASTable columns are dropped from the table.</p>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="postgresql-property-sanitize-field-names"></a><a href="#postgresql-property-sanitize-field-names"><code>sanitize.field&#8203;.names</code></a></p>
+<p><a id="postgresql-property-sanitize-field-names"></a><a href="#postgresql-property-sanitize-field-names"><code>sanitize.field.names</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>true</code> if connector configuration sets the <code>key.converter</code> or <code>value.converter</code> property to the Avro converter.</p>
@@ -4343,7 +4577,7 @@ become outdated if TOASTable columns are dropped from the table.</p>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="postgresql-property-toasted-value-placeholder"></a><a href="#postgresql-property-toasted-value-placeholder"><code>toasted.value&#8203;.placeholder</code></a></p>
+<p><a id="postgresql-property-toasted-value-placeholder"></a><a href="#postgresql-property-toasted-value-placeholder"><code>toasted.value.placeholder</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>__debezium_unavailable_value</code></p>
@@ -4355,7 +4589,7 @@ If the setting of <code>toasted.value.placeholder</code> starts with the <code>h
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="postgresql-property-provide-transaction-metadata"></a><a href="#postgresql-property-provide-transaction-metadata"><code>provide.transaction&#8203;.metadata</code></a></p>
+<p><a id="postgresql-property-provide-transaction-metadata"></a><a href="#postgresql-property-provide-transaction-metadata"><code>provide.transaction.metadata</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>false</code></p>
@@ -4366,7 +4600,7 @@ If the setting of <code>toasted.value.placeholder</code> starts with the <code>h
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="postgresql-property-retriable-restart-connector-wait-ms"></a><a href="#postgresql-property-retriable-restart-connector-wait-ms"><code>retriable.restart&#8203;.connector.wait.ms</code></a><br></p>
+<p><a id="postgresql-property-retriable-restart-connector-wait-ms"></a><a href="#postgresql-property-retriable-restart-connector-wait-ms"><code>retriable.restart.connector.wait.ms</code></a><br></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>10000 (10 seconds)</p>

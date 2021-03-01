@@ -286,36 +286,52 @@
 <div id="toctitle" class="title">Table of Contents</div>
 <ul class="sectlevel1">
 <li><a href="#oracle-overview">Overview</a></li>
+<li><a href="#how-the-oracle-connector-works">How the Oracle Connector Works</a>
+<ul class="sectlevel2">
+<li><a href="#oracle-snapshots">Snapshots</a></li>
+<li><a href="#oracle-topic-names">Topics Names</a></li>
+<li><a href="#oracle-schema-change-topic">Schema Change Topic</a></li>
+<li><a href="#oracle-transaction-metadata">Transaction Metadata</a></li>
+</ul>
+</li>
+<li><a href="#oracle-events">Data change events</a>
+<ul class="sectlevel2">
+<li><a href="#oracle-change-event-keys">Change event keys</a></li>
+<li><a href="#oracle-change-event-values">Change event values</a></li>
+<li><a href="#oracle-create-events">Create events</a></li>
+<li><a href="#oracle-update-events">Update events</a></li>
+<li><a href="#oracle-delete-events">Delete events</a></li>
+</ul>
+</li>
+<li><a href="#oracle-data-type-mappings">Data Type mappings</a>
+<ul class="sectlevel2">
+<li><a href="#oracle-character-types">Character types</a></li>
+<li><a href="#oracle-numeric-types">Numeric types</a></li>
+<li><a href="#oracle-decimal-types">Decimal types</a></li>
+<li><a href="#oracle-temporal-types">Temporal types</a></li>
+</ul>
+</li>
 <li><a href="#setting-up-oracle">Setting up Oracle</a>
 <ul class="sectlevel2">
 <li><a href="#_preparing_the_database">Preparing the Database</a></li>
 <li><a href="#_creating_users_for_the_connector">Creating Users for the connector</a></li>
 <li><a href="#_create_an_xstream_outbound_server">Create an XStream Outbound Server</a></li>
-<li><a href="#_supported_configurations">Supported Configurations</a></li>
-</ul>
-</li>
-<li><a href="#how-the-oracle-connector-works">How the Oracle Connector Works</a>
-<ul class="sectlevel2">
-<li><a href="#oracle-database-schema-history">Database Schema History</a></li>
-<li><a href="#oracle-snapshots">Snapshots</a></li>
-<li><a href="#oracle-reading-the-log">Reading the Redo Log</a></li>
-<li><a href="#oracle-topic-names">Topics Names</a></li>
-<li><a href="#oracle-schema-change-topic">Schema Change Topic</a></li>
-<li><a href="#oracle-events">Events</a></li>
-<li><a href="#oracle-transaction-metadata">Transaction Metadata</a></li>
-<li><a href="#oracle-data-types">Data Types</a></li>
 </ul>
 </li>
 <li><a href="#oracle-deploying-a-connector">Deploying a Connector</a>
 <ul class="sectlevel2">
 <li><a href="#oracle-example-configuration">Example Configuration</a></li>
 <li><a href="#oracle-database-mode">Pluggable vs Non-Plugable databases</a></li>
+<li><a href="#selecting-the-adapter">Selecting the adapter</a></li>
+<li><a href="#oracle-connector-properties">Connector Properties</a></li>
 </ul>
 </li>
-<li><a href="#selecting-the-adapter">Selecting the adapter</a>
+<li><a href="#oracle-monitoring">Monitoring</a>
 <ul class="sectlevel2">
-<li><a href="#oracle-monitoring">Monitoring</a></li>
-<li><a href="#oracle-connector-properties">Connector Properties</a></li>
+<li><a href="#oracle-snapshot-metrics">Snapshot Metrics</a></li>
+<li><a href="#oracle-streaming-metrics">Streaming Metrics</a></li>
+<li><a href="#oracle-monitoring-streaming-logminer">LogMiner Metrics</a></li>
+<li><a href="#oracle-schema-history-metrics">Schema History Metrics</a></li>
 </ul>
 </li>
 <li><a href="#oracle-when-things-go-wrong">Behavior when things go wrong</a>
@@ -359,329 +375,19 @@ In order to use the XStream API, you need to have a license for the GoldenGate p
 </div>
 </div>
 <div class="sect1">
-<h2 id="setting-up-oracle"><a class="anchor" href="#setting-up-oracle"></a>Setting up Oracle</h2>
-<div class="sectionbody">
-<div class="paragraph">
-<p>The following steps need to be performed in order to prepare the database so the Debezium connector can be used.
-This assumes the multi-tenancy configuration (with a container database and at least one pluggable database);
-if you&#8217;re not using this model, adjust the steps accordingly.</p>
-</div>
-<div class="paragraph">
-<p>You can find a template for setting up Oracle in a virtual machine (via Vagrant) in the <a href="https://github.com/debezium/oracle-vagrant-box/">oracle-vagrant-box/</a> repository.</p>
-</div>
-<div class="sect2">
-<h3 id="_preparing_the_database"><a class="anchor" href="#_preparing_the_database"></a>Preparing the Database</h3>
-<div class="sect3">
-<h4 id="_xstream"><a class="anchor" href="#_xstream"></a>XStream</h4>
-<div class="paragraph">
-<p>Enable GoldenGate replication and archive log mode:</p>
-</div>
-<div class="listingblock">
-<div class="content">
-<pre class="highlightjs highlight"><code>ORACLE_SID=ORCLCDB dbz_oracle sqlplus /nolog
-
-CONNECT sys/top_secret AS SYSDBA
-alter system set db_recovery_file_dest_size = 5G;
-alter system set db_recovery_file_dest = '/opt/oracle/oradata/recovery_area' scope=spfile;
-alter system set enable_goldengate_replication=true;
-shutdown immediate
-startup mount
-alter database archivelog;
-alter database open;
--- Should show "Database log mode: Archive Mode"
-archive log list
-
-exit;</code></pre>
-</div>
-</div>
-<div class="paragraph">
-<p>Furthermore, in order to capture the <em>before</em> state of changed rows, supplemental logging must be enabled for the captured tables or the database in general.
-E.g. like so for a specific table:</p>
-</div>
-<div class="listingblock">
-<div class="content">
-<pre class="highlightjs highlight"><code>ALTER TABLE inventory.customers ADD SUPPLEMENTAL LOG DATA (ALL) COLUMNS;</code></pre>
-</div>
-</div>
-</div>
-<div class="sect3">
-<h4 id="_logminer"><a class="anchor" href="#_logminer"></a>LogMiner</h4>
-<div class="admonitionblock note">
-<table>
-<tr>
-<td class="icon">
-<i class="fa icon-note" title="Note"></i>
-</td>
-<td class="content">
-<div class="paragraph">
-<p>The LogMiner implementation requires the database to be configured with a minimum number of redo log groups and files per group.
-It&#8217;s recommended to have a minimum of <code>5</code> redo log groups each with <code>2</code> redo files per group.
-Please refer to the Oracle documentation on how to manipulate redo log groups and files for your database version.</p>
-</div>
-</td>
-</tr>
-</table>
-</div>
-<div class="paragraph">
-<p>Enable archive log mode:</p>
-</div>
-<div class="listingblock">
-<div class="content">
-<pre class="highlightjs highlight"><code>ORACLE_SID=ORACLCDB dbz_oracle sqlplus /nolog
-
-CONNECT sys/top_secret AS SYSDBA
-alter system set db_recovery_file_dest_size = 10G;
-alter system set db_recovery_file_dest = '/opt/oracle/oradta/recovery_area' scope=spfile;
-shutdown immediate
-startup mount
-alter database archivelog;
-alter database open;
--- Should now "Database log mode: Archive Mode"
-archive log list
-
-exit;</code></pre>
-</div>
-</div>
-<div class="paragraph">
-<p>Furthermore, in order to capture the <em>before</em> state of changed rows, supplemental logging must be enabled for the captured tables or the database in general.
-E.g. like so for a specific table:</p>
-</div>
-<div class="listingblock">
-<div class="content">
-<pre class="highlightjs highlight"><code>ALTER TABLE inventory.customers ADD SUPPLEMENTAL LOG DATA (ALL) COLUMNS;</code></pre>
-</div>
-</div>
-</div>
-</div>
-<div class="sect2">
-<h3 id="_creating_users_for_the_connector"><a class="anchor" href="#_creating_users_for_the_connector"></a>Creating Users for the connector</h3>
-<div class="sect3">
-<h4 id="_xstream_2"><a class="anchor" href="#_xstream_2"></a>XStream</h4>
-<div class="paragraph">
-<p>Create an XStream admin user in the container database (used per Oracle&#8217;s recommendation for administering XStream):</p>
-</div>
-<div class="listingblock">
-<div class="content">
-<pre class="highlightjs highlight"><code>sqlplus sys/top_secret@//localhost:1521/ORCLCDB as sysdba
-CREATE TABLESPACE xstream_adm_tbs DATAFILE '/opt/oracle/oradata/ORCLCDB/xstream_adm_tbs.dbf'
-  SIZE 25M REUSE AUTOEXTEND ON MAXSIZE UNLIMITED;
-exit;</code></pre>
-</div>
-</div>
-<div class="listingblock">
-<div class="content">
-<pre class="highlightjs highlight"><code>sqlplus sys/top_secret@//localhost:1521/ORCLPDB1 as sysdba
-CREATE TABLESPACE xstream_adm_tbs DATAFILE '/opt/oracle/oradata/ORCLCDB/ORCLPDB1/xstream_adm_tbs.dbf'
-  SIZE 25M REUSE AUTOEXTEND ON MAXSIZE UNLIMITED;
-exit;</code></pre>
-</div>
-</div>
-<div class="listingblock">
-<div class="content">
-<pre class="highlightjs highlight"><code>sqlplus sys/top_secret@//localhost:1521/ORCLCDB as sysdba
-
-CREATE USER c##xstrmadmin IDENTIFIED BY xsa
-  DEFAULT TABLESPACE xstream_adm_tbs
-  QUOTA UNLIMITED ON xstream_adm_tbs
-  CONTAINER=ALL;
-
-GRANT CREATE SESSION, SET CONTAINER TO c##xstrmadmin CONTAINER=ALL;
-
-BEGIN
-   DBMS_XSTREAM_AUTH.GRANT_ADMIN_PRIVILEGE(
-      grantee                 =&gt; 'c##xstrmadmin',
-      privilege_type          =&gt; 'CAPTURE',
-      grant_select_privileges =&gt; TRUE,
-      container               =&gt; 'ALL'
-   );
-END;
-/
-
-exit;</code></pre>
-</div>
-</div>
-<div class="paragraph">
-<p>Create XStream user (used by the Debezium connector to connect to the XStream outbound server):</p>
-</div>
-<div class="listingblock">
-<div class="content">
-<pre class="highlightjs highlight"><code>sqlplus sys/top_secret@//localhost:1521/ORCLCDB as sysdba
-CREATE TABLESPACE xstream_tbs DATAFILE '/opt/oracle/oradata/ORCLCDB/xstream_tbs.dbf'
-  SIZE 25M REUSE AUTOEXTEND ON MAXSIZE UNLIMITED;
-exit;</code></pre>
-</div>
-</div>
-<div class="listingblock">
-<div class="content">
-<pre class="highlightjs highlight"><code>sqlplus sys/top_secret@//localhost:1521/ORCLPDB1 as sysdba
-CREATE TABLESPACE xstream_tbs DATAFILE '/opt/oracle/oradata/ORCLCDB/ORCLPDB1/xstream_tbs.dbf'
-  SIZE 25M REUSE AUTOEXTEND ON MAXSIZE UNLIMITED;
-exit;</code></pre>
-</div>
-</div>
-<div class="listingblock">
-<div class="content">
-<pre class="highlightjs highlight"><code>sqlplus sys/top_secret@//localhost:1521/ORCLCDB as sysdba
-
-CREATE USER c##xstrm IDENTIFIED BY xs
-  DEFAULT TABLESPACE xstream_tbs
-  QUOTA UNLIMITED ON xstream_tbs
-  CONTAINER=ALL;
-
-GRANT CREATE SESSION TO c##xstrm CONTAINER=ALL;
-GRANT SET CONTAINER TO c##xstrm CONTAINER=ALL;
-GRANT SELECT ON V_$DATABASE to c##xstrm CONTAINER=ALL;
-GRANT FLASHBACK ANY TABLE TO c##xstrm CONTAINER=ALL;
-GRANT SELECT_CATALOG_ROLE TO c##xstrm CONTAINER=ALL;
-
-exit;</code></pre>
-</div>
-</div>
-</div>
-<div class="sect3">
-<h4 id="_logminer_2"><a class="anchor" href="#_logminer_2"></a>LogMiner</h4>
-<div class="paragraph">
-<p>Create LogMiner user (used by the Debezium connector to connect to Oracle):</p>
-</div>
-<div class="listingblock">
-<div class="content">
-<pre class="highlightjs highlight"><code>sqlplus sys/top_secret@//localhost:1521/ORCLCDB as sysdba
-CREATE TABLESPACE logminer_tbs DATAFILE '/opt/oracle/oradata/ORCLCDB/logminer_tbs.dbf'
-  SIZE 25M REUSE AUTOEXTEND ON MAXSIZE UNLIMITED;
-exit;</code></pre>
-</div>
-</div>
-<div class="listingblock">
-<div class="content">
-<pre class="highlightjs highlight"><code>sqlplus sys/top_secret@//localhost:1521/ORCLPDB1 as sysdba
-CREATE TABLESPACE logminer_tbs DATAFILE '/opt/oracle/oradata/ORCLCDB/ORCLPDB1/logminer_tbs.dbf'
-  SIZE 25M REUSE AUTOEXTEND ON MAXSIZE UNLIMITED;
-exit;</code></pre>
-</div>
-</div>
-<div class="listingblock">
-<div class="content">
-<pre class="highlightjs highlight"><code>sqlplus sys/top_secret@//localhost:1521/ORCLCDB as sysdba
-
-CREATE USER c##logminer IDENTIFIED BY lm
-  DEFAULT TABLESPACE logminer_tbs
-  QUOTA UNLIMITED ON logminer_tbs
-  CONTAINER=ALL;
-
-GRANT CREATE SESSION TO c##logminer CONTAINER=ALL;
-GRANT SET CONTAINER TO c##logminer CONTAINER=ALL;
-GRANT SELECT ON V_$DATABASE to c##logminer CONTAINER=ALL;
-GRANT FLASHBACK ANY TABLE TO c##logminer CONTAINER=ALL;
-GRANT LOCK ANY TABLE TO c##logminer CONTAINER=ALL;
-GRANT CREATE TABLE TO c##logminer CONTAINER=ALL;
-GRANT CREATE SEQUENCE TO c##logminer CONTAINER=ALL;
-GRANT SELECT ON V_$LOG TO c##logminer CONTAINER=ALL;
-
-GRANT LOGMINING TO c##logminer CONTAINER=ALL;
-GRANT EXECUTE ON DBMS_LOGMNR TO c##logminer CONTAINER=ALL;
-GRANT EXECUTE ON DBMS_LOGMNR_D TO c##logminer CONTAINER=ALL;
-GRANT SELECT ON V$LOGMNR_LOGS TO c##logminer CONTAINER=ALL;
-GRANT SELECT ON V$LOGMNR_CONTENTS TO c##logminer CONTAINER=ALL;
-GRANT SELECT ON V$LOGFILE TO c##logminer CONTAINER=ALL;
-GRANT SELECT ON V$ARCHIVED_LOG TO c##logminer CONTAINER=ALL;
-GRANT SELECT ON V$ARCHIVE_DEST_STATUS TO c##logminer CONTAINER=ALL;
-
-exit;</code></pre>
-</div>
-</div>
-</div>
-</div>
-<div class="sect2">
-<h3 id="_create_an_xstream_outbound_server"><a class="anchor" href="#_create_an_xstream_outbound_server"></a>Create an XStream Outbound Server</h3>
-<div class="admonitionblock note">
-<table>
-<tr>
-<td class="icon">
-<i class="fa icon-note" title="Note"></i>
-</td>
-<td class="content">
-<div class="paragraph">
-<p>If you&#8217;re using the LogMiner implementation, this step is not necessary.</p>
-</div>
-</td>
-</tr>
-</table>
-</div>
-<div class="paragraph">
-<p>Create an <a href="https://docs.oracle.com/cd/E11882_01/server.112/e16545/xstrm_cncpt.htm#XSTRM1088">XStream Outbound server</a>
-(given the right privileges, this may be done automatically by the connector going forward, see <a href="https://issues.redhat.com/browse/DBZ-721">DBZ-721</a>):</p>
-</div>
-<div class="listingblock">
-<div class="content">
-<pre class="highlightjs highlight"><code>sqlplus c##xstrmadmin/xsa@//localhost:1521/ORCLCDB
-
-DECLARE
-  tables  DBMS_UTILITY.UNCL_ARRAY;
-  schemas DBMS_UTILITY.UNCL_ARRAY;
-BEGIN
-    tables(1)  := NULL;
-    schemas(1) := 'debezium';
-  DBMS_XSTREAM_ADM.CREATE_OUTBOUND(
-    server_name     =&gt;  'dbzxout',
-    table_names     =&gt;  tables,
-    schema_names    =&gt;  schemas);
-END;
-/
-
-exit;</code></pre>
-</div>
-</div>
-<div class="paragraph">
-<p>Alter the XStream Outbound server to allow the xstrm user to connect to it:</p>
-</div>
-<div class="listingblock">
-<div class="content">
-<pre class="highlightjs highlight"><code>sqlplus sys/top_secret@//localhost:1521/ORCLCDB as sysdba
-
-BEGIN
-  DBMS_XSTREAM_ADM.ALTER_OUTBOUND(
-    server_name  =&gt; 'dbzxout',
-    connect_user =&gt; 'c##xstrm');
-END;
-/
-
-exit;</code></pre>
-</div>
-</div>
-<div class="paragraph">
-<p>Note that a given outbound server must not be used by multiple connector instances at the same time.
-If you wish to set up multiple instances of the Debezium Oracle connector, a specific XStreamOutbound server is needed for each of them.</p>
-</div>
-</div>
-<div class="sect2">
-<h3 id="_supported_configurations"><a class="anchor" href="#_supported_configurations"></a>Supported Configurations</h3>
-<div class="paragraph">
-<p>So far, the connector has been tested with the pluggable database set-up (CDB/PDB model).
-It should monitor a single PDB in this model.
-It should also work with traditional (non-CDB) set-ups, though this could not be tested so far.</p>
-</div>
-</div>
-</div>
-</div>
-<div class="sect1">
 <h2 id="how-the-oracle-connector-works"><a class="anchor" href="#how-the-oracle-connector-works"></a>How the Oracle Connector Works</h2>
 <div class="sectionbody">
-<div class="sect2">
-<h3 id="oracle-database-schema-history"><a class="anchor" href="#oracle-database-schema-history"></a>Database Schema History</h3>
 <div class="paragraph">
-<p>tbd.</p>
-</div>
+<p>To optimally configure and run a Debezium Oracle connector, it is helpful to understand how the connector performs snapshots, streams change events, determines Kafka topic names, and uses metadata.</p>
 </div>
 <div class="sect2">
 <h3 id="oracle-snapshots"><a class="anchor" href="#oracle-snapshots"></a>Snapshots</h3>
 <div class="paragraph">
 <p>Most Oracle servers are configured to not retain the complete history of the database in the redo logs,
 so the Debezium Oracle connector would be unable to see the entire history of the database by simply reading the logs.
-So, by default (snapshotting mode <strong>initial</strong>) the connector will upon first startup perform an initial <em>consistent snapshot</em> of the database
-(meaning the structure and data within any tables to be captured as per the connector&#8217;s filter configuration).</p>
-</div>
-<div class="paragraph">
-<p>Each snapshot consists of the following steps:</p>
+Consequently, the first time the connector starts, it performs an initial <em>consistent snapshot</em> of the database.
+the default behavior for perofmring a snapshot consists of the following steps.
+you can change this behavior by setting the <code>snapshot.mode</code> connector configuration property to a value other than <code>initial</code>.</p>
 </div>
 <div class="olist arabic">
 <ol class="arabic">
@@ -711,27 +417,41 @@ So, by default (snapshotting mode <strong>initial</strong>) the connector will u
 <div class="paragraph">
 <p>If the connector fails, is rebalanced, or stops after step 1 begins but before step 7 completes,
 upon restart the connector will begin a new snapshot.
-Once the Oracle connector does complete its initial snapshot, it continues streaming from the position read during step 3,
-ensuring that it does not miss any updates that occurred while the snapshot was taken.
-If the connector stops again for any reason, upon restart it will simply continue streaming changes from where it previously left off.</p>
+After the connector completes its initial snapshot, the Debezium connector continues streaming from the position that it read in step 3.
+This ensures that the connector does not miss any updates.
+If the connector stops again for any reason, upon restart, the connector continues streaming changes from where it previously left off.</p>
 </div>
-<div class="paragraph">
-<p>A second snapshotting mode is <strong>schema_only</strong>.
-In this case, step 6 from the snapshotting routine described above is not applied.
-In other words, the connector still captures the structure of the relevant tables, but it does not create any <code>READ</code> events representing the complete dataset at the point of connector start-up.
-This can be useful if you are interested in data changes only from now onwards but not the complete current state of all records.</p>
-</div>
-</div>
-<div class="sect2">
-<h3 id="oracle-reading-the-log"><a class="anchor" href="#oracle-reading-the-log"></a>Reading the Redo Log</h3>
-<div class="paragraph">
-<p>Upon first start-up, the connector takes a snapshot of the structure of the captured tables (DDL)
-and persists this information in its internal database history topic.
-It then proceeds to listen for change events right from the SCN at which the schema structure was captured.
-Processed SCNs are passed as offsets to Kafka Connect and regularly acknowledged with the database server
-(allowing it to discard older log files).
-After restart, the connector will resume from the offset (SCN) where it left off before.</p>
-</div>
+<table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 1. Settings for <code>snapshot.mode</code> connector configuration property</caption>
+<colgroup>
+<col style="width: 30%;">
+<col style="width: 70%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Setting</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>initial</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The connector performs a database snapshot after which it will transition to streaming changes.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>schema_only</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The connector captures the structure of all relevant tables, performing all the steps described above, except it does not create any <code>READ</code> events representing the dataset at the point of the connector&#8217;s start-up.</p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
 </div>
 <div class="sect2">
 <h3 id="oracle-topic-names"><a class="anchor" href="#oracle-topic-names"></a>Topics Names</h3>
@@ -739,6 +459,12 @@ After restart, the connector will resume from the offset (SCN) where it left off
 </div>
 <div class="sect2">
 <h3 id="oracle-schema-change-topic"><a class="anchor" href="#oracle-schema-change-topic"></a>Schema Change Topic</h3>
+<div class="paragraph">
+<p>The Debezium Oracle connector stores the history of schema changes in a database history topic.
+This topic reflects an internal connector state and you should not use it directly.
+Applications that require notifications about schema changes should obtain the information from the public schema change topic.
+the connector writes all of these events to a Kafka topic named <code>&lt;serverName&gt;</code>, where <code>serverName</code> is the name of the connector that is specified in the <code>database.server.name</code> configuration property.</p>
+</div>
 <div class="admonitionblock warning">
 <table>
 <tr>
@@ -747,17 +473,11 @@ After restart, the connector will resume from the offset (SCN) where it left off
 </td>
 <td class="content">
 <div class="paragraph">
-<p>The format of the schema change topic messages is in incubating state and it can change without further notice.</p>
+<p>The schema change topic message format is in an incubating state and may change without notice.</p>
 </div>
 </td>
 </tr>
 </table>
-</div>
-<div class="paragraph">
-<p>Oracle connector stores the historic schema structure of database tables in a database history topic.
-This topic should be considered as an internal state of the connector and should not be used by the user.
-If the application needs to track changes in the source database there is the public-facing schema change topic.
-The topic name is the same as the logical server name configured in connector configuration.</p>
 </div>
 <div class="paragraph">
 <p>Debezium emits a new message to this topic whenever a new table is streamed from or when the structure of the table is altered (<a href="#oracle-schema-evolution">schema evolution procedure must be followed</a>).
@@ -787,19 +507,19 @@ The message contains a logical representation of the table schema.</p>
       "commit_scn": "1513734",
       "lcr_position" : null
     },
-    "databaseName": "ORCLPDB1",
-    "schemaName": "DEBEZIUM",
-    "ddl": "CREATE TABLE \"DEBEZIUM\".\"CUSTOMERS\" \n   (    \"ID\" NUMBER(9,0) NOT NULL ENABLE, \n    \"FIRST_NAME\" VARCHAR2(255), \n    \"LAST_NAME" VARCHAR2(255), \n    \"EMAIL\" VARCHAR2(255), \n     PRIMARY KEY (\"ID\") ENABLE, \n     SUPPLEMENTAL LOG DATA (ALL) COLUMNS\n   ) SEGMENT CREATION IMMEDIATE \n  PCTFREE 10 PCTUSED 40 INITRANS 1 MAXTRANS 255 \n NOCOMPRESS LOGGING\n  STORAGE(INITIAL 65536 NEXT 1048576 MINEXTENTS 1 MAXEXTENTS 2147483645\n  PCTINCREASE 0 FREELISTS 1 FREELIST GROUPS 1\n  BUFFER_POOL DEFAULT FLASH_CACHE DEFAULT CELL_FLASH_CACHE DEFAULT)\n  TABLESPACE \"USERS\" ",
-    "tableChanges": [
+    "databaseName": "ORCLPDB1", <i class="conum" data-value="1"></i><b>(1)</b>
+    "schemaName": "DEBEZIUM", <i class="conum" data-value="1"></i><b>(1)</b>
+    "ddl": "CREATE TABLE \"DEBEZIUM\".\"CUSTOMERS\" \n   (    \"ID\" NUMBER(9,0) NOT NULL ENABLE, \n    \"FIRST_NAME\" VARCHAR2(255), \n    \"LAST_NAME" VARCHAR2(255), \n    \"EMAIL\" VARCHAR2(255), \n     PRIMARY KEY (\"ID\") ENABLE, \n     SUPPLEMENTAL LOG DATA (ALL) COLUMNS\n   ) SEGMENT CREATION IMMEDIATE \n  PCTFREE 10 PCTUSED 40 INITRANS 1 MAXTRANS 255 \n NOCOMPRESS LOGGING\n  STORAGE(INITIAL 65536 NEXT 1048576 MINEXTENTS 1 MAXEXTENTS 2147483645\n  PCTINCREASE 0 FREELISTS 1 FREELIST GROUPS 1\n  BUFFER_POOL DEFAULT FLASH_CACHE DEFAULT CELL_FLASH_CACHE DEFAULT)\n  TABLESPACE \"USERS\" ", <i class="conum" data-value="2"></i><b>(2)</b>
+    "tableChanges": [ <i class="conum" data-value="3"></i><b>(3)</b>
       {
-        "type": "CREATE",
-        "id": "\"ORCLPDB1\".\"DEBEZIUM\".\"CUSTOMERS\"",
-        "table": {
+        "type": "CREATE", <i class="conum" data-value="4"></i><b>(4)</b>
+        "id": "\"ORCLPDB1\".\"DEBEZIUM\".\"CUSTOMERS\"", <i class="conum" data-value="5"></i><b>(5)</b>
+        "table": { <i class="conum" data-value="6"></i><b>(6)</b>
           "defaultCharsetName": null,
-          "primaryKeyColumnNames": [
+          "primaryKeyColumnNames": [ <i class="conum" data-value="7"></i><b>(7)</b>
             "ID"
           ],
-          "columns": [
+          "columns": [ <i class="conum" data-value="8"></i><b>(8)</b>
             {
               "name": "ID",
               "jdbcType": 2,
@@ -864,39 +584,82 @@ The message contains a logical representation of the table schema.</p>
 }</code></pre>
 </div>
 </div>
-<div class="paragraph">
-<p>The fields</p>
+<table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 2. Descriptions of fields in messages emitted to the schema change topic</caption>
+<colgroup>
+<col style="width: 10%;">
+<col style="width: 40%;">
+<col style="width: 50%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Item</th>
+<th class="tableblock halign-left valign-top">Field name</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">1</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>databaseName</code><br>
+<code>schemaName</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Identifies the database and the schema that contain the change.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">2</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>ddl</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">This field contains the DDL responsible for the schema change.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">3</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>tableChanges</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">An array of one or more items that contain the schema changes generated by a DDL command.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">4</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>type</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Describes the kind of change. The value is one of the following:</p>
 </div>
 <div class="ulist">
 <ul>
 <li>
-<p><code>databaseName</code> and <code>schemaName</code> describe which database/schema has been affected</p>
+<p><code>CREATE</code> - table created</p>
 </li>
 <li>
-<p><code>ddl</code> contains the DDL responsible for the schema change</p>
+<p><code>ALTER</code> - table modified</p>
 </li>
 <li>
-<p><code>tableChanges</code> array contains one or more schema changes generated by the DDL command</p>
-</li>
-<li>
-<p><code>type</code> describes the kind of the change: <code>CREATE</code> - table created, <code>ALTER</code> - table modified, <code>DROP</code> - table deleted</p>
-</li>
-<li>
-<p><code>id</code> is the full identifier of the table</p>
-</li>
-<li>
-<p><code>table</code> represents table metadata after the applied change</p>
-</li>
-<li>
-<p><code>primaryKeyColumnNames</code> is a list of columns that compose the table primary key</p>
-</li>
-<li>
-<p><code>columns</code> are column metadata of each of the columns</p>
+<p><code>DROP</code> - table deleted</p>
 </li>
 </ul>
-</div>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">5</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>id</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Full identifier of the table that was created, altered, or dropped.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">6</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>table</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Represents table metadata after the applied change.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">7</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>primaryKeyColumnNames</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">List of columns that compose the table&#8217;s primary key.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">8</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>columns</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Metadata for each column in the changed table.</p></td>
+</tr>
+</tbody>
+</table>
 <div class="paragraph">
-<p>The schema change messages use as the key the name of the database to which the changes apply:</p>
+<p>In messages that the connector sends to the schema change topic, the key is the name of the database that contains the schema change.
+In the following example, the <code>payload</code> field contains the key:</p>
 </div>
 <div class="listingblock">
 <div class="content">
@@ -921,7 +684,115 @@ The message contains a logical representation of the table schema.</p>
 </div>
 </div>
 <div class="sect2">
-<h3 id="oracle-events"><a class="anchor" href="#oracle-events"></a>Events</h3>
+<h3 id="oracle-transaction-metadata"><a class="anchor" href="#oracle-transaction-metadata"></a>Transaction Metadata</h3>
+<div class="paragraph">
+<p>Debezium can generate events that represents tranaction metadata boundaries and enrich data messages.</p>
+</div>
+<div class="sect3">
+<h4 id="_transaction_boundaries"><a class="anchor" href="#_transaction_boundaries"></a>Transaction boundaries</h4>
+<div class="paragraph">
+<p>Debezium generates events for every transaction <code>BEGIN</code> and <code>END</code>.
+Every event contains</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p><code>status</code> - <code>BEGIN</code> or <code>END</code></p>
+</li>
+<li>
+<p><code>id</code> - string representation of unique transaction identifier</p>
+</li>
+<li>
+<p><code>event_count</code> (for <code>END</code> events) - total number of events emmitted by the transaction</p>
+</li>
+<li>
+<p><code>data_collections</code> (for <code>END</code> events) - an array of pairs of <code>data_collection</code> and <code>event_count</code> that provides number of events emitted by changes originating from given data collection</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>Following is an example of what a message looks like:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
+  "status": "BEGIN",
+  "id": "5.6.641",
+  "event_count": null,
+  "data_collections": null
+}
+
+{
+  "status": "END",
+  "id": "5.6.641",
+  "event_count": 2,
+  "data_collections": [
+    {
+      "data_collection": "ORCLPDB1.DEBEZIUM.CUSTOMER",
+      "event_count": 1
+    },
+    {
+      "data_collection": "ORCLPDB1.DEBEZIUM.ORDER",
+      "event_count": 1
+    }
+  ]
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>The transaction events are written to the topic named <code>&lt;database.server.name&gt;.transaction</code>.</p>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_data_events_enrichment"><a class="anchor" href="#_data_events_enrichment"></a>Data events enrichment</h4>
+<div class="paragraph">
+<p>When transaction metadata is enabled the data message <code>Envelope</code> is enriched with a new <code>transaction</code> field.
+This field provides information about every event in the form of a composite of fields:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p><code>id</code> - string representation of unique transaction identifier</p>
+</li>
+<li>
+<p><code>total_order</code> - the absolute position of the event among all events generated by the transaction</p>
+</li>
+<li>
+<p><code>data_collection_order</code> - the per-data collection position of the event among all events that were emitted by the transaction</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>Following is an example of what a message looks like:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
+  "before": null,
+  "after": {
+    "pk": "2",
+    "aa": "1"
+  },
+  "source": {
+...
+  },
+  "op": "c",
+  "ts_ms": "1580390884335",
+  "transaction": {
+    "id": "5.6.641",
+    "total_order": "1",
+    "data_collection_order": "1"
+  }
+}</code></pre>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="oracle-events"><a class="anchor" href="#oracle-events"></a>Data change events</h2>
+<div class="sectionbody">
 <div class="paragraph">
 <p>All data change events produced by the Oracle connector have a key and a value, although the structure of the key and value depend on the table from which the change events originated (see <a href="#oracle-topic-names">Topic names</a>).</p>
 </div>
@@ -951,8 +822,8 @@ This could be difficult for consumers to deal with, so to make it easy Kafka Con
 Every message key and value has two parts: a <em>schema</em> and <em>payload</em>.
 The schema describes the structure of the payload, while the payload contains the actual data.</p>
 </div>
-<div class="sect3">
-<h4 id="oracle-change-event-keys"><a class="anchor" href="#oracle-change-event-keys"></a>Change Event Keys</h4>
+<div class="sect2">
+<h3 id="oracle-change-event-keys"><a class="anchor" href="#oracle-change-event-keys"></a>Change event keys</h3>
 <div class="paragraph">
 <p>For a given table, the change event&#8217;s key will have a structure that contains a field for each column in the primary key (or unique key constraint) of the table at the time the event was created.</p>
 </div>
@@ -1002,8 +873,8 @@ If you look at the value of the key&#8217;s <code>payload</code> field, you can 
 <p>Therefore, you can interpret this key as describing the row in the <code>inventory.customers</code> table (output from the connector named <code>server1</code>) whose <code>id</code> primary key column had a value of <code>1004</code>.</p>
 </div>
 </div>
-<div class="sect3">
-<h4 id="oracle-change-event-values"><a class="anchor" href="#oracle-change-event-values"></a>Change Event Values</h4>
+<div class="sect2">
+<h3 id="oracle-change-event-values"><a class="anchor" href="#oracle-change-event-values"></a>Change event values</h3>
 <div class="paragraph">
 <p>Like the message key, the value of a change event message has a <em>schema</em> section and <em>payload</em> section.
 The payload section of every change event value produced by the Oracle connector has an <em>envelope</em> structure with the following fields:</p>
@@ -1067,8 +938,9 @@ This field is only present when using the LogMiner connection adapter.</p>
 <div class="paragraph">
 <p>And of course, the <em>schema</em> portion of the event message&#8217;s value contains a schema that describes this envelope structure and the nested fields within it.</p>
 </div>
-<div class="sect4">
-<h5 id="oracle-create-events"><a class="anchor" href="#oracle-create-events"></a>Create events</h5>
+</div>
+<div class="sect2">
+<h3 id="oracle-create-events"><a class="anchor" href="#oracle-create-events"></a>Create events</h3>
 <div class="paragraph">
 <p>Let&#8217;s look at what a <em>create</em> event value might look like for our <code>customers</code> table:</p>
 </div>
@@ -1252,8 +1124,8 @@ It is possible and even recommended to use the <a href="/docs/faq/#avro-converte
 </table>
 </div>
 </div>
-<div class="sect4">
-<h5 id="oracle-update-events"><a class="anchor" href="#oracle-update-events"></a>Update events</h5>
+<div class="sect2">
+<h3 id="oracle-update-events"><a class="anchor" href="#oracle-update-events"></a>Update events</h3>
 <div class="paragraph">
 <p>The value of an <em>update</em> change event on this table will actually have the exact same <em>schema</em>, and its payload will be structured the same but will hold different values.
 Here&#8217;s an example:</p>
@@ -1331,8 +1203,8 @@ The <code>source</code> structure tells us information about Oracle&#8217;s reco
 </table>
 </div>
 </div>
-<div class="sect4">
-<h5 id="oracle-delete-events"><a class="anchor" href="#oracle-delete-events"></a>Delete events</h5>
+<div class="sect2">
+<h3 id="oracle-delete-events"><a class="anchor" href="#oracle-delete-events"></a>Delete events</h3>
 <div class="paragraph">
 <p>So far we&#8217;ve seen samples of <em>create</em> and <em>update</em> events.
 Now, let&#8217;s look at the value of a <em>delete</em> event for the same table. Once again, the <code>schema</code> portion of the value will be exactly the same as with the <em>create</em> and <em>update</em> events:</p>
@@ -1402,152 +1274,46 @@ To make this possible, Debezium&#8217;s Oracle connector always follows the <em>
 </div>
 </div>
 </div>
-<div class="sect2">
-<h3 id="oracle-transaction-metadata"><a class="anchor" href="#oracle-transaction-metadata"></a>Transaction Metadata</h3>
+<div class="sect1">
+<h2 id="oracle-data-type-mappings"><a class="anchor" href="#oracle-data-type-mappings"></a>Data Type mappings</h2>
+<div class="sectionbody">
 <div class="paragraph">
-<p>Debezium can generate events that represents tranaction metadata boundaries and enrich data messages.</p>
-</div>
-<div class="sect3">
-<h4 id="_transaction_boundaries"><a class="anchor" href="#_transaction_boundaries"></a>Transaction boundaries</h4>
-<div class="paragraph">
-<p>Debezium generates events for every transaction <code>BEGIN</code> and <code>END</code>.
-Every event contains</p>
+<p>The Oracle conenctor represents changes to rows with events that are structured like the table in which the rows exists. The event contains a field for each column value. How that value is represented in the event depends on the Oracle data type of the column. The following sections describe how the connector maps oracle data types to a <em>litearl type</em> and a <em>semantic type</em> in event fields.</p>
 </div>
 <div class="ulist">
 <ul>
 <li>
-<p><code>status</code> - <code>BEGIN</code> or <code>END</code></p>
+<p><em>litearl type</em> describes how the value is literally represented using Kafka Connect schema types: <code>INT8</code>, <code>INT16</code>, <code>INT32</code>, <code>INT64</code>, <code>FLOAT32</code>, <code>FLOAT64</code>, <code>BOOLEAN</code>, <code>STRING</code>, <code>BYTES</code>, <code>ARRAY</code>, <code>MAP</code>, and <code>STRUCT</code>.</p>
 </li>
 <li>
-<p><code>id</code> - string representation of unique transaction identifier</p>
-</li>
-<li>
-<p><code>event_count</code> (for <code>END</code> events) - total number of events emmitted by the transaction</p>
-</li>
-<li>
-<p><code>data_collections</code> (for <code>END</code> events) - an array of pairs of <code>data_collection</code> and <code>event_count</code> that provides number of events emitted by changes originating from given data collection</p>
+<p><em>semantic type</em> describes how the Kafka Connect schema captures the <em>meaning</em> of the field using the name of the Kafka Connect schema for the field.</p>
 </li>
 </ul>
-</div>
-<div class="paragraph">
-<p>Following is an example of what a message looks like:</p>
-</div>
-<div class="listingblock">
-<div class="content">
-<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
-  "status": "BEGIN",
-  "id": "5.6.641",
-  "event_count": null,
-  "data_collections": null
-}
-
-{
-  "status": "END",
-  "id": "5.6.641",
-  "event_count": 2,
-  "data_collections": [
-    {
-      "data_collection": "ORCLPDB1.DEBEZIUM.CUSTOMER",
-      "event_count": 1
-    },
-    {
-      "data_collection": "ORCLPDB1.DEBEZIUM.ORDER",
-      "event_count": 1
-    }
-  ]
-}</code></pre>
-</div>
-</div>
-<div class="paragraph">
-<p>The transaction events are written to the topic named <code>&lt;database.server.name&gt;.transaction</code>.</p>
-</div>
-</div>
-<div class="sect3">
-<h4 id="_data_events_enrichment"><a class="anchor" href="#_data_events_enrichment"></a>Data events enrichment</h4>
-<div class="paragraph">
-<p>When transaction metadata is enabled the data message <code>Envelope</code> is enriched with a new <code>transaction</code> field.
-This field provides information about every event in the form of a composite of fields:</p>
-</div>
-<div class="ulist">
-<ul>
-<li>
-<p><code>id</code> - string representation of unique transaction identifier</p>
-</li>
-<li>
-<p><code>total_order</code> - the absolute position of the event among all events generated by the transaction</p>
-</li>
-<li>
-<p><code>data_collection_order</code> - the per-data collection position of the event among all events that were emitted by the transaction</p>
-</li>
-</ul>
-</div>
-<div class="paragraph">
-<p>Following is an example of what a message looks like:</p>
-</div>
-<div class="listingblock">
-<div class="content">
-<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
-  "before": null,
-  "after": {
-    "pk": "2",
-    "aa": "1"
-  },
-  "source": {
-...
-  },
-  "op": "c",
-  "ts_ms": "1580390884335",
-  "transaction": {
-    "id": "5.6.641",
-    "total_order": "1",
-    "data_collection_order": "1"
-  }
-}</code></pre>
-</div>
-</div>
-</div>
-</div>
-<div class="sect2">
-<h3 id="oracle-data-types"><a class="anchor" href="#oracle-data-types"></a>Data Types</h3>
-<div class="paragraph">
-<p>As described above, the Debezium Oracle connector represents the changes to rows with events that are structured like the table in which the row exist.
-The event contains a field for each column value, and how that value is represented in the event depends on the Oracle data type of the column.
-This section describes this mapping from Oracle&#8217;s data types to a <em>literal type</em> and <em>semantic type</em> within the events' fields.</p>
-</div>
-<div class="paragraph">
-<p>Here, the <em>literal type</em> describes how the value is literally represented using Kafka Connect schema types, namely <code>INT8</code>, <code>INT16</code>, <code>INT32</code>, <code>INT64</code>, <code>FLOAT32</code>, <code>FLOAT64</code>, <code>BOOLEAN</code>, <code>STRING</code>, <code>BYTES</code>, <code>ARRAY</code>, <code>MAP</code>, and <code>STRUCT</code>.</p>
-</div>
-<div class="paragraph">
-<p>The <em>semantic type</em> describes how the Kafka Connect schema captures the <em>meaning</em> of the field using the name of the Kafka Connect schema for the field.</p>
 </div>
 <div class="paragraph">
 <p>Support for further data types will be added in subsequent releases.
-Please file a <a href="https://issues.redhat.com/browse/DBZ">JIRA issue</a> for any specific types you are missing.</p>
+Please file a <a href="https://issues.redhat.com/browse/DBZ">JIRA issue</a> for any specific types that may be missing.</p>
 </div>
-<div class="sect3">
-<h4 id="oracle-character-values"><a class="anchor" href="#oracle-character-values"></a>Character Values</h4>
+<div class="sect2">
+<h3 id="oracle-character-types"><a class="anchor" href="#oracle-character-types"></a>Character types</h3>
+<div class="paragraph">
+<p>The following table describes how the connector maps character types.</p>
+</div>
 <table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 3. Mappings for Oracle character data types</caption>
 <colgroup>
-<col style="width: 20%;">
-<col style="width: 15%;">
-<col style="width: 30%;">
-<col style="width: 35%;">
+<col style="width: 22.2222%;">
+<col style="width: 16.6666%;">
+<col style="width: 61.1112%;">
 </colgroup>
-<tbody>
+<thead>
 <tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Oracle Data Type</p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Literal type (schema type)</p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Semantic type (schema name)</p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Notes</p>
-</div></div></td>
+<th class="tableblock halign-left valign-top">Oracle Data Type</th>
+<th class="tableblock halign-left valign-top">Literal type (schema type)</th>
+<th class="tableblock halign-left valign-top">Semantic type (schema name) and Notes</th>
 </tr>
+</thead>
+<tbody>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>CHAR[(M)]</code></p>
@@ -1558,7 +1324,6 @@ Please file a <a href="https://issues.redhat.com/browse/DBZ">JIRA issue</a> for 
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>n/a</p>
 </div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"></div></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -1570,31 +1335,6 @@ Please file a <a href="https://issues.redhat.com/browse/DBZ">JIRA issue</a> for 
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>n/a</p>
 </div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>VARCHAR[(M)]</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>STRING</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>n/a</p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>VARCHAR2[(M)]</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>STRING</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>n/a</p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"></div></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -1606,33 +1346,146 @@ Please file a <a href="https://issues.redhat.com/browse/DBZ">JIRA issue</a> for 
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>n/a</p>
 </div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>VARCHAR[(M)]</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>STRING</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>n/a</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>VARCHAR2[(M)]</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>STRING</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>n/a</p>
+</div></div></td>
 </tr>
 </tbody>
 </table>
 </div>
-<div class="sect3">
-<h4 id="oracle-numeric-values"><a class="anchor" href="#oracle-numeric-values"></a>Numeric Values</h4>
+<div class="sect2">
+<h3 id="oracle-numeric-types"><a class="anchor" href="#oracle-numeric-types"></a>Numeric types</h3>
+<div class="paragraph">
+<p>The following table describes how the connector maps numeric types.</p>
+</div>
 <table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 4. Mappings for Oracle numeric data types</caption>
 <colgroup>
-<col style="width: 20%;">
-<col style="width: 15%;">
-<col style="width: 30%;">
-<col style="width: 35%;">
+<col style="width: 22.2222%;">
+<col style="width: 16.6666%;">
+<col style="width: 61.1112%;">
 </colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Oracle Data Type</th>
+<th class="tableblock halign-left valign-top">Literal type (schema type)</th>
+<th class="tableblock halign-left valign-top">Semantic type (schema name) and Notes</th>
+</tr>
+</thead>
 <tbody>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Oracle Data Type</p>
+<p><code>BINARY_FLOAT</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Literal type (schema type)</p>
+<p><code>FLOAT32</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Semantic type (schema name)</p>
+<p>n/a</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>BINARY_DOUBLE</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Notes</p>
+<p><code>FLOAT64</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>n/a</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>DECIMAL[(P, S)]</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>BYTES</code> / <code>INT8</code> / <code>INT16</code> / <code>INT32</code> / <code>INT64</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>org.apache.kafka.connect.data.Decimal</code> if using <code>BYTES</code><br>
+<br>
+Handled equivalently to <code>NUMBER</code> (note that S defaults to 0 for <code>DECIMAL</code>).</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>DOUBLE PRECISION</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>STRUCT</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>io.debezium.data.VariableScaleDecimal</code><br>
+<br>
+Contains a structure with two fields: <code>scale</code> of type <code>INT32</code> that contains the scale of the transferred value and <code>value</code> of type <code>BYTES</code> containing the original value in an unscaled form.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>FLOAT[(P)]</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>STRUCT</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>io.debezium.data.VariableScaleDecimal</code><br>
+<br>
+Contains a structure with two fields: <code>scale</code> of type <code>INT32</code> that contains the scale of the transferred value and <code>value</code> of type <code>BYTES</code> containing the original value in an unscaled form.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>INTEGER</code>, <code>INT</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>BYTES</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>org.apache.kafka.connect.data.Decimal</code><br>
+<br>
+<code>INTEGER</code> is mapped in Oracle to NUMBER(38,0) and hence can hold values larger than any of the <code>INT</code> types could store</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>LONG</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>INT64</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>n/a</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>NUMBER(1,0)</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>BOOLEAN</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>n/a</p>
 </div></div></td>
 </tr>
 <tr>
@@ -1643,10 +1496,9 @@ Please file a <a href="https://issues.redhat.com/browse/DBZ">JIRA issue</a> for 
 <p><code>STRUCT</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>io.debezium.data.VariableScaleDecimal</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Contains a structure with two fields: <code>scale</code> of type <code>INT32</code> that contains the scale of the transferred value and <code>value</code> of type <code>BYTES</code> containing the original value in an unscaled form.</p>
+<p><code>io.debezium.data.VariableScaleDecimal</code><br>
+<br>
+Contains a structure with two fields: <code>scale</code> of type <code>INT32</code> that contains the scale of the transferred value and <code>value</code> of type <code>BYTES</code> containing the original value in an unscaled form.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -1659,7 +1511,6 @@ Please file a <a href="https://issues.redhat.com/browse/DBZ">JIRA issue</a> for 
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>org.apache.kafka.connect.data.Decimal</code></p>
 </div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"></div></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -1669,40 +1520,28 @@ Please file a <a href="https://issues.redhat.com/browse/DBZ">JIRA issue</a> for 
 <p><code>INT8</code> / <code>INT16</code> / <code>INT32</code> / <code>INT64</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>n/a</p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>NUMBER</code> columns with a scale of 0 represent integer numbers; a negative scale indicates rounding in Oracle, e.g. a scale of -2 will cause rounding to hundreds.<br>
-Depending on the precision and scale, a matching Kafka Connect integer type will be chosen: <code>INT8</code> if P - S &lt; 3, <code>INT16</code> if P - S &lt; 5, <code>INT32</code> if P - S &lt; 10 and <code>INT64</code> if P - S &lt; 19.<br>
-If P - S &gt;= 19, the column will be mapped to <code>BYTES</code> (<code>org.apache.kafka.connect.data.Decimal</code>).</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>SMALLINT</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>BYTES</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>org.apache.kafka.connect.data.Decimal</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>SMALLINT</code> is mapped in Oracle to NUMBER(38,0) and hence can hold values larger than any of the <code>INT</code> types could store</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>INTEGER</code>, <code>INT</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>BYTES</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>org.apache.kafka.connect.data.Decimal</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>INTEGER</code> is mapped in Oracle to NUMBER(38,0) and hence can hold values larger than any of the <code>INT</code> types could store</p>
+<br>
+Depending on the precision and scale, a matching Kafka Connect integer type will be chosen:<br></p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>P - S &lt; 3, <code>INT8</code><br></p>
+</li>
+<li>
+<p>P - S &lt; 5, <code>INT16</code><br></p>
+</li>
+<li>
+<p>P - S &lt; 10, <code>INT32</code><br></p>
+</li>
+<li>
+<p>P - S &lt; 19, <code>INT64</code><br></p>
+</li>
+<li>
+<p>P - S &gt;= 19, <code>BYTES</code> (<code>org.apache.kafka.connect.data.Decimal</code>).</p>
+</li>
+</ul>
 </div></div></td>
 </tr>
 <tr>
@@ -1713,76 +1552,22 @@ If P - S &gt;= 19, the column will be mapped to <code>BYTES</code> (<code>org.ap
 <p><code>BYTES</code> / <code>INT8</code> / <code>INT16</code> / <code>INT32</code> / <code>INT64</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>org.apache.kafka.connect.data.Decimal</code> if using <code>BYTES</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Handled equivalently to <code>NUMBER</code> (note that S defaults to 0 for <code>NUMERIC</code>).</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>DECIMAL[(P, S)]</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>BYTES</code> / <code>INT8</code> / <code>INT16</code> / <code>INT32</code> / <code>INT64</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>org.apache.kafka.connect.data.Decimal</code> if using <code>BYTES</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Handled equivalently to <code>NUMBER</code> (note that S defaults to 0 for <code>DECIMAL</code>).</p>
+<p><code>org.apache.kafka.connect.data.Decimal</code> if using <code>BYTES</code><br>
+<br>
+Handled equivalently to <code>NUMBER</code> (note that S defaults to 0 for <code>NUMERIC</code>).</p>
 </div></div></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>BINARY_FLOAT</code></p>
+<p><code>SMALLINT</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>FLOAT32</code></p>
+<p><code>BYTES</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>n/a</p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>BINARY_DOUBLE</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>FLOAT64</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>n/a</p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>FLOAT[(P)]</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>STRUCT</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>io.debezium.data.VariableScaleDecimal</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Contains a structure with two fields: <code>scale</code> of type <code>INT32</code> that contains the scale of the transferred value and <code>value</code> of type <code>BYTES</code> containing the original value in an unscaled form.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>DOUBLE PRECISION</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>STRUCT</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>io.debezium.data.VariableScaleDecimal</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Contains a structure with two fields: <code>scale</code> of type <code>INT32</code> that contains the scale of the transferred value and <code>value</code> of type <code>BYTES</code> containing the original value in an unscaled form.</p>
+<p><code>org.apache.kafka.connect.data.Decimal</code><br>
+<br>
+<code>SMALLINT</code> is mapped in Oracle to NUMBER(38,0) and hence can hold values larger than any of the <code>INT</code> types could store</p>
 </div></div></td>
 </tr>
 <tr>
@@ -1793,50 +1578,51 @@ If P - S &gt;= 19, the column will be mapped to <code>BYTES</code> (<code>org.ap
 <p><code>STRUCT</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>io.debezium.data.VariableScaleDecimal</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Contains a structure with two fields: <code>scale</code> of type <code>INT32</code> that contains the scale of the transferred value and <code>value</code> of type <code>BYTES</code> containing the original value in an unscaled form.</p>
+<p><code>io.debezium.data.VariableScaleDecimal</code><br>
+<br>
+Contains a structure with two fields: <code>scale</code> of type <code>INT32</code> that contains the scale of the transferred value and <code>value</code> of type <code>BYTES</code> containing the original value in an unscaled form.</p>
 </div></div></td>
 </tr>
 </tbody>
 </table>
 </div>
-<div class="sect3">
-<h4 id="oracle-decimal-values"><a class="anchor" href="#oracle-decimal-values"></a>Decimal Values</h4>
+<div class="sect2">
+<h3 id="oracle-decimal-types"><a class="anchor" href="#oracle-decimal-types"></a>Decimal types</h3>
 <div class="paragraph">
-<p>When <code>decimal.handling.mode</code> configuration property is set to <code>precise</code>, then the connector will use the predefined Kafka Connect <code>org.apache.kafka.connect.data.Decimal</code> or <code>io.debezium.data.VariableScaleDecimal</code> logical types for numeric columns as described above.
+<p>The setting of the Oracle connector configuration property, <code>decimal.handling.mode</code> determines how the connector maps decimal types.</p>
+</div>
+<div class="paragraph">
+<p>When the <code>decimal.handling.mode</code> property is set to <code>precise</code>, the connector uses Kafka Connect <code>org.apache.kafka.connect.data.Decimal</code> logical type for all <code>DECIMAL</code> and <code>NUMERIC</code> columns.
 This is the default mode.</p>
 </div>
 <div class="paragraph">
-<p>However, when <code>decimal.handling.mode</code> configuration property is set to <code>double</code>, then the connector will represent the values as Java double values with schema type <code>FLOAT64</code>.
-The last option for <code>decimal.handling.mode</code> configuration property is <code>string</code>. In this case the connector will represent the values as their formatted string representation with schema type <code>STRING</code>.</p>
+<p>However, when the <code>decimal.handling.mode</code> property is set to <code>double</code>, the connector will represent the values as Java double values with schema type <code>FLOAT64</code>.</p>
+</div>
+<div class="paragraph">
+<p>The last possible setting for the <code>decimal.handling.mode</code> configuration property is <code>string</code>.
+In this case, the connector reprsents <code>DECIMAL</code> and <code>NUMERIC</code> values as their formatted string representation with schema type <code>STRING</code>.</p>
 </div>
 </div>
-<div class="sect3">
-<h4 id="oracle-temporal-values"><a class="anchor" href="#oracle-temporal-values"></a>Temporal Values</h4>
+<div class="sect2">
+<h3 id="oracle-temporal-types"><a class="anchor" href="#oracle-temporal-types"></a>Temporal types</h3>
+<div class="paragraph">
+<p>The following table describes how the connector maps temporal types.</p>
+</div>
 <table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 5. Mappings for Oracle temporal data types</caption>
 <colgroup>
+<col style="width: 25%;">
 <col style="width: 20%;">
-<col style="width: 15%;">
-<col style="width: 30%;">
-<col style="width: 35%;">
+<col style="width: 55%;">
 </colgroup>
-<tbody>
+<thead>
 <tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Oracle Data Type</p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Literal type (schema type)</p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Semantic type (schema name)</p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Notes</p>
-</div></div></td>
+<th class="tableblock halign-left valign-top">Oracle data type</th>
+<th class="tableblock halign-left valign-top">Literal type (schema type)</th>
+<th class="tableblock halign-left valign-top">Semantic type (schema name) and Notes</th>
 </tr>
+</thead>
+<tbody>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>DATE</code></p>
@@ -1845,10 +1631,37 @@ The last option for <code>decimal.handling.mode</code> configuration property is
 <p><code>INT64</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>io.debezium.time.Timestamp</code></p>
+<p><code>io.debezium.time.Timestamp</code><br>
+<br>
+Represents the number of milliseconds past epoch, and does not include timezone information.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>INTERVAL DAY[(M)] TO SECOND</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Represents the number of milliseconds past epoch, and does not include timezone information.</p>
+<p><code>FLOAT64</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>io.debezium.time.MicroDuration</code><br></p>
+</div>
+<div class="paragraph">
+<p>+
+The number of micro seconds for a time interval using the <code>365.25 / 12.0</code> formula for days per month average</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>INTERVAL YEAR[(M)] TO MONTH</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>FLOAT64</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>io.debezium.time.MicroDuration</code><br>
+<br>
+The number of micro seconds for a time interval using the <code>365.25 / 12.0</code> formula for days per month average</p>
 </div></div></td>
 </tr>
 <tr>
@@ -1859,10 +1672,9 @@ The last option for <code>decimal.handling.mode</code> configuration property is
 <p><code>INT64</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>io.debezium.time.Timestamp</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Represents the number of milliseconds past epoch, and does not include timezone information.</p>
+<p><code>io.debezium.time.Timestamp</code><br>
+<br>
+Represents the number of milliseconds past epoch, and does not include timezone information.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -1873,24 +1685,22 @@ The last option for <code>decimal.handling.mode</code> configuration property is
 <p><code>INT64</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>io.debezium.time.MicroTimestamp</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Represents the number of microseconds past epoch, and does not include timezone information.</p>
+<p><code>io.debezium.time.MicroTimestamp</code><br>
+<br>
+Represents the number of microseconds past epoch, and does not include timezone information.</p>
 </div></div></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>TIMESTAMP(7 - 9)</code></p>
+<p><code>TIMESTAMP(7 - 9)</code><br></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>INT64</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>io.debezium.time.NanoTimestamp</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Represents the number of nanoseconds past epoch, and does not include timezone information.</p>
+<p><code>io.debezium.time.NanoTimestamp</code><br>
+<br>
+Represents the number of nanoseconds past epoch, and does not include timezone information.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -1901,27 +1711,283 @@ The last option for <code>decimal.handling.mode</code> configuration property is
 <p><code>STRING</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>io.debezium.time.ZonedTimestamp</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>A string representation of a timestamp with timezone information</p>
+<p><code>io.debezium.time.ZonedTimestamp</code><br>
+<br>
+A string representation of a timestamp with timezone information</p>
 </div></div></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>INTERVAL</code></p>
+<p><code>TIMESTAMP WITH LOCAL TIME ZONE</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>FLOAT64</code></p>
+<p><code>STRING</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>io.debezium.time.MicroDuration</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The number of micro seconds for a time interval using the <code>365.25 / 12.0</code> formula for days per month average</p>
+<p><code>io.debezium.time.ZonedTimestamp</code><br>
+<br>
+A string representation of a timestamp with timezone information</p>
 </div></div></td>
 </tr>
 </tbody>
+</table>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="setting-up-oracle"><a class="anchor" href="#setting-up-oracle"></a>Setting up Oracle</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>The following database set up steps are necessary to use the Debezium Oracle connector.
+These steps assume the use of the multitenancy configuration with a container database and at least one pluggable database.
+If you intend to use a non-multitenancy configuration, the following steps may require adjustment.</p>
+</div>
+<div class="paragraph">
+<p>You can find a template for setting up Oracle in a virtual machine (via Vagrant) in the <a href="https://github.com/debezium/oracle-vagrant-box/">oracle-vagrant-box/</a> repository.</p>
+</div>
+<div class="sect2">
+<h3 id="_preparing_the_database"><a class="anchor" href="#_preparing_the_database"></a>Preparing the Database</h3>
+<div class="listingblock">
+<div class="title">Configuration needed for Oracle XStream</div>
+<div class="content">
+<pre class="highlightjs highlight"><code>ORACLE_SID=ORCLCDB dbz_oracle sqlplus /nolog
+
+CONNECT sys/top_secret AS SYSDBA
+alter system set db_recovery_file_dest_size = 5G;
+alter system set db_recovery_file_dest = '/opt/oracle/oradata/recovery_area' scope=spfile;
+alter system set enable_goldengate_replication=true;
+shutdown immediate
+startup mount
+alter database archivelog;
+alter database open;
+-- Should show "Database log mode: Archive Mode"
+archive log list
+
+exit;</code></pre>
+</div>
+</div>
+<div class="listingblock">
+<div class="title">Configuration needed for Oracle LogMiner</div>
+<div class="content">
+<pre class="highlightjs highlight"><code>ORACLE_SID=ORACLCDB dbz_oracle sqlplus /nolog
+
+CONNECT sys/top_secret AS SYSDBA
+alter system set db_recovery_file_dest_size = 10G;
+alter system set db_recovery_file_dest = '/opt/oracle/oradta/recovery_area' scope=spfile;
+shutdown immediate
+startup mount
+alter database archivelog;
+alter database open;
+-- Should now "Database log mode: Archive Mode"
+archive log list
+
+exit;</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>In addition, supplemental logging must be enabled for captured tables or the database in order for data changes to capture the <em>before</em> state of changed database rows.
+The following illustrates how to configure this on a specific table, which is the ideal choice to minimize the amount of information captured in the Oracle redo logs.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code>ALTER TABLE inventory.customers ADD SUPPLEMENTAL LOG DATA (ALL) COLUMNS;</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_creating_users_for_the_connector"><a class="anchor" href="#_creating_users_for_the_connector"></a>Creating Users for the connector</h3>
+<div class="paragraph">
+<p>The Debezium Oracle connector requires that users accounts be set up with specific permissions so that the connector can capture change events.
+The following briefly describes these user configurations using a multi-tenant database model.</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p><a href="#oracle-create-users-xstream"><code>Creating users for Oracle XStream</code></a></p>
+</li>
+<li>
+<p><a href="#oracle-create-users-logminer"><code>Creating users for Oracle LogMiner</code></a></p>
+</li>
+</ul>
+</div>
+<div id="oracle-create-users-xstream" class="listingblock">
+<div class="title">Creating an XStream Administrator user</div>
+<div class="content">
+<pre class="highlightjs highlight"><code>sqlplus sys/top_secret@//localhost:1521/ORCLCDB as sysdba
+  CREATE TABLESPACE xstream_adm_tbs DATAFILE '/opt/oracle/oradata/ORCLCDB/xstream_adm_tbs.dbf'
+    SIZE 25M REUSE AUTOEXTEND ON MAXSIZE UNLIMITED;
+  exit;
+
+sqlplus sys/top_secret@//localhost:1521/ORCLPDB1 as sysdba
+  CREATE TABLESPACE xstream_adm_tbs DATAFILE '/opt/oracle/oradata/ORCLCDB/ORCLPDB1/xstream_adm_tbs.dbf'
+    SIZE 25M REUSE AUTOEXTEND ON MAXSIZE UNLIMITED;
+  exit;
+
+sqlplus sys/top_secret@//localhost:1521/ORCLCDB as sysdba
+  CREATE USER c##xstrmadmin IDENTIFIED BY xsa
+    DEFAULT TABLESPACE xstream_adm_tbs
+    QUOTA UNLIMITED ON xstream_adm_tbs
+    CONTAINER=ALL;
+
+  GRANT CREATE SESSION, SET CONTAINER TO c##xstrmadmin CONTAINER=ALL;
+
+  BEGIN
+     DBMS_XSTREAM_AUTH.GRANT_ADMIN_PRIVILEGE(
+        grantee                 =&gt; 'c##xstrmadmin',
+        privilege_type          =&gt; 'CAPTURE',
+        grant_select_privileges =&gt; TRUE,
+        container               =&gt; 'ALL'
+     );
+  END;
+  /
+
+  exit;</code></pre>
+</div>
+</div>
+<div class="listingblock">
+<div class="title">Creating the connector&#8217;s XStream user</div>
+<div class="content">
+<pre class="highlightjs highlight"><code>sqlplus sys/top_secret@//localhost:1521/ORCLCDB as sysdba
+  CREATE TABLESPACE xstream_tbs DATAFILE '/opt/oracle/oradata/ORCLCDB/xstream_tbs.dbf'
+    SIZE 25M REUSE AUTOEXTEND ON MAXSIZE UNLIMITED;
+  exit;
+
+sqlplus sys/top_secret@//localhost:1521/ORCLPDB1 as sysdba
+  CREATE TABLESPACE xstream_tbs DATAFILE '/opt/oracle/oradata/ORCLCDB/ORCLPDB1/xstream_tbs.dbf'
+    SIZE 25M REUSE AUTOEXTEND ON MAXSIZE UNLIMITED;
+  exit;
+
+sqlplus sys/top_secret@//localhost:1521/ORCLCDB as sysdba
+  CREATE USER c##xstrm IDENTIFIED BY xs
+    DEFAULT TABLESPACE xstream_tbs
+    QUOTA UNLIMITED ON xstream_tbs
+    CONTAINER=ALL;
+
+  GRANT CREATE SESSION TO c##xstrm CONTAINER=ALL;
+  GRANT SET CONTAINER TO c##xstrm CONTAINER=ALL;
+  GRANT SELECT ON V_$DATABASE to c##xstrm CONTAINER=ALL;
+  GRANT FLASHBACK ANY TABLE TO c##xstrm CONTAINER=ALL;
+  GRANT SELECT_CATALOG_ROLE TO c##xstrm CONTAINER=ALL;
+  GRANT EXECUTE_CATALOG_ROLE TO c##xstrm CONTAINER=ALL;
+  exit;</code></pre>
+</div>
+</div>
+<div id="oracle-create-users-logminer" class="listingblock">
+<div class="title">Creating the connector&#8217;s LogMiner user</div>
+<div class="content">
+<pre class="highlightjs highlight"><code>sqlplus sys/top_secret@//localhost:1521/ORCLCDB as sysdba
+  CREATE TABLESPACE logminer_tbs DATAFILE '/opt/oracle/oradata/ORCLCDB/logminer_tbs.dbf'
+    SIZE 25M REUSE AUTOEXTEND ON MAXSIZE UNLIMITED;
+  exit;
+
+sqlplus sys/top_secret@//localhost:1521/ORCLPDB1 as sysdba
+  CREATE TABLESPACE logminer_tbs DATAFILE '/opt/oracle/oradata/ORCLCDB/ORCLPDB1/logminer_tbs.dbf'
+    SIZE 25M REUSE AUTOEXTEND ON MAXSIZE UNLIMITED;
+  exit;
+
+sqlplus sys/top_secret@//localhost:1521/ORCLCDB as sysdba
+
+  CREATE USER c##logminer IDENTIFIED BY lm
+    DEFAULT TABLESPACE logminer_tbs
+    QUOTA UNLIMITED ON logminer_tbs
+    CONTAINER=ALL;
+
+  GRANT CREATE SESSION TO c##logminer CONTAINER=ALL;
+  GRANT SET CONTAINER TO c##logminer CONTAINER=ALL;
+  GRANT SELECT ON V_$DATABASE to c##logminer CONTAINER=ALL;
+  GRANT FLASHBACK ANY TABLE TO c##logminer CONTAINER=ALL;
+  GRANT SELECT ANY TABLE TO c##logminer CONTAINER=ALL;
+  GRANT SELECT_CATALOG_ROLE TO c##logminer CONTAINER=ALL;
+  GRANT EXECUTE_CATALOG_ROLE TO c##logminer CONTAINER=ALL;
+  GRANT SELECT ANY TRANSACTION TO c##logminer CONTAINER=ALL;
+  GRANT LOGMINING TO c##logminer CONTAINER=ALL;
+
+  GRANT CREATE TABLE TO c##logminer CONTAINER=ALL;
+  GRANT LOCK ANY TABLE TO c##logminer CONTAINER=ALL;
+  GRANT ALTER ANY TABLE TO c##logminer CONTAINER=ALL;
+  GRANT CREATE SEQUENCE TO c##logminer CONTAINER=ALL;
+
+  GRANT EXECUTE ON DBMS_LOGMNR TO c##logminer CONTAINER=ALL;
+  GRANT EXECUTE ON DBMS_LOGMNR_D TO c##logminer CONTAINER=ALL;
+
+  GRANT SELECT ON V_$LOG TO c##logminer CONTAINER=ALL;
+  GRANT SELECT ON V_$LOG_HISTORY TO c##logminer CONTAINER=ALL;
+  GRANT SELECT ON V_$LOGMNR_LOGS TO c##logminer CONTAINER=ALL;
+  GRANT SELECT ON V_$LOGMNR_CONTENTS TO c##logminer CONTAINER=ALL;
+  GRANT SELECT ON V_$LOGMNR_PARAMETERS TO c##logminer CONTAINER=ALL;
+  GRANT SELECT ON V_$LOGFILE TO c##logminer CONTAINER=ALL;
+  GRANT SELECT ON V_$ARCHIVED_LOG TO c##logminer CONTAINER=ALL;
+  GRANT SELECT ON V_$ARCHIVE_DEST_STATUS TO c##logminer CONTAINER=ALL;
+
+  exit;</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_create_an_xstream_outbound_server"><a class="anchor" href="#_create_an_xstream_outbound_server"></a>Create an XStream Outbound Server</h3>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>If you&#8217;re using the LogMiner implementation, this step is not necessary.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="paragraph">
+<p>Create an <a href="https://docs.oracle.com/cd/E11882_01/server.112/e16545/xstrm_cncpt.htm#XSTRM1088">XStream Outbound server</a>
+(given the right privileges, this may be done automatically by the connector going forward, see <a href="https://issues.redhat.com/browse/DBZ-721">DBZ-721</a>):</p>
+</div>
+<div class="listingblock">
+<div class="title">Create an XStream Outbound Server</div>
+<div class="content">
+<pre class="highlightjs highlight"><code>sqlplus c##xstrmadmin/xsa@//localhost:1521/ORCLCDB
+DECLARE
+  tables  DBMS_UTILITY.UNCL_ARRAY;
+  schemas DBMS_UTILITY.UNCL_ARRAY;
+BEGIN
+    tables(1)  := NULL;
+    schemas(1) := 'debezium';
+  DBMS_XSTREAM_ADM.CREATE_OUTBOUND(
+    server_name     =&gt;  'dbzxout',
+    table_names     =&gt;  tables,
+    schema_names    =&gt;  schemas);
+END;
+/
+exit;</code></pre>
+</div>
+</div>
+<div class="listingblock">
+<div class="title">Configure the XStream user account to connect to the XStream Outbound Server</div>
+<div class="content">
+<pre class="highlightjs highlight"><code>sqlplus sys/top_secret@//localhost:1521/ORCLCDB as sysdba
+BEGIN
+  DBMS_XSTREAM_ADM.ALTER_OUTBOUND(
+    server_name  =&gt; 'dbzxout',
+    connect_user =&gt; 'c##xstrm');
+END;
+/
+exit;</code></pre>
+</div>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>A single XStream Outbound server cannot be shared by multiple Debezium Oracle connectors.
+Each connector requires a unique XStream Outbound connector to be configured.</p>
+</div>
+</td>
+</tr>
 </table>
 </div>
 </div>
@@ -1932,12 +1998,12 @@ The last option for <code>decimal.handling.mode</code> configuration property is
 <div class="sectionbody">
 <div class="paragraph">
 <p>Due to licensing requirements, the Debezium Oracle Connector does not ship with the Oracle JDBC driver and the XStream API JAR.
-You can obtain them for free by downloading the <a href="http://www.oracle.com/technetwork/topics/linuxx86-64soft-092277.html">Oracle Instant Client</a>.</p>
+You can obtain them for free by downloading the <a href="https://www.oracle.com/database/technologies/instant-client/downloads.html">Oracle Instant Client</a>.</p>
 </div>
 <div class="paragraph">
-<p>Extract the archive into a directory, e.g. <em>/path/to/instant_client/</em>.
-Copy the files <em>ojdbc8.jar</em> and <em>xstreams.jar</em> from the Instant Client into Kafka&#8217;s <em>libs</em> directory.
-Create the environment variable <code>LD_LIBRARY_PATH</code>, pointing to the Instant Client directory:</p>
+<p>Extract the archive and navigate to the Instant Client directory.
+Copy <code>ojdbc&lt;version&gt;.jar</code> and <code>xstreams.jar</code> into Kafka&#8217;s <em>libs</em> directory.
+Lastly, create an environment variable, <code>LD_LIBRARY_PATH</code>, that points to the instant client directory, as shown below:</p>
 </div>
 <div class="listingblock">
 <div class="content">
@@ -1999,13 +2065,8 @@ Create the environment variable <code>LD_LIBRARY_PATH</code>, pointing to the In
 <div class="paragraph">
 <p>The Debezium Oracle connector supports both deployment practices of pluggable databases (CDB mode) as well as non-pluggable databases (non-CDB mode).</p>
 </div>
-<div class="sect3">
-<h4 id="_non_pluggable_databases"><a class="anchor" href="#_non_pluggable_databases"></a>Non-Pluggable Databases</h4>
-<div class="paragraph">
-<p>In order to deploy the connector in non-pluggable database mode, the the <code>database.pdb.name</code> configuration option must <strong>not</strong> be supplied.
-An example configuration for pluggable databases would be:</p>
-</div>
 <div class="listingblock">
+<div class="title">Example configuration using non-CDB (Non Pluggable Database) installations</div>
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
   "config": {
@@ -2024,14 +2085,8 @@ An example configuration for pluggable databases would be:</p>
 }</code></pre>
 </div>
 </div>
-</div>
-<div class="sect3">
-<h4 id="_pluggable_databases"><a class="anchor" href="#_pluggable_databases"></a>Pluggable Databases</h4>
-<div class="paragraph">
-<p>In order to deploy the connector in pluggable database mode (CDB), the <code>database.pdb.name</code> configuration option <strong>must</strong> be supplied.
-An example configuration when using pluggable databases would be:</p>
-</div>
 <div class="listingblock">
+<div class="title">Example configuration using CDB (Pluggable Database) installations</div>
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
   "config": {
@@ -2051,13 +2106,24 @@ An example configuration when using pluggable databases would be:</p>
 }</code></pre>
 </div>
 </div>
+<div class="admonitionblock warning">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-warning" title="Warning"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>When using CDB installations, specify <code>database.pbd.name</code>.<br>
+When using a non-CDB installation, do <strong>not</strong> specify the <code>database.pdb.name</code>.</p>
+</div>
+</td>
+</tr>
+</table>
 </div>
 </div>
-</div>
-</div>
-<div class="sect1">
-<h2 id="selecting-the-adapter"><a class="anchor" href="#selecting-the-adapter"></a>Selecting the adapter</h2>
-<div class="sectionbody">
+<div class="sect2">
+<h3 id="selecting-the-adapter"><a class="anchor" href="#selecting-the-adapter"></a>Selecting the adapter</h3>
 <div class="paragraph">
 <p>Debezium provides multiple ways to ingest change events from Oracle.
 By default Debezium uses the XStream API but this isn&#8217;t always applicable for every installation.</p>
@@ -2095,683 +2161,10 @@ By default Debezium uses the XStream API but this isn&#8217;t always applicable 
 </td>
 <td class="content">
 <div class="paragraph">
-<p>We do encourage the use of the LogMiner implementation for testing purposes and providing us with your feedback, but we do not yet recommend its use in production as its still under active development.</p>
+<p>We encourage the use of the LogMiner adapter for testing and feedback purposes, but we do not yet recommend it for production use as its still under active development.</p>
 </div>
 </td>
 </tr>
-</table>
-</div>
-<div class="sect2">
-<h3 id="oracle-monitoring"><a class="anchor" href="#oracle-monitoring"></a>Monitoring</h3>
-<div class="paragraph">
-<p>The Debezium Oracle connector has three metric types in addition to the built-in support for JMX metrics that Zookeeper, Kafka, and Kafka Connect have.</p>
-</div>
-<div class="ulist">
-<ul>
-<li>
-<p><a href="#snapshot-metrics">snapshot metrics</a>; for monitoring the connector when performing snapshots</p>
-</li>
-<li>
-<p><a href="#streaming-metrics">streaming metrics</a>; for monitoring the connector when processing change events</p>
-</li>
-<li>
-<p><a href="#schema-history-metrics">schema history metrics</a>; for monitoring the status of the connector&#8217;s schema history</p>
-</li>
-</ul>
-</div>
-<div class="paragraph">
-<p>Please refer to the <a href="../operations/monitoring.html#monitoring-debezium" class="page">monitoring documentation</a> for details of how to expose these metrics via JMX.</p>
-</div>
-<div class="sect3">
-<h4 id="oracle-snapshot-metrics"><a class="anchor" href="#oracle-snapshot-metrics"></a>Snapshot Metrics</h4>
-<div class="paragraph">
-<p>The <strong>MBean</strong> is <code>debezium.oracle:type=connector-metrics,context=snapshot,server=<em>&lt;database.server.name&gt;</em></code>.</p>
-</div>
-<table class="tableblock frame-all grid-all stretch">
-<colgroup>
-<col style="width: 45%;">
-<col style="width: 25%;">
-<col style="width: 30%;">
-</colgroup>
-<thead>
-<tr>
-<th class="tableblock halign-left valign-top">Attributes</th>
-<th class="tableblock halign-left valign-top">Type</th>
-<th class="tableblock halign-left valign-top">Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-snaps-metric-lastevent_oracle"></a><a href="#connectors-snaps-metric-lastevent_oracle"><code>LastEvent</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>string</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The last snapshot event that the connector has read.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-snaps-metric-millisecondssincelastevent_oracle"></a><a href="#connectors-snaps-metric-millisecondssincelastevent_oracle"><code>MilliSecondsSinceLastEvent</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>long</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The number of milliseconds since the connector has read and processed the most recent event.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-snaps-metric-totalnumberofeventsseen_oracle"></a><a href="#connectors-snaps-metric-totalnumberofeventsseen_oracle"><code>TotalNumberOfEventsSeen</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>long</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The total number of events that this connector has seen since last started or reset.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-snaps-metric-numberofeventsfiltered_oracle"></a><a href="#connectors-snaps-metric-numberofeventsfiltered_oracle"><code>NumberOfEventsFiltered</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>long</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The number of events that have been filtered by include/exclude list filtering rules configured on the connector.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-snaps-metric-monitoredtables_oracle"></a><a href="#connectors-snaps-metric-monitoredtables_oracle"><code>MonitoredTables</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>string[]</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The list of tables that are monitored by the connector.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-snaps-metric-queuetotalcapacity_oracle"></a><a href="#connectors-snaps-metric-queuetotalcapacity_oracle"><code>QueueTotalCapacity</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>int</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The length the queue used to pass events between the snapshotter and the main Kafka Connect loop.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-snaps-metric-queueremainingcapacity_oracle"></a><a href="#connectors-snaps-metric-queueremainingcapacity_oracle"><code>QueueRemainingCapacity</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>int</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The free capacity of the queue used to pass events between the snapshotter and the main Kafka Connect loop.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-snaps-metric-totaltablecount_oracle"></a><a href="#connectors-snaps-metric-totaltablecount_oracle"><code>TotalTableCount</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>int</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The total number of tables that are being included in the snapshot.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-snaps-metric-remainingtablecount_oracle"></a><a href="#connectors-snaps-metric-remainingtablecount_oracle"><code>RemainingTableCount</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>int</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The number of tables that the snapshot has yet to copy.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-snaps-metric-snapshotrunning_oracle"></a><a href="#connectors-snaps-metric-snapshotrunning_oracle"><code>SnapshotRunning</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>boolean</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Whether the snapshot was started.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-snaps-metric-snapshotaborted_oracle"></a><a href="#connectors-snaps-metric-snapshotaborted_oracle"><code>SnapshotAborted</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>boolean</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Whether the snapshot was aborted.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-snaps-metric-snapshotcompleted_oracle"></a><a href="#connectors-snaps-metric-snapshotcompleted_oracle"><code>SnapshotCompleted</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>boolean</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Whether the snapshot completed.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-snaps-metric-snapshotdurationinseconds_oracle"></a><a href="#connectors-snaps-metric-snapshotdurationinseconds_oracle"><code>SnapshotDurationInSeconds</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>long</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The total number of seconds that the snapshot has taken so far, even if not complete.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-snaps-metric-rowsscanned_oracle"></a><a href="#connectors-snaps-metric-rowsscanned_oracle"><code>RowsScanned</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>Map&lt;String, Long&gt;</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Map containing the number of rows scanned for each table in the snapshot.
-Tables are incrementally added to the Map during processing.
-Updates every 10,000 rows scanned and upon completing a table.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-snaps-metric-maxqueuesizeinbytes_oracle"></a><a href="#connectors-snaps-metric-maxqueuesizeinbytes_oracle"><code>MaxQueueSizeInBytes</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>long</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The maximum buffer of the queue in bytes. It will be enabled if <code>max.queue.size.in.bytes</code> is passed with a positive long value.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-snaps-metric-currentqueuesizeinbytes_oracle"></a><a href="#connectors-snaps-metric-currentqueuesizeinbytes_oracle"><code>CurrentQueueSizeInBytes</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>long</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The current data of records in the queue in bytes.</p>
-</div></div></td>
-</tr>
-</tbody>
-</table>
-</div>
-<div class="sect3">
-<h4 id="oracle-streaming-metrics"><a class="anchor" href="#oracle-streaming-metrics"></a>Streaming Metrics</h4>
-<div class="paragraph">
-<p>The <strong>MBean</strong> is <code>debezium.oracle:type=connector-metrics,context=streaming,server=<em>&lt;database.server.name&gt;</em></code>.</p>
-</div>
-<table class="tableblock frame-all grid-all stretch">
-<colgroup>
-<col style="width: 45%;">
-<col style="width: 25%;">
-<col style="width: 30%;">
-</colgroup>
-<thead>
-<tr>
-<th class="tableblock halign-left valign-top">Attributes</th>
-<th class="tableblock halign-left valign-top">Type</th>
-<th class="tableblock halign-left valign-top">Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-strm-metric-lastevent_oracle"></a><a href="#connectors-strm-metric-lastevent_oracle"><code>LastEvent</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>string</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The last streaming event that the connector has read.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-strm-metric-millisecondssincelastevent_oracle"></a><a href="#connectors-strm-metric-millisecondssincelastevent_oracle"><code>MilliSecondsSinceLastEvent</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>long</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The number of milliseconds since the connector has read and processed the most recent event.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-strm-metric-totalnumberofeventsseen_oracle"></a><a href="#connectors-strm-metric-totalnumberofeventsseen_oracle"><code>TotalNumberOfEventsSeen</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>long</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The total number of events that this connector has seen since last started or reset.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-strm-metric-numberofeventsfiltered_oracle"></a><a href="#connectors-strm-metric-numberofeventsfiltered_oracle"><code>NumberOfEventsFiltered</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>long</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The number of events that have been filtered by include/exclude list filtering rules configured on the connector.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-strm-metric-monitoredtables_oracle"></a><a href="#connectors-strm-metric-monitoredtables_oracle"><code>MonitoredTables</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>string[]</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The list of tables that are monitored by the connector.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-strm-metric-queuetotalcapacity_oracle"></a><a href="#connectors-strm-metric-queuetotalcapacity_oracle"><code>QueueTotalCapacity</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>int</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The length the queue used to pass events between the streamer and the main Kafka Connect loop.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-strm-metric-queueremainingcapacity_oracle"></a><a href="#connectors-strm-metric-queueremainingcapacity_oracle"><code>QueueRemainingCapacity</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>int</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The free capacity of the queue used to pass events between the streamer and the main Kafka Connect loop.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-strm-metric-connected_oracle"></a><a href="#connectors-strm-metric-connected_oracle"><code>Connected</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>boolean</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Flag that denotes whether the connector is currently connected to the database server.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-strm-metric-millisecondsbehindsource_oracle"></a><a href="#connectors-strm-metric-millisecondsbehindsource_oracle"><code>MilliSecondsBehindSource</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>long</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The number of milliseconds between the last change event&#8217;s timestamp and the connector processing it.
-The values will incoporate any differences between the clocks on the machines where the database server and the connector are running.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-strm-metric-numberofcommittedtransactions_oracle"></a><a href="#connectors-strm-metric-numberofcommittedtransactions_oracle"><code>NumberOfCommittedTransactions</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>long</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The number of processed transactions that were committed.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-strm-metric-sourceeventposition_oracle"></a><a href="#connectors-strm-metric-sourceeventposition_oracle"><code>SourceEventPosition</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>Map&lt;String, String&gt;</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The coordinates of the last received event.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-strm-metric-lasttransactionid_oracle"></a><a href="#connectors-strm-metric-lasttransactionid_oracle"><code>LastTransactionId</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>string</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Transaction identifier of the last processed transaction.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-strm-metric-maxqueuesizeinbytes_oracle"></a><a href="#connectors-strm-metric-maxqueuesizeinbytes_oracle"><code>MaxQueueSizeInBytes</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>long</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The maximum buffer of the queue in bytes.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-strm-metric-currentqueuesizeinbytes_oracle"></a><a href="#connectors-strm-metric-currentqueuesizeinbytes_oracle"><code>CurrentQueueSizeInBytes</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>long</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The current data of records in the queue in bytes.</p>
-</div></div></td>
-</tr>
-</tbody>
-</table>
-</div>
-<div class="sect3">
-<h4 id="oracle-monitoring-streaming-logminer"><a class="anchor" href="#oracle-monitoring-streaming-logminer"></a>LogMiner Metrics</h4>
-<div class="paragraph">
-<p>The <strong>MBean</strong> is <code>debezium.oracle:type=connector-metrics,context=log-miner,server=<em>&lt;database.server.name&gt;</em></code>.</p>
-</div>
-<table class="tableblock frame-all grid-all stretch">
-<colgroup>
-<col style="width: 45%;">
-<col style="width: 25%;">
-<col style="width: 30%;">
-</colgroup>
-<thead>
-<tr>
-<th class="tableblock halign-left valign-top">Attributes</th>
-<th class="tableblock halign-left valign-top">Type</th>
-<th class="tableblock halign-left valign-top">Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="log-miner-metrics-currentscn"></a><a href="#log-miner-metrics-currentscn"><code>CurrentScn</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>long</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The most recent SCN has has been processed.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="log-miner-metrics-captureddmlcount"></a><a href="#log-miner-metrics-captureddmlcount"><code>CapturedDmlCount</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>int</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The number of DML operations observed.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="log-miner-metrics-currentlogfilename"></a><a href="#log-miner-metrics-currentlogfilename"><code>CurrentLogFileName</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>string[]</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The current redo log filename.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="log-miner-metrics-redologstatus"></a><a href="#log-miner-metrics-redologstatus"><code>RedoLogStatus</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>string[]</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The current status of the redo logs.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="log-miner-metrics-switchcounter"></a><a href="#log-miner-metrics-switchcounter"><code>SwitchCounter</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>long</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The number of times the redo logs have switched.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="log-miner-metrics-lastlogminerqueryduration"></a><a href="#log-miner-metrics-lastlogminerqueryduration"><code>LastLogMinerQueryDuration</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>Duration</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The duration it took for the last log mining query to prepare results for processing.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="log-miner-metrics-averagelogminerqueryduration"></a><a href="#log-miner-metrics-averagelogminerqueryduration"><code>AverageLogMinerQueryDuration</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>Duration</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The average duration it has taken for log mining queries to prepare results for processing.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="log-miner-metrics-logminerquerycount"></a><a href="#log-miner-metrics-logminerquerycount"><code>LogMinerQueryCount</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>int</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The number of log mining queries executed.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="log-miner-metrics-lastprocessedcapturedbatchduration"></a><a href="#log-miner-metrics-lastprocessedcapturedbatchduration"><code>LastProcessedCapturedBatchDuration</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>Duration</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The duration it took for the last log mining query results to be processed.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="log-miner-metrics-averageprocessedcapturedbatchduration"></a><a href="#log-miner-metrics-averageprocessedcapturedbatchduration"><code>AverageProcessedCapturedBatchDuration</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>Duration</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The average duration it has taken for the log mining query results to be processed.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="log-miner-metrics-processedcapturebatchcount"></a><a href="#log-miner-metrics-processedcapturebatchcount"><code>ProcesssedCaptureBatchCount</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>int</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The number of log mining query results processed.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="log-miner-metrics-batchsize"></a><a href="#log-miner-metrics-batchsize"><code>BatchSize</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>int</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The number of entries fetched by the log mining query per database round-trip.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="log-miner-metrics-millisecondtosleepbetweenminingquery"></a><a href="#log-miner-metrics-millisecondtosleepbetweenminingquery"><code>MillisecondToSleepBetweenMiningQuery</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>int</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The number of milliseconds the connector sleeps before fetching another batch of results from the log mining view.</p>
-</div></div></td>
-</tr>
-</tbody>
-</table>
-</div>
-<div class="sect3">
-<h4 id="oracle-schema-history-metrics"><a class="anchor" href="#oracle-schema-history-metrics"></a>Schema History Metrics</h4>
-<div class="paragraph">
-<p>The <strong>MBean</strong> is <code>debezium.mysql:type=connector-metrics,context=schema-history,server=<em>&lt;database.server.name&gt;</em></code>.</p>
-</div>
-<table class="tableblock frame-all grid-all stretch">
-<colgroup>
-<col style="width: 45%;">
-<col style="width: 25%;">
-<col style="width: 30%;">
-</colgroup>
-<thead>
-<tr>
-<th class="tableblock halign-left valign-top">Attributes</th>
-<th class="tableblock halign-left valign-top">Type</th>
-<th class="tableblock halign-left valign-top">Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-shist-metric-status_oracle"></a><a href="#connectors-shist-metric-status_oracle"><code>Status</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>string</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>One of <code>STOPPED</code>, <code>RECOVERING</code> (recovering history from the storage), <code>RUNNING</code> describing the state of the database history.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-shist-metric-recoverystarttime_oracle"></a><a href="#connectors-shist-metric-recoverystarttime_oracle"><code>RecoveryStartTime</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>long</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The time in epoch seconds at what recovery has started.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-shist-metric-changesrecovered_oracle"></a><a href="#connectors-shist-metric-changesrecovered_oracle"><code>ChangesRecovered</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>long</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The number of changes that were read during recovery phase.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-shist-metric-changesapplied_oracle"></a><a href="#connectors-shist-metric-changesapplied_oracle"><code>ChangesApplied</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>long</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>the total number of schema changes applied during recovery and runtime.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-shist-metric-millisecondssincelastrecoveredchange_oracle"></a><a href="#connectors-shist-metric-millisecondssincelastrecoveredchange_oracle"><code>MilliSecondsSinceLast&#8203;RecoveredChange</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>long</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The number of milliseconds that elapsed since the last change was recovered from the history store.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-shist-metric-millisecondssincelastappliedchange_oracle"></a><a href="#connectors-shist-metric-millisecondssincelastappliedchange_oracle"><code>MilliSecondsSinceLast&#8203;AppliedChange</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>long</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The number of milliseconds that elapsed since the last change was applied.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-shist-metric-lastrecoveredchange_oracle"></a><a href="#connectors-shist-metric-lastrecoveredchange_oracle"><code>LastRecoveredChange</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>string</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The string representation of the last change recovered from the history store.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="connectors-shist-metric-lastappliedchange_oracle"></a><a href="#connectors-shist-metric-lastappliedchange_oracle"><code>LastAppliedChange</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>string</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The string representation of the last applied change.</p>
-</div></div></td>
-</tr>
-</tbody>
 </table>
 </div>
 </div>
@@ -3451,6 +2844,874 @@ Any transaction that exceeds this configured value will be discarded entirely an
 <div class="paragraph">
 <p>While this option allows the behavior to be configured on a case-by-case basis,
 we have plans to enhance this behavior in a future release by means of adding a scalable transaction buffer, (see <a href="#https://issues.redhat.com/browse/DBZ-3123">DBZ-3123</a>).</p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="oracle-monitoring"><a class="anchor" href="#oracle-monitoring"></a>Monitoring</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>The Debezium Oracle connector has three metric types in addition to the built-in support for JMX metrics that Zookeeper, Kafka, and Kafka Connect have.</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p><a href="#oracle-snapshot-metrics">snapshot metrics</a>; for monitoring the connector when performing snapshots</p>
+</li>
+<li>
+<p><a href="#oracle-streaming-metrics">streaming metrics</a>; for monitoring the connector when processing change events</p>
+</li>
+<li>
+<p><a href="#oracle-monitoring-streaming-logminer">logminer metrics</a>; additional metrics captured when using the LogMiner adpter to process change events</p>
+</li>
+<li>
+<p><a href="#oracle-schema-history-metrics">schema history metrics</a>; for monitoring the status of the connector&#8217;s schema history</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>Please refer to the <a href="../operations/monitoring.html#monitoring-debezium" class="page">monitoring documentation</a> for details of how to expose these metrics via JMX.</p>
+</div>
+<div class="sect2">
+<h3 id="oracle-snapshot-metrics"><a class="anchor" href="#oracle-snapshot-metrics"></a>Snapshot Metrics</h3>
+<div class="paragraph">
+<p>The <strong>MBean</strong> is <code>debezium.oracle:type=connector-metrics,context=snapshot,server=<em>&lt;database.server.name&gt;</em></code>.</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 45%;">
+<col style="width: 25%;">
+<col style="width: 30%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Attributes</th>
+<th class="tableblock halign-left valign-top">Type</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-snaps-metric-lastevent_oracle"></a><a href="#connectors-snaps-metric-lastevent_oracle"><code>LastEvent</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>string</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The last snapshot event that the connector has read.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-snaps-metric-millisecondssincelastevent_oracle"></a><a href="#connectors-snaps-metric-millisecondssincelastevent_oracle"><code>MilliSecondsSinceLastEvent</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of milliseconds since the connector has read and processed the most recent event.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-snaps-metric-totalnumberofeventsseen_oracle"></a><a href="#connectors-snaps-metric-totalnumberofeventsseen_oracle"><code>TotalNumberOfEventsSeen</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The total number of events that this connector has seen since last started or reset.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-snaps-metric-numberofeventsfiltered_oracle"></a><a href="#connectors-snaps-metric-numberofeventsfiltered_oracle"><code>NumberOfEventsFiltered</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of events that have been filtered by include/exclude list filtering rules configured on the connector.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-snaps-metric-monitoredtables_oracle"></a><a href="#connectors-snaps-metric-monitoredtables_oracle"><code>MonitoredTables</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>string[]</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The list of tables that are monitored by the connector.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-snaps-metric-queuetotalcapacity_oracle"></a><a href="#connectors-snaps-metric-queuetotalcapacity_oracle"><code>QueueTotalCapacity</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>int</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The length the queue used to pass events between the snapshotter and the main Kafka Connect loop.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-snaps-metric-queueremainingcapacity_oracle"></a><a href="#connectors-snaps-metric-queueremainingcapacity_oracle"><code>QueueRemainingCapacity</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>int</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The free capacity of the queue used to pass events between the snapshotter and the main Kafka Connect loop.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-snaps-metric-totaltablecount_oracle"></a><a href="#connectors-snaps-metric-totaltablecount_oracle"><code>TotalTableCount</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>int</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The total number of tables that are being included in the snapshot.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-snaps-metric-remainingtablecount_oracle"></a><a href="#connectors-snaps-metric-remainingtablecount_oracle"><code>RemainingTableCount</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>int</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of tables that the snapshot has yet to copy.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-snaps-metric-snapshotrunning_oracle"></a><a href="#connectors-snaps-metric-snapshotrunning_oracle"><code>SnapshotRunning</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>boolean</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Whether the snapshot was started.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-snaps-metric-snapshotaborted_oracle"></a><a href="#connectors-snaps-metric-snapshotaborted_oracle"><code>SnapshotAborted</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>boolean</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Whether the snapshot was aborted.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-snaps-metric-snapshotcompleted_oracle"></a><a href="#connectors-snaps-metric-snapshotcompleted_oracle"><code>SnapshotCompleted</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>boolean</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Whether the snapshot completed.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-snaps-metric-snapshotdurationinseconds_oracle"></a><a href="#connectors-snaps-metric-snapshotdurationinseconds_oracle"><code>SnapshotDurationInSeconds</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The total number of seconds that the snapshot has taken so far, even if not complete.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-snaps-metric-rowsscanned_oracle"></a><a href="#connectors-snaps-metric-rowsscanned_oracle"><code>RowsScanned</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>Map&lt;String, Long&gt;</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Map containing the number of rows scanned for each table in the snapshot.
+Tables are incrementally added to the Map during processing.
+Updates every 10,000 rows scanned and upon completing a table.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-snaps-metric-maxqueuesizeinbytes_oracle"></a><a href="#connectors-snaps-metric-maxqueuesizeinbytes_oracle"><code>MaxQueueSizeInBytes</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The maximum buffer of the queue in bytes. It will be enabled if <code>max.queue.size.in.bytes</code> is passed with a positive long value.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-snaps-metric-currentqueuesizeinbytes_oracle"></a><a href="#connectors-snaps-metric-currentqueuesizeinbytes_oracle"><code>CurrentQueueSizeInBytes</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The current data of records in the queue in bytes.</p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="sect2">
+<h3 id="oracle-streaming-metrics"><a class="anchor" href="#oracle-streaming-metrics"></a>Streaming Metrics</h3>
+<div class="paragraph">
+<p>The <strong>MBean</strong> is <code>debezium.oracle:type=connector-metrics,context=streaming,server=<em>&lt;database.server.name&gt;</em></code>.</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 45%;">
+<col style="width: 25%;">
+<col style="width: 30%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Attributes</th>
+<th class="tableblock halign-left valign-top">Type</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-strm-metric-lastevent_oracle"></a><a href="#connectors-strm-metric-lastevent_oracle"><code>LastEvent</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>string</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The last streaming event that the connector has read.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-strm-metric-millisecondssincelastevent_oracle"></a><a href="#connectors-strm-metric-millisecondssincelastevent_oracle"><code>MilliSecondsSinceLastEvent</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of milliseconds since the connector has read and processed the most recent event.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-strm-metric-totalnumberofeventsseen_oracle"></a><a href="#connectors-strm-metric-totalnumberofeventsseen_oracle"><code>TotalNumberOfEventsSeen</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The total number of events that this connector has seen since last started or reset.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-strm-metric-numberofeventsfiltered_oracle"></a><a href="#connectors-strm-metric-numberofeventsfiltered_oracle"><code>NumberOfEventsFiltered</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of events that have been filtered by include/exclude list filtering rules configured on the connector.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-strm-metric-monitoredtables_oracle"></a><a href="#connectors-strm-metric-monitoredtables_oracle"><code>MonitoredTables</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>string[]</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The list of tables that are monitored by the connector.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-strm-metric-queuetotalcapacity_oracle"></a><a href="#connectors-strm-metric-queuetotalcapacity_oracle"><code>QueueTotalCapacity</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>int</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The length the queue used to pass events between the streamer and the main Kafka Connect loop.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-strm-metric-queueremainingcapacity_oracle"></a><a href="#connectors-strm-metric-queueremainingcapacity_oracle"><code>QueueRemainingCapacity</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>int</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The free capacity of the queue used to pass events between the streamer and the main Kafka Connect loop.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-strm-metric-connected_oracle"></a><a href="#connectors-strm-metric-connected_oracle"><code>Connected</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>boolean</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Flag that denotes whether the connector is currently connected to the database server.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-strm-metric-millisecondsbehindsource_oracle"></a><a href="#connectors-strm-metric-millisecondsbehindsource_oracle"><code>MilliSecondsBehindSource</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of milliseconds between the last change event&#8217;s timestamp and the connector processing it.
+The values will incoporate any differences between the clocks on the machines where the database server and the connector are running.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-strm-metric-numberofcommittedtransactions_oracle"></a><a href="#connectors-strm-metric-numberofcommittedtransactions_oracle"><code>NumberOfCommittedTransactions</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of processed transactions that were committed.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-strm-metric-sourceeventposition_oracle"></a><a href="#connectors-strm-metric-sourceeventposition_oracle"><code>SourceEventPosition</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>Map&lt;String, String&gt;</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The coordinates of the last received event.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-strm-metric-lasttransactionid_oracle"></a><a href="#connectors-strm-metric-lasttransactionid_oracle"><code>LastTransactionId</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>string</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Transaction identifier of the last processed transaction.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-strm-metric-maxqueuesizeinbytes_oracle"></a><a href="#connectors-strm-metric-maxqueuesizeinbytes_oracle"><code>MaxQueueSizeInBytes</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The maximum buffer of the queue in bytes.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-strm-metric-currentqueuesizeinbytes_oracle"></a><a href="#connectors-strm-metric-currentqueuesizeinbytes_oracle"><code>CurrentQueueSizeInBytes</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The current data of records in the queue in bytes.</p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="sect2">
+<h3 id="oracle-monitoring-streaming-logminer"><a class="anchor" href="#oracle-monitoring-streaming-logminer"></a>LogMiner Metrics</h3>
+<div class="paragraph">
+<p>The <strong>MBean</strong> is <code>debezium.oracle:type=connector-metrics,context=log-miner,server=<em>&lt;database.server.name&gt;</em></code>.</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 45%;">
+<col style="width: 25%;">
+<col style="width: 30%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Attributes</th>
+<th class="tableblock halign-left valign-top">Type</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="log-miner-metrics-currentscn"></a><a href="#log-miner-metrics-currentscn"><code>CurrentScn</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The most recent SCN that has been processed.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="log-miner-metrics-currentredologfilename"></a><a href="#log-miner-metrics-currentredologfilename"><code>CurrentRedoLogFileName</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>string[]</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Array of the log files that are currently mined.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="log-miner-metrics-minimumminedlogcount"></a><a href="#log-miner-metrics-minimumminedlogcount"><code>MinimumMinedLogCount</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The minimum number of logs specified for any LogMiner session.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="log-miner-metrics-maximumminedlogcount"></a><a href="#log-miner-metrics-maximumminedlogcount"><code>MaximumMinedLogCount</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The maximum number of logs specified for any LogMiner session.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="log-miner-metrics-redologstatus"></a><a href="#log-miner-metrics-redologstatus"><code>RedoLogStatus</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>string[]</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Array of the current state for each mined logfile with the format <code><em>filename</em>|<em>status</em></code>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="log-miner-metrics-switchcounter"></a><a href="#log-miner-metrics-switchcounter"><code>SwitchCounter</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>int</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of times the database has performed a log switch for the last day.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="log-miner-metrics-lastcaptureddmlcount"></a><a href="#log-miner-metrics-lastcaptureddmlcount"><code>LastCapturedDmlCount</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of DML operations observed in the last LogMiner session query.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="log-miner-metrics-maxcaptureddmlinbatch"></a><a href="#log-miner-metrics-maxcaptureddmlinbatch"><code>MaxCapturedDmlInBatch</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The maximum number of DML operations observed while processing a single LogMiner session query.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="log-miner-metrics-totalcaptureddmlcount"></a><a href="#log-miner-metrics-totalcaptureddmlcount"><code>TotalCapturedDmlCount</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The total number of DML operations observed.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="log-miner-metrics-fetchingquerycount"></a><a href="#log-miner-metrics-fetchingquerycount"><code>FetchingQueryCount</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The total number of LogMiner session query (aka batches) performed.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="log-miner-metrics-lastdurationoffetchqueryinmilliseconds"></a><a href="#log-miner-metrics-lastdurationoffetchqueryinmilliseconds"><code>LastDurationOfFetchQueryInMilliseconds</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The duration of the last LogMiner session query&#8217;s fetch in milliseconds.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="log-miner-metrics-maxdurationoffetchqueryinmilliseconds"></a><a href="#log-miner-metrics-maxdurationoffetchqueryinmilliseconds"><code>MaxDurationOfFetchQueryInMilliseconds</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The maximum duration of any LogMiner session query&#8217;s fetch in milliseconds.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="log-miner-metrics-lastbatchprocessingtimeinmilliseconds"></a><a href="#log-miner-metrics-lastbatchprocessingtimeinmilliseconds"><code>LastBatchProcessingTimeInMilliseconds</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The duration for processing the last LogMiner query batch results in milliseconds.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="log-miner-metrics-totalparsetimeinmilliseconds"></a><a href="#log-miner-metrics-totalparsetimeinmilliseconds"><code>TotalParseTimeInMilliseconds</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The time in milliseconds spent parsing DML event SQL sattements.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="log-miner-metrics-lastminingsessionstarttimeinmilliseconds"></a><a href="#log-miner-metrics-lastminingsessionstarttimeinmilliseconds"><code>LastMiningSessionStartTimeInMilliseconds</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The duration in milliseconds to start the last LogMiner session.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="log-miner-metrics-maxminingsessionstarttimeinmilliseconds"></a><a href="#log-miner-metrics-maxminingsessionstarttimeinmilliseconds"><code>MaxMiningSessionStartTimeInMilliseconds</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The longest duration in milliseconds to start a LogMiner session.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="log-miner-metrics-totalminingsessionstarttimeinmilliseconds"></a><a href="#log-miner-metrics-totalminingsessionstarttimeinmilliseconds"><code>TotalMiningSessionStartTimeInMilliseconds</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The total duration in milliseconds spent by the connector starting LogMiner sessions.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="log-miner-metrics-minbatchprocessingtimeinmilliseconds"></a><a href="#log-miner-metrics-minbatchprocessingtimeinmilliseconds"><code>MinBatchProcessingTimeInMilliseconds</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The minimum duration in milliseconds spent processing results from a single LogMiner session.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="log-miner-metrics-maxbatchprocessingtimeinmilliseconds"></a><a href="#log-miner-metrics-maxbatchprocessingtimeinmilliseconds"><code>MaxBatchProcessingTimeInMilliseconds</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The maximum duration in milliseconds spent processing results from a single LogMiner session.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="log-miner-metrics-totalprocessingtimeinmilliseconds"></a><a href="#log-miner-metrics-totalprocessingtimeinmilliseconds"><code>TotalProcessingTimeInMilliseconds</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The total duration in milliseconds spent processing results from LogMiner sessions.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="log-miner-metrics-totalresultsetnexttimeinmilliseconds"></a><a href="#log-miner-metrics-totalresultsetnexttimeinmilliseconds"><code>TotalResultSetNextTimeInMilliseconds</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The total duration in milliseconds spent by the JDBC driver fetching the next row to be processed from the log mining view.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="log-miner-metrics-totalprocessedrows"></a><a href="#log-miner-metrics-totalprocessedrows"><code>TotalProcessedRows</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The total number of rows processed from the log mining view across all sessions.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="log-miner-metrics-batchsize"></a><a href="#log-miner-metrics-batchsize"><code>BatchSize</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>int</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of entries fetched by the log mining query per database round-trip.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="log-miner-metrics-millisecondtosleepbetweenminingquery"></a><a href="#log-miner-metrics-millisecondtosleepbetweenminingquery"><code>MillisecondToSleepBetweenMiningQuery</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of milliseconds the connector sleeps before fetching another batch of results from the log mining view.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="log-miner-metrics-maxbatchprocessingthroughput"></a><a href="#log-miner-metrics-maxbatchprocessingthroughput"><code>MaxBatchProcessingThroughput</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The maximum number of rows/second processed from the log mining view.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="log-miner-metrics-averagebatchprocessingthroughput"></a><a href="#log-miner-metrics-averagebatchprocessingthroughput"><code>AverageBatchProcessingThroughput</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The average number of rows/second processed from the log mining.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="log-miner-metrics-lastbatchprocessingthroughput"></a><a href="#log-miner-metrics-lastbatchprocessingthroughput"><code>LastBatchProcessingThroughput</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The average number of rows/second processed from the log mining view for the last batch.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="log-miner-metrics-networkconnectionproblemscounter"></a><a href="#log-miner-metrics-networkconnectionproblemscounter"><code>NetworkConnectionProblemsCounter</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of connection problems detected.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="log-miner-metrics-hourstokeeptransactioninbuffer"></a><a href="#log-miner-metrics-hourstokeeptransactioninbuffer"><code>HoursToKeepTransactionInBuffer</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>int</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of hours that transactions will be retained by the connector&#8217;s in-memory buffer without being committed or rolled back before being discarded.
+See <a href="#oracle-property-log-mining-transaction-retention-hours"><code>log.mining.transaction.retention</code></a> for more details.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="log-miner-metrics-recordmininghistory"></a><a href="#log-miner-metrics-recordmininghistory"><code>RecordMiningHistory</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>boolean</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Flag that indicates if the mining results are being recorded.
+See <a href="#oracle-property-log-mining-history-recorder-class"><code>log.mining.history.recorder.clas</code></a> for more details.</p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="sect2">
+<h3 id="oracle-schema-history-metrics"><a class="anchor" href="#oracle-schema-history-metrics"></a>Schema History Metrics</h3>
+<div class="paragraph">
+<p>The <strong>MBean</strong> is <code>debezium.mysql:type=connector-metrics,context=schema-history,server=<em>&lt;database.server.name&gt;</em></code>.</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 45%;">
+<col style="width: 25%;">
+<col style="width: 30%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Attributes</th>
+<th class="tableblock halign-left valign-top">Type</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-shist-metric-status_oracle"></a><a href="#connectors-shist-metric-status_oracle"><code>Status</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>string</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>One of <code>STOPPED</code>, <code>RECOVERING</code> (recovering history from the storage), <code>RUNNING</code> describing the state of the database history.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-shist-metric-recoverystarttime_oracle"></a><a href="#connectors-shist-metric-recoverystarttime_oracle"><code>RecoveryStartTime</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The time in epoch seconds at what recovery has started.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-shist-metric-changesrecovered_oracle"></a><a href="#connectors-shist-metric-changesrecovered_oracle"><code>ChangesRecovered</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of changes that were read during recovery phase.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-shist-metric-changesapplied_oracle"></a><a href="#connectors-shist-metric-changesapplied_oracle"><code>ChangesApplied</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>the total number of schema changes applied during recovery and runtime.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-shist-metric-millisecondssincelastrecoveredchange_oracle"></a><a href="#connectors-shist-metric-millisecondssincelastrecoveredchange_oracle"><code>MilliSecondsSinceLast&#8203;RecoveredChange</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of milliseconds that elapsed since the last change was recovered from the history store.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-shist-metric-millisecondssincelastappliedchange_oracle"></a><a href="#connectors-shist-metric-millisecondssincelastappliedchange_oracle"><code>MilliSecondsSinceLast&#8203;AppliedChange</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of milliseconds that elapsed since the last change was applied.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-shist-metric-lastrecoveredchange_oracle"></a><a href="#connectors-shist-metric-lastrecoveredchange_oracle"><code>LastRecoveredChange</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>string</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The string representation of the last change recovered from the history store.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="connectors-shist-metric-lastappliedchange_oracle"></a><a href="#connectors-shist-metric-lastappliedchange_oracle"><code>LastAppliedChange</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>string</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The string representation of the last applied change.</p>
 </div></div></td>
 </tr>
 </tbody>
