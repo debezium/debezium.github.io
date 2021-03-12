@@ -318,6 +318,8 @@
 <li><a href="#_verifying_that_the_user_has_access_to_the_cdc_table">Verifying that the user has access to the CDC table</a></li>
 <li><a href="#sqlserver-on-azure">SQL Server on Azure</a></li>
 <li><a href="#sqlserver-always-on-replica">SQL Server Always On</a></li>
+<li><a href="#_effect_of_sql_server_capture_job_agent_configuration_on_server_load_and_latency">Effect of SQL Server capture job agent configuration on server load and latency</a></li>
+<li><a href="#_sql_server_capture_job_agent_configuration_parameters">SQL Server capture job agent configuration parameters</a></li>
 </ul>
 </li>
 <li><a href="#_deployment_and_management_of_debezium_sql_server_connectors">Deployment and management of Debezium SQL Server connectors</a>
@@ -573,7 +575,7 @@ The connector writes all of these events to a Kafka topic named <code>&lt;server
   },
   "payload": {
     "source": {
-      "version": "1.5.0.Beta1",
+      "version": "1.5.0.Beta2",
       "connector": "sqlserver",
       "name": "server1",
       "ts_ms": 1588252618953,
@@ -1154,7 +1156,7 @@ It is possible to override the table&#8217;s primary key by setting the <a href=
       "email": "john.doe@example.org"
     },
     "source": { <i class="conum" data-value="8"></i><b>(8)</b>
-      "version": "1.5.0.Beta1",
+      "version": "1.5.0.Beta2",
       "connector": "sqlserver",
       "name": "server1",
       "ts_ms": 1559729468470,
@@ -1327,7 +1329,7 @@ By comparing the value for <code>payload.source.ts_ms</code> with the value for 
       "email": "noreply@example.org"
     },
     "source": { <i class="conum" data-value="3"></i><b>(3)</b>
-      "version": "1.5.0.Beta1",
+      "version": "1.5.0.Beta2",
       "connector": "sqlserver",
       "name": "server1",
       "ts_ms": 1559729995937,
@@ -1470,7 +1472,7 @@ By comparing the value for <code>payload.source.ts_ms</code> with the value for 
     },
     "after": null, <i class="conum" data-value="2"></i><b>(2)</b>
     "source": { <i class="conum" data-value="3"></i><b>(3)</b>
-      "version": "1.5.0.Beta1",
+      "version": "1.5.0.Beta2",
       "connector": "sqlserver",
       "name": "server1",
       "ts_ms": 1559730445243,
@@ -2442,29 +2444,139 @@ If the result is empty, verify that the user has privileges to access both the c
 <div class="sect2">
 <h3 id="sqlserver-always-on-replica"><a class="anchor" href="#sqlserver-always-on-replica"></a>SQL Server Always On</h3>
 <div class="paragraph">
-<p>The SQL Server connector can capture changes from an Always On read-only replica.
-A few pre-requisities are necessary to be fulfilled:</p>
+<p>The SQL Server connector can capture changes from an Always On read-only replica.</p>
 </div>
 <div class="ulist">
+<div class="title">Prerequisites</div>
 <ul>
 <li>
 <p>Change data capture is configured and enabled on the primary node.
 SQL Server does not support CDC directly on replicas.</p>
 </li>
 <li>
-<p>The configuration option <code>database.applicationIntent</code> must be set to <code>ReadOnly</code>.
+<p>The configuration option <code>database.applicationIntent</code> is set to <code>ReadOnly</code>.
 This is required by SQL Server.
-When Debezium detects this configuration option then it will:</p>
+When Debezium detects this configuration option, it responds by taking the following actions:</p>
 <div class="ulist">
 <ul>
 <li>
-<p>set <code>snapshot.isolation.mode</code> to <code>snapshot</code> as this is the only one transaction isolation mode supported by read-only replicas</p>
+<p>Sets <code>snapshot.isolation.mode</code> to <code>snapshot</code>, which is the only one transaction isolation mode supported for read-only replicas.</p>
 </li>
 <li>
-<p>commit the (read-only) transaction in every execution of the streaming query loop, as this is necessary to get the latest view on CDC data</p>
+<p>Commits the (read-only) transaction in every execution of the streaming query loop, which is necessary to get the latest view of CDC data.</p>
 </li>
 </ul>
 </div>
+</li>
+</ul>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_effect_of_sql_server_capture_job_agent_configuration_on_server_load_and_latency"><a class="anchor" href="#_effect_of_sql_server_capture_job_agent_configuration_on_server_load_and_latency"></a>Effect of SQL Server capture job agent configuration on server load and latency</h3>
+<div class="paragraph">
+<p>When a database administrator enables change data capture for a source table, the capture job agent begins to run.
+The agent reads new change event records from the transaction log and replicates the event records to a change data table.
+Between the time that a change is committed in the source table, and the time that the change appears in the corresponding change table, there is always a small latency interval.
+This latency interval represents a gap between when changes occur in the source table and when they become available for Debezium to stream to Apache Kafka.</p>
+</div>
+<div class="paragraph">
+<p>Ideally, for applications that must respond quickly to changes in data, you want to maintain close synchronization between the source and change tables.
+You might imagine that running the capture agent to continuously process change events as rapidly as possible might result in increased throughput and reduced latency&#8201;&#8212;&#8201;populating change tables with new event records as soon as possible after the events occur, in near real time.
+However, this is not necessarily the case.
+There is a performance penalty to pay in the pursuit of more immediate synchronization.
+Each time that the capture job agent queries the database for new event records, it increases the CPU load on the database host.
+The additional load on the server can have a negative effect on overall database performance, and potentially reduce transaction efficiency, especially during times of peak database use.</p>
+</div>
+<div class="paragraph">
+<p>It&#8217;s important to monitor database metrics so that you know if the database reaches the point where the server can no longer support the capture agent&#8217;s level of activity.
+If you notice performance problems, there are SQL Server capture agent settings that you can modify to help balance the overall CPU load on the database host with a tolerable degree of latency.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_sql_server_capture_job_agent_configuration_parameters"><a class="anchor" href="#_sql_server_capture_job_agent_configuration_parameters"></a>SQL Server capture job agent configuration parameters</h3>
+<div class="paragraph">
+<p>On SQL Server, parameters that control the behavior of the capture job agent are defined in the SQL Server table <a href="https://docs.microsoft.com/en-us/sql/relational-databases/system-tables/dbo-cdc-jobs-transact-sql?view=latest"><code>msdb.dbo.cdc_jobs</code></a>.
+If you experience performance issues while running the capture job agent, adjust capture jobs settings to reduce CPU load by running the <a href="https://docs.microsoft.com/en-us/sql/relational-databases/system-stored-procedures/sys-sp-cdc-change-job-transact-sql?view=latest"><code>sys.sp_cdc_change_job</code></a> stored procedure and supplying new values.</p>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>Specific guidance about how to configure SQL Server capture job agent parameters is beyond the scope of this documentation.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="paragraph">
+<p>The following parameters are the most significant for modifying capture agent behavior for use with the Debezium SQL Server connector:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>pollinginterval</code></dt>
+<dd>
+<div class="ulist">
+<ul>
+<li>
+<p>Specifies the number of seconds that the capture agent waits between log scan cycles.</p>
+</li>
+<li>
+<p>A higher value reduces the load on the database host and increases latency.</p>
+</li>
+<li>
+<p>A value of <code>0</code> specifies no wait between scans.</p>
+</li>
+<li>
+<p>The default value is <code>5</code>.</p>
+</li>
+</ul>
+</div>
+</dd>
+<dt class="hdlist1"><code>maxtrans</code></dt>
+<dd>
+<div class="ulist">
+<ul>
+<li>
+<p>Specifies the maximum number of transactions to process during each log scan cycle.
+After the capture job processes the specified number of transactions, it pauses for the length of time that the <code>pollinginterval</code> specifies before the next scan begins.</p>
+</li>
+<li>
+<p>A lower value reduces the load on the database host and increases latency.</p>
+</li>
+<li>
+<p>The default value is <code>500</code>.</p>
+</li>
+</ul>
+</div>
+</dd>
+<dt class="hdlist1"><code>maxscans</code></dt>
+<dd>
+<div class="ulist">
+<ul>
+<li>
+<p>Specifies a limit on the number of scan cycles that the capture job can attempt in capturing the full contents of the database transaction log.
+If the <code>continuous</code> parameter is set to <code>1</code>, the job pauses for the length of time that the <code>pollinginterval</code> specifies before it resumes scanning.</p>
+</li>
+<li>
+<p>A lower values reduces the load on the database host and increases latency.</p>
+</li>
+<li>
+<p>The default value is <code>10</code>.</p>
+</li>
+</ul>
+</div>
+</dd>
+</dl>
+</div>
+<div class="ulist">
+<div class="title">Additional resources</div>
+<ul>
+<li>
+<p>For more information about capture agent parameters, see the SQL Server documentation.</p>
 </li>
 </ul>
 </div>
@@ -2477,7 +2589,7 @@ When Debezium detects this configuration option then it will:</p>
 <div class="sect2">
 <h3 id="sqlserver-deploying-a-connector"><a class="anchor" href="#sqlserver-deploying-a-connector"></a>Deployment</h3>
 <div class="paragraph">
-<p>With <a href="https://zookeeper.apache.org">Zookeeper</a>, <a href="http://kafka.apache.org/">Kafka</a>, and <a href="https://kafka.apache.org/documentation.html#connect">Kafka Connect</a> installed, the remaining tasks to deploy a Debezium SQL Server connector are to download the <a href="https://repo1.maven.org/maven2/io/debezium/debezium-connector-sqlserver/1.5.0.Beta1/debezium-connector-sqlserver-1.5.0.Beta1-plugin.tar.gz">connector&#8217;s plug-in archive</a>, extract the JAR files into your Kafka Connect environment, and add the directory with the JAR files to <a href="https://kafka.apache.org/documentation/#connectconfigs">Kafka Connect&#8217;s <code>plugin.path</code></a>.
+<p>With <a href="https://zookeeper.apache.org">Zookeeper</a>, <a href="http://kafka.apache.org/">Kafka</a>, and <a href="https://kafka.apache.org/documentation.html#connect">Kafka Connect</a> installed, the remaining tasks to deploy a Debezium SQL Server connector are to download the <a href="https://repo1.maven.org/maven2/io/debezium/debezium-connector-sqlserver/1.5.0.Beta2/debezium-connector-sqlserver-1.5.0.Beta2-plugin.tar.gz">connector&#8217;s plug-in archive</a>, extract the JAR files into your Kafka Connect environment, and add the directory with the JAR files to <a href="https://kafka.apache.org/documentation/#connectconfigs">Kafka Connect&#8217;s <code>plugin.path</code></a>.
 Restart your Kafka Connect process to pick up the new JAR files.</p>
 </div>
 <div class="paragraph">

@@ -322,7 +322,7 @@
 <li><a href="#oracle-deploying-a-connector">Deploying a Connector</a>
 <ul class="sectlevel2">
 <li><a href="#oracle-example-configuration">Example Configuration</a></li>
-<li><a href="#oracle-database-mode">Pluggable vs Non-Plugable databases</a></li>
+<li><a href="#oracle-database-mode">Pluggable vs Non-Pluggable databases</a></li>
 <li><a href="#selecting-the-adapter">Selecting the adapter</a></li>
 <li><a href="#oracle-connector-properties">Connector Properties</a></li>
 </ul>
@@ -369,7 +369,7 @@ It is supported though to capture tables newly added while the connector is runn
 <h2 id="oracle-overview"><a class="anchor" href="#oracle-overview"></a>Overview</h2>
 <div class="sectionbody">
 <div class="paragraph">
-<p>Debezium ingests change events from Oracle using the <a href="https://docs.oracle.com/database/121/XSTRM/xstrm_intro.htm#XSTRM72647">XStream API</a> or directly by LogMiner.
+<p>Debezium ingests change events from Oracle using the native LogMiner database package or the <a href="https://docs.oracle.com/database/121/XSTRM/xstrm_intro.htm#XSTRM72647">XStream API</a>.
 In order to use the XStream API, you need to have a license for the GoldenGate product
 (though it is not required that GoldenGate itself is installed).</p>
 </div>
@@ -387,7 +387,7 @@ In order to use the XStream API, you need to have a license for the GoldenGate p
 <p>Most Oracle servers are configured to not retain the complete history of the database in the redo logs,
 so the Debezium Oracle connector would be unable to see the entire history of the database by simply reading the logs.
 Consequently, the first time the connector starts, it performs an initial <em>consistent snapshot</em> of the database.
-the default behavior for perofmring a snapshot consists of the following steps.
+the default behavior for performing a snapshot consists of the following steps.
 you can change this behavior by setting the <code>snapshot.mode</code> connector configuration property to a value other than <code>initial</code>.</p>
 </div>
 <div class="olist arabic">
@@ -495,7 +495,7 @@ The message contains a logical representation of the table schema.</p>
   },
   "payload": {
     "source": {
-      "version": "1.5.0.Beta1",
+      "version": "1.5.0.Beta2",
       "connector": "oracle",
       "name": "server1",
       "ts_ms": 1588252618953,
@@ -1750,14 +1750,32 @@ A string representation of a timestamp with timezone information</p>
 <div class="sectionbody">
 <div class="paragraph">
 <p>The following database set up steps are necessary to use the Debezium Oracle connector.
-These steps assume the use of the multitenancy configuration with a container database and at least one pluggable database.
-If you intend to use a non-multitenancy configuration, the following steps may require adjustment.</p>
+These steps assume the use of the multi-tenancy configuration with a container database and at least one pluggable database.
+If you intend to not use multi-tenancy configuration, the following steps may require adjustment.</p>
 </div>
 <div class="paragraph">
 <p>You can find a template for setting up Oracle in a virtual machine (via Vagrant) in the <a href="https://github.com/debezium/oracle-vagrant-box/">oracle-vagrant-box/</a> repository.</p>
 </div>
 <div class="sect2">
 <h3 id="_preparing_the_database"><a class="anchor" href="#_preparing_the_database"></a>Preparing the Database</h3>
+<div class="listingblock">
+<div class="title">Configuration needed for Oracle LogMiner</div>
+<div class="content">
+<pre class="highlightjs highlight"><code>ORACLE_SID=ORACLCDB dbz_oracle sqlplus /nolog
+
+CONNECT sys/top_secret AS SYSDBA
+alter system set db_recovery_file_dest_size = 10G;
+alter system set db_recovery_file_dest = '/opt/oracle/oradta/recovery_area' scope=spfile;
+shutdown immediate
+startup mount
+alter database archivelog;
+alter database open;
+-- Should now "Database log mode: Archive Mode"
+archive log list
+
+exit;</code></pre>
+</div>
+</div>
 <div class="listingblock">
 <div class="title">Configuration needed for Oracle XStream</div>
 <div class="content">
@@ -1772,24 +1790,6 @@ startup mount
 alter database archivelog;
 alter database open;
 -- Should show "Database log mode: Archive Mode"
-archive log list
-
-exit;</code></pre>
-</div>
-</div>
-<div class="listingblock">
-<div class="title">Configuration needed for Oracle LogMiner</div>
-<div class="content">
-<pre class="highlightjs highlight"><code>ORACLE_SID=ORACLCDB dbz_oracle sqlplus /nolog
-
-CONNECT sys/top_secret AS SYSDBA
-alter system set db_recovery_file_dest_size = 10G;
-alter system set db_recovery_file_dest = '/opt/oracle/oradta/recovery_area' scope=spfile;
-shutdown immediate
-startup mount
-alter database archivelog;
-alter database open;
--- Should now "Database log mode: Archive Mode"
 archive log list
 
 exit;</code></pre>
@@ -1814,12 +1814,62 @@ The following briefly describes these user configurations using a multi-tenant d
 <div class="ulist">
 <ul>
 <li>
-<p><a href="#oracle-create-users-xstream"><code>Creating users for Oracle XStream</code></a></p>
-</li>
-<li>
 <p><a href="#oracle-create-users-logminer"><code>Creating users for Oracle LogMiner</code></a></p>
 </li>
+<li>
+<p><a href="#oracle-create-users-xstream"><code>Creating users for Oracle XStream</code></a></p>
+</li>
 </ul>
+</div>
+<div id="oracle-create-users-logminer" class="listingblock">
+<div class="title">Creating the connector&#8217;s LogMiner user</div>
+<div class="content">
+<pre class="highlightjs highlight"><code>sqlplus sys/top_secret@//localhost:1521/ORCLCDB as sysdba
+  CREATE TABLESPACE logminer_tbs DATAFILE '/opt/oracle/oradata/ORCLCDB/logminer_tbs.dbf'
+    SIZE 25M REUSE AUTOEXTEND ON MAXSIZE UNLIMITED;
+  exit;
+
+sqlplus sys/top_secret@//localhost:1521/ORCLPDB1 as sysdba
+  CREATE TABLESPACE logminer_tbs DATAFILE '/opt/oracle/oradata/ORCLCDB/ORCLPDB1/logminer_tbs.dbf'
+    SIZE 25M REUSE AUTOEXTEND ON MAXSIZE UNLIMITED;
+  exit;
+
+sqlplus sys/top_secret@//localhost:1521/ORCLCDB as sysdba
+
+  CREATE USER c##dbzuser IDENTIFIED BY dbz
+    DEFAULT TABLESPACE logminer_tbs
+    QUOTA UNLIMITED ON logminer_tbs
+    CONTAINER=ALL;
+
+  GRANT CREATE SESSION TO c##dbzuser CONTAINER=ALL;
+  GRANT SET CONTAINER TO c##dbzuser CONTAINER=ALL;
+  GRANT SELECT ON V_$DATABASE to c##dbzuser CONTAINER=ALL;
+  GRANT FLASHBACK ANY TABLE TO c##dbzuser CONTAINER=ALL;
+  GRANT SELECT ANY TABLE TO c##dbzuser CONTAINER=ALL;
+  GRANT SELECT_CATALOG_ROLE TO c##dbzuser CONTAINER=ALL;
+  GRANT EXECUTE_CATALOG_ROLE TO c##dbzuser CONTAINER=ALL;
+  GRANT SELECT ANY TRANSACTION TO c##dbzuser CONTAINER=ALL;
+  GRANT LOGMINING TO c##dbzuser CONTAINER=ALL;
+
+  GRANT CREATE TABLE TO c##dbzuser CONTAINER=ALL;
+  GRANT LOCK ANY TABLE TO c##dbzuser CONTAINER=ALL;
+  GRANT ALTER ANY TABLE TO c##dbzuser CONTAINER=ALL;
+  GRANT CREATE SEQUENCE TO c##dbzuser CONTAINER=ALL;
+
+  GRANT EXECUTE ON DBMS_LOGMNR TO c##dbzuser CONTAINER=ALL;
+  GRANT EXECUTE ON DBMS_LOGMNR_D TO c##dbzuser CONTAINER=ALL;
+
+  GRANT SELECT ON V_$LOG TO c##dbzuser CONTAINER=ALL;
+  GRANT SELECT ON V_$LOG_HISTORY TO c##dbzuser CONTAINER=ALL;
+  GRANT SELECT ON V_$LOGMNR_LOGS TO c##dbzuser CONTAINER=ALL;
+  GRANT SELECT ON V_$LOGMNR_CONTENTS TO c##dbzuser CONTAINER=ALL;
+  GRANT SELECT ON V_$LOGMNR_PARAMETERS TO c##dbzuser CONTAINER=ALL;
+  GRANT SELECT ON V_$LOGFILE TO c##dbzuser CONTAINER=ALL;
+  GRANT SELECT ON V_$ARCHIVED_LOG TO c##dbzuser CONTAINER=ALL;
+  GRANT SELECT ON V_$ARCHIVE_DEST_STATUS TO c##dbzuser CONTAINER=ALL;
+
+  exit;</code></pre>
+</div>
 </div>
 <div id="oracle-create-users-xstream" class="listingblock">
 <div class="title">Creating an XStream Administrator user</div>
@@ -1835,16 +1885,16 @@ sqlplus sys/top_secret@//localhost:1521/ORCLPDB1 as sysdba
   exit;
 
 sqlplus sys/top_secret@//localhost:1521/ORCLCDB as sysdba
-  CREATE USER c##xstrmadmin IDENTIFIED BY xsa
+  CREATE USER c##dbzadmin IDENTIFIED BY dbz
     DEFAULT TABLESPACE xstream_adm_tbs
     QUOTA UNLIMITED ON xstream_adm_tbs
     CONTAINER=ALL;
 
-  GRANT CREATE SESSION, SET CONTAINER TO c##xstrmadmin CONTAINER=ALL;
+  GRANT CREATE SESSION, SET CONTAINER TO c##dbzadmin CONTAINER=ALL;
 
   BEGIN
      DBMS_XSTREAM_AUTH.GRANT_ADMIN_PRIVILEGE(
-        grantee                 =&gt; 'c##xstrmadmin',
+        grantee                 =&gt; 'c##dbzadmin',
         privilege_type          =&gt; 'CAPTURE',
         grant_select_privileges =&gt; TRUE,
         container               =&gt; 'ALL'
@@ -1869,67 +1919,17 @@ sqlplus sys/top_secret@//localhost:1521/ORCLPDB1 as sysdba
   exit;
 
 sqlplus sys/top_secret@//localhost:1521/ORCLCDB as sysdba
-  CREATE USER c##xstrm IDENTIFIED BY xs
+  CREATE USER c##dbzuser IDENTIFIED BY dbz
     DEFAULT TABLESPACE xstream_tbs
     QUOTA UNLIMITED ON xstream_tbs
     CONTAINER=ALL;
 
-  GRANT CREATE SESSION TO c##xstrm CONTAINER=ALL;
-  GRANT SET CONTAINER TO c##xstrm CONTAINER=ALL;
-  GRANT SELECT ON V_$DATABASE to c##xstrm CONTAINER=ALL;
-  GRANT FLASHBACK ANY TABLE TO c##xstrm CONTAINER=ALL;
-  GRANT SELECT_CATALOG_ROLE TO c##xstrm CONTAINER=ALL;
-  GRANT EXECUTE_CATALOG_ROLE TO c##xstrm CONTAINER=ALL;
-  exit;</code></pre>
-</div>
-</div>
-<div id="oracle-create-users-logminer" class="listingblock">
-<div class="title">Creating the connector&#8217;s LogMiner user</div>
-<div class="content">
-<pre class="highlightjs highlight"><code>sqlplus sys/top_secret@//localhost:1521/ORCLCDB as sysdba
-  CREATE TABLESPACE logminer_tbs DATAFILE '/opt/oracle/oradata/ORCLCDB/logminer_tbs.dbf'
-    SIZE 25M REUSE AUTOEXTEND ON MAXSIZE UNLIMITED;
-  exit;
-
-sqlplus sys/top_secret@//localhost:1521/ORCLPDB1 as sysdba
-  CREATE TABLESPACE logminer_tbs DATAFILE '/opt/oracle/oradata/ORCLCDB/ORCLPDB1/logminer_tbs.dbf'
-    SIZE 25M REUSE AUTOEXTEND ON MAXSIZE UNLIMITED;
-  exit;
-
-sqlplus sys/top_secret@//localhost:1521/ORCLCDB as sysdba
-
-  CREATE USER c##logminer IDENTIFIED BY lm
-    DEFAULT TABLESPACE logminer_tbs
-    QUOTA UNLIMITED ON logminer_tbs
-    CONTAINER=ALL;
-
-  GRANT CREATE SESSION TO c##logminer CONTAINER=ALL;
-  GRANT SET CONTAINER TO c##logminer CONTAINER=ALL;
-  GRANT SELECT ON V_$DATABASE to c##logminer CONTAINER=ALL;
-  GRANT FLASHBACK ANY TABLE TO c##logminer CONTAINER=ALL;
-  GRANT SELECT ANY TABLE TO c##logminer CONTAINER=ALL;
-  GRANT SELECT_CATALOG_ROLE TO c##logminer CONTAINER=ALL;
-  GRANT EXECUTE_CATALOG_ROLE TO c##logminer CONTAINER=ALL;
-  GRANT SELECT ANY TRANSACTION TO c##logminer CONTAINER=ALL;
-  GRANT LOGMINING TO c##logminer CONTAINER=ALL;
-
-  GRANT CREATE TABLE TO c##logminer CONTAINER=ALL;
-  GRANT LOCK ANY TABLE TO c##logminer CONTAINER=ALL;
-  GRANT ALTER ANY TABLE TO c##logminer CONTAINER=ALL;
-  GRANT CREATE SEQUENCE TO c##logminer CONTAINER=ALL;
-
-  GRANT EXECUTE ON DBMS_LOGMNR TO c##logminer CONTAINER=ALL;
-  GRANT EXECUTE ON DBMS_LOGMNR_D TO c##logminer CONTAINER=ALL;
-
-  GRANT SELECT ON V_$LOG TO c##logminer CONTAINER=ALL;
-  GRANT SELECT ON V_$LOG_HISTORY TO c##logminer CONTAINER=ALL;
-  GRANT SELECT ON V_$LOGMNR_LOGS TO c##logminer CONTAINER=ALL;
-  GRANT SELECT ON V_$LOGMNR_CONTENTS TO c##logminer CONTAINER=ALL;
-  GRANT SELECT ON V_$LOGMNR_PARAMETERS TO c##logminer CONTAINER=ALL;
-  GRANT SELECT ON V_$LOGFILE TO c##logminer CONTAINER=ALL;
-  GRANT SELECT ON V_$ARCHIVED_LOG TO c##logminer CONTAINER=ALL;
-  GRANT SELECT ON V_$ARCHIVE_DEST_STATUS TO c##logminer CONTAINER=ALL;
-
+  GRANT CREATE SESSION TO c##dbzuser CONTAINER=ALL;
+  GRANT SET CONTAINER TO c##dbzuser CONTAINER=ALL;
+  GRANT SELECT ON V_$DATABASE to c##dbzuser CONTAINER=ALL;
+  GRANT FLASHBACK ANY TABLE TO c##dbzuser CONTAINER=ALL;
+  GRANT SELECT_CATALOG_ROLE TO c##dbzuser CONTAINER=ALL;
+  GRANT EXECUTE_CATALOG_ROLE TO c##dbzuser CONTAINER=ALL;
   exit;</code></pre>
 </div>
 </div>
@@ -1944,7 +1944,7 @@ sqlplus sys/top_secret@//localhost:1521/ORCLCDB as sysdba
 </td>
 <td class="content">
 <div class="paragraph">
-<p>If you&#8217;re using the LogMiner implementation, this step is not necessary.</p>
+<p>If you&#8217;re using the default adapter, LogMiner, then this step can be skipped.</p>
 </div>
 </td>
 </tr>
@@ -1957,7 +1957,7 @@ sqlplus sys/top_secret@//localhost:1521/ORCLCDB as sysdba
 <div class="listingblock">
 <div class="title">Create an XStream Outbound Server</div>
 <div class="content">
-<pre class="highlightjs highlight"><code>sqlplus c##xstrmadmin/xsa@//localhost:1521/ORCLCDB
+<pre class="highlightjs highlight"><code>sqlplus c##dbzadmin/dbz@//localhost:1521/ORCLCDB
 DECLARE
   tables  DBMS_UTILITY.UNCL_ARRAY;
   schemas DBMS_UTILITY.UNCL_ARRAY;
@@ -1980,7 +1980,7 @@ exit;</code></pre>
 BEGIN
   DBMS_XSTREAM_ADM.ALTER_OUTBOUND(
     server_name  =&gt; 'dbzxout',
-    connect_user =&gt; 'c##xstrm');
+    connect_user =&gt; 'c##dbzuser');
 END;
 /
 exit;</code></pre>
@@ -2036,11 +2036,10 @@ Lastly, create an environment variable, <code>LD_LIBRARY_PATH</code>, that point
         "database.server.name" : "server1",
         "database.hostname" : "&lt;oracle ip&gt;",
         "database.port" : "1521",
-        "database.user" : "c##xstrm",
-        "database.password" : "xs",
+        "database.user" : "c##dbzuser",
+        "database.password" : "dbz",
         "database.dbname" : "ORCLCDB",
         "database.pdb.name" : "ORCLPDB1",
-        "database.out.server.name" : "dbzxout",
         "database.history.kafka.bootstrap.servers" : "kafka:9092",
         "database.history.kafka.topic": "schema-changes.inventory"
     }
@@ -2058,12 +2057,11 @@ Lastly, create an environment variable, <code>LD_LIBRARY_PATH</code>, that point
         "connector.class" : "io.debezium.connector.oracle.OracleConnector",
         "tasks.max" : "1",
         "database.server.name" : "server1",
-        "database.user" : "c##xstrm",
-        "database.password" : "xs",
+        "database.user" : "c##dbzuser",
+        "database.password" : "dbz",
         "database.url": "jdbc:oracle:thin:@(DESCRIPTION=(ADDRESS_LIST=(LOAD_BALANCE=OFF)(FAILOVER=ON)(ADDRESS=(PROTOCOL=TCP)(HOST=&lt;oracle ip 1&gt;)(PORT=1521))(ADDRESS=(PROTOCOL=TCP)(HOST=&lt;oracle ip 2&gt;)(PORT=1521)))(CONNECT_DATA=SERVICE_NAME=)(SERVER=DEDICATED)))",
         "database.dbname" : "ORCLCDB",
         "database.pdb.name" : "ORCLPDB1",
-        "database.out.server.name" : "dbzxout",
         "database.history.kafka.bootstrap.servers" : "kafka:9092",
         "database.history.kafka.topic": "schema-changes.inventory"
     }
@@ -2072,7 +2070,7 @@ Lastly, create an environment variable, <code>LD_LIBRARY_PATH</code>, that point
 </div>
 </div>
 <div class="sect2">
-<h3 id="oracle-database-mode"><a class="anchor" href="#oracle-database-mode"></a>Pluggable vs Non-Plugable databases</h3>
+<h3 id="oracle-database-mode"><a class="anchor" href="#oracle-database-mode"></a>Pluggable vs Non-Pluggable databases</h3>
 <div class="paragraph">
 <p>The Debezium Oracle connector supports both deployment practices of pluggable databases (CDB mode) as well as non-pluggable databases (non-CDB mode).</p>
 </div>
@@ -2086,10 +2084,9 @@ Lastly, create an environment variable, <code>LD_LIBRARY_PATH</code>, that point
     "database.server.name" : "server1",
     "database.hostname" : "&lt;oracle ip&gt;",
     "database.port" : "1521",
-    "database.user" : "c##xstrm",
-    "database.password" : "xs",
+    "database.user" : "c##dbzuser",
+    "database.password" : "dbz",
     "database.dbname" : "ORCLCDB",
-    "database.out.server.name" : "dbzxout",
     "database.history.kafka.bootstrap.servers" : "kafka:9092",
     "database.history.kafka.topic": "schema-changes.inventory"
   }
@@ -2106,11 +2103,10 @@ Lastly, create an environment variable, <code>LD_LIBRARY_PATH</code>, that point
     "database.server.name" : "server1",
     "database.hostname" : "&lt;oracle ip&gt;",
     "database.port" : "1521",
-    "database.user" : "c##xstrm",
-    "database.password" : "xs",
+    "database.user" : "c##dbzuser",
+    "database.password" : "dbz",
     "database.dbname" : "ORCLCDB",
     "database.pdb.name" : "ORCLPDB1",
-    "database.out.server.name" : "dbzxout",
     "database.history.kafka.bootstrap.servers" : "kafka:9092",
     "database.history.kafka.topic": "schema-changes.inventory"
   }
@@ -2137,10 +2133,11 @@ When using a non-CDB installation, do <strong>not</strong> specify the <code>dat
 <h3 id="selecting-the-adapter"><a class="anchor" href="#selecting-the-adapter"></a>Selecting the adapter</h3>
 <div class="paragraph">
 <p>Debezium provides multiple ways to ingest change events from Oracle.
-By default Debezium uses the XStream API but this isn&#8217;t always applicable for every installation.</p>
+By default Debezium uses Oracle LogMiner but you may wish to use the Oracle XStream API for your installation.</p>
 </div>
 <div class="paragraph">
-<p>The following example configuration illustrates that by adding the <code>database.connection.adapter</code>, the connector can be toggled to use the LogMiner implementation.</p>
+<p>The following example configuration illustrates that by adding the <code>database.connection.adapter</code> and <code>database.out.server.name</code>,
+the connector can be toggled to use the XStream API implementation.</p>
 </div>
 <div class="listingblock">
 <div class="content">
@@ -2152,31 +2149,17 @@ By default Debezium uses the XStream API but this isn&#8217;t always applicable 
         "database.server.name" : "server1",
         "database.hostname" : "&lt;oracle ip&gt;",
         "database.port" : "1521",
-        "database.user" : "c##xstrm",
-        "database.password" : "xs",
+        "database.user" : "c##dbzuser",
+        "database.password" : "dbz",
         "database.dbname" : "ORCLCDB",
         "database.pdb.name" : "ORCLPDB1",
-        "database.out.server.name" : "dbzxout",
         "database.history.kafka.bootstrap.servers" : "kafka:9092",
-        "database.history.kafka.topic": "schema-changes.inventory"
-        "database.connection.adapter": "logminer"
+        "database.history.kafka.topic": "schema-changes.inventory",
+        "database.connection.adapter": "xstream",
+        "database.out.server.name" : "dbzxout",
     }
 }</code></pre>
 </div>
-</div>
-<div class="admonitionblock note">
-<table>
-<tr>
-<td class="icon">
-<i class="fa icon-note" title="Note"></i>
-</td>
-<td class="content">
-<div class="paragraph">
-<p>We encourage the use of the LogMiner adapter for testing and feedback purposes, but we do not yet recommend it for production use as its still under active development.</p>
-</div>
-</td>
-</tr>
-</table>
 </div>
 </div>
 <div class="sect2">
@@ -2287,17 +2270,6 @@ By default Debezium uses the XStream API but this isn&#8217;t always applicable 
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="oracle-property-database-tablename-case-insensitive"></a><a href="#oracle-property-database-tablename-case-insensitive"><code>database.tablename.case.insensitive</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>false</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Enable support for case insensitive table names; set to <code>true</code> for Oracle 11g.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><a id="oracle-property-database-oracle-version"></a><a href="#oracle-property-database-oracle-version"><code>database.oracle.version</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -2343,12 +2315,12 @@ Only alphanumeric characters and underscores should be used.</p>
 <p><a id="oracle-property-database-connection-adapter"></a><a href="#oracle-database-connection-adapter"><code>database.connection.adapter</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>xstream</code></p>
+<p><code>logminer</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The adapter implementation to use.
-<code>xstream</code> uses the Oracle XStreams API.
-<code>logminer</code> uses the native Oracle LogMiner API.</p>
+<p>The adapter implementation to be used to stream database changes.
+<code>logminer</code> (the default) to use the native Oracle LogMiner API;
+<code>xstream</code> to use the Oracle XStreams API.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -2841,10 +2813,11 @@ When set to <code>0</code>, log mining history is is disabled.</p>
 <p><a id="oracle-property-log-mining-transaction-retention-hours"></a><a href="#oracle-property-log-mining-transaction-retention-hours"><code>log.mining.transaction.retention.hours</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>4</code></p>
+<p><code>0</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Positive integer value that specifies the number of hours to retain long running transactions between redo log switches.</p>
+<p>Positive integer value that specifies the number of hours to retain long running transactions between redo log switches.
+When set to <code>0</code>, transactions are retained until a commit or rollback is detected.</p>
 </div>
 <div class="paragraph">
 <p>The LogMiner adapter maintains an in-memory buffer of all running transactions.
