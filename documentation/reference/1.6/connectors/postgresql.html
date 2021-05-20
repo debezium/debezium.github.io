@@ -491,12 +491,6 @@ For more information about PostgreSQL logical replication security, see the <a h
 <p>Start a transaction with a <a href="https://www.postgresql.org/docs/current/static/sql-set-transaction.html">SERIALIZABLE, READ ONLY, DEFERRABLE</a> isolation level to ensure that subsequent reads in this transaction are against a single consistent version of the data. Any changes to the data due to subsequent <code>INSERT</code>, <code>UPDATE</code>, and <code>DELETE</code> operations by other clients are not visible to this transaction.</p>
 </li>
 <li>
-<p>Obtain an <code>ACCESS SHARE MODE</code> lock on each of the tables being tracked to ensure that no structural changes can occur to any of the tables while the snapshot is taking place. These locks do not prevent table <code>INSERT</code>, <code>UPDATE</code> and <code>DELETE</code> operations from taking place during the snapshot.</p>
-<div class="paragraph">
-<p><em>This step is omitted when <code>snapshot.mode</code> is set to <code>exported</code>, which allows the connector to perform a lock-free snapshot</em>.</p>
-</div>
-</li>
-<li>
 <p>Read the current position in the server&#8217;s transaction log.</p>
 </li>
 <li>
@@ -512,21 +506,6 @@ For more information about PostgreSQL logical replication security, see the <a h
 </div>
 <div class="paragraph">
 <p>If the connector fails, is rebalanced, or stops after Step 1 begins but before Step 6 completes, upon restart the connector begins a new snapshot. After the connector completes its initial snapshot, the PostgreSQL connector continues streaming from the position that it read in step 3. This ensures that the connector does not miss any updates. If the connector stops again for any reason, upon restart, the connector continues streaming changes from where it previously left off.</p>
-</div>
-<div class="admonitionblock warning">
-<table>
-<tr>
-<td class="icon">
-<i class="fa icon-warning" title="Warning"></i>
-</td>
-<td class="content">
-<div class="paragraph">
-<p>It is strongly recommended that you configure a PostgreSQL connector to set <code>snapshot.mode</code> to <code>exported</code>. The <code>initial</code>, <code>initial only</code> and <code>always</code> modes can lose a few events while a connector switches from performing the snapshot to streaming change event records when a database is under heavy load.
-This is a known issue and the affected snapshot modes will be reworked to use <code>exported</code> mode internally (<a href="https://issues.redhat.com/browse/DBZ-2337">DBZ-2337</a>).</p>
-</div>
-</td>
-</tr>
-</table>
 </div>
 <table id="snapshot-mode-settings" class="tableblock frame-all grid-all stretch">
 <caption class="title">Table 1. Settings for <code>snapshot.mode</code> connector configuration property</caption>
@@ -580,7 +559,7 @@ This is a known issue and the affected snapshot modes will be reworked to use <c
 <p><code>exported</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The connector performs a database snapshot based on the point in time when the replication slot was created. This mode is an excellent way to perform a snapshot in a lock-free way.</p>
+<p>Deprecated, all modes are lockless.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -593,6 +572,203 @@ This is a known issue and the affected snapshot modes will be reworked to use <c
 </tr>
 </tbody>
 </table>
+<div class="paragraph">
+<p><a id="postgresql-adhoc-snapshot"></a></p>
+</div>
+<div class="sect3">
+<h4 id="_ad_hoc_snapshot"><a class="anchor" href="#_ad_hoc_snapshot"></a>Ad-hoc snapshot</h4>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>This feature is currently in incubating state, i.e. exact semantics, configuration options etc. may change in future revisions, based on the feedback we receive.
+Please let us know if you encounter any problems while using this extension.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="paragraph">
+<p>When the initial snapshot is completed then it is not executed again as further data are acquired via streaming.</p>
+</div>
+<div class="paragraph">
+<p>Sometimes it would be really useful to re-execute a snapshot, either completely, or for only a subset of tables.
+Examples for such use cases include:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>a new table was added into the list of captured tables</p>
+</li>
+<li>
+<p>some of the topics were deleted and their content needs to be rebuilt</p>
+</li>
+<li>
+<p>the data were corrupted due to a configuration error</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>Debezium can be requested via the <a href="../configuration/signalling.html" class="page">signalling table</a> mechanism to execute a new snapshot of a defined list of tables.
+The signal is named <code>execute-snapshot</code> and accepts messages in the following format:</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 2. Example of a signal record</caption>
+<colgroup>
+<col style="width: 20%;">
+<col style="width: 20%;">
+<col style="width: 60%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Field</th>
+<th class="tableblock halign-left valign-top">Default</th>
+<th class="tableblock halign-left valign-top">Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>type</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>incremental</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The type of the snapshot to be executed. Currently only <code>incremental</code> is supported.<br>
+See the next section for more details.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>data-collections</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><em>N/A</em></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">An array of qualified names of table to be snapshotted.<br>
+The format of the names is the same as for <a href="#postgresql-property-signal-data-collection">signal.data.collection</a> configuration option.</p></td>
+</tr>
+</tbody>
+</table>
+<div class="paragraph">
+<p>An example of the signal to be triggered is this:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">INSERT INTO myschema.debezium_signal VALUES('ad-hoc-1', 'execute-snapshot', '{"data-collections": ["schema1.table1", "schema1.table2"]}')</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p><a id="postgresql-incremental-snapshot"></a></p>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_incremental_snapshot"><a class="anchor" href="#_incremental_snapshot"></a>Incremental snapshot</h4>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>This feature is currently in incubating state, i.e. exact semantics, configuration options etc. may change in future revisions, based on the feedback we receive.
+Please let us know if you encounter any problems while using this extension.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="paragraph">
+<p>Initial snapshots are a great way to obtain a consistent set of all data stored in a database upfront.
+But there are also some downsides to this approach, though:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>For larger datasets it can take very long to complete; hours or even days</p>
+</li>
+<li>
+<p>The snapshot must be completed before the start of streaming</p>
+</li>
+<li>
+<p>Snapshots are not resumable
+If a snapshot hasn&#8217;t been completed when the connector gets stopped or restarted, the snapshot must be restarted from scratch</p>
+</li>
+<li>
+<p>New tables that are added among the captured ones later are not snapshotted.</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>To mitigate these issues, a new mechanism called <em>incremental snapshotting</em> has been introduced.</p>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>Incremental snapshots can be started current only as <a href="#postgresql-adhoc-snapshot">an ad-hoc snapshot</a>.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>Configuration option <a href="#postgresql-property-signal-data-collection">signal.data.collection</a> must be set.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="paragraph">
+<p>Incremental snapshot is based on <a href="https://github.com/debezium/debezium-design-documents/blob/main/DDD-3.md">DDD-3</a> design document.
+In this case the table is snapshotted in chunks and streaming and snapshot events are blended together.
+The snaphot events are still denoted using operation <code>r</code> and the <code>snapshot</code> field in <code>source</code> info block is set to <code>incremental</code>.</p>
+</div>
+<div class="listingblock">
+<div class="title">Example</div>
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
+   "before":null,
+   "after": {
+      "pk":"1",
+      "value":"New data"
+   },
+   "source": {
+...
+      "snapshot":"incremental"
+   },
+   "op":"r",
+   "ts_ms":"1620393591654",
+   "transaction":null
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>The incremental snapshot events should be understood in a different way than events from an initial snapshot.
+The <code>read</code> events should be understoold like a materialization of data in a certain period of time.
+This means that event semantics differ between initial and incremental snapshots:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p><code>update</code> and <code>delete</code> events can arrive before <code>read</code> events</p>
+</li>
+<li>
+<p>if <code>delete</code> event arrives first then <code>read</code> event is never delivered</p>
+</li>
+<li>
+<p>if <code>update</code> event arrives first then <code>read</code> event will either not be delivered at all or it will be delivered with the updated value</p>
+</li>
+</ul>
+</div>
+</div>
 </div>
 <div class="sect2">
 <h3 id="postgresql-custom-snapshot"><a class="anchor" href="#postgresql-custom-snapshot"></a>Custom snapshotter SPI</h3>
@@ -643,14 +819,6 @@ public interface Snapshotter {
      */
     default boolean shouldStreamEventsStartingFromSnapshot() {
         return true;
-    }
-
-    /**
-     * @return true if when creating a slot, a snapshot should be exported, which
-     * can be used as an alternative to taking a lock
-     */
-    default boolean exportSnapshot() {
-        return false;
     }
 
     /**
@@ -995,7 +1163,7 @@ This field provides information about every event in the form of a composite of 
 </div>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 2. Overview of change event basic content</caption>
+<caption class="title">Table 3. Overview of change event basic content</caption>
 <colgroup>
 <col style="width: 10%;">
 <col style="width: 20%;">
@@ -1116,7 +1284,7 @@ It is possible to override the table&#8217;s primary key by setting the <a href=
 </div>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 3. Description of change event key</caption>
+<caption class="title">Table 4. Description of change event key</caption>
 <colgroup>
 <col style="width: 10%;">
 <col style="width: 20%;">
@@ -1406,7 +1574,7 @@ It is possible to override the table&#8217;s primary key by setting the <a href=
             "email": "annek@noanswer.org"
         },
         "source": { <i class="conum" data-value="8"></i><b>(8)</b>
-            "version": "1.6.0.Alpha1",
+            "version": "1.6.0.Beta1",
             "connector": "postgresql",
             "name": "PostgreSQL_server",
             "ts_ms": 1559033904863,
@@ -1426,7 +1594,7 @@ It is possible to override the table&#8217;s primary key by setting the <a href=
 </div>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 4. Descriptions of <em>create</em> event value fields</caption>
+<caption class="title">Table 5. Descriptions of <em>create</em> event value fields</caption>
 <colgroup>
 <col style="width: 10%;">
 <col style="width: 20%;">
@@ -1598,7 +1766,7 @@ In the <code>source</code> object, <code>ts_ms</code> indicates the time that th
             "email": "annek@noanswer.org"
         },
         "source": { <i class="conum" data-value="3"></i><b>(3)</b>
-            "version": "1.6.0.Alpha1",
+            "version": "1.6.0.Beta1",
             "connector": "postgresql",
             "name": "PostgreSQL_server",
             "ts_ms": 1559033904863,
@@ -1617,7 +1785,7 @@ In the <code>source</code> object, <code>ts_ms</code> indicates the time that th
 </div>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 5. Descriptions of <em>update</em> event value fields</caption>
+<caption class="title">Table 6. Descriptions of <em>update</em> event value fields</caption>
 <colgroup>
 <col style="width: 10%;">
 <col style="width: 20%;">
@@ -1743,7 +1911,7 @@ as a primary key change. For a primary key change, in place of sending an <code>
         },
         "after": null, <i class="conum" data-value="2"></i><b>(2)</b>
         "source": { <i class="conum" data-value="3"></i><b>(3)</b>
-            "version": "1.6.0.Alpha1",
+            "version": "1.6.0.Beta1",
             "connector": "postgresql",
             "name": "PostgreSQL_server",
             "ts_ms": 1559033904863,
@@ -1762,7 +1930,7 @@ as a primary key change. For a primary key change, in place of sending an <code>
 </div>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 6. Descriptions of <em>delete</em> event value fields</caption>
+<caption class="title">Table 7. Descriptions of <em>delete</em> event value fields</caption>
 <colgroup>
 <col style="width: 10%;">
 <col style="width: 20%;">
@@ -1878,7 +2046,7 @@ The message key is <code>null</code> in this case, the message value looks like 
     "schema": { ... },
     "payload": {
         "source": { <i class="conum" data-value="1"></i><b>(1)</b>
-            "version": "1.6.0.Alpha1",
+            "version": "1.6.0.Beta1",
             "connector": "postgresql",
             "name": "PostgreSQL_server",
             "ts_ms": 1559033904863,
@@ -1897,7 +2065,7 @@ The message key is <code>null</code> in this case, the message value looks like 
 </div>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 7. Descriptions of <em>truncate</em> event value fields</caption>
+<caption class="title">Table 8. Descriptions of <em>truncate</em> event value fields</caption>
 <colgroup>
 <col style="width: 10%;">
 <col style="width: 20%;">
@@ -2000,7 +2168,7 @@ when those events are read from different partitions.</p>
 <p>The following table describes how the connector maps basic types.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 8. Mappings for PostgreSQL basic data types</caption>
+<caption class="title">Table 9. Mappings for PostgreSQL basic data types</caption>
 <colgroup>
 <col style="width: 25%;">
 <col style="width: 20%;">
@@ -2432,7 +2600,7 @@ Contains the string representation of the PostgreSQL <code>ENUM</code> value. Th
 <p>When the <code>time.precision.mode</code> property is set to <code>adaptive</code>, the default, the connector determines the literal type and semantic type based on the column&#8217;s data type definition. This ensures that events <em>exactly</em> represent the values in the database.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 9. Mappings when <code>time.precision.mode</code> is <code>adaptive</code></caption>
+<caption class="title">Table 10. Mappings when <code>time.precision.mode</code> is <code>adaptive</code></caption>
 <colgroup>
 <col style="width: 25%;">
 <col style="width: 20%;">
@@ -2518,7 +2686,7 @@ Represents the number of microseconds since the epoch, and does not include time
 <p>When the <code>time.precision.mode</code> configuration property is set to <code>adaptive_time_microseconds</code>, the connector determines the literal type and semantic type for temporal types based on the column&#8217;s data type definition. This ensures that events <em>exactly</em> represent the values in the database, except all <code>TIME</code> fields are captured as microseconds.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 10. Mappings when <code>time.precision.mode</code> is <code>adaptive_time_microseconds</code></caption>
+<caption class="title">Table 11. Mappings when <code>time.precision.mode</code> is <code>adaptive_time_microseconds</code></caption>
 <colgroup>
 <col style="width: 25%;">
 <col style="width: 20%;">
@@ -2591,7 +2759,7 @@ Represents the number of microseconds past the epoch, and does not include timez
 <p>When the <code>time.precision.mode</code> configuration property is set to <code>connect</code>, the connector uses Kafka Connect logical types. This may be useful when consumers can handle only the built-in Kafka Connect logical types and are unable to handle variable-precision time values. However, since PostgreSQL supports microsecond precision, the events generated by a connector with the <code>connect</code> time precision mode <strong>results in a loss of precision</strong> when the database column has a <em>fractional second precision</em> value that is greater than 3.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 11. Mappings when <code>time.precision.mode</code> is <code>connect</code></caption>
+<caption class="title">Table 12. Mappings when <code>time.precision.mode</code> is <code>connect</code></caption>
 <colgroup>
 <col style="width: 25%;">
 <col style="width: 20%;">
@@ -2671,7 +2839,7 @@ This behaviour mimics the standard behaviour of PostgreSQL JDBC driver - see <co
 <p>When the <code>decimal.handling.mode</code> property is set to <code>precise</code>, the connector uses the Kafka Connect <code>org.apache.kafka.connect.data.Decimal</code> logical type for all <code>DECIMAL</code> and <code>NUMERIC</code> columns. This is the default mode.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 12. Mappings when <code>decimal.handling.mode</code> is <code>precise</code></caption>
+<caption class="title">Table 13. Mappings when <code>decimal.handling.mode</code> is <code>precise</code></caption>
 <colgroup>
 <col style="width: 28%;">
 <col style="width: 17%;">
@@ -2718,7 +2886,7 @@ The <code>scale</code> schema parameter contains an integer representing how man
 When the <code>NUMERIC</code> or <code>DECIMAL</code> types are used without scale constraints, the values coming from the database have a different (variable) scale for each value. In this case, the connector uses <code>io.debezium.data.VariableScaleDecimal</code>, which contains both the value and the scale of the transferred value.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 13. Mappings of decimal types when there are no scale constraints</caption>
+<caption class="title">Table 14. Mappings of decimal types when there are no scale constraints</caption>
 <colgroup>
 <col style="width: 25%;">
 <col style="width: 20%;">
@@ -2764,7 +2932,7 @@ Contains a structure with two fields: <code>scale</code> of type <code>INT32</co
 <p>When the <code>decimal.handling.mode</code> property is set to <code>double</code>, the connector represents all <code>DECIMAL</code> and <code>NUMERIC</code> values as Java double values and encodes them as shown in the following table.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 14. Mappings when <code>decimal.handling.mode</code> is <code>double</code></caption>
+<caption class="title">Table 15. Mappings when <code>decimal.handling.mode</code> is <code>double</code></caption>
 <colgroup>
 <col style="width: 30%;">
 <col style="width: 30%;">
@@ -2802,7 +2970,7 @@ Contains a structure with two fields: <code>scale</code> of type <code>INT32</co
 <p>The last possible setting for the <code>decimal.handling.mode</code> configuration property is <code>string</code>. In this case, the connector represents <code>DECIMAL</code> and <code>NUMERIC</code> values as their formatted string representation, and encodes them as shown in the following table.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 15. Mappings when <code>decimal.handling.mode</code> is <code>string</code></caption>
+<caption class="title">Table 16. Mappings when <code>decimal.handling.mode</code> is <code>string</code></caption>
 <colgroup>
 <col style="width: 30%;">
 <col style="width: 30%;">
@@ -2846,7 +3014,7 @@ Contains a structure with two fields: <code>scale</code> of type <code>INT32</co
 <p>When the <code>hstore.handling.mode</code> connector configuration property is set to <code>json</code> (the default), the connector represents <code>HSTORE</code> values as string representations of JSON values and encodes them as shown in the following table. When the <code>hstore.handling.mode</code> property is set to <code>map</code>, the connector uses the <code>MAP</code> schema type for <code>HSTORE</code> values.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 16. Mappings for <code>HSTORE</code> data type</caption>
+<caption class="title">Table 17. Mappings for <code>HSTORE</code> data type</caption>
 <colgroup>
 <col style="width: 25%;">
 <col style="width: 20%;">
@@ -2918,7 +3086,7 @@ Example: output representation  using the JSON converter is <code>{"key" : "val"
 <p>PostgreSQL has data types that can store IPv4, IPv6, and MAC addresses. It is better to use these types instead of plain text types to store network addresses. Network address types offer input error checking and specialized operators and functions.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 17. Mappings for network address types</caption>
+<caption class="title">Table 18. Mappings for network address types</caption>
 <colgroup>
 <col style="width: 25%;">
 <col style="width: 20%;">
@@ -2993,7 +3161,7 @@ MAC addresses in EUI-64 format</p>
 <p>The PostgreSQL connector supports all <a href="http://postgis.net">PostGIS data types</a>.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 18. Mappings of PostGIS data types</caption>
+<caption class="title">Table 19. Mappings of PostGIS data types</caption>
 <colgroup>
 <col style="width: 25%;">
 <col style="width: 20%;">
@@ -3662,7 +3830,7 @@ Again, regularly emitting events solves the problem.</p>
 <div class="title">Procedure</div>
 <ol class="arabic">
 <li>
-<p>Download the Debezium <a href="https://repo1.maven.org/maven2/io/debezium/debezium-connector-postgres/1.6.0.Alpha1/debezium-connector-postgres-1.6.0.Alpha1-plugin.tar.gz">PostgreSQL connector plug-in archive</a>.</p>
+<p>Download the Debezium <a href="https://repo1.maven.org/maven2/io/debezium/debezium-connector-postgres/1.6.0.Beta1/debezium-connector-postgres-1.6.0.Beta1-plugin.tar.gz">PostgreSQL connector plug-in archive</a>.</p>
 </li>
 <li>
 <p>Extract the files into your Kafka Connect environment.</p>
@@ -3824,7 +3992,7 @@ The service records the configuration and starts one connector task that perform
 <p>The following configuration properties are <em>required</em> unless a default value is available.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 19. Required connector configuration properties</caption>
+<caption class="title">Table 20. Required connector configuration properties</caption>
 <colgroup>
 <col style="width: 30%;">
 <col style="width: 25%;">
@@ -4346,7 +4514,7 @@ Please see <a href="#postgresql-truncate-events"><em>truncate</em> events</a> fo
 <p>The following <em>advanced</em> configuration properties have defaults that work in most situations and therefore rarely need to be specified in the connector&#8217;s configuration.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 20. Advanced connector configuration properties</caption>
+<caption class="title">Table 21. Advanced connector configuration properties</caption>
 <colgroup>
 <col style="width: 30%;">
 <col style="width: 28%;">
@@ -4378,7 +4546,7 @@ Please see <a href="#postgresql-truncate-events"><em>truncate</em> events</a> fo
 <br>
 <code>initial_only</code> - The connector performs an initial snapshot and then stops, without processing any subsequent changes.<br>
 <br>
-<code>exported</code> -  The connector performs a snapshot based on the point in time when the replication slot was created. This is an excellent way to perform the snapshot in a lock-free way.<br>
+<code>exported</code> -  deprecated<br>
 <br>
 <code>custom</code> - The connector performs a snapshot according to the setting for the <code>snapshot.custom.class</code> property, which is a custom implementation of the <code>io.debezium.connector.postgresql.spi.Snapshotter</code> interface.<br>
 <br>
@@ -4702,6 +4870,16 @@ If the setting of <code>toasted.value.placeholder</code> starts with the <code>h
 <p>comma-separated list of operation types that will be skipped during streaming.
 The operations include: <code>c</code> for inserts/create, <code>u</code> for updates, and <code>d</code> for deletes.
 By default, no operations are skipped.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="postgresql-property-signal-data-collection"></a><a href="#postgresql-property-signal-data-collection"><code>signal.data.collection</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Fully-qualified name of the data collection that is used to send <a href="../configuration/signalling.html" class="page">signals</a> to the connector.
+The name format is <em>schema-name.table-name</em>.</p>
 </div></div></td>
 </tr>
 </tbody>
