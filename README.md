@@ -58,7 +58,8 @@ This should only need to be performed once. After the libraries are installed, w
 
     jekyll@49d06009e1fa:/site$ rake clean preview
     
-With the integration with Antora, the above command will now also fetch the main codebase repository and will invoke the Antora build process to build the version-specific documentation prior to invoking Jekyll.  For information on Antora and how we've integrated it into the build process, please see ANTORA.md.
+With the integration with Antora, the above command will now also fetch the main codebase repository and will invoke the Antora build process to build the version-specific documentation prior to invoking Jekyll.  For information on Antora and how we've integrated it into the build process, please see [ANTORA.md](./ANTORA.md).
+Also see [CONTRIBUTING.md](./CONTRIBUTING.md) to learn about running the Antora build based on a local check out of the main codebase instead of fetching it from upstream.s
 
 ##### 2.2 Using a local Ruby and Jekyll installation
 
