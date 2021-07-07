@@ -170,7 +170,7 @@ If the reviewers ask you to make additional changes, simply switch to your topic
 
     $ git checkout DBZ-1234
 
-and then make the changes on that branch and either add a new commit or ammend your previous commits. When you've addressed the reviewers' concerns, push your changes to your `origin` repository:
+and then make the changes on that branch and either add a new commit or amend your previous commits. When you've addressed the reviewers' concerns, push your changes to your `origin` repository:
 
     $ git push origin DBZ-1234
 
@@ -369,5 +369,5 @@ Here's a quick check list for a good pull request (PR):
 * One commit per PR
 * One feature/change per PR
 * No changes not directly related to your change (e.g. no formatting changes or refactoring to existing code, if you want to refactor/improve existing code that's a separate discussion and separate JIRA issue)
-* A full build completes succesfully
+* A full build completes successfully
 * Do a rebase on upstream `develop`
