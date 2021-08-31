@@ -1,0 +1,152 @@
+---
+layout: post
+title: Going ZooKeeper-less With the Debezium Container Image for Apache Kafka
+date: 2021-08-31
+tags: [ docker, apache kafka, examples ]
+author: gmorling
+---
+
+https://blogs.apache.org/kafka/entry/what-s-new-in-apache5[Apache Kafka 2.8] allows for a first glimpse into the ZooKeeper-less future of the widely used event streaming platform:
+shipping with a preview of https://cwiki.apache.org/confluence/display/KAFKA/KIP-500%3A+Replace+ZooKeeper+with+a+Self-Managed+Metadata+Quorum[KIP-500] ("Replace ZooKeeper with a Self-Managed Metadata Quorum"),
+you can now run Kafka clusters without the need for setting up and operating Apache ZooKeeper.
+This does not only simplify running Kafka from an operational perspective,
+the new metadata quorum implementation
+(named "KRaft", Kafka Raft metadata mode)
+also should provide much better scaling characteristics,
+for instance when it comes to large numbers of topics and partitions.
+
++++<!-- more -->+++
+
+https://www.morling.dev/blog/exploring-zookeeper-less-kafka/[I have blogged] about my first experiences with KRaft and ZooKeeper-less Kafka a while ago over on my personal blog.
+Since then, the Debezium community has upgraded its https://hub.docker.com/r/debezium/kafka[container image] for Apache Kafka to version 2.8,
+which makes it really simple to start your own explorations around running Kafka without ZooKeeper.
+Note that KRaft mode is an early access feature of Apache Kafka at this point in time and should not be used for production purposes.
+
+== Enabling KRaft Mode
+
+As of Debezium version 1.7, the container image for Kafka supports three new environment variables,
+to be specified when running the image:
+
+* `CLUSTER_ID`: A unique id, such as "5Yr1SIgYQz-b-dgRabWx4g"; if this variable is present, KRaft mode is enabled. Otherwise, the image behaves as before, and must be configured with a reference to ZooKeeper. When using KRaft mode, all nodes of the Kafka cluster must use the same cluster id.
+Values can be generated using the _kafka-storage.sh_ script coming with Apache Kafka.
+* `NODE_ROLE`: Specifies the role of the Kafka node; must be one of "controller", "broker", or "combined". In KRaft mode, Kafka nodes can either be part of the metadata quorum (controller nodes),
+they can be exclusively used for propagating messages (broker nodes), or they can do both (combined nodes). Depending on your use case and requirements, you might for instance go for a smaller Kafka cluster of three combined nodes, or for a larger one with three controllers and seven brokers. If no value is given, the image will start the broker in combined mode.
+* `NODE_ID`; Specifies a unique id (1, 2, 3, ...) for each node in the cluster; the previously used variable `BROKER_ID` has been deprecated in favour of `NODE_ID`; for the time being, it still is supported as an alias for the new name, but using it will trigger a warning in the logs, and it is planned to be phased out eventually.
+
+In addition, one more environment variable must be given when starting a Kafka cluster in KRaft mode using the Debezium container image: `KAFKA_CONTROLLER_QUORUM_VOTERS`.
+This one is used to pass the `controller.quorum.voters` configuration option to Kafka,
+referencing all controller nodes in the cluster in the format "id-1@controller-node-1:controller-port-1,...",
+for instance `KAFKA_CONTROLLER_QUORUM_VOTERS=1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093`.
+
+== Giving it a Try
+
+And really that's all there is to it.
+So let's take a look at a Docker Compose file for starting up a three node Kafka cluster,
+formed of combined nodes solely:
+
+[source,yaml]
+----
+version: '2'
+services:
+  kafka-1:
+    image: debezium/kafka:1.7
+    ports:
+      - 19092:9092
+      - 19093:9093
+    environment:
+      - CLUSTER_ID=5Yr1SIgYQz-b-dgRabWx4g
+      - BROKER_ID=1
+      - KAFKA_CONTROLLER_QUORUM_VOTERS=1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093
+  kafka-2:
+    image: debezium/kafka:1.7
+    ports:
+      - 29092:9092
+      - 29093:9093
+    environment:
+      - CLUSTER_ID=5Yr1SIgYQz-b-dgRabWx4g
+      - BROKER_ID=2
+      - KAFKA_CONTROLLER_QUORUM_VOTERS=1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093
+  kafka-3:
+    image: debezium/kafka:1.7
+    ports:
+      - 39092:9092
+      - 39093:9093
+    environment:
+      - CLUSTER_ID=5Yr1SIgYQz-b-dgRabWx4g
+      - BROKER_ID=3
+      - KAFKA_CONTROLLER_QUORUM_VOTERS=1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093
+----
+
+One quick `docker compose up` later, and you'll have your ZooKeeper-less Kafka cluster running,
+ready to be used with Debezium, Kafka Connect, or any other Kafka workload you may have.
+Just remember: don't roll it out to production just yet ;)
+Note that whether ZooKeeper is or isn't used by a given cluster, solely is an implementation detail of Kafka,
+i.e. it's fully transparent to Debezium, its history producers/consumers, and any other Kafka clients.
+
+Setting up a cluster with dedicated controller and broker nodes isn't much more complex either.
+Here's the configuration for a cluster with one controller and three brokers
+(of course you'd want to run with at least three controllers in reality,
+so to avoid the single point of failure of only one controller node):
+
+[source,yaml]
+----
+version: '2'
+services:
+  kafka-1:
+    image: debezium/kafka:1.7
+    ports:
+      - 19092:9092
+      - 19093:9093
+    environment:
+      - CLUSTER_ID=5Yr1SIgYQz-b-dgRabWx4g
+      - BROKER_ID=1
+      - KAFKA_CONTROLLER_QUORUM_VOTERS=1@kafka-1:9093
+      - NODE_ROLE=controller
+  kafka-2:
+    image: debezium/kafka:1.7
+    ports:
+      - 29092:9092
+      - 29093:9093
+    environment:
+      - CLUSTER_ID=5Yr1SIgYQz-b-dgRabWx4g
+      - BROKER_ID=2
+      - KAFKA_CONTROLLER_QUORUM_VOTERS=1@kafka-1:9093
+      - NODE_ROLE=broker
+  kafka-3:
+    image: debezium/kafka:1.7
+    ports:
+      - 39092:9092
+      - 39093:9093
+    environment:
+      - CLUSTER_ID=5Yr1SIgYQz-b-dgRabWx4g
+      - BROKER_ID=3
+      - KAFKA_CONTROLLER_QUORUM_VOTERS=1@kafka-1:9093
+      - NODE_ROLE=broker
+  kafka-4:
+    image: debezium/kafka:1.7
+    ports:
+      - 49092:9092
+      - 49093:9093
+    environment:
+      - CLUSTER_ID=5Yr1SIgYQz-b-dgRabWx4g
+      - BROKER_ID=4
+      - KAFKA_CONTROLLER_QUORUM_VOTERS=1@kafka-1:9093
+      - NODE_ROLE=broker
+----
+
+You can find extended versions of the two Compose files
+(https://github.com/debezium/debezium-examples/blob/master/tutorial/docker-compose-zookeeperless-kafka-combined.yaml[combined], https://github.com/debezium/debezium-examples/blob/master/tutorial/docker-compose-zookeeperless-kafka.yaml[controller/broker]) in the Debezium examples repository,
+also containing services for Kafka Connect and a Postgres database,
+and accompanied by https://github.com/debezium/debezium-examples/tree/master/tutorial#running-without-zookeeper[instructions] for running the https://debezium.io/documentation/reference/tutorial.html[Debezium tutorial] with ZooKeeper-less Kafka.
+
+As KRaft mode matures in Kafka 3.0 and later versions,
+we may do some adjustments to the container image,
+so to support the new mode of running Kafka in the best way possible.
+Eventually, the option to run with ZooKeeper will be removed, but it'll be quite some more time until then.
+
+To learn more about KRaft, refer to https://cwiki.apache.org/confluence/display/KAFKA/KIP-500%3A+Replace+ZooKeeper+with+a+Self-Managed+Metadata+Quorum[KIP-500] and related KIPs, which describe the feature and its design in great detail,
+the https://github.com/apache/kafka/blob/trunk/config/kraft/README.md[KRaft README file],
+https://github.com/debezium/docker-images/tree/master/kafka/1.7[the README] of the Debezium 1.7 container image for Apache Kafka,
+and aforementioned blog post https://www.morling.dev/blog/exploring-zookeeper-less-kafka/["Exploring ZooKeeper-less Kafka"].
+
+_Many thanks to twitter.com/rk3rn3r/[René Kerner] for providing feedback while writing this post._
