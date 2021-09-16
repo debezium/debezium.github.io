@@ -5,7 +5,7 @@
 
 # Introduction
 
-This is the source code for the [Debezium website](https://debezium.io/). This is based on [templates](https://github.com/rhmwes/community-theme) created by the Red Hat Upstream Community using [Jekyll](https://jekyllrb.com/).
+This is the source code for the [Debezium website](https://debezium.io/). This is based on [templates](https://github.com/rhmwes/community-theme) created by the Red Hat upstream community using [Jekyll](https://jekyllrb.com/).
 
 For publishing the Debezium reference documentation, the [Antora](https://antora.org/) tool is used,
 which produces the documentation based on [AsciiDoc files](https://github.com/debezium/debezium/tree/master/documentation) in different branches of the Debezium main code repository.
