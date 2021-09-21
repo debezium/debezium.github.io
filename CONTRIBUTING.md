@@ -188,6 +188,9 @@ and in your fork:
 
 (This last command is a bit strange, but it basically is pushing an empty branch (the space before the `:` character) to the named branch. Pushing an empty branch is the same thing as removing it.)
 
+### PR Preview the website
+
+As soon as you passes the pull request a GitHub action generates the link for preview the change in surge.sh. When a pull request is closed the surge preview instance will be torn down.
 ### Site characteristics
 
 When you build the site, the Jekyll tools will generate all of the static files for the site and place them into a local `_site` directory. These are the only files that will appear on the public website.
