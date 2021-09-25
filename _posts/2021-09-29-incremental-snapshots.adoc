@@ -1,0 +1,317 @@
+---
+layout: post
+title:  Incremental Snaphosts in Debezium
+date:   2021-09-29
+tags: [ mysql, postgres, sqlserver, oracle, db2, snapshots ]
+author: jpechane
+---
+
+One of the major improvements in Debezium starting version 1.6 is support for incremental snapshots.
+
+In this blogpost we are going to explain the motivation for the feature, we will deep dive into the implementation details and we will also try a demo of it.
+
++++<!-- more -->+++
+
+== Why?
+
+One of the important pain points in Debezium since its inception was a recurring problem related to changes in the captured table list.
+A user creates a new connector with a list of tables that are captured.
+Later in point of time, it is necessary to add one or more new tables to be captured.
+If it is necessary to stream only changes on the table then the problem is pretty simple to solve.
+But what if it is necessary to capture also the existing content of the table?
+
+The capturing of the existing table data is traditionally done by Debezium in the snapshot phase.
+This phase is executed once upon the first connector start and its objective is capturing consistent data at a point of time (transforming data at rest into data in motion).
+This can be a fairly long operation and by definition, it must be executed completely or not at all - like transaction semantics.
+This means that if the snapshot is not completed it must be re-executed from scratch and everything already done is thrown away.
+Also while the snapshot is taken the data modification that is executed in parallel in the database are not streamed until the snapshot is finished.
+This could lead to problems with database resources for very large snapshots as transaction logs must be kept available until the streaming is started.
+
+We are thus ending with three issues to be solved
+
+* near-impossible adding of new tables to capture if existing data must be streamed
+* long-running consistent snapshot process that cannot be terminated or resumed
+* blocked streaming till the snapshot is completed
+
+== Legacy solutions
+
+The problem was well known and it was necessary to provide a workaround and work on a stable solution.
+
+As a workaround, the general recommendation was to use a multiple connector approach.
+The user was asked to
+
+* stop the connector
+* create a new one to take the snapshot of new tables
+* when completed stop the new connector
+* reconfigure and start the old connector with new captured tables added to the list
+
+This method did the trick but is very clumsy and all the consistent snapshot issues mentioned above still apply.
+
+The next step was a community contribution into MySQL connector via https://issues.redhat.com/browse/DBZ-175[DBZ-175].
+It was based on the notion of having multiple binary log readers in place.
+One would capture the originally configured table while the other one will snapshot the new tables and then capture changes from the new tables.
+The latter reader would catch up with the original and then they would be reconciled and merged into a single one.
+
+The code was working well but it never left incubating stage as the process itself was quite complex and liable to errors in corner cases.
+Last but not least it was an ingenious approach but unfortunately not portable to other connectors.
+
+== Watermark based snapshots
+
+In late 2019 Netflix engineers announced the availability of https://netflixtechblog.com/dblog-a-generic-change-data-capture-framework-69351fb9099b[DBLog] - the in-house developed change data capture framework.
+They came with an innovative solution of executing snapshots using watermarking.
+
+The main idea behind this is that streaming is executed continuously together with snapshotting.
+The framework inserts low and high watermarks into the transaction log (by writing to a database) and between those two points, a part of the snapshotted table is read.
+The framework keeps a record of database changes in between the watermarks and reconciles them with the snapshotted values if the same data are snapshotted and modified during the window.
+
+This means that the data are snapshotted in chunks - no lengthy process at the connector start and also in case of crash or controlled termination the snapshotting can be resumed since the last completed chunk.
+
+The implementation is provided for MySQL and PostgreSQL databases.
+
+== Signalling table
+
+Before moving to Debezium implementation of DBLog's approach a small detour is needed.
+
+Sometimes it can be useful to control Debezium from outside to force it to execute requested action.
+Let's suppose it is necessary to re-snapshot the already snapshotted table - the so-called _ad-hoc_ snapshot.
+The user would need to send a command to Debezium to pause the current operation and do the snapshot.
+For that purpose a concept of Debezium signals and https://debezium.io/documentation/reference/configuration/signalling.html[signalling table].
+In this case, a special table is designated for communication between the user and Debezium.
+Debezium captures the table and when the user requires a certain operation to be executed it writes a record to the signalling table (sends a signal).
+Debezium will receive the captured change and executes the required action.
+
+== Incremental snapshotting in Debezium
+
+When we become aware of the DBLog's approach we decided that the method is a universal one and that we could try to adopt it in Debezium too.
+Also as we share a lot of codebase among the connector (using the Debezium connector framework) our object was to implement it in the core so all connectors would benefit from the feature at once.
+
+The design and implementation were driven by https://github.com/debezium/debezium-design-documents/blob/main/DDD-3.md[DDD-3] Debezium design document.
+
+Incremental snapshotting in Debezium is available as ad-hoc snapshots.
+The user does not configure the connector to use the snapshot but instead, it uses a signalling mechanism to send a snapshot signal and thus trigger a snapshot of a set of tables.
+The signal in question is called `execute-snapshot` and the signal message follows the format of:
+
+[source,json]
+----
+{"data-collections": ["<table-id-1>", "<table-id-2>", "<table-id-3>", ...]}
+----
+
+When a table snapshot is requested then Debezium will
+
+* obtain the largest primary key in the table, this is snapshot endpoint; the value is stored in offsets
+* split the table into chunks based on the primary key total order and of size as prescribed by config option `incremental.snapshot.chunk.size`
+
+When the chunk is queried a dynamic SQL is built that fulfills conditions:
+
+* primary key is larger than the last one from the previous chunk (or the first primary key for the first chunk)
+* its size is limited by `incremental.snapshot.chunk.size`
+* the primary key is smaller or equal to the recorded maximum primary key
+
+The reading of a chunk is a slightly complicated procedure:
+
+* `snapshot-window-open` signal is sent
+* the chunk query is executed and the chunk content is read into memory
+* `snapshot-window-close` signal is sent
+
+Why is this needed?
+Why it is not enough to just query the database?
+The answers lie in the following picture.
+
+[.centered-image.responsive-image]
+====
+++++
+<img src="/assets/images/2021-09-29-incremental-snapshots/transactions.svg" style="max-width:100%;" class="responsive-image">
+++++
+*Figure 1. The transaction isolation*
+====
+
+Debezium is not the only process accessing the database.
+We can expect a multitude of processes accessing the database concurrently potentially accessing the same chunks the are snapshotted.
+If you take a look at the picture you can see that the changes to data are written to the transaction log based on the commit order.
+As it is not possible to precisely time the chunk read transaction to identify potential conflicts the open and close window events are added to demarcate the time in which the conflicts can happen.
+Debezium's task is the deduplication of those conflicts.
+
+For that purpose, Debezium records all events generated by the chunk into a buffer.
+When the `snapshot-window-open` signal is received then all events coming from the transaction log are checked whether they belong to the snapshotted table.
+If yes then the buffer is checked whether contains the primary key.
+If yes then the snapshot event is removed from the buffer as this is a potential conflict.
+And as it is not possible to correctly order the snapshot and transaction log event then only the transaction log event is kept.
+When the `snapshot-window-close` signal is received the remaining events in the buffer are sent downstream.
+
+The following image shows an example of how such a buffer works and how are the transaction log events filtered before sending downstream.
+
+[.centered-image.responsive-image]
+====
+++++
+<img src="/assets/images/2021-09-29-incremental-snapshots/windowprocessing.svg" style="max-width:100%;" class="responsive-image">
+++++
+*Figure 2. The buffer in action*
+====
+
+=== Connector restarts
+
+So now we have demonstrated that the incremental snapshot can be (re-)started as needed.
+We have shown that its execution does not stop streaming from the transaction log.
+The last item is termination and/or resuming of the process.
+
+When an incremental snapshot is running then incremental snapshot context data are added to each of the message offsets.
+The context is represented by three pieces of information:
+
+* the list of tables to be snapshotted where the first one is the one currently snapshotted
+* maximum primary key of the table
+* the primary key of the last event from incremental snapshot sent downstream
+
+These three items are enough to resume the snapshot after the connector restart or a crash.
+Upon connector start, the component responsible for the snapshotting reads the data from offsets.
+It initializes its internal state and resumes snapshotting after the last processed event.
+
+This approach ensures the robustness of the process, resilience to restarts and crashes, and minimizes the number of redelivered events (at-least-once delivery applies).
+
+=== Limitations
+
+The incremental snapshotting has few drawbacks in comparison to the initial consistent snapshot:
+
+* The snapshotted table must contain primary keys
+* If an event is deleted from the table during the snapshot process then one of the situations can happen:
+** `read` event and `delete` event are received
+** only `delete` event is be received
+** no event is be received
+* If an event is updated in the table during the snapshot process then one of the situations can happen:
+** `read` event and `update` event are received
+** `update` event and `read` event are received (note the opposite order)
+
+In general `read` event should not be understood as the initial state of the record in a table but as the state of the record at an arbitrary point of time.
+
+
+== Demo
+
+We will use our standard https://github.com/debezium/debezium-examples/tree/master/tutorial[tutorial deployment] to demonstrate ad-hoc incremental snapshotting.
+We are using https://github.com/debezium/debezium-examples/tree/master/tutorial#using-postgres[PostgreSQL] as the source database.
+
+For this demo, you will need multiple terminal windows.
+
+In the beginning we will start the deployment, create signalling table and start the connector
+
+[source,bash]
+----
+# Terminal 1 - start the deployment
+# Start the deployment
+export DEBEZIUM_VERSION=1.7
+docker-compose -f docker-compose-postgres.yaml up
+
+# Terminal 2
+# Create a signalling table
+echo "CREATE TABLE inventory.dbz_signal (id varchar(64), type varchar(32), data varchar(2048))" | docker-compose -f docker-compose-postgres.yaml exec -T postgres env PGOPTIONS="--search_path=inventory" bash -c "psql -U $POSTGRES_USER postgres"
+
+# Start Postgres connector, capture only customers table and enable signalling
+curl -i -X POST -H "Accept:application/json" -H  "Content-Type:application/json" http://localhost:8083/connectors/ -d @- <<EOF
+{
+    "name": "inventory-connector",
+    "config": {
+        "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+        "tasks.max": "1",
+        "database.hostname": "postgres",
+        "database.port": "5432",
+        "database.user": "postgres",
+        "database.password": "postgres",
+        "database.dbname" : "postgres",
+        "database.server.name": "dbserver1",
+        "schema.include": "inventory",
+        "table.include.list": "inventory.customers,inventory.dbz_signal",
+        "signal.data.collection": "inventory.dbz_signal"
+    }
+}
+EOF
+----
+
+From the log we see that only one table `customers` is snapshotted:
+
+----
+connect_1    | 2021-09-24 13:38:21,781 INFO   Postgres|dbserver1|snapshot  Snapshotting contents of 1 tables while still in transaction   [io.debezium.relational.RelationalSnapshotChangeEventSource]
+----
+
+In the next step we will simulate continuous activity in the database:
+
+[source,bash]
+----
+# Terminal 3
+# Continuously consume messages from Debezium topic for customers table
+docker-compose -f docker-compose-postgres.yaml exec kafka /kafka/bin/kafka-console-consumer.sh \
+    --bootstrap-server kafka:9092 \
+    --from-beginning \
+    --property print.key=true \
+    --topic dbserver1.inventory.customers
+
+# Terminal 4
+# Modify records in the database via Postgres client
+docker-compose -f docker-compose-postgres.yaml exec postgres env PGOPTIONS="--search_path=inventory" bash -c "i=0; while true; do psql -U $POSTGRES_USER postgres -c \"INSERT INTO customers VALUES(default,'name\$i','surname\$i','email\$i')\"; ((i++)); done"
+----
+
+The topic `dbserver1.inventory.customers` receives a continuous stream of messages.
+Now the connector will be reconfigured to also capture the `orders` table:
+
+----
+# Terminal 5
+# Add orders table among the captured
+curl -i -X PUT -H "Accept:application/json" -H  "Content-Type:application/json" http://localhost:8083/connectors/inventory-connector/config -d @- <<EOF
+{
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "tasks.max": "1",
+    "database.hostname": "postgres",
+    "database.port": "5432",
+    "database.user": "postgres",
+    "database.password": "postgres",
+    "database.dbname" : "postgres",
+    "database.server.name": "dbserver1",
+    "schema.include": "inventory",
+    "table.include.list": "inventory.customers,inventory.dbz_signal,inventory.orders",
+    "signal.data.collection": "inventory.dbz_signal"
+}
+EOF
+----
+
+There are no messages for the `orders` table:
+
+[source,bash]
+----
+# Terminal 5
+docker-compose -f docker-compose-postgres.yaml exec kafka /kafka/bin/kafka-console-consumer.sh \
+    --bootstrap-server kafka:9092 \
+    --from-beginning \
+    --property print.key=true \
+    --topic dbserver1.inventory.orders
+----
+
+Start an incremental ad-hoc snapshot via sending a signal.
+The snapshot messages for the `orders` table are delivered to the `dbserver1.inventory.orders` topic.
+Messages for the `customers` table are delivered without interruption.
+
+[source,bash]
+----
+# Terminal 5
+# Send the signal
+echo "INSERT INTO inventory.dbz_signal VALUES ('signal-1', 'execute-snapshot', '{\"data-collections\": [\"inventory.orders\"]}')" | docker-compose -f docker-compose-postgres.yaml exec -T postgres env PGOPTIONS="--search_path=inventory" bash -c "psql -U $POSTGRES_USER postgres"
+
+# Check messages for orders table
+docker-compose -f docker-compose-postgres.yaml exec kafka /kafka/bin/kafka-console-consumer.sh \
+    --bootstrap-server kafka:9092 \
+    --from-beginning \
+    --property print.key=true \
+    --topic dbserver1.inventory.orders
+----
+
+As the last step, we will terminate the deployed systems and close all terminals.
+
+[source,bash]
+----
+# Shut down the cluster
+docker-compose -f docker-compose-postgres.yaml down
+----
+
+== Summary
+
+In this blog post, we have discussed the motivation for incremental snapshotting.
+We have reviewed the methods used in the past to achieve the described functionality.
+Then we dived into the deep waters of the implementation and in the end, we tried to use it live.
+
+We hope you will find the incremental snapshotting useful and we look forward to your feedback, experiences, and use cases.
