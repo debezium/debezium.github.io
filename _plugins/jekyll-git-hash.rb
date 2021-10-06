@@ -14,7 +14,7 @@ module Jekyll
       priority :high
       safe true
       def generate(site)
-        hash = %x( git rev-parse --short HEAD ).strip
+        shortHash = %x( git rev-parse --short HEAD ).strip
         longHash = %x( git rev-parse HEAD ).strip
         site.data['shortHash'] = shortHash
         site.data['longHash'] = longHash
