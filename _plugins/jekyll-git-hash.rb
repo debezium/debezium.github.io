@@ -15,7 +15,9 @@ module Jekyll
       safe true
       def generate(site)
         hash = %x( git rev-parse --short HEAD ).strip
-        site.data['hash'] = hash
+        longHash = %x( git rev-parse HEAD ).strip
+        site.data['shortHash'] = shortHash
+        site.data['longHash'] = longHash
       end
     end
   end
