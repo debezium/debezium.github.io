@@ -6,81 +6,81 @@ tags: [ mysql, postgres, sqlserver, oracle, db2, snapshots ]
 author: jpechane
 ---
 
-One of the major improvements in Debezium starting version 1.6 is support for incremental snapshots.
-
-In this blogpost we are going to explain the motivation for the feature, we will deep dive into the implementation details and we will also try a demo of it.
+One of the major improvements in Debezium starting in version 1.6 is support for link:/documentation/reference/connectors/mysql.html#_ad_hoc_snapshot[incremental snapshots].
+In this blog post we are going to explain the motivation for this feature, we will do a deep dive into the implementation details, and we will also show a demo of it.
 
 +++<!-- more -->+++
 
 == Why?
 
-One of the important pain points in Debezium since its inception was a recurring problem related to changes in the captured table list.
-A user creates a new connector with a list of tables that are captured.
-Later in point of time, it is necessary to add one or more new tables to be captured.
-If it is necessary to stream only changes on the table then the problem is pretty simple to solve.
-But what if it is necessary to capture also the existing content of the table?
+One of the biggest pain points in Debezium since its inception was the sup-optimal support for changes to the captured tables list.
+As a user, you create a new connector with a list of tables to be captured
+(`table.include.list` and related options);
+at a later point in time, it may become necessary to adjust this configuration, so to capture further tables which where not part to CDC initially.
+If it suffices to only _stream_ changes from these tables, then the problem is pretty simple to solve.
+But what if you also need to capture the existing contents of the tables?
 
-The capturing of the existing table data is traditionally done by Debezium in the snapshot phase.
-This phase is executed once upon the first connector start and its objective is capturing consistent data at a point of time (transforming data at rest into data in motion).
-This can be a fairly long operation and by definition, it must be executed completely or not at all - like transaction semantics.
-This means that if the snapshot is not completed it must be re-executed from scratch and everything already done is thrown away.
-Also while the snapshot is taken the data modification that is executed in parallel in the database are not streamed until the snapshot is finished.
-This could lead to problems with database resources for very large snapshots as transaction logs must be kept available until the streaming is started.
+Capturing existing data in tables is traditionally done by Debezium in the _snapshot_ phase.
+This phase is executed once upon the first connector start-up, and its objective is capturing consistent data at a point of time (transforming data at rest into data in motion).
+This can be a fairly long operation, and by definition, it must be executed completely or not at all - a bit like transaction semantics.
+This means that if the snapshot is not completed due to a connector restart for instance, it must be re-executed from scratch, and everything already done is thrown away.
+Also, while the snapshot is taken, any data modifications that are executed in parallel in the database are not streamed until the snapshot has been completed.
+This could lead to problems with database resources for very large snapshots, as transaction logs must be kept available until the streaming is started.
 
-We are thus ending with three issues to be solved
+We are thus ended up with three issues to be solved:
 
-* near-impossible adding of new tables to capture if existing data must be streamed
-* long-running consistent snapshot process that cannot be terminated or resumed
-* blocked streaming till the snapshot is completed
+* The near-impossibility of adding of additional tables to the captured tables list, if existing data must be streamed
+* A long-running process for consistent snapshotting that cannot be terminated or resumed
+* Change data streaming being blocked till the snapshot is completed
 
-== Legacy solutions
+== Legacy Solutions
 
-The problem was well known and it was necessary to provide a workaround and work on a stable solution.
-
+The problem was well known, and over time we developed workarounds and also ideated possible improvements and new solutions.
 As a workaround, the general recommendation was to use a multiple connector approach.
-The user was asked to
+The user was asked to:
 
-* stop the connector
-* create a new one to take the snapshot of new tables
-* when completed stop the new connector
-* reconfigure and start the old connector with new captured tables added to the list
+* Stop the connector
+* Create a new one to take the snapshot of new tables (using the `initial_only` snapshotting mode)
+* When completed, stop the new connector
+* Reconfigure and start the old connector with newly captured tables added to the list
 
-This method did the trick but is very clumsy and all the consistent snapshot issues mentioned above still apply.
+This method somewhat did the trick, but is very clumsy, and all the questions around snapshot consistency mentioned above still apply.
 
-The next step was a community contribution into MySQL connector via https://issues.redhat.com/browse/DBZ-175[DBZ-175].
+The next step was a community contribution into the Debezium connector for MySQL via https://issues.redhat.com/browse/DBZ-175[DBZ-175].
 It was based on the notion of having multiple binary log readers in place.
-One would capture the originally configured table while the other one will snapshot the new tables and then capture changes from the new tables.
-The latter reader would catch up with the original and then they would be reconciled and merged into a single one.
+One reader would capture the originally configured tables, while the other one will snapshot the new tables and then capture changes from the new tables.
+The latter reader would catch up with the original one, and then they would be reconciled and merged into a single one.
 
-The code was working well but it never left incubating stage as the process itself was quite complex and liable to errors in corner cases.
-Last but not least it was an ingenious approach but unfortunately not portable to other connectors.
+The code was working well, but it never left the incubating stage, as the process itself was quite complex and liable to errors in corner cases.
+Last but not least, it was an ingenious approach, but unfortunately not portable to other connectors.
 
-== Watermark based snapshots
+== Watermark-based Snapshots
 
-In late 2019 Netflix engineers announced the availability of https://netflixtechblog.com/dblog-a-generic-change-data-capture-framework-69351fb9099b[DBLog] - the in-house developed change data capture framework.
-They came with an innovative solution of executing snapshots using watermarking.
+In late 2019, the Netflix engineering team announced that they had developed an in-house change data capture framework.
+They also came up with an innovative solution of executing concurrent snapshots using _watermarking_, described in the paper https://arxiv.org/pdf/2010.12597v1.pdf[ DBLog: A Watermark Based Change-Data-Capture Framework] by Andreas Andreakis and Ioannis Papapanagiotou.
 
-The main idea behind this is that streaming is executed continuously together with snapshotting.
-The framework inserts low and high watermarks into the transaction log (by writing to a database) and between those two points, a part of the snapshotted table is read.
-The framework keeps a record of database changes in between the watermarks and reconciles them with the snapshotted values if the same data are snapshotted and modified during the window.
+The main idea behind this approach is that change data streaming is executed continuously together with snapshotting.
+The framework inserts low and high watermarks into the transaction log (by writing to the source database) and between those two points, a part of the snapshotted table is read.
+The framework keeps a record of database changes in between the watermarks and reconciles them with the snapshotted values, if the same records are snapshotted and modified during the window.
 
-This means that the data are snapshotted in chunks - no lengthy process at the connector start and also in case of crash or controlled termination the snapshotting can be resumed since the last completed chunk.
+This means that the data is snapshotted in chunks - no lengthy process at the connector start, and also in case of crashes or a controlled termination of the connector, the snapshotting can be resumed since the last completed chunk.
 
-The implementation is provided for MySQL and PostgreSQL databases.
+As per Netflix, the implementation is provided for MySQL and PostgreSQL databases.
 
-== Signalling table
+== Signalling Table
 
-Before moving to Debezium implementation of DBLog's approach a small detour is needed.
+Before moving to Debezium's implementation of the watermark-based snapshotting approach, a small detour is needed.
 
-Sometimes it can be useful to control Debezium from outside to force it to execute requested action.
-Let's suppose it is necessary to re-snapshot the already snapshotted table - the so-called _ad-hoc_ snapshot.
+Sometimes it can be useful to control Debezium from the outside, so to force it to execute some requested action.
+Let's suppose it is necessary to re-snapshot an already snapshotted table - a so-called _ad-hoc_ snapshot.
 The user would need to send a command to Debezium to pause the current operation and do the snapshot.
-For that purpose a concept of Debezium signals and https://debezium.io/documentation/reference/configuration/signalling.html[signalling table].
-In this case, a special table is designated for communication between the user and Debezium.
-Debezium captures the table and when the user requires a certain operation to be executed it writes a record to the signalling table (sends a signal).
-Debezium will receive the captured change and executes the required action.
+For that purpose, Debezium defines the concept _signals_, issued via a link:/documentation/reference/configuration/signalling.html[signalling table].
+This is a special table, designated for communication between the user and Debezium.
+Debezium captures the table and when the user requires a certain operation to be executed,
+they simply write a record to the signalling table (sending a signal).
+Debezium will receive the captured change and then execute the required action.
 
-== Incremental snapshotting in Debezium
+== Incremental Snapshotting in Debezium
 
 When we become aware of the DBLog's approach we decided that the method is a universal one and that we could try to adopt it in Debezium too.
 Also as we share a lot of codebase among the connector (using the Debezium connector framework) our object was to implement it in the core so all connectors would benefit from the feature at once.
