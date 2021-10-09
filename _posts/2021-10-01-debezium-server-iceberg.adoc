@@ -6,50 +6,51 @@ tags: [ debezium, iceberg, datalake, lakehouse ]
 author: isimsek
 ---
 
-Do you need to build Lakehouse with near realtime data pipeline, do you want it to support ACID transactions and updates on data lake?
-It is possible with "Debezium Server Iceberg" without any dependency to Apache Kafka or Apache Spark applications.
+Are you looking for a simple way to build Data lake? Do you need to load it with realtime data pipeline from your source databases, supporting ACID transactions and SQL updates?
+Now is possible with "*Debezium Server Iceberg*" project, without any dependency to Apache Kafka or Apache Spark applications to create data pipeline.
 
 +++<!-- more -->+++
 
 ==== Debezium
 
-link:/[Debezium] is an open source distributed platform for change data capture.
-Debezium extracts realtime database changes as json, avro, protobuf events and delivers to event streaming platforms
-(Kafka, Kinesis, Google Pub/Sub, Pulsar are just some of https://debezium.io/documentation/reference/operations/debezium-server.html#_sink_configuration[supported sinks],
-it provides simple interface to https://debezium.io/documentation/reference/operations/debezium-server.html#_implementation_of_a_new_sink[implement new sink].
+https://debezium.io[Debezium] is an open source distributed platform for change data capture.
+Debezium extracts change events in different formats such as json, avro, protobuf and delivers to event streaming platforms.
+Most of the time, Debezium is used with Apache Kafka and Kafka Connect, specifically. But via Debezium Server, also users of other messaging infrastructure like Kinesis, Google Pub/Sub, Pulsar can benefit from Debezium's change data capture capabilities. Here you can see
+https://debezium.io/documentation/reference/operations/debezium-server.html#_sink_configuration[list of supported destinations].
 
 ==== Apache Iceberg
 
 https://iceberg.apache.org/[Apache Iceberg] is an open table format for huge analytic datasets.
 Iceberg adds tables to compute engines including Spark, Trino, PrestoDB, Flink and Hive using a high-performance table format that works just like a SQL table.
-It supports ACID Inserts as well as Row level Deletes/Updates. It has flexible foundation and comes with https://iceberg.apache.org[many features].
+It supports ACID Inserts as well as Row level Deletes/Updates. It provides java API to manage table metadata, like schema, partition spec, metadata, and data files that store table data.
 
 == Debezium Server Iceberg
+Iceberg Consumer connects above two amazing projects and enables the features both projects providing. For example: With the consumer it's possible to process realtime CDC data from a source database and upload them to any object storage supported by Iceberg.
 
-**Debezium Server Iceberg** project implements new consumer which uses Iceberg Java API to consume events.
-Iceberg consumer converts received events to iceberg format and commits them to destination iceberg table. With the consumer it's possible to use any cloud store/any catalog supported by iceberg.
+Debezium Server provides SPI to https://debezium.io/documentation/reference/operations/debezium-server.html#_implementation_of_a_new_sink[implement new sink adapters] and this is what's being used by **Debezium Server Iceberg** to build Debezium/Iceberg consumer.
 
-on high level data processing works like below ::
-for each batch of events
-* it groups events per event destination,
-* for each destination, events are converted to iceberg records. at this step event schema used to map data to iceberg record (`debezium.format.value.schemas.enable` should be enabled(true)).
-* After events converted to iceberg records, they are saved to iceberg parquet files(iceberg data and delete files(for upsert)).
-* as a last step, these files are committed to the destination tables (i.e. uploaded to the destination storage) using  the Iceberg java API.
-
-If the destination table is not found in the destination catalog, the consumer will try to create it using the event schema and key schema(record key/PK).
 
 image::../assets/images/debezium-iceberg.png[Debezium-Iceberg]
 
-Currently, Iceberg Consumer supports only json events. With json events event schema must be enabled to do correct type conversion to iceberg record.
+Iceberg consumer converts CDC events to Iceberg data files and commits them to destination iceberg table using iceberg Java API.
 
-example configuration::
+on high level change events processed like below ::
+For each received batch of events
+* events are grouped per event destination (per source table).
+* for each destination, events converted to Iceberg records. at this step event schema used to map change event to Iceberg record(`debezium.format.value.schemas.enable` should be set to `true`).
+* After events converted to Iceberg records, they are saved to Iceberg parquet files(Iceberg data files and delete files if the consumer is running with upsert mode).
+* as a last step, these files are committed to the destination Iceberg table(i.e. uploaded to the destination storage).
+* uploaded events marked as processed by Debezium
+
+As explained in above step 1 and 2 consumer maps each source table to a destination table. When destination iceberg table is not there consumer will try to create it using the event schema and key schema.
+
+Here is a complete example configuration for using Debezium Server with the Iceberg adaptor:
 [source,properties]
 ----
 debezium.sink.type=iceberg
 # run with append mode
 debezium.sink.iceberg.upsert=false
 debezium.sink.iceberg.upsert-keep-deletes=true
-# iceberg
 debezium.sink.iceberg.table-prefix=debeziumcdc_
 debezium.sink.iceberg.table-namespace=debeziumevents
 debezium.sink.iceberg.fs.defaultFS=s3a://S3_BUCKET);
@@ -68,96 +69,91 @@ debezium.transforms.unwrap.delete.handling.mode=rewrite
 debezium.transforms.unwrap.drop.tombstones=true
 ----
 
-=== Update and Append Modes
+=== Upsert and Append Modes
 
-By default, Iceberg sink is running with upsert mode `debezium.sink.iceberg.upsert=true`. When a row updated on source table destination row replaced with the new updated version, and deleted records are deleted from destination. With upsert mode data at destination kept identical to source data. Update mode uses iceberg equality delete feature and creates delete files using key of the debezium event(PK). To avoid duplicate data deduplication is done on each batch and only last version of the record kept.
+By default, Iceberg Consumer is running with upsert mode `debezium.sink.iceberg.upsert=true`. When a row updated on source table destination row replaced with the new updated version. And when a row deleted from source its deleted from destination. With upsert mode data at destination kept identical to source data. Update mode uses Iceberg equality delete feature and creates delete files using key of the debezium event(PK of the source table). To avoid duplicate data deduplication is done on each batch and only last version of the record kept. For example in single batch of events same record could appear twice once its inserted and once its updated. With Update mode always last extracted version of the record used.
 
-Note: For the tables without record key(PK) operation mode falls back to `append` even configuration is set to upsert mode.
+Note:: When a source table don't have record key(PK) operation mode falls back to `append` for the table.
 
-==== Keeping Deleted Records
+==== Upsert Mode Keeping Deleted Records
 
-For some use cases it's useful to keep deleted records as soft deletes, this is possible by setting `debezium.sink.iceberg.upsert-keep-deletes` to `true`.
-This setting will keep the latest version of deleted record (`__op=d`) in the iceberg table. Setting it to false will remove deleted records from the destination table.
+For some use cases it's useful to keep deleted records as soft delete. This is possible by setting `debezium.sink.iceberg.upsert-keep-deletes` to `true`.
+This setting will keep the latest version of deleted records (`__op=d`) in the destination Iceberg table. Setting it to false will remove deleted records from the destination table.
 
 ==== Append mode
 
 This is most straightforward operation mode, setting `debezium.sink.iceberg.upsert` to `false` sets the operation mode to append.
-With append mode data deduplication is not done and all received records are appended to destination table.
+With append mode all received records are appended to destination table. With append mode it's possible to analyze al the changes happening in the source database.
 
 === Optimizing batch size (commit interval)
 
-Debezium extracts/consumes database events in real time and this could cause too frequent commits( generate too many small files) to iceberg table,
-which is not optimal for batch processing especially when near realtime data feed is sufficient.
+Debezium extracts and delivers database events in real time and this could cause too frequent commits( generate too many small files) to Iceberg table.
+This is not optimal for batch processing especially when near realtime data feed is sufficient.
 To avoid this problem it's possible to use following configuration and increase batch size per commit.
 
 **MaxBatchSizeWait**: uses Debezium metrics to optimize batch size, it periodically reads streaming queue current size and waits until it reaches to `max.batch.size`.
 Maximum wait and check intervals are controlled by `debezium.sink.batch.batch-size-wait.max-wait-ms`, `debezium.sink.batch.batch-size-wait.wait-interval-ms` properties.
-During the wait debezium events are collected in memory (in debezium streaming queue), this way each commit receives more records and consistent batch size.
-Note: this setting should be configured together with `debezium.source.max.queue.size` and `debezium.source.max.batch.size` debezium properties
+During the wait debezium events are collected in memory (in debezium streaming queue), this way each commit(set of events processed) gets more records and consistent batch size. This setting should be configured together with `debezium.source.max.queue.size` and `debezium.source.max.batch.size` debezium properties
 
-Note: It's also possible to do data compaction using iceberg, compacting data and metadata files to get the best performance.
+Note:: It's also possible consume realtime events and do https://iceberg.apache.org/maintenance/[data compaction] afterwards with separate periodic compaction process. Iceberg supports compacting data and metadata files to increase performance.
 
 example setting::
-
 [source,properties]
 ----
 debezium.sink.batch.batch-size-wait=MaxBatchSizeWait
 debezium.sink.batch.metrics.snapshot-mbean=debezium.postgres:type=connector-metrics,context=snapshot,server=testc
 debezium.sink.batch.metrics.streaming-mbean=debezium.postgres:type=connector-metrics,context=streaming,server=testc
-debezium.source.connector.class=io.debezium.connector.postgresql.PostgresConnector
+# increase max.batch.size to receive large number of events per batch
 debezium.source.max.batch.size=50000
 debezium.source.max.queue.size=400000
 debezium.sink.batch.batch-size-wait.max-wait-ms=60000
 debezium.sink.batch.batch-size-wait.wait-interval-ms=10000
 ----
 
-=== Destination, iceberg catalog
+== Loading Next Data Lake Layers
 
-Iceberg consumer uses iceberg catalog to read and commit data to destination table, destination could be any cloud storage and any catalog supported by iceberg.
+Now raw layer of the data lake loaded, with data deduplication and near realtime pipeline challenges solved. As a next step it is straightforward to build Curated layer(sometimes called Analytic Layer or Datawarehouse) on top of it.
 
-== Next Datawarehouse, Curated layer
-
-Now we got perfect raw layer with near realtime data feed, we can build Curated Layer,Analytic Layer or Datawarehouse on top of.
-
-For example someone could easily use https://iceberg.apache.org/spark-writes/[Spark SQL](or Prestodb, Trino, Flink) and process this data to next layer
-
-loading slowly changing dimension type 2:
+For example someone could easily use https://Iceberg.apache.org/spark-writes/[Spark SQL](or Prestodb, Trino, Flink) and load https://en.wikipedia.org/wiki/Slowly_changing_dimension[slowly changing dimension], most commonly used Datawrahouse table type.
 [source,sql]
 ----
 MERGE INTO dwh.consumers t
      USING (
-     -- new data goes to insert
+     -- new data to insert
          SELECT customer_id, name, effective_date, to_date('9999-12-31', 'yyyy-MM-dd') as end_date FROM debezium.consumers
          UNION ALL
-     -- update exiting records and close them
+     -- update exiting records. close end_date
          SELECT t.customer_id, t.name, t.effective_date, s.effective_date as end_date FROM debezium.consumers s
          INNER JOIN dwh.consumers t on s.customer_id = t.customer_id AND t.current = true
 
      ) s
      ON s.customer_id = t.customer_id AND s.effective_date = t.effective_date
-     -- close last record.
+     -- close last records/versions.
      WHEN MATCHED
        THEN UPDATE SET t.current = false, t.end_date = s.end_date
-    -- also possible to delete deleted records!
-    -- WHEN MATCHED and s.__op = 'd'
-    --    THEN DELETE
+     -- insert new versions and new data
      WHEN NOT MATCHED THEN
         INSERT(customer_id, name, current, effective_date, end_date)
         VALUES(s.customer_id, s.name, true, s.effective_date, s.end_date);
 ----
 
-It's also possible to use https://iceberg.apache.org/spark-writes/[delete, insert statements].
+Iceberg also supports using https://iceberg.apache.org/spark-writes/[delete, insert, update statements].
 [source,sql]
 ----
 INSERT INTO prod.db.table SELECT ...;
+
 DELETE FROM prod.db.table WHERE ts >= '2020-05-01 00:00:00' and ts < '2020-06-01 00:00:00';
+DELETE FROM prod.db.orders AS t1 WHERE EXISTS (SELECT order_id FROM prod.db.returned_orders WHERE t1.order_id = order_id;
+
+UPDATE prod.db.all_events
+SET session_time = 0, ignored = true
+WHERE session_time < (SELECT min(session_time) FROM prod.db.good_events));
 ----
 
-with https://github.com/ismailsimsek/iceberg-examples[iceberg examples] project you could see more examples and experiment with iceberg and spark.
+You could see more examples and experiment with Iceberg and Spark with https://github.com/ismailsimsek/iceberg-examples[this] project.
 
 === Contribution
 
 This project is new and there are many things to improve, please feel free to test it, give feedback, open feature request or send pull request.
 
-- https://github.com/memiiso/debezium-server-iceberg[For more details please see the project]
-- https://github.com/memiiso/debezium-server-iceberg/releases[Releases]
+- https://github.com/memiiso/debezium-server-iceberg[Debezium Server Iceberg] Project
