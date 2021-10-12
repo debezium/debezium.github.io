@@ -4,7 +4,7 @@ Our website is a community effort, and we welcome suggestions, fixes, improvemen
 
 ### Talk to us
 
-You can talk to us in our [chat room for developers](https://gitter.im/debezium/dev) or on our [Google Group](https://groups.google.com/forum/#!forum/debezium). We do [track our issues for the website](https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20AND%20component%20%3D%20website), so please report any problems or suggestions even if you're going to propose a fix. No issue is required for new blog posts, though.
+You can talk to us in our [chat room for developers](https://debezium.zulipchat.com/#narrow/stream/302533-dev) or on our [Google Group](https://groups.google.com/forum/#!forum/debezium). We do [track our issues for the website](https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20AND%20component%20%3D%20website), so please report any problems or suggestions even if you're going to propose a fix. No issue is required for new blog posts, though.
 
 ### Get set up
 

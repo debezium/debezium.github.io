@@ -1,6 +1,6 @@
 [![Build Status](https://github.com/debezium/debezium.github.io/actions/workflows/gh-pages-deployment.yml/badge.svg?branch=develop)](https://github.com/debezium/debezium.github.io/actions/workflows/gh-pages-deployment.yml)
 [![License](http://img.shields.io/:license-apache%202.0-brightgreen.svg)](http://www.apache.org/licenses/LICENSE-2.0.html)
-[![Developer chat](https://img.shields.io/badge/chat-devs-brightgreen.svg)](https://gitter.im/debezium/dev)
+[![Developer chat](https://img.shields.io/badge/chat-devs-brightgreen.svg)](https://debezium.zulipchat.com/#narrow/stream/302533-dev)
 [![Google Group](https://img.shields.io/:mailing%20list-debezium-brightgreen.svg)](https://groups.google.com/forum/#!forum/debezium)
 
 # Introduction
