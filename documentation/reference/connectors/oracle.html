@@ -692,11 +692,30 @@ This means that event semantics differ between initial and incremental snapshots
 <div class="sect2">
 <h3 id="oracle-topic-names"><a class="anchor" href="#oracle-topic-names"></a>Topic names</h3>
 <div class="paragraph">
-<p>The default behavior is that a Debezium Oracle connector writes events for all <code>INSERT</code>, <code>UPDATE</code>, and <code>DELETE</code> operations in one table to one Kafka topic.
-The Kafka topic naming convention is as follows:</p>
+<p>By default, the Oracle connector writes change events for all <code>INSERT</code>, <code>UPDATE</code>, and <code>DELETE</code> operations that occur in a table to a single Apache Kafka topic that is specific to that table.
+The connector uses the following convention to name change event topics:</p>
 </div>
 <div class="paragraph">
 <p><em>serverName.schemaName.tableName</em></p>
+</div>
+<div class="paragraph">
+<p>The following list provides definitions for the components of the default name:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><em>serverName</em></dt>
+<dd>
+<p>The logical name of the server as specified by the <a href="#oracle-property-database-server-name"><code>database.server.name</code></a> connector configuration property.</p>
+</dd>
+<dt class="hdlist1"><em>schemaName</em></dt>
+<dd>
+<p>The name of the schema in which the operation occurred.</p>
+</dd>
+<dt class="hdlist1"><em>tableName</em></dt>
+<dd>
+<p>The name of the table in which the operation occurred.</p>
+</dd>
+</dl>
 </div>
 <div class="paragraph">
 <p>For example, if <code>fulfillment</code> is the server name, <code>inventory</code> is the schema name, and the database contains tables with the names <code>orders</code>, <code>customers</code>, and <code>products</code>,
@@ -709,14 +728,90 @@ fulfillment.inventory.customers
 fulfillment.inventory.products</pre>
 </div>
 </div>
+<div class="paragraph">
+<p>The connector applies similar naming conventions to label its internal database history topics, <a href="#about-the-debezium-oracle-connector-schema-change-topic">schema change topics</a>, and <a href="#oracle-transaction-metadata">transaction metadata topics</a>.</p>
+</div>
+<div class="paragraph">
+<p>If the default topic name do not meet your requirements, you can configure custom topic names.
+To configure custom topic names, you specify regular expressions in the logical topic routing SMT.
+For more information about using the logical topic routing SMT to customize topic naming, see <a href="../transformations/topic-routing.html#topic-routing" class="page">Topic routing</a>.</p>
+</div>
 </div>
 <div class="sect2">
 <h3 id="oracle-schema-change-topic"><a class="anchor" href="#oracle-schema-change-topic"></a>Schema change topic</h3>
 <div class="paragraph">
-<p>The Debezium Oracle connector stores the history of schema changes in a database history topic.
-This topic reflects an internal connector state and you should not use it directly.
-Applications that require notifications about schema changes should obtain the information from the public schema change topic.
-The connector writes schema change events to a Kafka topic named <code>&lt;serverName&gt;</code>, where <code>serverName</code> is the name of the connector that is specified in the <code>database.server.name</code> configuration property.</p>
+<p>You can configure a Debezium Oracle connector to produce schema change events that describe schema changes that are applied to captured tables in the database.
+The connector writes schema change events to a Kafka topic named <code><em>&lt;serverName&gt;</em></code>, where <code><em>serverName</em></code> is the logical server name that is specified in the <a href="#oracle-property-database-server-name"><code>database.server.name</code></a> configuration property.</p>
+</div>
+<div class="paragraph">
+<p>Debezium emits a new message to this topic whenever it streams data from a new table.</p>
+</div>
+<div class="paragraph">
+<p>Messages that the connector sends to the schema change topic contain a payload, and, optionally, also contain the schema of the change event message.
+The payload of a schema change event message includes the following elements:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>ddl</code></dt>
+<dd>
+<p>Provides the SQL <code>CREATE</code>, <code>ALTER</code>, or <code>DROP</code> statement that results in the schema change.</p>
+</dd>
+<dt class="hdlist1"><code>databaseName</code></dt>
+<dd>
+<p>The name of the database to which the statements are applied.
+The value of <code>databaseName</code> serves as the message key.</p>
+</dd>
+<dt class="hdlist1"><code>tableChanges</code></dt>
+<dd>
+<p>A structured representation of the entire table schema after the schema change.
+The <code>tableChanges</code> field contains an array that includes entries for each column of the table.
+Because the structured representation presents data in JSON or Avro format, consumers can easily read messages without first processing them through a DDL parser.</p>
+</dd>
+</dl>
+</div>
+<div class="admonitionblock important">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-important" title="Important"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>When the connector is configured to capture a table, it stores the history of the table&#8217;s schema changes not only in the schema change topic, but also in an internal database history topic.
+The internal database history topic is for connector use only and it is not intended for direct use by consuming applications.
+Ensure that applications that require notifications about schema changes consume that information only from the schema change topic.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="admonitionblock important">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-important" title="Important"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>Never partition the database history topic.
+For the database history topic to function correctly, it must maintain a consistent, global order of the event records that the connector emits to it.</p>
+</div>
+<div class="paragraph">
+<p>To ensure that the topic is not split among partitions, set the partition count for the topic by using one of the following methods:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>If you create the database history topic manually, specify a partition count of <code>1</code>.</p>
+</li>
+<li>
+<p>If you use the Apache Kafka broker to create the database history topic automatically, the topic is created, set the value of the <a href="https://kafka.apache.org/documentation/#brokerconfigs_num.partitions">Kafka <code>num.partitions</code></a> configuration option to <code>1</code>.</p>
+</li>
+</ul>
+</div>
+</td>
+</tr>
+</table>
 </div>
 <div class="admonitionblock warning">
 <table>
@@ -731,9 +826,6 @@ The connector writes schema change events to a Kafka topic named <code>&lt;serve
 </td>
 </tr>
 </table>
-</div>
-<div class="paragraph">
-<p>Debezium emits a new message to this topic whenever it streams data from a new table.</p>
 </div>
 <div class="paragraph">
 <p>Debezium emits a new message to this topic whenever it streams data from a new table, or when the structure of the table is altered.</p>
@@ -753,11 +845,9 @@ The connector writes schema change events to a Kafka topic named <code>&lt;serve
 </table>
 </div>
 <div class="paragraph">
-<p>The message contains a logical representation of the table schema.</p>
-</div>
-<div class="paragraph">
-<div class="title">Example: Message emitted to the schema change topic</div>
-<p>The following example shows a typical schema change message in JSON format:</p>
+<div class="title">Example: Message emitted to the Oracle connector schema change topic</div>
+<p>The following example shows a typical schema change message in JSON format.
+The message contains a logical representation of the table schema.</p>
 </div>
 <div class="listingblock">
 <div class="content">
@@ -935,7 +1025,7 @@ In the case of a table rename, this identifier is a concatenation of <code><em>&
 </tbody>
 </table>
 <div class="paragraph">
-<p>Messages that the connector sends to the schema change topic use a message key that is equal to the name of the database that contains the schema change.
+<p>In messages that the connector sends to the schema change topic, the message key is the name of the database that contains the schema change.
 In the following example, the <code>payload</code> field contains the key:</p>
 </div>
 <div class="listingblock">
@@ -1002,7 +1092,7 @@ Transaction boundary events contain the following fields:</p>
 </dd>
 <dt class="hdlist1"><code>data_collections</code> (for <code>END</code> events)</dt>
 <dd>
-<p>An array of pairs of <code>data_collection</code> and <code>event_count</code> that provides number of events emitted by changes originating from the given data collection.</p>
+<p>An array of pairs of <code>data_collection</code> and <code>event_count</code> elements that indicates number of events that the connector emits for changes that originate from a data collection.</p>
 </dd>
 </dl>
 </div>
@@ -1037,7 +1127,7 @@ Transaction boundary events contain the following fields:</p>
 </div>
 </div>
 <div class="paragraph">
-<p>The transaction events are written to the topic named <code><em>&lt;database.server.name&gt;</em>.transaction</code>.</p>
+<p>The connector emits transaction events to the <a href="#oracle-property-database-server-name"><code><em>&lt;database.server.name&gt;</em></code></a><code>.transaction</code> topic.</p>
 </div>
 <div class="sect3">
 <h4 id="_change_data_event_enrichment"><a class="anchor" href="#_change_data_event_enrichment"></a>Change data event enrichment</h4>
@@ -1157,7 +1247,7 @@ The schema describes the structure of the payload, while the payload contains th
 </div>
 </div>
 <div class="paragraph">
-<p>If the value of the <code>database.server.name</code> configuration property is set to <code>server1</code>,
+<p>If the value of the <a href="#oracle-property-database-server-name"><code><em>&lt;database.server.name&gt;</em></code></a><code>.transaction</code> configuration property is set to <code>server1</code>,
 the JSON representation for every change event that occurs in the <code>customers</code> table in the database features the following key structure:</p>
 </div>
 <div class="listingblock">
@@ -3158,7 +3248,9 @@ In environments that use the LogMiner implementation, you must use POSIX regular
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>An optional comma-separated list of regular expressions that match fully-qualified table identifiers for tables to be monitored.
 Tables that are not included in the include list are excluded from monitoring.
-Each identifier is of the form <code><em>&lt;schema_name&gt;.&lt;table_name&gt;</em></code>.<br>
+Each table identifier uses the following format:<br>
+<br>
+<code><em>&lt;schema_name&gt;.&lt;table_name&gt;</em></code><br>
 <br>
 By default, the connector monitors every non-system table in each monitored database.
 Do not use this property in combination with <code>table.exclude.list</code>.
@@ -3193,7 +3285,9 @@ If you use the LogMiner implementation, use only POSIX regular expressions with 
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>An optional comma-separated list of regular expressions that match the fully-qualified names of columns that want to include in the change event message values.
-Fully-qualified names for columns are of the form <code><em>&lt;schemaName&gt;</em>.<em>&lt;tableName&gt;</em>.<em>&lt;columnName&gt;</em></code>.<br>
+Fully-qualified names for columns use the following format: <code><em>+
+<br>
+`&lt;Schema_name&gt;.&lt;table_name&gt;.&lt;column_name&gt;</em></code><br>
 <br>
 The primary key column is always included in an event&#8217;s key, even if you do not use this property to explicitly include its value.
 If you include this property in the configuration, do not also set the <code>column.exclude.list</code> property.</p>
@@ -3208,7 +3302,9 @@ If you include this property in the configuration, do not also set the <code>col
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>An optional comma-separated list of regular expressions that match the fully-qualified names of columns that you want to exclude from change event message values.
-Fully-qualified names for columns are of the form <code><em>&lt;schemaName&gt;</em>.<em>&lt;tableName&gt;</em>.<em>&lt;columnName&gt;</em></code>.<br>
+Fully-qualified column names use the following format:<br>
+<br>
+<code><em>&lt;schema_name&gt;.&lt;table_name&gt;.&lt;column_name&gt;</em></code><br>
 <br>
 The primary key column is always included in an event&#8217;s key, even if you use this property to explicitly exclude its value.
 If you include this property in the configuration, do not set the <code>column.include.list</code> property.</p>
