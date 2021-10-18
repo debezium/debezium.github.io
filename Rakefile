@@ -54,16 +54,16 @@ end
 
 desc 'Build and preview the site locally in development mode'
 task :preview do
-  run_antora
+  $buildcommithash = `git rev-parse HEAD`; # gets website build commit hash
+  run_antora($buildcommithash)
   system 'bundle install'
   system "#{$use_bundle_exec ? 'bundle exec ' : ''}jekyll serve --host 0.0.0.0 --livereload" or raise "Jekyll build failed"
 end
 
 desc 'Build the site for the given environment: development (the default), staging, or production'
-task :build, [:environment] do |task, args|
+task :build, [:environment, :buildcommithash] do |task, args|
   args.with_defaults(:environment => 'development')
-
-  run_antora
+  run_antora(args[:buildcommithash])
   system 'bundle install'
   system "JEKYLL_ENV=#{args[:environment]} bundle exec jekyll build"
 end
@@ -87,9 +87,9 @@ task :author do
 end
 
 # Execute Antora
-def run_antora()
+def run_antora(buildcommithash)
   puts "Generating Antora documentation using configuration: #{$antora_config}"
-  if system "antora #{$antora_config}"
+  if system "antora #{$antora_config} --attribute page-build-commit-hash=#{buildcommithash}"
     puts "Antora documentation created"
   else
     puts "Antora failed"
