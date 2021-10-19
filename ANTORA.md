@@ -73,7 +73,7 @@ content:
       start_path: documentation
       branches: 
         - 'master'
-      taags:
+      tags:
         - '0.9.5.Final'
         - '0.8.3.Final'
 ```
