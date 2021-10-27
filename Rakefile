@@ -97,7 +97,7 @@ def clone_versions()
   latestDevelVersion = playbook['asciidoc']['attributes']['page-version-devel']
 
   stableDir = "_site/documentation/reference/stable";
-  develDir = "_site/documentation/reference/#{latestDevelVersion}"
+  develDir = "_site/documentation/reference/devel"
   $refDir = "_site/documentation/reference"
 
   if File.exists?($refDir)
@@ -124,7 +124,7 @@ def clone_versions()
     puts "Unable to find stable version dir"
   end  
   if File.exists?(develDir)    
-   FileUtils.cp_r develDir, "_site/documentation/reference/devel"
+   FileUtils.cp_r develDir, "_site/documentation/reference/#{latestDevelVersion}"
   else
     puts "Unable to find devel version dir"
   end
