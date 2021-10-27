@@ -1,0 +1,227 @@
+---
+layout: post
+title:  Debezium 1.8.0.Alpha1 Released
+date:   2021-10-27
+tags: [ releases, mysql, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox ]
+author: ccranfor
+---
+
+It's my pleasure to announce the first release of the Debezium 1.8 series, *1.8.0.Alpha1*!
+
+With the colors of Autumn upon us, the team has been hard at work painting lines of code for this release.
+With Debezium 1.8.0.Alpha1 comes quite a number of improvements but most notably is the new native MongoDB 4.0 change streams support!
+
++++<!-- more -->+++
+
+== MongoDB Change Stream Support
+
+MonogoDB https://docs.mongodb.com/manual/changeStreams/[change streams] allow an application or client access to real-time change data capture events without the complexity of tailing the oplog.
+This functionality was first introduced by the MongoDB engine in version 3.6; however the functionality was limited.
+In MongoDB 4.0, change streams can now capture changes across a database, replica set, or even a sharded cluster.
+In order to use change stream support with Debezium, you must use MongoDB 4.0 or later.
+
+=== Enablement
+
+Debezium for MongoDB exposes a new configuration property called `capture.mode`.
+The capture mode specifies how the connector should obtain change events from the MongoDB database.
+The valid options are:
+
+`oplog`::
+Specifies that changes should  be captured by tailing the oplog; this is the legacy behavior.
+`change_streams`::
+Specifies that changes should be captured by using MongoDB change streams.
+Updates will not contain the full message; only changes are in the event.
+`change_streams_update_full`::
+Specifies that changes should be captured by using MongoDB change streams.
+Updates will contain a full snapshot of the current record in the event.
+This is the new default for the connector.
+
+[WARNING]
+====
+The new `change_streams` and `change_streams_update_full` capture modes are incubating and the format and details surrounding how these work may change in future releases.
+====
+
+=== Event changes
+
+Using our tutorial from our https://www.github.com/debezium-examples[examples repository], lets take a look at the differences in these capture modes.
+
+==== Oplog
+
+The following shows a snippet of an update event when using the `oplog` capture mode.
+
+[source,json]
+----
+{
+  "schema": {
+      ...
+  },
+  "payload": {
+    "after": null,
+    "patch": "{\"$v\": 1, \"$set\": { \"first_name\": \"Bobby\"}}",
+    "filter": "{\"_id\": {\"$numberLong\": \"1005\"}}",
+    "updateDescription": null,
+    "source": {
+      "version": "1.8.0-SNAPSHOT",
+      "connector": "mongodb",
+      "name": "dbserver1",
+      "ts_ms": 1635291250000,
+      "snapshot": "false",
+      "db": "inventory",
+      "sequence": null,
+      "rs": "rs0",
+      "collection": "customers",
+      "ord": 1,
+      "h": 3510217852938498600,
+      "tord": null,
+      "stxnid": null
+    },
+    "op": "u",
+    "ts_ms": 1635291250803,
+    "transaction": null
+  }
+}
+----
+
+The emitted event's after field has no value.
+Instead, the event provides values for patch and filter that describe limited details about what changed in the source document.
+Since the event only provides details about what fields have changed and not the values for unchanged fields, this may not be ideal for certain consumers that require knowledge of the full document.
+
+==== Change Streams
+
+The following shows a snippet of an update event when using the `change_streams` capture mode.
+
+[source,json]
+----
+{
+  "schema": {
+      ...
+  },
+  "payload": {
+    "after": null,
+    "patch": null,
+    "filter": null,
+    "updateDescription": {
+      "removedFields": null,
+      "updatedFields": "{\"first_name\": \"Bobby\"}",
+      "truncatedArrays": null
+    },
+    "source": {
+      "version": "1.8.0-SNAPSHOT",
+      "connector": "mongodb",
+      "name": "dbserver1",
+      "ts_ms": 1635292448000,
+      "snapshot": "false",
+      "db": "inventory",
+      "sequence": null,
+      "rs": "rs0",
+      "collection": "customers",
+      "ord": 1,
+      "h": null,
+      "tord": null,
+      "stxnid": null
+    },
+    "op": "u",
+    "ts_ms": 1635292448736,
+    "transaction": null
+  }
+}
+----
+
+The emitted event has a slightly different set of values that the legacy oplog output.
+As shown above, the event does not have a value in the after, patch, or filter fields.
+Instead, the event relies on describing the changes to the document's fields in the `updateDescription` structure.
+While this provides a bit more detail about values that may have been set and even unset due to an update,
+this may still not be ideal for some consumers that need values for all fields of the source document.
+
+==== Change Streams Full Document
+
+The following shows a snippet of an update event when using the `change_streams_update_full` capture mode.
+
+[source,json]
+----
+{
+  "schema": {
+      ...
+  },
+  "payload": {
+    "after": "{\"_id\": {\"$numberLong\": \"1005\"},\"first_name\": \"Bobby\",\"last_name\": \"Hopper\",\"email\": \"thebob@example.com\",\"unique_id\": {\"$binary\": \"KRywzYp5RneNu8DUmhQHAQ==\",\"$type\": \"04\"}}",
+    "patch": null,
+    "filter": null,
+    "updateDescription": {
+      "removedFields": null,
+      "updatedFields": "{\"first_name\": \"Bobby\"}",
+      "truncatedArrays": null
+    },
+    "source": {
+      "version": "1.8.0-SNAPSHOT",
+      "connector": "mongodb",
+      "name": "dbserver1",
+      "ts_ms": 1635292878000,
+      "snapshot": "false",
+      "db": "inventory",
+      "sequence": null,
+      "rs": "rs0",
+      "collection": "customers",
+      "ord": 1,
+      "h": null,
+      "tord": null,
+      "stxnid": null
+    },
+    "op": "u",
+    "ts_ms": 1635292878244,
+    "transaction": null
+  }
+}
+----
+
+This capture mode is nearly identical to the `change_streams` mode except with one critical difference, the `after` field is populated with a complete snapshot of document.
+This mode is great for consumers that rely on having all fields in the source document.
+
+Please see the https://docs.mongodb.com/manual/changeStreams/#lookup-full-document-for-update-operations[MongoDB documentation] for more details on full document mode semantics.
+
+[NOTE]
+====
+The full document mode is based on a re-selection of the source document when MongoDB provides the change event over the change stream to the connector.
+In cases where multiple changes to the same document happen within close proximity of one another, each event may have the same full document representation.
+====
+
+=== Future work
+
+In conjunction to the work already done with MongoDB change streams, we recognize there is much work that remains which includes testing the new change streams implementations against MongoDB 5 and updating the connector documentation to reflect these new changes.
+You can expect this and much more as a part of the next preview release.
+
+== Other Fixes
+
+There were quite a number of bugfixes and stability changes in this release, some noteworthy are:
+
+* Row hashing in LogMiner Query not able to differentiate between rows of a statement. https://issues.redhat.com/browse/DBZ-3834[DBZ-3834]
+* The chunk select statement is incorrect for combined primary key in incremental snapshot https://issues.redhat.com/browse/DBZ-3860[DBZ-3860]
+* column.the mask.hash.hashAlgorithm.with.... data corruption occurs when using this feature https://issues.redhat.com/browse/DBZ-4033[DBZ-4033]
+* Infinispan SPI throws NPE with more than one connector configured to the same Oracle database https://issues.redhat.com/browse/DBZ-4064[DBZ-4064]
+
+Altogether, https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20AND%20fixVersion%20%3D%201.8.0.Alpha1%20ORDER%20BY%20component%20ASC[82 issues] were fixed for this release.
+A big thank you to all the contributors from the community who worked on this release:
+https://github.com/cburch824[Christopher Burch],
+https://github.com/kometen[Claus Guttesen],
+https://github.com/famartinrh[Fabian Martinez],
+https://github.com/gkorland[Guy Korland],
+https://github.com/harveyyue[Harvey Yue],
+https://github.com/blcksrx[Hossein Torabi],
+https://github.com/juanfiallo[Juan Fiallo],
+https://github.com/judahrand[Judah Rand],
+https://github.com/lbroudoux[Laurent Broudoux],
+https://github.com/PlugaruT[Plugaru Tudor],
+https://github.com/morozov[Sergei Morozov],
+https://github.com/sgc109[Sungho Hwang],
+https://github.com/unalsurmeli[Ünal Sürmeli],
+https://github.com/vivekwassan[Vivek Wassan],
+https://github.com/zxpzlp[Willie Zhu],
+https://github.com/ashulin[Zongwen Li], and
+https://github.com/lujiefsi[陆杰].
+
+== Outlook
+
+As the end of the year is just around the corner, we intend to press forward with the same vigor.
+You can expect a minor bugfix release to the Debezium 1.7 series next week,
+as well as another preview release of the Debezium 1.8 series in couple more weeks.
+We urge you to give the latest build a test drive and share your feedback with us!
