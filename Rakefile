@@ -119,7 +119,7 @@ def clone_versions()
     puts "Unable to find reference dir"
   end 
   if File.exists?(stableDir)
-   FileUtils.cp_r stableDir, "_site/documentation/reference/1.7"
+   FileUtils.cp_r stableDir, "_site/documentation/reference/#{latestStableVersion}"
   else
     puts "Unable to find stable version dir"
   end  
