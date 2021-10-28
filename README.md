@@ -8,7 +8,7 @@
 This is the source code for the [Debezium website](https://debezium.io/). This is based on [templates](https://github.com/rhmwes/community-theme) created by the Red Hat upstream community using [Jekyll](https://jekyllrb.com/).
 
 For publishing the Debezium reference documentation, the [Antora](https://antora.org/) tool is used,
-which produces the documentation based on [AsciiDoc files](https://github.com/debezium/debezium/tree/master/documentation) in different branches of the Debezium main code repository.
+which produces the documentation based on [AsciiDoc files](https://github.com/debezium/debezium/tree/main/documentation) in different branches of the Debezium main code repository.
 The rendered HTML pages are added as-is to the website generated with Jekyll.
 Please see [ANTORA.md](./ANTORA.md) to learn more.
 
@@ -136,4 +136,4 @@ Use Git on your local machine to commit the changes to the site's codebase to yo
 As soon as you passes the pull request a GitHub action generates the link for preview the change in surge.sh. When a pull request is closed the surge preview instance will be torn down.
 ### 7. Publish the website
 
-Review the pull request and merge onto the `develop` branch. The [GitHub Actions](https://github.com/features/actions) will then build the `develop` branch and, if successful, store the generated site in the `master` branch and publish to GitHub Pages.
+Review the pull request and merge onto the `develop` branch. The [GitHub Actions](https://github.com/features/actions) will then build the `develop` branch and, if successful, store the generated site in the `gh-pages` branch and publish to GitHub Pages.

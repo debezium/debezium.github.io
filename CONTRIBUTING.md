@@ -340,7 +340,7 @@ At the time of writing the following table illustrates the mappings:
 
 |Branch|Debezium Version|Antora Version|
 |---|---|---|
-|master|1.2.x|master|
+|main|1.2.x|main|
 |1.2|1.2.x|1.2|
 |1.1|1.1.x|1.1|
 |1.0|1.0.x|1.0|
@@ -355,7 +355,7 @@ Be sure when a new major/minor release is added that a new `releases/<major>.</m
 
 #### Edit documentation
 
-Documentation for Debezium is now split between this repository and the [main codebase](https://www.github.com/debezium/debezium.git) repository.  Please see [DOCUMENTATION.md](http://www.github.com/debezium/debezium/tree/master/DOCUMENTATION.md) in the main codebase repository for details about Antora and how the documentation should be updated.
+Documentation for Debezium is now split between this repository and the [main codebase](https://www.github.com/debezium/debezium.git) repository.  Please see [DOCUMENTATION.md](http://www.github.com/debezium/debezium/tree/main/DOCUMENTATION.md) in the main codebase repository for details about Antora and how the documentation should be updated.
 
 Note: There are two Antora playbook configuration files used by this repository, `playbook.yml` and `playbook_author.yml`.  It is important that these two files be kept in sync and the only difference between them should be `content.sources[0].url` which controls how each playbook obtains a reference to the Debezium main code repository.  
 

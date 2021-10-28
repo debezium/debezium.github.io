@@ -57,7 +57,7 @@ content:
     - url: https://github.com/debezium/debezium.git
       start_path: documentation
       branches:
-        - 'master'
+        - 'main'
         - '0.9'
         - '0.8'
 ```
@@ -72,7 +72,7 @@ content:
     - url: https://github.com/debezium/debezium.git
       start_path: documentation
       branches: 
-        - 'master'
+        - 'main'
       tags:
         - '0.9.5.Final'
         - '0.8.3.Final'
