@@ -36,10 +36,12 @@
 #
 # Now you're Jekyll with rake!
 require 'jekyll'
+require 'yaml'
+
 $use_bundle_exec = true
 $antora_config = "playbook.yml"
 task :default => :build
-
+ 
 desc 'Install the environment to run Jekyll'
 task :install do
   system 'bundle install'
@@ -55,6 +57,7 @@ end
 desc 'Build and preview the site locally in development mode'
 task :preview do
   run_antora
+  clone_versions
   system 'bundle install'
   system "#{$use_bundle_exec ? 'bundle exec ' : ''}jekyll serve --host 0.0.0.0 --livereload" or raise "Jekyll build failed"
 end
@@ -66,6 +69,7 @@ task :build, [:environment] do |task, args|
   run_antora
   system 'bundle install'
   system "JEKYLL_ENV=#{args[:environment]} bundle exec jekyll build"
+  clone_versions
 end
 
 desc 'Clean out generated site and temporary files'
@@ -80,12 +84,52 @@ task :clean, :spec do |task, args|
   end
 end
 
-
 desc 'Configures Antora build process to use authoring mode, allowing changes to documentation files locally without needing to push changes to github'
 task :author do
   $antora_config = "playbook_author.yml"
 end
 
+# Clone specified versions to stable and devel
+def clone_versions()  
+  require 'fileutils'  
+  playbook = YAML.load_file($antora_config)
+  latestStableVersion = playbook['asciidoc']['attributes']['page-version-current']
+  latestDevelVersion = playbook['asciidoc']['attributes']['page-version-devel']
+
+  stableDir = "_site/documentation/reference/stable";
+  develDir = "_site/documentation/reference/devel"
+  $refDir = "_site/documentation/reference"
+
+  if File.exists?($refDir)
+    # Crete nigtly folder
+    FileUtils.mkdir_p("#{$refDir}/nightly/")
+    # Copy all .html files into nightly
+    Dir.glob("#{$refDir}/*.html").each do|f|
+      FileUtils.cp_r f, "#{$refDir}/nightly"
+    end
+    # Copy below specified folders into nightly
+    FileUtils.cp_r "_site/documentation/debezium-antora", "_site/documentation/reference"
+    FileUtils.cp_r "#{$refDir}/configuration", "#{$refDir}/nightly"
+    FileUtils.cp_r "#{$refDir}/connectors", "#{$refDir}/nightly"
+    FileUtils.cp_r "#{$refDir}/development", "#{$refDir}/nightly"
+    FileUtils.cp_r "#{$refDir}/integrations", "#{$refDir}/nightly"
+    FileUtils.cp_r "#{$refDir}/operations", "#{$refDir}/nightly"
+    FileUtils.cp_r "#{$refDir}/transformations", "#{$refDir}/nightly"
+  else
+    puts "Unable to find reference dir"
+  end 
+  if File.exists?(stableDir)
+   FileUtils.cp_r stableDir, "_site/documentation/reference/#{latestStableVersion}"
+  else
+    puts "Unable to find stable version dir"
+  end  
+  if File.exists?(develDir)    
+   FileUtils.cp_r develDir, "_site/documentation/reference/#{latestDevelVersion}"
+  else
+    puts "Unable to find devel version dir"
+  end
+end
+ 
 # Execute Antora
 def run_antora()
   puts "Generating Antora documentation using configuration: #{$antora_config}"
