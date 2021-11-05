@@ -385,7 +385,7 @@
 <td class="content">
 <div class="paragraph">
 <p>A new capturing implementation for the Debezium MySQL connector has been created as of Debezium 1.5,
-based on the common connector framework used by all the other Kafka Connect connectors of Debezium.</p>
+based on the common connector framework used by the other Debezium Kafka Connect connectors.</p>
 </div>
 <div class="paragraph">
 <p>If you encounter any issues with the new MySQL connector implementation, please log a <a href="https://issues.redhat.com/browse/DBZ">Jira issue</a>; in this case, you can use the legacy implementation by setting the <code>internal.implementation=legacy</code> connector configuration option
@@ -474,21 +474,28 @@ Official support for MariaDB is planned for a future Debezium version.</p>
 <div class="sect2">
 <h3 id="mysql-schema-history-topic"><a class="anchor" href="#mysql-schema-history-topic"></a>Schema history topic</h3>
 <div class="paragraph">
-<p>When a database client queries a database, the client uses the database’s current schema. However, the database schema can be changed at any time, which means that the connector must be able to identify what the schema was at the time each insert, update, or delete operation was recorded. Also, a connector cannot just use the current schema because the connector might be processing events that are relatively old and may have been recorded before the tables' schemas were changed.</p>
+<p>When a database client queries a database, the client uses the database’s current schema.
+However, the database schema can be changed at any time, which means that the connector must be able to identify what the schema was at the time each insert, update, or delete operation was recorded.
+Also, a connector cannot just use the current schema because the connector might be processing events that are relatively old that were recorded before the tables' schemas were changed.</p>
 </div>
 <div class="paragraph">
-<p>To handle this, MySQL includes in the binlog not only the row-level changes to the data, but also the DDL statements that are applied to the database. As the connector reads the binlog and comes across these DDL statements, it parses them and updates an in-memory representation of each table’s schema. The connector uses this schema representation to identify the structure of the tables at the time of each insert, update, or delete operation and to produce the appropriate change event. In a separate database history Kafka topic, the connector records all DDL statements along with the position in the binlog where each DDL statement appeared.</p>
+<p>To ensure correct processing of changes that occur after a schema change, MySQL includes in the binlog not only the row-level changes to the data, but also the DDL statements that are applied to the database.
+As the connector reads the binlog and comes across these DDL statements, it parses them and updates an in-memory representation of each table’s schema.
+The connector uses this schema representation to identify the structure of the tables at the time of each insert, update, or delete operation and to produce the appropriate change event.
+In a separate database history Kafka topic, the connector records all DDL statements along with the position in the binlog where each DDL statement appeared.</p>
 </div>
 <div class="paragraph">
-<p>When the connector restarts after having crashed or been stopped gracefully, the connector starts reading the binlog from a specific position, that is, from a specific point in time. The connector rebuilds the table structures that existed at this point in time by reading the database history Kafka topic and parsing all DDL statements up to the point in the binlog where the connector is starting.</p>
+<p>When the connector restarts after having crashed or been stopped gracefully, the connector starts reading the binlog from a specific position, that is, from a specific point in time.
+The connector rebuilds the table structures that existed at this point in time by reading the database history Kafka topic and parsing all DDL statements up to the point in the binlog where the connector is starting.</p>
 </div>
 <div class="paragraph">
-<p>This database history topic is for connector use only. The connector can optionally See <a href="#mysql-schema-change-topic">emit schema change events to a different topic that is intended for consumer applications</a>.</p>
+<p>This database history topic is for connector use only.
+The connector can optionally <a href="#mysql-schema-change-topic">emit schema change events to a different topic that is intended for consumer applications</a>.</p>
 </div>
 <div class="paragraph">
-<p>When the MySQL connector captures changes in a table to which a schema change tool such as <code>gh-ost</code> or <code>pt-online-schema-change</code> is applied there are helper tables created during the migration process.
+<p>When the MySQL connector captures changes in a table to which a schema change tool such as <code>gh-ost</code> or <code>pt-online-schema-change</code> is applied, there are helper tables created during the migration process.
 The connector needs to be configured to capture change to these helper tables.
-If consumers do not need the records generated for helper tables then a single message transform can be applied to filter them out.</p>
+If consumers do not need the records generated for helper tables, then a single message transform can be applied to filter them out.</p>
 </div>
 <div class="paragraph">
 <p>See <a href="#mysql-topic-names">default names for topics</a> that receive Debezium event records.</p>
@@ -497,10 +504,35 @@ If consumers do not need the records generated for helper tables then a single m
 <div class="sect2">
 <h3 id="mysql-schema-change-topic"><a class="anchor" href="#mysql-schema-change-topic"></a>Schema change topic</h3>
 <div class="paragraph">
-<p>You can configure a Debezium MySQL connector to produce schema change events that include all DDL statements applied to databases in the MySQL server. The connector emits these events to a Kafka topic named <em>serverName</em> where <em>serverName</em> is the name of the connector as specified by the <code>database.server.name</code> connector configuration property.</p>
+<p>You can configure a Debezium MySQL connector to produce schema change events that describe schema changes that are applied to captured tables in the database.
+The connector writes schema change events to a Kafka topic named <code><em>&lt;serverName&gt;</em></code>, where <code><em>serverName</em></code> is the logical server name that is specified in the <a href="#mysql-property-database-server-name"><code>database.server.name</code></a> connector configuration property.
+Messages that the connector sends to the schema change topic contain a payload, and, optionally, also contain the schema of the change event message.</p>
 </div>
 <div class="paragraph">
-<p>If you choose to use <em>schema change events</em>, ensure that you consume records from the schema change topic. The database history topic is for connector use only.</p>
+<p>The payload of a schema change event message includes the following elements:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>ddl</code></dt>
+<dd>
+<p>Provides the SQL <code>CREATE</code>, <code>ALTER</code>, or <code>DROP</code> statement that results in the schema change.</p>
+</dd>
+<dt class="hdlist1"><code>databaseName</code></dt>
+<dd>
+<p>The name of the database to which the DDL statements are applied.
+The value of <code>databaseName</code> serves as the message key.</p>
+</dd>
+<dt class="hdlist1"><code>pos</code></dt>
+<dd>
+<p>The position in the binlog where the statements appear.</p>
+</dd>
+<dt class="hdlist1"><code>tableChanges</code></dt>
+<dd>
+<p>A structured representation of the entire table schema after the schema change.
+The <code>tableChanges</code> field contains an array that includes entries for each column of the table.
+Because the structured representation presents data in JSON or Avro format, consumers can easily read messages without first processing them through a DDL parser.</p>
+</dd>
+</dl>
 </div>
 <div class="admonitionblock important">
 <table>
@@ -509,129 +541,170 @@ If consumers do not need the records generated for helper tables then a single m
 <i class="fa icon-important" title="Important"></i>
 </td>
 <td class="content">
-A global order for events emitted to the schema change topic is vital. Therefore, you must not partition the database history topic. This means that you must specify a partition count of <code>1</code> when creating the database history topic. When relying on auto topic creation, make sure that Kafka’s <code>num.partitions</code> configuration option, which specifies the default number of partitions, is set to <code>1</code>.
+<div class="paragraph">
+<p>For a table that is in capture mode, the connector not only stores the history of schema changes in the schema change topic, but also in an internal database history topic.
+The internal database history topic is for connector use only and it is not intended for direct use by consuming applications.
+Ensure that applications that require notifications about schema changes consume that information only from the schema change topic.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="admonitionblock important">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-important" title="Important"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>Never partition the database history topic.
+For the database history topic to function correctly, it must maintain a consistent, global order of the event records that the connector emits to it.</p>
+</div>
+<div class="paragraph">
+<p>To ensure that the topic is not split among partitions, set the partition count for the topic by using one of the following methods:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>If you create the database history topic manually, specify a partition count of <code>1</code>.</p>
+</li>
+<li>
+<p>If you use the Apache Kafka broker to create the database history topic automatically, the topic is created, set the value of the <a href="https://kafka.apache.org/documentation/#brokerconfigs_num.partitions">Kafka <code>num.partitions</code></a> configuration option to <code>1</code>.</p>
+</li>
+</ul>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="admonitionblock warning">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-warning" title="Warning"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>The format of the messages that a connector emits to its schema change topic is in an incubating state and is subject to change without notice.</p>
+</div>
 </td>
 </tr>
 </table>
 </div>
 <div class="paragraph">
-<p>Each record that the connector emits to the schema change topic contains a message key that includes the name of the connected database when the DDL statement was applied, for example:</p>
+<div class="title">Example: Message emitted to the MySQL connector schema change topic</div>
+<p>The following example shows a typical schema change message in JSON format.
+The message contains a logical representation of the table schema.</p>
 </div>
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
   "schema": {
-    "type": "struct",
-    "name": "io.debezium.connector.mysql.SchemaChangeKey",
-    "optional": false,
-    "fields": [
-      {
-        "field": "databaseName",
-        "type": "string",
-        "optional": false
-      }
-    ]
+  ...
   },
   "payload": {
-    "databaseName": "inventory"
-  }
-}</code></pre>
-</div>
-</div>
-<div class="paragraph">
-<p>The schema change event record value contains a structure that includes the DDL statements, the name of the database to which the statements were applied, and the position in the binlog where the statements appeared, for example:</p>
-</div>
-<div class="listingblock">
-<div class="content">
-<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
-  "schema": {
-    "type": "struct",
-    "name": "io.debezium.connector.mysql.SchemaChangeValue",
-    "optional": false,
-    "fields": [
-      {
-        "field": "databaseName",
-        "type": "string",
-        "optional": false
-      },
-      {
-        "field": "ddl",
-        "type": "string",
-        "optional": false
-      },
-      {
-        "field": "source",
-        "type": "struct",
-        "name": "io.debezium.connector.mysql.Source",
-        "optional": false,
-        "fields": [
-          {
-            "type": "string",
-            "optional": true,
-            "field": "version"
-          },
-          {
-            "type": "string",
-            "optional": false,
-            "field": "name"
-          },
-          {
-            "type": "int64",
-            "optional": false,
-            "field": "server_id"
-          },
-          {
-            "type": "int64",
-            "optional": false,
-            "field": "ts_ms"
-          },
-          {
-            "type": "string",
-            "optional": true,
-            "field": "gtid"
-          },
-          {
-            "type": "string",
-            "optional": false,
-            "field": "file"
-          },
-          {
-            "type": "int64",
-            "optional": false,
-            "field": "pos"
-          },
-          {
-            "type": "int32",
-            "optional": false,
-            "field": "row"
-          },
-          {
-            "type": "boolean",
-            "optional": true,
-            "default": false,
-            "field": "snapshot"
-          },
-          {
-            "type": "int64",
-            "optional": true,
-            "field": "thread"
-          },
-          {
-            "type": "string",
-            "optional": true,
-            "field": "db"
-          },
-          {
-            "type": "string",
-            "optional": true,
-            "field": "table"
-          },
-          {
-            "type": "string",
-            "optional": true,
-            "field": "query"
-          }
-        ]
+        "source": {  // <1>
+        "version": "1.7.1.Final",
+        "connector": "mysql",
+        "name": "dbserver1",
+        "ts_ms": 0,
+        "snapshot": "false",
+        "db": "inventory",
+        "sequence": null,
+        "table": "customers",
+        "server_id": 0,
+        "gtid": null,
+        "file": "mysql-bin.000003",
+        "pos": 219,
+        "row": 0,
+        "thread": null,
+        "query": null
+    },
+    "databaseName": "inventory", // <2>
+    "schemaName": null,
+    "ddl": "ALTER TABLE customers ADD COLUMN middle_name VARCHAR(2000)", // <3>
+    "tableChanges": [  // <4>
+        {
+        "type": "ALTER", // <5>
+        "id": "\"inventory\".\"customers\"",  // <6>
+        "table": { // <7>
+            "defaultCharsetName": "latin1",
+            "primaryKeyColumnNames": [  // <8>
+                "id"
+            ],
+            "columns": [ // <9>
+                {
+                "name": "id",
+                "jdbcType": 4,
+                "nativeType": null,
+                "typeName": "INT",
+                "typeExpression": "INT",
+                "charsetName": null,
+                "length": 11,
+                "scale": null,
+                "position": 1,
+                "optional": false,
+                "autoIncremented": true,
+                "generated": true
+            },
+            {
+                "name": "first_name",
+                "jdbcType": 12,
+                "nativeType": null,
+                "typeName": "VARCHAR",
+                "typeExpression": "VARCHAR",
+                "charsetName": "latin1",
+                "length": 255,
+                "scale": null,
+                "position": 2,
+                "optional": false,
+                "autoIncremented": false,
+                "generated": false
+            },                        {
+                "name": "last_name",
+                "jdbcType": 12,
+                "nativeType": null,
+                "typeName": "VARCHAR",
+                "typeExpression": "VARCHAR",
+                "charsetName": "latin1",
+                "length": 255,
+                "scale": null,
+                "position": 3,
+                "optional": false,
+                "autoIncremented": false,
+                "generated": false
+            },
+            {
+                "name": "email",
+                "jdbcType": 12,
+                "nativeType": null,
+                "typeName": "VARCHAR",
+                "typeExpression": "VARCHAR",
+                "charsetName": "latin1",
+                "length": 255,
+                "scale": null,
+                "position": 4,
+                "optional": false,
+                "autoIncremented": false,
+                "generated": false
+            },
+            {
+                "name": "middle_name",
+                "jdbcType": 12,
+                "nativeType": null,
+                "typeName": "VARCHAR",
+                "typeExpression": "VARCHAR",
+                "charsetName": "latin1",
+                "length": 2000,
+                "scale": null,
+                "position": 5,
+                "optional": true,
+                "autoIncremented": false,
+                "generated": false
+            }
+          ]
+        }
       }
     ]
   },
@@ -639,7 +712,7 @@ A global order for events emitted to the schema change topic is vital. Therefore
     "databaseName": "inventory",
     "ddl": "CREATE TABLE products ( id INTEGER NOT NULL AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255) NOT NULL, description VARCHAR(512), weight FLOAT ); ALTER TABLE products AUTO_INCREMENT = 101;",
     "source" : {
-      "version": "1.7.0.Final",
+      "version": "1.7.1.Final",
       "name": "mysql-server-1",
       "server_id": 0,
       "ts_ms": 0,
@@ -657,25 +730,97 @@ A global order for events emitted to the schema change topic is vital. Therefore
 }</code></pre>
 </div>
 </div>
-<div class="paragraph">
-<p>The <code>ddl</code> field might contain multiple DDL statements. Each statement applies to the database in the <code>databaseName</code> field. The statements appear in the order in which they were applied to the database. The <code>source</code> field is structured exactly as a standard data change event written to table-specific topics. This field is useful to correlate events on different topics.</p>
+<table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 1. Descriptions of fields in messages emitted to the schema change topic</caption>
+<colgroup>
+<col style="width: 10%;">
+<col style="width: 40%;">
+<col style="width: 50%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Item</th>
+<th class="tableblock halign-left valign-top">Field name</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">1</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>source</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The <code>source</code> field is structured exactly as standard data change events that the connector writes to table-specific topics.
+This field is useful to correlate events on different topics.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">2</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>databaseName</code><br>
+<code>schemaName</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Identifies the database and the schema that contains the change.
+The value of the <code>databaseName</code> field is used as the message key for the record.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">3</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>ddl</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">This field contains the DDL that is responsible for the schema change.
+The <code>ddl</code> field can contain multiple DDL statements.
+Each statement applies to the database in the <code>databaseName</code> field.
+Multiple DDL statements appear in the order in which they were applied to the database.<br>
+<br>
+Clients can submit multiple DDL statements that apply to multiple databases.
+If MySQL applies them atomically, the connector takes the DDL statements in order, groups them by database, and creates a schema change event for each group.
+If MySQL applies them individually, the connector creates a separate schema change event for each statement.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">4</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>tableChanges</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">An array of one or more items that contain the schema changes generated by a DDL command.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">5</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>type</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Describes the kind of change. The value is one of the following:</p>
 </div>
-<div class="listingblock">
-<div class="content">
-<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">....
-"payload": {
-    "databaseName": "inventory",
-    "ddl": "CREATE TABLE products ( id INTEGER NOT NULL AUTO_INCREMENT PRIMARY KEY,...)",
-    "source" : {
-        ...
-    }
-}
-....</code></pre>
-</div>
-</div>
-<div class="paragraph">
-<p>A client can submit multiple DDL statements to be applied to multiple databases. If MySQL applies them atomically, the connector takes the DDL statements in order, groups them by database, and creates a schema change event for each group. If MySQL applies them individually, the connector creates a separate schema change event for each statement.</p>
-</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>CREATE</code></dt>
+<dd>
+<p>Table created.</p>
+</dd>
+<dt class="hdlist1"><code>ALTER</code></dt>
+<dd>
+<p>Table modified.</p>
+</dd>
+<dt class="hdlist1"><code>DROP</code></dt>
+<dd>
+<p>Table deleted.</p>
+</dd>
+</dl>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">6</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>id</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Full identifier of the table that was created, altered, or dropped.
+In the case of a table rename, this identifier is a concatenation of <code><em>&lt;old&gt;</em>,<em>&lt;new&gt;</em></code> table names.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">7</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>table</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Represents table metadata after the applied change.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">8</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>primaryKeyColumnNames</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">List of columns that compose the table&#8217;s primary key.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">9</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>columns</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Metadata for each column in the changed table.</p></td>
+</tr>
+</tbody>
+</table>
 <div class="paragraph">
 <p>See also: <a href="#mysql-schema-history-topic">schema history topic</a>.</p>
 </div>
@@ -686,7 +831,7 @@ A global order for events emitted to the schema change topic is vital. Therefore
 <p>When a Debezium MySQL connector is first started, it performs an initial <em>consistent snapshot</em> of your database. The following flow describes how the connector creates this snapshot. This flow is for the default snapshot mode, which is <code>initial</code>. For information about other snapshot modes, see the <a href="#mysql-property-snapshot-mode">MySQL connector <code>snapshot.mode</code> configuration property</a>.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 1. Workflow for performing an initial snapshot with a global read lock</caption>
+<caption class="title">Table 2. Workflow for performing an initial snapshot with a global read lock</caption>
 <colgroup>
 <col style="width: 10%;">
 <col style="width: 90%;">
@@ -769,7 +914,7 @@ The snapshot itself does not prevent other clients from applying DDL that might 
 <dd>
 <p>Some environments do not allow global read locks. If the Debezium MySQL connector detects that global read locks are not permitted, the connector uses table-level locks instead and performs a snapshot with this method. This requires the database user for the Debezium connector to have <code>LOCK TABLES</code> privileges.</p>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 2. Workflow for performing an initial snapshot with table-level locks</caption>
+<caption class="title">Table 3. Workflow for performing an initial snapshot with table-level locks</caption>
 <colgroup>
 <col style="width: 10%;">
 <col style="width: 90%;">
@@ -885,7 +1030,7 @@ Examples for such use cases include:</p>
 The signal is named <code>execute-snapshot</code> and accepts messages in the following format:</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 3. Example of a signal record</caption>
+<caption class="title">Table 4. Example of a signal record</caption>
 <colgroup>
 <col style="width: 20%;">
 <col style="width: 20%;">
@@ -1076,7 +1221,7 @@ it&#8217;s required to set <code>replica_preserve_commit_order=1</code> or <code
 <p>The signal type is <code>execute-snapshot</code> and the <code>data</code> field must have the following fields:</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 4. Execute snapshot data fields</caption>
+<caption class="title">Table 5. Execute snapshot data fields</caption>
 <colgroup>
 <col style="width: 20%;">
 <col style="width: 20%;">
@@ -1134,13 +1279,17 @@ transforms.snapshotasinsert.type=io.debezium.connector.mysql.transforms.ReadToIn
 <div class="sect2">
 <h3 id="mysql-topic-names"><a class="anchor" href="#mysql-topic-names"></a>Topic names</h3>
 <div class="paragraph">
-<p>The default behavior is that a Debezium MySQL connector writes events for all <code>INSERT</code>, <code>UPDATE</code>, and <code>DELETE</code> operations in one table to one Kafka topic. The Kafka topic naming convention is as follows:</p>
+<p>By default, the MySQL connector writes change events for all of the <code>INSERT</code>, <code>UPDATE</code>, and <code>DELETE</code> operations that occur in a table to a single Apache Kafka topic that is specific to that table.</p>
+</div>
+<div class="paragraph">
+<p>The connector uses the following convention to name change event topics:</p>
 </div>
 <div class="paragraph">
 <p><em>serverName.databaseName.tableName</em></p>
 </div>
 <div class="paragraph">
-<p>Suppose that <code>fulfillment</code> is the server name, <code>inventory</code> is the database name, and the database contains tables named <code>orders</code>, <code>customers</code>, and <code>products</code>. The Debezium MySQL connector emits events to three Kafka topics, one for each table in the database:</p>
+<p>Suppose that <code>fulfillment</code> is the server name, <code>inventory</code> is the database name, and the database contains tables named <code>orders</code>, <code>customers</code>, and <code>products</code>.
+The Debezium MySQL connector emits events to three Kafka topics, one for each table in the database:</p>
 </div>
 <div class="listingblock">
 <div class="content">
@@ -1148,6 +1297,33 @@ transforms.snapshotasinsert.type=io.debezium.connector.mysql.transforms.ReadToIn
 fulfillment.inventory.customers
 fulfillment.inventory.products</pre>
 </div>
+</div>
+<div class="paragraph">
+<p>The following list provides definitions for the components of the default name:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><em>serverName</em></dt>
+<dd>
+<p>The logical name of the server as specified by the <a href="#mysql-property-database-server-name"><code>database.server.name</code></a> connector configuration property.</p>
+</dd>
+<dt class="hdlist1"><em>schemaName</em></dt>
+<dd>
+<p>The name of the schema in which the operation occurred.</p>
+</dd>
+<dt class="hdlist1"><em>tableName</em></dt>
+<dd>
+<p>The name of the table in which the operation occurred.</p>
+</dd>
+</dl>
+</div>
+<div class="paragraph">
+<p>The connector applies similar naming conventions to label its internal database history topics, <a href="#about-the-debezium-mysql-connector-schema-change-topic">schema change topics</a>, and <a href="#mysql-transaction-metadata">transaction metadata topics</a>.</p>
+</div>
+<div class="paragraph">
+<p>If the default topic name do not meet your requirements, you can configure custom topic names.
+To configure custom topic names, you specify regular expressions in the logical topic routing SMT.
+For more information about using the logical topic routing SMT to customize topic naming, see <a href="../transformations/topic-routing.html#topic-routing" class="page">Topic routing</a>.</p>
 </div>
 </div>
 <div class="sect2">
@@ -1172,23 +1348,29 @@ Metadata for transactions that occur before you deploy the connector is not avai
 </table>
 </div>
 <div class="paragraph">
-<p>For every transaction <code>BEGIN</code> and <code>END</code>, Debezium generates an event that contains the following fields:</p>
+<p>Debezium generates transaction boundary events for the <code>BEGIN</code> and <code>END</code> delimiters in every transaction.
+Transaction boundary events contain the following fields:</p>
 </div>
-<div class="ulist">
-<ul>
-<li>
-<p><code>status</code> - <code>BEGIN</code> or <code>END</code></p>
-</li>
-<li>
-<p><code>id</code> - string representation of unique transaction identifier</p>
-</li>
-<li>
-<p><code>event_count</code> (for <code>END</code> events) - total number of events emitted by the transaction</p>
-</li>
-<li>
-<p><code>data_collections</code> (for <code>END</code> events) - an array of pairs of <code>data_collection</code> and <code>event_count</code> that provides the number of events emitted by changes originating from given data collection</p>
-</li>
-</ul>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>status</code></dt>
+<dd>
+<p><code>BEGIN</code> or <code>END</code>.</p>
+</dd>
+<dt class="hdlist1"><code>id</code></dt>
+<dd>
+<p>String representation of the unique transaction identifier.</p>
+</dd>
+<dt class="hdlist1"><code>event_count</code> (for <code>END</code> events)</dt>
+<dd>
+<p>Total number of events emitted by the transaction.</p>
+</dd>
+<dt class="hdlist1"><code>data_collections</code> (for <code>END</code> events)</dt>
+<dd>
+<p>An array of pairs of <code>data_collection</code> and <code>event_count</code> elements.
+that indicates the number of events that the connector emits for changes that originate from a data collection.</p>
+</dd>
+</dl>
 </div>
 <div class="listingblock">
 <div class="title">Example</div>
@@ -1218,7 +1400,7 @@ Metadata for transactions that occur before you deploy the connector is not avai
 </div>
 </div>
 <div class="paragraph">
-<p>Transaction events are written to the topic named <code><em>database.server.name</em>.transaction</code>.</p>
+<p>The connector emits transaction events to the <a href="#mysql-property-database-server-name"><code><em>&lt;database.server.name&gt;</em></code></a><code>.transaction</code> topic.</p>
 </div>
 <div class="paragraph">
 <div class="title">Change data event enrichment</div>
@@ -1299,7 +1481,7 @@ This field provides information about every event in the form of a composite of 
 </div>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 5. Overview of change event basic content</caption>
+<caption class="title">Table 6. Overview of change event basic content</caption>
 <colgroup>
 <col style="width: 10%;">
 <col style="width: 20%;">
@@ -1400,7 +1582,7 @@ It is possible to override the table&#8217;s primary key by setting the <a href=
 </div>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 6. Description of change event key</caption>
+<caption class="title">Table 7. Description of change event key</caption>
 <colgroup>
 <col style="width: 10%;">
 <col style="width: 20%;">
@@ -1669,7 +1851,7 @@ It is possible to override the table&#8217;s primary key by setting the <a href=
       "email": "annek@noanswer.org"
     },
     "source": { <i class="conum" data-value="10"></i><b>(10)</b>
-      "version": "1.7.0.Final",
+      "version": "1.7.1.Final",
       "connector": "mysql",
       "name": "mysql-server-1",
       "ts_ms": 0,
@@ -1689,7 +1871,7 @@ It is possible to override the table&#8217;s primary key by setting the <a href=
 </div>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 7. Descriptions of <em>create</em> event value fields</caption>
+<caption class="title">Table 8. Descriptions of <em>create</em> event value fields</caption>
 <colgroup>
 <col style="width: 10%;">
 <col style="width: 20%;">
@@ -1849,7 +2031,7 @@ In the <code>source</code> object, <code>ts_ms</code> indicates the time that th
       "email": "annek@noanswer.org"
     },
     "source": { <i class="conum" data-value="3"></i><b>(3)</b>
-      "version": "1.7.0.Final",
+      "version": "1.7.1.Final",
       "name": "mysql-server-1",
       "connector": "mysql",
       "name": "mysql-server-1",
@@ -1872,7 +2054,7 @@ In the <code>source</code> object, <code>ts_ms</code> indicates the time that th
 </div>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 8. Descriptions of <em>update</em> event value fields</caption>
+<caption class="title">Table 9. Descriptions of <em>update</em> event value fields</caption>
 <colgroup>
 <col style="width: 10%;">
 <col style="width: 20%;">
@@ -2008,7 +2190,7 @@ as a primary key change. For a primary key change, in place of an <code>UPDATE</
     },
     "after": null, <i class="conum" data-value="2"></i><b>(2)</b>
     "source": { <i class="conum" data-value="3"></i><b>(3)</b>
-      "version": "1.7.0.Final",
+      "version": "1.7.1.Final",
       "connector": "mysql",
       "name": "mysql-server-1",
       "ts_ms": 1465581902300,
@@ -2030,7 +2212,7 @@ as a primary key change. For a primary key change, in place of an <code>UPDATE</
 </div>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 9. Descriptions of <em>delete</em> event value fields</caption>
+<caption class="title">Table 10. Descriptions of <em>delete</em> event value fields</caption>
 <colgroup>
 <col style="width: 10%;">
 <col style="width: 20%;">
@@ -2159,7 +2341,7 @@ In the <code>source</code> object, <code>ts_ms</code> indicates the time that th
 <p>The following table shows how the connector maps basic MySQL data types.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 10. Descriptions of basic type mappings</caption>
+<caption class="title">Table 11. Descriptions of basic type mappings</caption>
 <colgroup>
 <col style="width: 25%;">
 <col style="width: 20%;">
@@ -2533,7 +2715,7 @@ In <a href="https://www.iso.org/iso-8601-date-and-time-format.html">ISO 8601</a>
 <dd>
 <p>The MySQL connector determines the literal type and semantic type based on the column&#8217;s data type definition so that events represent exactly the values in the database. All time fields are in microseconds. Only positive <code>TIME</code> field values in the range of <code>00:00:00.000000</code> to <code>23:59:59.999999</code> can be captured correctly.</p>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 11. Mappings when <code>time.precision.mode=adaptive_time_microseconds</code></caption>
+<caption class="title">Table 12. Mappings when <code>time.precision.mode=adaptive_time_microseconds</code></caption>
 <colgroup>
 <col style="width: 25%;">
 <col style="width: 20%;">
@@ -2602,7 +2784,7 @@ Represents the number of microseconds past the epoch and does not include time z
 <dd>
 <p>The MySQL connector uses defined Kafka Connect logical types. This approach is less precise than the default approach and the events could be less precise if the database column has a <em>fractional second precision</em> value of greater than <code>3</code>. Values in only the range of <code>00:00:00.000</code> to <code>23:59:59.999</code> can be handled. Set <code>time.precision.mode=connect</code> only if you can ensure that the <code>TIME</code> values in your tables never exceed the supported ranges. The <code>connect</code> setting is expected to be removed in a future version of Debezium.</p>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 12. Mappings when <code>time.precision.mode=connect</code></caption>
+<caption class="title">Table 13. Mappings when <code>time.precision.mode=connect</code></caption>
 <colgroup>
 <col style="width: 25%;">
 <col style="width: 20%;">
@@ -2668,7 +2850,7 @@ Represents the number of milliseconds since the epoch, and does not include time
 <dt class="hdlist1">decimal.handling.mode=precise</dt>
 <dd>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 13. Mappings when <code>decimal.handing.mode=precise</code></caption>
+<caption class="title">Table 14. Mappings when <code>decimal.handing.mode=precise</code></caption>
 <colgroup>
 <col style="width: 30%;">
 <col style="width: 15%;">
@@ -2712,7 +2894,7 @@ The <code>scale</code> schema parameter contains an integer that represents how 
 <dt class="hdlist1">decimal.handling.mode=double</dt>
 <dd>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 14. Mappings when <code>decimal.handing.mode=double</code></caption>
+<caption class="title">Table 15. Mappings when <code>decimal.handing.mode=double</code></caption>
 <colgroup>
 <col style="width: 30%;">
 <col style="width: 30%;">
@@ -2754,7 +2936,7 @@ The <code>scale</code> schema parameter contains an integer that represents how 
 <dt class="hdlist1">decimal.handling.mode=string</dt>
 <dd>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 15. Mappings when <code>decimal.handing.mode=string</code></caption>
+<caption class="title">Table 16. Mappings when <code>decimal.handing.mode=string</code></caption>
 <colgroup>
 <col style="width: 30%;">
 <col style="width: 30%;">
@@ -2824,7 +3006,7 @@ boolean.selector=db1.table1.*, db1.table2.column1</pre>
 <p>Currently, the Debezium MySQL connector supports the following spatial data types.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 16. Description of spatial type mappings</caption>
+<caption class="title">Table 17. Description of spatial type mappings</caption>
 <colgroup>
 <col style="width: 35%;">
 <col style="width: 15%;">
@@ -2938,7 +3120,7 @@ If using a hosted option such as Amazon RDS or Amazon Aurora that does not allow
 </ol>
 </div>
 <table id="permissions-explained-mysql-connector" class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 17. Descriptions of user permissions</caption>
+<caption class="title">Table 18. Descriptions of user permissions</caption>
 <colgroup>
 <col style="width: 30%;">
 <col style="width: 70%;">
@@ -3055,7 +3237,7 @@ FROM information_schema.global_variables WHERE variable_name='log_bin';</code></
 </ol>
 </div>
 <table id="binlog-configuration-properties-mysql-connector" class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 18. Descriptions of MySQL binlog configuration properties</caption>
+<caption class="title">Table 19. Descriptions of MySQL binlog configuration properties</caption>
 <colgroup>
 <col style="width: 20%;">
 <col style="width: 80%;">
@@ -3153,7 +3335,7 @@ FROM information_schema.global_variables WHERE variable_name='log_bin';</code></
 </div>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 19. Descriptions of GTID options</caption>
+<caption class="title">Table 20. Descriptions of GTID options</caption>
 <colgroup>
 <col style="width: 30%;">
 <col style="width: 70%;">
@@ -3241,7 +3423,7 @@ FROM information_schema.global_variables WHERE variable_name='log_bin';</code></
 </ol>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 20. Descriptions of MySQL session timeout options</caption>
+<caption class="title">Table 21. Descriptions of MySQL session timeout options</caption>
 <colgroup>
 <col style="width: 30%;">
 <col style="width: 70%;">
@@ -3340,7 +3522,7 @@ FROM information_schema.global_variables WHERE variable_name='log_bin';</code></
 <div class="title">Procedure</div>
 <ol class="arabic">
 <li>
-<p>Download the Debezium <a href="https://repo1.maven.org/maven2/io/debezium/debezium-connector-mysql/1.7.0.Final/debezium-connector-mysql-1.7.0.Final-plugin.tar.gz">MySQL connector plug-in</a>.</p>
+<p>Download the Debezium <a href="https://repo1.maven.org/maven2/io/debezium/debezium-connector-mysql/1.7.1.Final/debezium-connector-mysql-1.7.1.Final-plugin.tar.gz">MySQL connector plug-in</a>.</p>
 </li>
 <li>
 <p>Extract the files into your Kafka Connect environment.</p>
@@ -3749,7 +3931,7 @@ Do not also specify the <code>table.include.list</code> connector configuration 
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>An optional, comma-separated list of regular expressions that match the fully-qualified names of character-based columns.
-Fully-qualified names for columns are of the form <em>databaseName</em>.<em>tableName</em>.<em>columnName</em>.
+Fully-qualified names for columns are of the form <code><em>&lt;databaseName&gt;</em>.<em>&lt;tableName&gt;</em>.<em>&lt;columnName&gt;</em></code>.
 In the resulting change event record, the values for the specified columns are replaced with pseudonyms.<br></p>
 </div>
 <div class="paragraph">
@@ -4056,17 +4238,37 @@ After a source record is deleted, emitting a tombstone event (the default behavi
 <p><em>n/a</em></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>A semicolon separated list of tables with regular expressions that match table column names. The connector maps values in matching columns to key fields in change event records that it sends to Kafka topics. This is useful when a table does not have a primary key, or when you want to order change event records in a Kafka topic according to a field that is not a primary key.<br>
+<p>A list of expressions that specify the columns that the connector uses to form custom message keys for change event records that it publishes to the Kafka topics for specified tables.</p>
+</div>
+<div class="paragraph">
+<p>By default, Debezium uses the primary key column of a table as the message key for records that it emits.
+In place of the default, or to specify a key for tables that lack a primary key, you can configure custom message keys based on one or more columns.<br>
 <br>
-Separate entries with semicolons. Insert a colon between the fully-qualified table name and its regular expression. The format (shown with spaces for clarity only) is:<br>
+To establish a custom message key for a table, list the table, followed by the columns to use as the message key.
+Each list entry takes the following format:<br>
 <br>
-<em>database-name</em> <code>.</code> <em>table-name</em> <code>:</code> <em>regexp</em> <code>;</code> &#8230;&#8203;<br>
+<code><em>&lt;fully-qualified_tableName&gt;</em>:_&lt;keyColumn&gt;_,<em>&lt;keyColumn&gt;</em></code><br>
 <br>
-For example:<br>
+To base a table key on multiple column names, insert commas between the column names.</p>
+</div>
+<div class="paragraph">
+<p>Each fully-qualified table name is a regular expression in the following format:<br>
 <br>
-<code>dbA.table_a:regex_1;dbB.table_b:regex_2;dbC.table_c:regex_3</code><br>
+<code><em>&lt;databaseName&gt;</em>.<em>&lt;tableName&gt;</em></code><br>
 <br>
-If <code>table_a</code> has an <code>id</code> column, and <code>regex_1</code> is <code>^i</code> (matches any column that starts with <code>i</code>), the connector maps the value in the <code>id</code> column of <code>table_a</code> to a key field in change events that the connector sends to Kafka.</p>
+The property can include entries for multiple tables.
+Use a semicolon to separate table entries in the list.<br>
+<br>
+The following example sets the message key for the tables <code>inventory.customers</code> and <code>purchase.orders</code>:<br>
+<br>
+<code>inventory.customers:pk1,pk2;(.*).purchaseorders:pk3,pk4</code><br>
+<br>
+For the table <code>inventory.customer</code>, the columns <code>pk1</code> and <code>pk2</code> are specified as the message key.
+For the <code>purchaseorders</code> tables in any database, the columns <code>pk3</code> and <code>pk4</code> server as the message key.</p>
+</div>
+<div class="paragraph">
+<p>There is no limit to the number of columns that you use to create custom message keys.
+However, it&#8217;s best to use the minimum number that are required to specify a unique key.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -4095,7 +4297,7 @@ If <code>table_a</code> has an <code>id</code> column, and <code>regex_1</code> 
 <p>The following table describes <a href="#mysql-advanced-connector-configuration-properties">advanced MySQL connector properties</a>. The default values for these properties rarely need to be changed. Therefore, you do not need to specify them in the connector configuration.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 21. Descriptions of MySQL connector advanced configuration properties</caption>
+<caption class="title">Table 22. Descriptions of MySQL connector advanced configuration properties</caption>
 <colgroup>
 <col style="width: 30%;">
 <col style="width: 20%;">
@@ -4449,7 +4651,7 @@ The name format is <em>database-name.table-name</em>.</p>
 <p>The following table describes the <code>database.history</code> properties for configuring the Debezium connector.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 22. Connector database history configuration properties</caption>
+<caption class="title">Table 23. Connector database history configuration properties</caption>
 <colgroup>
 <col style="width: 33%;">
 <col style="width: 17%;">
@@ -4599,7 +4801,7 @@ database.history.consumer.ssl.key.password=test1234</code></pre>
 <p>The following table describes the <code>signal</code> properties.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 23. Kafka signals configuration properties</caption>
+<caption class="title">Table 24. Kafka signals configuration properties</caption>
 <colgroup>
 <col style="width: 33%;">
 <col style="width: 17%;">
@@ -5161,7 +5363,7 @@ The values will incoporate any differences between the clocks on the machines wh
 <p>The Debezium MySQL connector also provides the following additional streaming metrics:</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 24. Descriptions of additional streaming metrics</caption>
+<caption class="title">Table 25. Descriptions of additional streaming metrics</caption>
 <colgroup>
 <col style="width: 30%;">
 <col style="width: 20%;">
@@ -5440,7 +5642,7 @@ The values will incoporate any differences between the clocks on the machines wh
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2021 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/d2e07afac52e6bbf2a0dcb51f93720cf2ed7622b">d2e07afa</a></span>)
+            <div class="copyright">Copyright &copy; 2021 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/379955001e703eb01cd6b5eb2ee34df5bae9e5d9">37995500</a></span>)
             
         </div>
     </footer>
