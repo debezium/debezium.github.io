@@ -142,6 +142,9 @@
     <a class="nav-link" href="../transformations/outbox-event-router.html">Outbox Event Router</a>
   </li>
   <li class="nav-item" data-depth="2">
+    <a class="nav-link" href="../transformations/mongodb-outbox-event-router.html">MongoDB Outbox Event Router</a>
+  </li>
+  <li class="nav-item" data-depth="2">
     <a class="nav-link" href="../transformations/filtering.html">Message Filtering</a>
   </li>
   <li class="nav-item" data-depth="2">
@@ -343,6 +346,7 @@
 <li><a href="#oracle-boolean-types">Boolean types</a></li>
 <li><a href="#oracle-decimal-types">Decimal types</a></li>
 <li><a href="#oracle-temporal-types">Temporal types</a></li>
+<li><a href="#oracle-default-values">Default Values</a></li>
 </ul>
 </li>
 <li><a href="#setting-up-oracle">Setting up Oracle</a>
@@ -693,6 +697,20 @@ This means that event semantics differ between initial and incremental snapshots
 </li>
 </ul>
 </div>
+<div class="admonitionblock warning">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-warning" title="Warning"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>The Debezium connector for Oracle does not support schema changes while an incremental snapshot is running.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
 </div>
 </div>
 <div class="sect2">
@@ -735,7 +753,7 @@ fulfillment.inventory.products</pre>
 </div>
 </div>
 <div class="paragraph">
-<p>The connector applies similar naming conventions to label its internal database history topics, <a href="#about-the-debezium-oracle-connector-schema-change-topic">schema change topics</a>, and <a href="#oracle-transaction-metadata">transaction metadata topics</a>.</p>
+<p>The connector applies similar naming conventions to label its internal database history topics, <a href="#oracle-schema-change-topic">schema change topics</a>, and <a href="#oracle-transaction-metadata">transaction metadata topics</a>.</p>
 </div>
 <div class="paragraph">
 <p>If the default topic name do not meet your requirements, you can configure custom topic names.
@@ -863,7 +881,7 @@ The message contains a logical representation of the table schema.</p>
   },
   "payload": {
     "source": {
-      "version": "1.8.0.Alpha1",
+      "version": "1.8.0.Beta1",
       "connector": "oracle",
       "name": "server1",
       "ts_ms": 1588252618953,
@@ -1133,7 +1151,8 @@ Transaction boundary events contain the following fields:</p>
 </div>
 </div>
 <div class="paragraph">
-<p>The connector emits transaction events to the <a href="#oracle-property-database-server-name"><code><em>&lt;database.server.name&gt;</em></code></a><code>.transaction</code> topic.</p>
+<p>Unless overridden via the <a href="#oracle-property-transaction-topic"><code>transaction.topic</code></a> option,
+the connector emits transaction events to the <a href="#oracle-property-database-server-name"><code><em>&lt;database.server.name&gt;</em></code></a><code>.transaction</code> topic.</p>
 </div>
 <div class="sect3">
 <h4 id="_change_data_event_enrichment"><a class="anchor" href="#_change_data_event_enrichment"></a>Change data event enrichment</h4>
@@ -1195,16 +1214,78 @@ The connector drops change events that are discarded by a rollback.</p>
 <div class="paragraph">
 <p>You can configure the buffering mechanism that the connector uses by setting the property <a href="#oracle-property-log-mining-buffer-type"><code>log.mining.buffer.type</code></a>.</p>
 </div>
+<div class="sect3">
+<h4 id="_heap"><a class="anchor" href="#_heap"></a>Heap</h4>
 <div class="paragraph">
 <p>The default buffer type is configured using <code>memory</code>.
 Under the default <code>memory</code> setting, the connector uses the heap memory of the JVM process to allocate and manage buffered event records.
 If you use the <code>memory</code> buffer setting, be sure that the amount of memory that you allocate to the Java process can accommodate long-running and large transactions in your environment.</p>
 </div>
+</div>
+<div class="sect3">
+<h4 id="oracle-event-buffering-infinispan"><a class="anchor" href="#oracle-event-buffering-infinispan"></a>Infinispan</h4>
 <div class="paragraph">
-<p>An additional buffer type can be configured using <code>infinispan</code>.
-You can also set the buffer type to  <code>infinispan</code> to have the connector use Infinispan in embedded-mode to cache buffered events.
-Using Infinispan as the buffer type permits the cache to be persisted to disk.
-If you use the <code>infinispan</code> option, you must also set the <a href="#oracle-property-log-mining-buffer-location"><code>log.mining.buffer.location</code></a> property to specify the location to which the connector writes persisted cache files.</p>
+<p>The Debezium Oracle connector can also be configured to use Infinispan as its cache provider, supporting cache stores both locally with embedded mode or remotely on a server cluster.
+In order to use Infinispan, the <a href="#oracle-property-log-mining-buffer-type"><code>log.mining.buffer.type</code></a> must be configured using either <code>infinispan_embedded</code> or <code>infinispan_remote</code>.</p>
+</div>
+<div class="paragraph">
+<p>In order to allow flexibility with Infinispan cache configurations, the connector expects a series of cache configuration properties to be supplied when using Infinispan to buffer event data.
+See the <a href="#oracle-connector-properties">configuration properties</a> in the <code>log.mining.buffer.infinispan.cache</code> namespace.
+The contents of these configuration properties depend on whether the connector is to integrate with a remote Infinispan cluster or to use the embedded engine.</p>
+</div>
+<div class="paragraph">
+<p>For example, the following illustrates what an embedded configuration would look like for the transaction cache property when using Infinispan in embedded mode:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-xml hljs" data-lang="xml">&lt;local-cache name="transactions"&gt;
+  &lt;persistence passivation="false"&gt;
+    &lt;file-store fetch-state="true" read-only="false" preload="true" shared="false" segmented="false" path="./data" /&gt;
+  &lt;/persistence&gt;
+&lt;/local-cache&gt;</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Looking at the configuration in-depth, the cache is configured to be persistent.
+All caches should be configured this way to avoid loss of transaction events across connector restarts if a transaction is in-progress.
+Additionally, the location where the cache is kept is defined by the <code>path</code> attribute and this should be a shared location accessible all possible runtime environments.</p>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>When supplying XML configuration as a JSON connector property value, line breaks must be omitted or replaced with a <code>\n</code> character.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="paragraph">
+<p>Another example, the following illustrates the same cache configured with an Infinispan cluster:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-xml hljs" data-lang="xml">&lt;distributed-cache name="transactions" statistics="true"&gt;
+  &lt;encoding media-type="application/x-protostream" /&gt;
+  &lt;persistence passivation="false"&gt;
+    &lt;file-store fetch-state="true" read-only="false" preload="true" shared="false" segmented="false" /&gt;
+  &lt;/persistence&gt;
+&lt;/distributed-cache&gt;</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Just like the embedded local-cache configuration from the previous example, this configuration is also defined to be persistent.
+All caches should be configured this way to avoid loss of transaction events across connector restarts if a transaction is in-progress.</p>
+</div>
+<div class="paragraph">
+<p>However, there are a few differences with noting.
+First, the cache is defined as a distributed cache rather than a local-cache.
+Secondly, the cache is defined to use the <code>application/x-protostream</code> encoding, which is required for all Debezium caches.
+And lastly, no <code>path</code> attribute is necessary on the file store definition since the Infinispan cluster will handle this automatically.</p>
 </div>
 <div class="admonitionblock important">
 <table>
@@ -1224,6 +1305,25 @@ If the same buffer location will be used by a new connector deployment, the file
 </td>
 </tr>
 </table>
+</div>
+<div class="sect4">
+<h5 id="_infinispan_hotrod_client_integration"><a class="anchor" href="#_infinispan_hotrod_client_integration"></a>Infinispan Hotrod client integration</h5>
+<div class="paragraph">
+<p>The Debezium Oracle connector utilizes the Hotrod client to communicate with the Infinispan cluster.
+Any connector property that is prefixed with <code>log.mining.buffer.infinispan.client.</code> will be passed directly to the Hotrod client using the <code>infinispan.client.</code> namespace, allowing for complete customization of how the client is to interact with the cluster.</p>
+</div>
+<div class="paragraph">
+<p>There is at least one required configuration property that must be supplied when using this Infinspan mode:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>log.mining.buffer.infinispan.client.hotrod.server_list</code></dt>
+<dd>
+<p>Specifies the list of Infinispan server hostname and port combinations, using <code>&lt;hostname&gt;:&lt;port&gt;</code> format.</p>
+</dd>
+</dl>
+</div>
+</div>
 </div>
 </div>
 <div class="sect2">
@@ -1570,7 +1670,7 @@ This field is only present when using the LogMiner connection adapter.</p>
             "EMAIL": "annek@noanswer.org"
         },
         "source": {
-            "version": "1.8.0.Alpha1",
+            "version": "1.8.0.Beta1",
             "name": "server1",
             "ts_ms": 1520085154000,
             "txId": "6.28.807",
@@ -1660,7 +1760,7 @@ Here&#8217;s an example:</p>
             "EMAIL": "anne@example.com"
         },
         "source": {
-            "version": "1.8.0.Alpha1",
+            "version": "1.8.0.Beta1",
             "name": "server1",
             "ts_ms": 1520085811000,
             "txId": "6.9.809",
@@ -1751,7 +1851,7 @@ Now, let&#8217;s look at the value of a <em>delete</em> event for the same table
         },
         "after": null,
         "source": {
-            "version": "1.8.0.Alpha1",
+            "version": "1.8.0.Beta1",
             "name": "server1",
             "ts_ms": 1520085153000,
             "txId": "6.28.807",
@@ -2010,6 +2110,25 @@ Please let us know if you encounter any problems while using these data types.</
 </tr>
 </tbody>
 </table>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>Oracle only supplies column values for <code>CLOB</code>, <code>NCLOB</code>, and <code>BLOB</code> data types if they&#8217;re explicitly set or changed in a SQL statement.
+This means that change events will never contain the value of an unchanged <code>CLOB</code>, <code>NCLOB</code>, or <code>BLOB</code> column,
+but a placeholder as defined by the connector property, <code>unavailable.value.placeholder</code>.</p>
+</div>
+<div class="paragraph">
+<p>If the value of a <code>CLOB</code>, <code>NCLOB</code>, or <code>BLOB</code> column gets updated, the new value will be contained in the <code>after</code> part of the corresponding update change events whereas the unavailable value placeholder will be used in the <code>before</code> part.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
 </div>
 <div class="sect2">
 <h3 id="oracle-numeric-types"><a class="anchor" href="#oracle-numeric-types"></a>Numeric types</h3>
@@ -2287,7 +2406,11 @@ Represents the number of milliseconds past epoch, and does not include timezone 
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>io.debezium.time.MicroDuration</code><br>
 <br>
-The number of micro seconds for a time interval using the <code>365.25 / 12.0</code> formula for days per month average.</p>
+The number of micro seconds for a time interval using the <code>365.25 / 12.0</code> formula for days per month average.<br>
+<br>
+<code>io.debezium.time.Interval</code> (when <code>interval.handling.mode</code> is set to <code>string</code>)<br>
+<br>
+The string representation of the interval value that follows the pattern <code>P&lt;years&gt;Y&lt;months&gt;M&lt;days&gt;DT&lt;hours&gt;H&lt;minutes&gt;M&lt;seconds&gt;S</code>, for example,  <code>P1Y2M3DT4H5M6.78S</code>.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -2300,7 +2423,11 @@ The number of micro seconds for a time interval using the <code>365.25 / 12.0</c
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>io.debezium.time.MicroDuration</code><br>
 <br>
-The number of micro seconds for a time interval using the <code>365.25 / 12.0</code> formula for days per month average.</p>
+The number of micro seconds for a time interval using the <code>365.25 / 12.0</code> formula for days per month average.<br>
+<br>
+<code>io.debezium.time.Interval</code> (when <code>interval.handling.mode</code> is set to <code>string</code>)<br>
+<br>
+The string representation of the interval value that follows the pattern <code>P&lt;years&gt;Y&lt;months&gt;M&lt;days&gt;DT&lt;hours&gt;H&lt;minutes&gt;M&lt;seconds&gt;S</code>, for example,  <code>P1Y2M3DT4H5M6.78S</code>.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -2412,7 +2539,11 @@ Represents the number of days since the epoch.</p>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>io.debezium.time.MicroDuration</code><br>
 <br>
-The number of micro seconds for a time interval using the <code>365.25 / 12.0</code> formula for days per month average.</p>
+The number of micro seconds for a time interval using the <code>365.25 / 12.0</code> formula for days per month average.<br>
+<br>
+<code>io.debezium.time.Interval</code> (when <code>interval.handling.mode</code> is set to <code>string</code>)<br>
+<br>
+The string representation of the interval value that follows the pattern <code>P&lt;years&gt;Y&lt;months&gt;M&lt;days&gt;DT&lt;hours&gt;H&lt;minutes&gt;M&lt;seconds&gt;S</code>, for example,  <code>P1Y2M3DT4H5M6.78S</code>.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -2425,7 +2556,11 @@ The number of micro seconds for a time interval using the <code>365.25 / 12.0</c
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>io.debezium.time.MicroDuration</code><br>
 <br>
-The number of micro seconds for a time interval using the <code>365.25 / 12.0</code> formula for days per month average.</p>
+The number of micro seconds for a time interval using the <code>365.25 / 12.0</code> formula for days per month average.<br>
+<br>
+<code>io.debezium.time.Interval</code> (when <code>interval.handling.mode</code> is set to <code>string</code>)<br>
+<br>
+The string representation of the interval value that follows the pattern <code>P&lt;years&gt;Y&lt;months&gt;M&lt;days&gt;DT&lt;hours&gt;H&lt;minutes&gt;M&lt;seconds&gt;S</code>, for example,  <code>P1Y2M3DT4H5M6.78S</code>.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -2496,6 +2631,34 @@ A string representation of a timestamp in UTC.</p>
 </tbody>
 </table>
 </div>
+<div class="sect2">
+<h3 id="oracle-default-values"><a class="anchor" href="#oracle-default-values"></a>Default Values</h3>
+<div class="paragraph">
+<p>If a default value is specified for a column in the database schema, the Oracle connector will attempt to propagate this value to the schema of the corresponding Kafka record field. Most common data types are supported, including:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>Character types (<code>CHAR</code>, <code>NCHAR</code>, <code>VARCHAR</code>, <code>VARCHAR2</code>, <code>NVARCHAR</code>, <code>NVARCHAR2</code>)</p>
+</li>
+<li>
+<p>Numeric types (<code>INTEGER</code>, <code>NUMERIC</code>, etc.)</p>
+</li>
+<li>
+<p>Temporal types (<code>DATE</code>, <code>TIMESTAMP</code>, <code>INTERVAL</code>, etc.)</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>If a temporal type uses a function call such as <code>TO_TIMESTAMP</code> or <code>TO_DATE</code> to represent the default value, the connector will resolve the default value by making an additional database call to evaluate the function.
+For example, if a <code>DATE</code> column is defined with the default value of <code>TO_DATE('2021-01-02', 'YYYY-MM-DD')</code>, the column&#8217;s default value will be the number of days since epoch for that date or <code>18629</code> in this case.</p>
+</div>
+<div class="paragraph">
+<p>If a temporal type uses the <code>SYSDATE</code> constant to represent the default value, the connector will resolve this based on whether the column is defined as <code>NOT NULL</code> or <code>NULL</code>.
+If the column is nullable, no default value will be set; however, if the column isn&#8217;t nullable then the default value will be resolved as either <code>0</code> (for <code>DATE</code> or <code>TIMESTAMP(n)</code> data types) or <code>1970-01-01T00:00:00Z</code> (for <code>TIMESTAMP WITH TIME ZONE</code> or <code>TIMESTAMP WITH LOCAL TIME ZONE</code> data types).
+The default value type will be numeric except if the column is a <code>TIMESTAMP WITH TIME ZONE</code> or <code>TIMESTAMP WITH LOCAL TIME ZONE</code> in which case its emitted as a string.</p>
+</div>
+</div>
 </div>
 </div>
 <div class="sect1">
@@ -2518,7 +2681,7 @@ If you do not intend to use a multi-tenant configuration, it might be necessary 
 
 CONNECT sys/top_secret AS SYSDBA
 alter system set db_recovery_file_dest_size = 10G;
-alter system set db_recovery_file_dest = '/opt/oracle/oradta/recovery_area' scope=spfile;
+alter system set db_recovery_file_dest = '/opt/oracle/oradata/recovery_area' scope=spfile;
 shutdown immediate
 startup mount
 alter database archivelog;
@@ -2675,7 +2838,7 @@ For more information, see <a href="#obtaining-oracle-jdbc-driver-and-xstreams-ap
 <div class="title">Procedure</div>
 <ol class="arabic">
 <li>
-<p>Download the Debezium <a href="https://repo1.maven.org/maven2/io/debezium/debezium-connector-oracle/1.8.0.Alpha1/debezium-connector-oracle-1.8.0.Alpha1-plugin.tar.gz">Oracle connector plug-in archive</a>.</p>
+<p>Download the Debezium <a href="https://repo1.maven.org/maven2/io/debezium/debezium-connector-oracle/1.8.0.Beta1/debezium-connector-oracle-1.8.0.Beta1-plugin.tar.gz">Oracle connector plug-in archive</a>.</p>
 </li>
 <li>
 <p>Extract the files into your Kafka Connect environment.</p>
@@ -3489,6 +3652,21 @@ For more information, see <a href="#oracle-decimal-types">Decimal types</a>.</p>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="oracle-property-interval-handling-mode"></a><a href="#oracle-property-interval-handling-mode"><code>interval.handling.mode</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>numeric</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies how the connector should handle values for <code>interval</code> columns:<br>
+<br>
+<code>numeric</code> represents intervals using approximate number of microseconds.<br>
+<br>
+<code>string</code> represents intervals exactly by using the string pattern representation <code>P&lt;years&gt;Y&lt;months&gt;M&lt;days&gt;DT&lt;hours&gt;H&lt;minutes&gt;M&lt;seconds&gt;S</code>. For example: <code>P1Y2M3DT4H5M6.78S</code>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><a id="oracle-property-event-processing-failure-handling-mode"></a><a href="#oracle-property-event-processing-failure-handling-mode"><code>event.processing.failure.handling.mode</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -3767,6 +3945,17 @@ For more information, see <a href="../configuration/avro.html#avro-naming" class
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="oracle-property-transaction-topic"></a><a href="#oracle-property-transaction-topic"><code>transaction.topic</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>${database.server.name}.transaction</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Controls the name of the topic to which the connector sends transaction metadata messages. The placeholder <code>${database.server.name}</code> can be used for referring to the connector&#8217;s logical name; defaults to <code>${database.server.name}.transaction</code>, for example <code>dbserver1.transaction</code>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><a id="oracle-property-log-mining-strategy"></a><a href="#oracle-property-log-mining-strategy"><code>log.mining.strategy</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -3809,14 +3998,49 @@ Use the <code>log.mining.buffer.location</code> property to define the location 
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="oracle-property-log-mining-buffer-location"></a><a href="#oracle-property-log-mining-buffer-location"><code>log.mining.buffer.location</code></a></p>
+<p><a id="oracle-property-log-mining-buffer-infinispan-cache-transactions"></a><a href="#oracle-property-log-mining-buffer-infinispan-cache-transactions"><code>log.mining.buffer.infinispan.cache.transactions</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>No default</p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Specifies the location of the directory that the connector uses to read and write the buffer cache.
-Specify a directory that every node in the Kafka cluster can access and that is unique for the connector deployment.</p>
+<p>The XML configuration for the Infinispan transaction cache.
+See <a href="#oracle-event-buffering-infinispan">Infinispan event buffering</a> for more details.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="oracle-property-log-mining-buffer-infinispan-cache-events"></a><a href="#oracle-property-log-mining-buffer-infinispan-cache-events"><code>log.mining.buffer.infinispan.cache.events</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The XML configuration for the Infinispan events cache.
+See <a href="#oracle-event-buffering-infinispan">Infinispan event buffering</a> for more details.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="oracle-property-log-mining-buffer-infinispan-cache-processed-transactions"></a><a href="#oracle-property-log-mining-buffer-infinispan-cache-processed-transactions"><code>log.mining.buffer.infinispan.cache.processed_transactions</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The XML configuration for the Infinispan processed transactions cache.
+See <a href="#oracle-event-buffering-infinispan">Infinispan event buffering</a> for more details.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="oracle-property-log-mining-buffer-infinispan-cache-schema-changes"></a><a href="#oracle-property-log-mining-buffer-infinispan-cache-schema-changes"><code>log.mining.buffer.infinispan.cache.schema_changes</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The XML configuration for the Infinispan schema changes cache.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -4052,6 +4276,17 @@ To capture large object values and serialized them in change events, set this op
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="oracle-property-unavailable-value-placeholder"></a><a href="#oracle-property-unavailable-value-placeholder"><code>unavailable.value.placeholder</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>__debezium_unavailable_value</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies the constant that the connector provides to indicate that the original value is unchanged and not provided by the database.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><a id="oracle-property-rac-nodes"></a><a href="#oracle-property-rac-nodes"><code>rac.nodes</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -4117,6 +4352,29 @@ You can configure the connector to skip the following types of operations:</p>
 </div>
 <div class="paragraph">
 <p>By default, no operations are skipped.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="oracle-property-signal-data-collection"></a><a href="#oracle-property-signal-data-collection"><code>signal.data.collection</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Fully-qualified name of the data collection that is used to send <a href="../configuration/signalling.html" class="page">signals</a> to the connector.
+The name format is <em>database_name.schema-name.table-name</em>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="oracle-property-incremental-snapshot-chunk-size"></a><a href="#oracle-property-incremental-snapshot-chunk-size"><code>incremental.snapshot.chunk.size</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>1024</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of rows fetched from the database for each incremental snapshot iteration.</p>
 </div></div></td>
 </tr>
 </tbody>
@@ -5317,7 +5575,7 @@ This should always be <code>0</code>; however when allowing unparsable DDL to be
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="oracle-streaming-metrics-mining-session-user-global-area-memory-in-bytes"></a><a href="#oracle-streaming-metrics-mining-session-user-global-area-memory-in-bytes"><code>+MiningSessionUserGlobalAreaMemoryInBytes</code></a></p>
+<p><a id="oracle-streaming-metrics-mining-session-user-global-area-memory-in-bytes"></a><a href="#oracle-streaming-metrics-mining-session-user-global-area-memory-in-bytes"><code>MiningSessionUserGlobalAreaMemoryInBytes</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>long</code></p>
@@ -5328,7 +5586,7 @@ This should always be <code>0</code>; however when allowing unparsable DDL to be
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="oracle-streaming-metrics-mining-session-user-global-area-max-memory-in-bytes"></a><a href="#oracle-streaming-metrics-mining-session-user-global-area-max-memory-in-bytes"><code>+MiningSessionUserGlobalAreaMaxMemoryInBytes</code></a></p>
+<p><a id="oracle-streaming-metrics-mining-session-user-global-area-max-memory-in-bytes"></a><a href="#oracle-streaming-metrics-mining-session-user-global-area-max-memory-in-bytes"><code>MiningSessionUserGlobalAreaMaxMemoryInBytes</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>long</code></p>
@@ -5339,7 +5597,7 @@ This should always be <code>0</code>; however when allowing unparsable DDL to be
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="oracle-streaming-metrics-mining-session-process-global-area-memory-in-bytes"></a><a href="#oracle-streaming-metrics-mining-session-process-global-area-memory-in-bytes"><code>+MiningSessionProcessGlobalAreaMemoryInBytes</code></a></p>
+<p><a id="oracle-streaming-metrics-mining-session-process-global-area-memory-in-bytes"></a><a href="#oracle-streaming-metrics-mining-session-process-global-area-memory-in-bytes"><code>MiningSessionProcessGlobalAreaMemoryInBytes</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>long</code></p>
@@ -5350,7 +5608,7 @@ This should always be <code>0</code>; however when allowing unparsable DDL to be
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="oracle-streaming-metrics-mining-session-process-global-area-max-memory-in-bytes"></a><a href="#oracle-streaming-metrics-mining-session-process-global-area-max-memory-in-bytes"><code>+MiningSessionProcessGlobalAreaMaxMemoryInBytes</code></a></p>
+<p><a id="oracle-streaming-metrics-mining-session-process-global-area-max-memory-in-bytes"></a><a href="#oracle-streaming-metrics-mining-session-process-global-area-max-memory-in-bytes"><code>MiningSessionProcessGlobalAreaMaxMemoryInBytes</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>long</code></p>
@@ -5982,7 +6240,7 @@ To determine the parent index-organized table name, use the following SQL:</p>
 </div>
 <div class="listingblock">
 <div class="content">
-<pre class="highlightjs highlight"><code class="language-none hljs">SELECT IOT_NAME
+<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">SELECT IOT_NAME
   FROM DBA_TABLES
  WHERE OWNER='&lt;tablespace-owner&gt;'
    AND TABLE_NAME='&lt;iot-table-name-that-failed&gt;'</code></pre>
@@ -6009,7 +6267,7 @@ Never use the <code>SYS</code> or <code>SYSTEM</code> user accounts for changes 
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2021 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/3efeb05c74918b0d9f0f5d22089fc8ee3acaafae">3efeb05c</a></span>)
+            <div class="copyright">Copyright &copy; 2021 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/bc68cd4227d067881cccf50c8355fc782dd5d4b7">bc68cd42</a></span>)
             
         </div>
     </footer>
