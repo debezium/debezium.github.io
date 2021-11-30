@@ -1,0 +1,239 @@
+---
+layout: post
+title:  Debezium 1.8.0.Beta1 Released
+date:   2021-11-30
+tags: [ releases, mysql, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox ]
+author: gmorling
+---
+
+I'm very happy to announce the release of Debezium *1.8.0.Beta2*!
+
+This release is packed with exciting new features like support for MongoDB 5.0,
+an outbox event router for the MongoDB connector and
+support for Postgres logical decoding messages, as well as tons of bugfixes and other improvements.
+Overall, not less than https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20AND%20fixVersion%20%3D%201.8.0.Beta1%20ORDER%20BY%20component%20ASC[63 issues] have been fixed for this release.
+
+Let's take a closer look at some of them.
+
++++<!-- more -->+++
+
+== MongoDB Outbox Event Router
+
+The outbox pattern is becoming more and more popular for exchanging data between microservices in a reliable way,
+without using unsafe _dual writes_ to a service's database and Apache Kafka.
+
+With the outbox pattern, instead of capturing changes from your actual business tables,
+you write messages to be sent to external consumers into a dedicated outbox table.
+This nicely decouples your internal data model from the message contracts used for communicating with other services,
+allowing you to develop and evolve these independently.
+Updates to your business tables and inserts into the outbox table are done within one database transaction,
+so that either both of these things are done, or none of them.
+Once a message has been persisted in the outbox table,
+Debezium can capture it from there and propagate it to any consumers using the usual at-least-once semantics.
+
+Debezium provides support for implementing the outbox pattern via a special single message transform (SMT),
+the link:/documentation/reference/stable/transformations/outbox-event-router.html[outbox event router].
+This takes care of routing events from the single outbox table to different topics,
+based on a configurable column representing the aggregate type the event is for.
+In addition, there is an extension for emitting outbox events from services based on Quarkus,
+a stack for building cloud-native microservices.
+
+These things are complemented now by a new link:/documentation/reference/1.8/transformations/mongodb-outbox-event-router.html[event routing SMT] which works with the Debezium connector for MongoDB.
+As the MongoDB connector's event format differs from the format of the Debezium connectors for relational databases,
+creating this separate SMT became necessary.
+Here's an example for configuring the SMT:
+
+[source,json]
+----
+{
+  "name": "outbox-connector",
+  "config": {
+    "connector.class" : "io.debezium.connector.mongodb.MongoDbConnector",
+    "tasks.max" : "1",
+    "mongodb.hosts" : "rs0/mongodb:27017",
+    "mongodb.name" : "dbserver1",
+    "mongodb.user" : "debezium",
+    "mongodb.password" : "dbz",
+    "collection.include.list": "inventory.outboxevent",
+    "database.history.kafka.bootstrap.servers" : "kafka:9092",
+
+    "transforms" : "outbox",
+    "transforms.outbox.type" :
+        "io.debezium.connector.mongodb.transforms.outbox.MongoEventRouter",
+    "transforms.outbox.route.topic.replacement" : "${routedByValue}.events",
+    "transforms.outbox.collection.expand.json.payload" : "true",
+    "transforms.outbox.collection.field.event.timestamp" : "timestamp",
+    "transforms.outbox.collection.fields.additional.placement" : "type:header:eventType",
+    "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+    "value.converter": "org.apache.kafka.connect.storage.StringConverter"
+  }
+}
+----
+
+Here we're using the `MongoEventRouter` SMT for capturing changes from the `inventory.outboxevent` collection.
+Events could be written using the MongoDB CLI like so:
+
+[source]
+----
+new_order = { "_id" : ObjectId("000000000000000000000002"), "order_date" : ISODate("2021-11-22T00:00:00Z"), "purchaser_id" : NumberLong(1004), "quantity" : 1, "product_id" : NumberLong(107) }
+
+s = db.getMongo().startSession()
+s.startTransaction()
+
+s.getDatabase("inventory").orders.insert(new_order)
+s.getDatabase("inventory").outboxevent.insert({ _id : ObjectId("000000000000000000000001"), aggregateid : new_order._id, aggregatetype : "Order", type : "OrderCreated", timestamp: NumberLong(1556890294484), payload : new_order })
+
+s.commitTransaction()
+----
+
+Note how we're doing the inserts into a business collection ("orders") and into the outbox collection ("outboxevent") within a transaction,
+as supported by MongoDB since version 4.0.
+While we are using the actual order object in the outbox message itself in this case,
+we also could separate these things and choose another representation of the purchase orders in the outbox events.
+
+The id of the order _aggregate_ (in terms of domain driven design) is used as the message key in Kafka,
+ensuring consistent ordering for all outbox events pertaining to a given purchase order.
+The _aggregate type_ is used for determining the name of the topic to route events to, `Order.events` in this example.
+The unique message id of the message itself is propagated as a header in the Kafka message,
+for instance allowing consumers to identify duplicated messages.
+
+You can find a https://github.com/debezium/debezium-examples/tree/main/mongodb-outbox[complete example] for using this new MongoDB outbox event routing SMT in our https://github.com/debezium/debezium-examples/[demos repository].
+A massive thank you to https://github.com/sgc109[Sungho Hwang],
+who not only provided the actual feature implementation itself,
+but also created this example.
+
+Potential next steps around outbox support for the Debezium MongoDB connector may be adding support for MongoDB to the Quarkus outbox extension,
+and having an option to capture outbox events from sub-documents attached to an entity like `Order`.
+That way, your application's data and the outbox message could be written as a single document (the application would ignore the outbox sub-document itself) and not requiring cross-document transactions.
+This idea is tracked via https://issues.redhat.com/browse/DBZ-4319[DBZ-4319];
+please let us know if you think that'd be a useful addition or if you'd even be interested in implementing it.
+
+== Support for Postgres' `pg_logical_emit_message()`
+
+The versatility and flexibility of Postgres is legend;
+one of the interesting and lesser known features is the ability to write messages into the database's transaction log (WAL),
+without writing to a table actually.
+This is done via the https://www.postgresql.org/docs/14/functions-admin.html#FUNCTIONS-REPLICATION[`pg_logical_emit_message()`] function.
+http://amitkapila16.blogspot.com/2021/09/logical-replication-improvements-in.html[As of Postgres 14],
+these logical decoding messages can be captured using the `pgoutput` plug-in,
+and Debezium also supports this event type as of this release.
+
+Logical decoding messages are great for propagating contextual information associated to your transactions,
+without having to store this data in a table.
+This could for instance be link:/blog/2019/10/01/audit-logs-with-change-data-capture-and-stream-processing/[auditing metadata] such as a business user which triggered some data change.
+Another use case could be the outbox pattern mentioned above,
+which could be implemented without a dedicated outbox table, solely by writing outbox events to the WAL.
+That's advantageous for instance when thinking about house-keeping:
+there'd be no need for removing messages from an outbox table after they have been propagated to Kafka.
+
+"Sending" a logical decoding message is as simple as that:
+
+[source,sql]
+----
+SELECT pg_logical_emit_message(true, 'some-prefix', 'some text');
+----
+
+This emits a message which is transactional (`true`), with the "some-prefix" prefix and "some text" as the message contents.
+The prefix can be used for grouping messages into logical contexts.
+Debezium uses the prefix as the Kafka message key,
+i.e. all messages with the same prefix will go into the same partition of the corresponding Kafka topic and thus will be propagated in the same order to downstream consumers as they were created.
+
+Logical decoding messages are emitted by the Debezium Postgres connector using a new event type ("m") and look like so
+(the message content is binary-encoded, using Base64 in this example):
+
+[source,json]
+----
+{
+  "source": {
+    "version": "1.8.0.Beta1",
+    "connector": "postgresql",
+    "name": "PostgreSQL_server",
+    "ts_ms": 1559033904863,
+    "snapshot": false,
+    "db": "postgres",
+    "schema": "",
+    "table": "",
+    "txId": 556,
+    "lsn": 46523128,
+    "xmin": null
+  },
+  "op": "m",
+  "ts_ms": 1559033904961,
+  "message": {
+    "prefix": "some-prefix",
+    "content": "c29tZSB0ZXh0"
+  }
+}
+----
+
+The message contents is an arbitrary payload, besides the textual represention you also can insert binary data here.
+It is the responsibility of the event producer to document the format, evolve it with backwards compatibility in mind,
+and exchange schema information with any clients.
+One great way of doing so would be ot take advantage of a schema registry such as https://www.apicur.io/registry/[Apicurio].
+You also could think using a standard like https://cloudevents.io/[CloudEvents] for your logical decoding messages,
+which then for instance would allow an SMT such as the aforementioned outbox event router to take action based on defined attributes in the event structure.
+
+To learn more about support for logical decoding messages in Debezium,
+please refer to the link:/documentation/reference/1.8/connectors/postgresql.html#postgresql-message-events[connector documentation].
+Thanks a lot to Lairen Hightower for implementing this feature!
+
+== Other Fixes and Changes
+
+Further fixes and improvements in the 1.8.0.Beta1 release include:
+
+* Support for configuring SMTs and topic creation settings in the Debezium UI;
+you can see the former in a quick video in link:/blog/2021/11/23/debezium-ui-transforms/[this post],
+and we'll share another demo of the topic creation UI later this week
+* Transaction metadata events in the Vitess connector (https://issues.redhat.com/browse/DBZ-4355[DBZ-4355]);
+we also simplified its configuration by removing the dependency to vtctld (https://issues.redhat.com/browse/DBZ-4324[DBZ-4324]), added support for the `stop_on_reshard` flag (https://issues.redhat.com/browse/DBZ-4295[DBZ-4295]), and provided the ability to specify a VGTID as the starting point for streaming (https://issues.redhat.com/browse/DBZ-4297[DBZ-4297]).
+All these changes were contributed by Yang Wu and Shichao from the Stripe engineering team,
+we agreed to step up as maintainers of this connectors. Thanks a lot and welcome!
+* More flexible configuration of the Infinispan-based transaction buffer of the Debezium connector for Oracle (https://issues.redhat.com/browse/DBZ-4169[DBZ-4169])
+* Improved type mappings for `MONEY` columns in Postgres (https://issues.redhat.com/browse/DBZ-1931[DBZ-1931]) and `INTERVAL` columns in Oracle (https://issues.redhat.com/browse/DBZ-1539[DBZ-1539])
+* Support for schema changes while doing an incremental snapshot with the Debezium connector for MySQL (https://issues.redhat.com/browse/DBZ-4196[DBZ-4196]); thanks to Kate Galieva for this very useful improvement!
+
+Please refer to the link:/releases/1.8/release-notes#release-1.8.0-beta1[release notes] to learn more about these and further fixes in this release.
+
+As always, a big thank you to everyone contributing to this release:
+
+https://github.com/dlg99[Andrey Yegorov],
+https://github.com/ani-sha[Anisha Mohanty],
+https://github.com/uidoyen[Ashique Ansari],
+https://github.com/bgaraue[Biel Garau Estarellas],
+https://github.com/camilesing[Camile Sing],
+https://github.com/Naros[Chris Cranford],
+https://github.com/danielpetisme[Daniel Petisme],
+https://github.com/gunnarmorling[Gunnar Morling],
+https://github.com/harveyyue[Harvey Yue],
+https://github.com/sugarcrm-jgminder[Jacob Gminder],
+https://github.com/jcechace[Jakub Cechacek],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/kgalieva[Katerina Galieva],
+https://github.com/lairen[Lairen Hightower],
+https://github.com/mikekamornikov[Mike Kamornikov],
+https://github.com/morozov[Sergei Morozov],
+https://github.com/shichao-an[Shichao An],
+https://github.com/sgc109[Sungho Hwang],
+https://github.com/Thiago-Dantas[Thiago Dantas],
+https://github.com/TomBillietKlarrio[Tom Billiet],
+https://github.com/ramanenka[Vadzim Ramanenka],
+https://github.com/vjuranek[Vojtech Juranek], and
+https://github.com/sonne5[Yang Wu].
+
+== Outlook
+
+With the Beta1 release out,
+we're approaching the final phase of the 1.8 release cycle.
+You can expect a CR1 sometime next week,
+and depending on incoming issue reports,
+we may decide to cut the Final release either in the week before Christmas,
+or in the first week of 2022.
+In terms of features to be added, one thing we'd love to get to is incremental snapshotting support for the MongoDB connector.
+We'll have to see whether this will make it,
+or whether this will have to wait for the Debezium 1.9 release.
+While the 1.8 release line is maturing, you also can look forward to the release of Debezium 1.7.2.
+
+Going forward,
+we're also continuing our planning around Debezium 2.0,
+which should be released sometime next year.
+Please join the discussion around this on the https://groups.google.com/u/1/g/debezium/c/X17AUmQ88-E[mailing list].
