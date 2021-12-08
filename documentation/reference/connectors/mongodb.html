@@ -318,7 +318,12 @@
 <div id="toc" class="toc">
 <div id="toctitle" class="title">Table of Contents</div>
 <ul class="sectlevel1">
-<li><a href="#mongodb-overview">Overview</a></li>
+<li><a href="#mongodb-overview">Overview</a>
+<ul class="sectlevel2">
+<li><a href="#_oplog_capture_mode_legacy">Oplog capture mode (legacy)</a></li>
+<li><a href="#_change_stream_mode">Change Stream mode</a></li>
+</ul>
+</li>
 <li><a href="#how-the-mongodb-connector-works">How the MongoDB connector works</a>
 <ul class="sectlevel2">
 <li><a href="#supported-mongodb-topologies">Supported MongoDB topologies</a></li>
@@ -387,14 +392,72 @@ When a new server is added to a replica set, that server first performs an <a hr
 This new server becomes a secondary (and able to handle queries) when it catches up to the tail of the primary&#8217;s oplog.</p>
 </div>
 <div class="paragraph">
-<p>The MongoDB connector uses this same replication mechanism, though it does not actually become a member of the replica set.
+<p>MongoDB connector supports two distinct modes of capturing the changes controlled by <a href="#mongodb-property-capture-mode">[<code>capture.mode</code></a> option:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>oplog based</p>
+</li>
+<li>
+<p>change streams based</p>
+</li>
+</ul>
+</div>
+<hr>
+<div class="sect2">
+<h3 id="_oplog_capture_mode_legacy"><a class="anchor" href="#_oplog_capture_mode_legacy"></a>Oplog capture mode (legacy)</h3>
+<div class="paragraph">
+<p>The Debezium MongoDB connector uses the same replication mechanism as described above, though it does not actually become a member of the replica set.
 Just like MongoDB secondaries, however, the connector always reads the oplog of the replica set&#8217;s primary.
 And, when the connector sees a replica set for the first time, it looks at the oplog to get the last recorded transaction and then performs a snapshot of the primary&#8217;s databases and collections.
 When all the data is copied, the connector then starts streaming changes from the position it read earlier from the oplog. Operations in the MongoDB oplog are <a href="https://docs.mongodb.com/manual/core/replica-set-oplog/">idempotent</a>, so no matter how many times the operations are applied, they result in the same end state.</p>
 </div>
 <div class="paragraph">
-<p>As the MongoDB connector processes changes, it periodically records the position in the oplog where the event originated.
-When the MongoDB connector stops, it records the last oplog position that it processed, so that upon restart it simply begins streaming from that position.
+<p>The disadvantage of this mode is that only <em>insert</em> change events will contain the full document, whereas <em>update</em> events only contain a representation of changed fields (i.e. unmodified fields cannot be obtained from an <em>update</em> event), and <em>delete</em> events contain no representation of the deleted document apart from its key.</p>
+</div>
+<div class="paragraph">
+<p>This mode should be considered as the legacy one.
+It is not supported on MongoDB 5 and the user is strongly advised to not use it for MongoDB 4.x server.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_change_stream_mode"><a class="anchor" href="#_change_stream_mode"></a>Change Stream mode</h3>
+<div class="paragraph">
+<p>The Debezium MongoDB connector uses a similar replication mechanism to the one described above, though it does not actually become a member of the replica set.
+The main difference is that the connector does not read the oplog directly, but delegates capturing and decoding the oplog to MongoDB&#8217;s <a href="https://docs.mongodb.com/manual/changeStreams/">Change Streams</a> feature.
+With change streams, the MongoDB server exposes changes to collections as an event stream.
+The Debezium connector watches the stream and delivers the changes downstream.
+And, when the connector sees a replica set for the first time, it looks at the oplog to get the last recorded transaction and then performs a snapshot of the primary&#8217;s databases and collections.
+When all the data is copied, the connector then creates a change stream from the position it read earlier from the oplog.</p>
+</div>
+<div class="paragraph">
+<p>This is the recommended mode starting with MongoDB 4.x.</p>
+</div>
+<div class="admonitionblock warning">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-warning" title="Warning"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>Both capture modes use different values stored in offsets that allow them to resume streaming from the last position seen after a connector restart.
+Thus it is not possible to switch from the change streams mode to the oplog mode.
+To prevent any inadvertent capture mode changes, the connector has a built-in safety check.</p>
+</div>
+<div class="paragraph">
+<p>When the connector is started it checks the stored offsets.
+If the original capture mode was oplog-based and the new mode is change streams based, then it will try to migrate to change streams.
+If the original capture mode was change streams based, it will keep using change streams, also if the new mode is oplog-based, and a warning about this will be emitted to the logs.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="paragraph">
+<p>As the MongoDB connector processes changes, it periodically records the position in the oplog/stream where the event originated.
+When the connector stops, it records the last oplog/stream position that it processed, so that upon restart it simply begins streaming from that position.
 In other words, the connector can be stopped, upgraded or maintained, and restarted some time later, and it will pick up exactly where it left off without losing a single event.
 Of course, MongoDB&#8217;s oplogs are usually capped at a maximum size, which means that the connector should not be stopped for too long, or else some of the operations in the oplog might be purged before the connector has a chance to read them.
 In this case, upon restart the connector will detect the missing oplog operations, perform a snapshot, and then proceed with streaming the changes.</p>
@@ -426,7 +489,11 @@ In this way the connector is able to dynamically adjust to changes in replica se
 <li>
 <p><a href="https://docs.mongodb.com/manual/tutorial/remove-shards-from-cluster/">Shard removal</a></p>
 </li>
+<li>
+<p><a href="https://docs.mongodb.com/manual/changeStreams/">Change Streams</a></p>
+</li>
 </ul>
+</div>
 </div>
 </div>
 </div>
@@ -547,7 +614,7 @@ For more information, see the <a href="https://docs.mongodb.com/manual/core/repl
 <h3 id="mongodb-logical-connector-name"><a class="anchor" href="#mongodb-logical-connector-name"></a>Logical connector name</h3>
 <div class="paragraph">
 <p>The connector configuration property <code>mongodb.name</code> serves as a <em>logical name</em> for the MongoDB replica set or sharded cluster.
-The connector uses the logical name in a number of ways: as the prefix for all topic names, and as a unique identifier when recording the oplog position of each replica set.</p>
+The connector uses the logical name in a number of ways: as the prefix for all topic names, and as a unique identifier when recording the oplog/change stream position of each replica set.</p>
 </div>
 <div class="paragraph">
 <p>You should give each MongoDB connector a unique logical name that meaningfully describes the source MongoDB system.
@@ -590,7 +657,7 @@ If the connector is stopped before the tasks' snapshots are completed, upon rest
 <h3 id="mongodb-streaming-changes"><a class="anchor" href="#mongodb-streaming-changes"></a>Streaming changes</h3>
 <div id="mongodb-tailing-the-oplog" class="paragraph">
 <p>After the connector task for a replica set records an offset, it uses the offset to determine the position in the oplog where it should start streaming changes.
-The task then connects to the replica set&#8217;s primary node and start streaming changes from that position.
+The task then (depending on the configuration) either connects to the replica set&#8217;s primary node or connects to a replica-set-wide change stream and starts streaming changes from that position.
 It processes all of create, insert, and delete operations, and converts them into Debezium <a href="#mongodb-events">change events</a>.
 Each change event includes the position in the oplog where the operation was found, and the connector periodically records this as its most recent offset.
 The interval at which the offset is recorded is governed by <a href="https://kafka.apache.org/documentation/#offset.flush.interval.ms"><code>offset.flush.interval.ms</code></a>, which is a Kafka Connect worker configuration property.</p>
@@ -1242,7 +1309,7 @@ However, by using the <a href="../configuration/avro.html" class="page">Avro con
 <tr>
 <td class="tableblock halign-left valign-top"><p class="tableblock">6</p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock"><code>after</code></p></td>
-<td class="tableblock halign-left valign-top"><p class="tableblock">An optional field that specifies the state of the document after the event occurred. In this example, the <code>after</code> field contains the values of the new document&#8217;s <code>_id</code>, <code>first_name</code>, <code>last_name</code>, and <code>email</code> fields. The <code>after</code> value is always a string. By convention, it contains a JSON representation of the document. MongoDB&#8217;s oplog entries contain the full state of a document only for _create_ events; in other words, a <em>create</em> event is the only kind of event that contains an <em>after</em> field.</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">An optional field that specifies the state of the document after the event occurred. In this example, the <code>after</code> field contains the values of the new document&#8217;s <code>_id</code>, <code>first_name</code>, <code>last_name</code>, and <code>email</code> fields. The <code>after</code> value is always a string. By convention, it contains a JSON representation of the document. MongoDB&#8217;s oplog entries contain the full state of a document only for _create_ events and also for <code>update</code> events, when the <code>capture.mode</code> option is set to <code>change_streams_update_full</code>; in other words, a <em>create</em> event is the only kind of event that contains an <em>after</em> field, when the <code>capture.mode</code> option is set either to <code>oplog</code> or <code>change_streams</code>.</p></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><p class="tableblock">7</p></td>
@@ -1313,6 +1380,8 @@ In the <code>source</code> object, <code>ts_ms</code> indicates the time that th
 </div>
 <div class="sect2">
 <h3 id="mongodb-update-events"><a class="anchor" href="#mongodb-update-events"></a><em>update</em> events</h3>
+<div class="sect3">
+<h4 id="_oplog_capture_mode_legacy_2"><a class="anchor" href="#_oplog_capture_mode_legacy_2"></a>Oplog capture mode (legacy)</h4>
 <div class="paragraph">
 <p>The value of a change event for an update in the sample <code>customers</code> collection has the same schema as a <em>create</em> event for that collection. Likewise, the event value&#8217;s payload has the same structure. However, the event value payload contains different values in an <em>update</em> event. An <em>update</em> event does not have an <code>after</code> value. Instead, it has these two fields:</p>
 </div>
@@ -1343,7 +1412,7 @@ In the <code>source</code> object, <code>ts_ms</code> indicates the time that th
         "connector": "mongodb",
         "name": "fulfillment",
         "ts_ms": 1558965508000,
-        "snapshot": true,
+        "snapshot": false,
         "db": "inventory",
         "rs": "rs0",
         "collection": "customers",
@@ -1460,10 +1529,162 @@ An <em>update</em> event value does not contain an <code>after</code> field.</p>
 </table>
 </div>
 </div>
+<div class="sect3">
+<h4 id="_change_streams_capture_mode"><a class="anchor" href="#_change_streams_capture_mode"></a>Change streams capture mode</h4>
+<div class="paragraph">
+<p>The value of a change event for an update in the sample <code>customers</code> collection has the same schema as a <em>create</em> event for that collection. Likewise, the event value&#8217;s payload has the same structure. However, the event value payload contains different values in an <em>update</em> event. An <em>update</em> event does have an <code>after</code> value only if the <code>capture.mode</code> option is set to <code>change_streams_update_full</code>. There is a new structured field <code>updateDescription</code> with a few additional fields in this case:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p><code>updatedFields</code> is a string field that contains the JSON representation of the updated document fields with their values</p>
+</li>
+<li>
+<p><code>removedFields</code> is a list of field names that were removed from the document</p>
+</li>
+<li>
+<p><code>truncatedArrays</code> is a list of arrays in the document that were truncated</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>Here is an example of a change event value in an event that the connector generates for an update in the <code>customers</code> collection:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight nowrap"><code class="language-json hljs" data-lang="json">{
+    "schema": { ... },
+    "payload": {
+      "op": "u", <i class="conum" data-value="1"></i><b>(1)</b>
+      "ts_ms": 1465491461815, <i class="conum" data-value="2"></i><b>(2)</b>
+      "after":"{\"_id\": {\"$numberLong\": \"1004\"},\"first_name\": \"Anne Marie\",\"last_name\": \"Kretchmar\",\"email\": \"annek@noanswer.org\"}", <i class="conum" data-value="3"></i><b>(3)</b>
+      "updateDescription": {
+        "removedFields": null,
+        "updatedFields": "{\"first_name\": \"Anne Marie\"}", <i class="conum" data-value="4"></i><b>(4)</b>
+        "truncatedArrays": null
+      },
+      "source": { <i class="conum" data-value="5"></i><b>(5)</b>
+        "version": "1.8.0.Beta1",
+        "connector": "mongodb",
+        "name": "fulfillment",
+        "ts_ms": 1558965508000,
+        "snapshot": false,
+        "db": "inventory",
+        "rs": "rs0",
+        "collection": "customers",
+        "ord": 1,
+        "h": null,
+        "tord": null,
+        "stxnid": null,
+        "lsid":"{\"id\": {\"$binary\": \"FA7YEzXgQXSX9OxmzllH2w==\",\"$type\": \"04\"},\"uid\": {\"$binary\": \"47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=\",\"$type\": \"00\"}}",
+        "txnNumber":1
+      }
+    }
+  }</code></pre>
+</div>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 6. Descriptions of <em>update</em> event value fields</caption>
+<colgroup>
+<col style="width: 10%;">
+<col style="width: 20%;">
+<col style="width: 70%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Item</th>
+<th class="tableblock halign-left valign-top">Field name</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">1</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>op</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Mandatory string that describes the type of operation that caused the connector to generate the event. In this example, <code>u</code> indicates that the operation updated a document.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">2</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>ts_ms</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Optional field that displays the time at which the connector processed the event. The time is based on the system clock in the JVM running the Kafka Connect task. <br>
+<br>
+In the <code>source</code> object, <code>ts_ms</code> indicates the time that the change was made in the database. By comparing the value for <code>payload.source.ts_ms</code> with the value for <code>payload.ts_ms</code>, you can determine the lag between the source database update and Debezium.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">3</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>after</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Contains the JSON string representation of the actual MongoDB document.
+<br>
+An <em>update</em> event value does not contain an <code>after</code> field if the capture mode is not set to <code>change_streams_update_full</code></p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">4</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>updatedFields</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Contains the JSON string representation of the updated field values of the document. In this example, the update changed the <code>first_name</code> field to a new value.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">5</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>source</code></p></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Mandatory field that describes the source metadata for the event. This field contains the same information as a <em>create</em> event for the same collection, but the values are different since this event is from a different position in the oplog. The source metadata includes:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>Debezium version.</p>
+</li>
+<li>
+<p>Name of the connector that generated the event.</p>
+</li>
+<li>
+<p>Logical name of the MongoDB replica set, which forms a namespace for generated events and is used in Kafka topic names to which the connector writes.</p>
+</li>
+<li>
+<p>Names of the collection and database that contain the updated document.</p>
+</li>
+<li>
+<p>If the event was part of a snapshot.</p>
+</li>
+<li>
+<p>Timestamp for when the change was made in the database and ordinal of the event within the timestamp.</p>
+</li>
+<li>
+<p>Unique identifier of the MongoDB operation, which depends on the version of MongoDB. It is either the <code>h</code> field in the oplog event, or a field named <code>stxnid</code>, which represents the <code>lsid</code> and <code>txnNumber</code> fields from the oplog event.</p>
+</li>
+</ul>
+</div></div></td>
+</tr>
+</tbody>
+</table>
+<div class="admonitionblock warning">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-warning" title="Warning"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>The <code>after</code> value in the event should be handled as the at-point-of-time value of the document.
+The value is not calculated dynamically but is obtained from the collection.
+It is thus possible if multiple updates are closely following one after the other, that all <em>update</em> updates events will contain the same <code>after</code> value which will be representing the last value stored in the document.</p>
+</div>
+<div class="paragraph">
+<p>If your application depends on gradual change evolution then you should rely on <code>updateDescription</code> only.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+</div>
+</div>
 <div class="sect2">
 <h3 id="mongodb-delete-events"><a class="anchor" href="#mongodb-delete-events"></a><em>delete</em> events</h3>
 <div class="paragraph">
-<p>The value in a <em>delete</em> change event has the same <code>schema</code> portion as <em>create</em> and <em>update</em> events for the same collection. The <code>payload</code> portion in a <em>delete</em> event contains values that are different from <em>create</em> and <em>update</em> events for the same collection. In particular, a <em>delete</em> event contains neither an <code>after</code> value nor a <code>patch</code> value. Here is an example of a <em>delete</em> event for a document in the <code>customers</code> collection:</p>
+<p>The value in a <em>delete</em> change event has the same <code>schema</code> portion as <em>create</em> and <em>update</em> events for the same collection. The <code>payload</code> portion in a <em>delete</em> event contains values that are different from <em>create</em> and <em>update</em> events for the same collection. In particular, a <em>delete</em> event contains neither an <code>after</code> value nor a <code>patch</code> or <code>updateDescription</code> values. Here is an example of a <em>delete</em> event for a document in the <code>customers</code> collection:</p>
 </div>
 <div class="listingblock">
 <div class="content">
@@ -1490,7 +1711,7 @@ An <em>update</em> event value does not contain an <code>after</code> field.</p>
 </div>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 6. Descriptions of <em>delete</em> event value fields</caption>
+<caption class="title">Table 7. Descriptions of <em>delete</em> event value fields</caption>
 <colgroup>
 <col style="width: 10%;">
 <col style="width: 20%;">
@@ -1575,12 +1796,13 @@ In the <code>source</code> object, <code>ts_ms</code> indicates the time that th
 <h2 id="setting-up-mongodb"><a class="anchor" href="#setting-up-mongodb"></a>Setting up MongoDB</h2>
 <div class="sectionbody">
 <div class="paragraph">
-<p>The MongoDB connector uses MongoDB&#8217;s oplog to capture the changes, so the connector works only with MongoDB replica sets or with sharded clusters where each shard is a separate replica set.
+<p>The MongoDB connector uses MongoDB&#8217;s oplog/change streams to capture the changes, so the connector works only with MongoDB replica sets or with sharded clusters where each shard is a separate replica set.
 See the MongoDB documentation for setting up a <a href="https://docs.mongodb.com/manual/replication/">replica set</a> or <a href="https://docs.mongodb.com/manual/sharding/">sharded cluster</a>.
 Also, be sure to understand how to enable <a href="https://docs.mongodb.com/manual/tutorial/deploy-replica-set-with-keyfile-access-control/#deploy-repl-set-with-auth">access control and authentication</a> with replica sets.</p>
 </div>
 <div class="paragraph">
-<p>You must also have a MongoDB user that has the appropriate roles to read the <code>admin</code> database where the oplog can be read. Additionally, the user must also be able to read the <code>config</code> database in the configuration server of a sharded cluster and must have <code>listDatabases</code> privilege action.</p>
+<p>You must also have a MongoDB user that has the appropriate roles to read the <code>admin</code> database where the oplog can be read. Additionally, the user must also be able to read the <code>config</code> database in the configuration server of a sharded cluster and must have <code>listDatabases</code> privilege action.
+When change streams are used (the default) the user also must have cluster-wide privilege actions <code>find</code> and <code>changeStream</code>.</p>
 </div>
 </div>
 </div>
@@ -1695,7 +1917,7 @@ The service records the configuration and starts one connector task that perform
 <p>Performs a snapshot, if necessary.</p>
 </li>
 <li>
-<p>Reads the oplog.</p>
+<p>Reads the oplog/change stream.</p>
 </li>
 <li>
 <p>Streams change event records to Kafka topics.</p>
@@ -1740,7 +1962,7 @@ The service records the configuration and starts one connector task that perform
 <p><a href="#mongodb-performing-a-snapshot">Performs a consistent snapshot</a> of the collections in your MongoDB replica sets.</p>
 </li>
 <li>
-<p>Reads the oplogs for the replica sets.</p>
+<p>Reads the oplogs/change streams for the replica sets.</p>
 </li>
 <li>
 <p>Produces change events for every inserted, updated, and deleted document.</p>
@@ -1771,7 +1993,7 @@ Many properties have default values. Information about the properties is organiz
 <p>The following configuration properties are <em>required</em> unless a default value is available.</p>
 </div>
 <table id="debezium-mongodb-connector-required-configuration-properties" class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 7. Required Debezium MongoDB connector configuration properties</caption>
+<caption class="title">Table 8. Required Debezium MongoDB connector configuration properties</caption>
 <colgroup>
 <col style="width: 30%;">
 <col style="width: 25%;">
@@ -1929,7 +2151,19 @@ Must not be used with <code>collection.include.list</code>.</p>
 <p><code>initial</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Specifies the criteria for running a snapshot upon startup of the connector. The default is <strong>initial</strong>, and specifies the connector reads a snapshot when either no offset is found or if the oplog no longer contains the previous offset. The <strong>never</strong> option specifies that the connector should never use snapshots, instead the connector should proceed to tail the log.</p>
+<p>Specifies the criteria for running a snapshot upon startup of the connector. The default is <strong>initial</strong>, and specifies that the connector reads a snapshot when either no offset is found or if the oplog/change stream no longer contains the previous offset. The <strong>never</strong> option specifies that the connector should never use snapshots, instead the connector should proceed to tail the log.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="mongodb-property-capture-mode"></a><a href="#mongodb-property-capture-mode"><code>capture.mode</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>change_streams_update_full</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies the method used to capture changes from the MongoDB server. The default is <strong>change_streams_update_full</strong>, and specifies that the connector captures changes via MongoDB Change Streams mechanism, and that <em>update</em> events should contain the full document. The <strong>change_streams</strong> mode will use the same capturing method, but <em>update</em> events won&#8217;t contain the full document.<br>
+The <strong>oplog</strong> mode specifies that the MongoDB oplog will be accessed directly; this is the legacy method and should not be used for new connector instances.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -2033,7 +2267,7 @@ Defaults to 0, which indicates that the server chooses an appropriate fetch size
 <p>The following <em>advanced</em> configuration properties have good defaults that will work in most situations and therefore rarely need to be specified in the connector&#8217;s configuration.</p>
 </div>
 <table id="debezium-mongodb-connector-advanced-configuration-properties" class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 8. Required Debezium MongoDB connector advanced configuration properties</caption>
+<caption class="title">Table 9. Required Debezium MongoDB connector advanced configuration properties</caption>
 <colgroup>
 <col style="width: 30%;">
 <col style="width: 25%;">
@@ -2055,7 +2289,7 @@ Defaults to 0, which indicates that the server chooses an appropriate fetch size
 <p><code>8192</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Positive integer value that specifies the maximum size of the blocking queue into which change events read from the database log are placed before they are written to Kafka. This queue can provide backpressure to the oplog reader when, for example, writes to Kafka are slower or if Kafka is not available. Events that appear in the queue are not included in the offsets periodically recorded by this connector. Defaults to 8192, and should always be larger than the maximum batch size specified in the <code>max.batch.size</code> property.</p>
+<p>Positive integer value that specifies the maximum size of the blocking queue into which change events read from the database log are placed before they are written to Kafka. This queue can provide backpressure to the oplog/change stream reader when, for example, writes to Kafka are slower or if Kafka is not available. Events that appear in the queue are not included in the offsets periodically recorded by this connector. Defaults to 8192, and should always be larger than the maximum batch size specified in the <code>max.batch.size</code> property.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -2162,7 +2396,7 @@ Note that this setting is not recommended and is planned for removal in a future
 This property contains an interval in milliseconds that defines how frequently the connector sends messages into a heartbeat topic.
 This can be used to monitor whether the connector is still receiving change events from the database.
 You also should leverage heartbeat messages in cases where only records in non-captured collections are changed for a longer period of time.
-In such situation the connector would proceed to read the oplog from the database but never emit any change messages into Kafka,
+In such situation the connector would proceed to read the oplog/change stream from the database but never emit any change messages into Kafka,
 which in turn means that no offset updates are committed to Kafka.
 This will cause the oplog files to be rotated out but connector will not notice it so on restart some events are no longer available which leads to the need of re-execution of the initial snapshot.</p>
 </div>
@@ -2307,7 +2541,7 @@ A value of <code>0</code> disables this behavior.</p>
 <p><code>0</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Specifies the maximum number of milliseconds the oplog cursor will wait for the server to produce a result before causing an execution timeout exception.
+<p>Specifies the maximum number of milliseconds the oplog/change stream cursor will wait for the server to produce a result before causing an execution timeout exception.
 A value of <code>0</code> indicates using the server/driver default wait timeout.</p>
 </div></div></td>
 </tr>
@@ -3122,7 +3356,7 @@ As a result, the secondary node that is elected as the new primary node might be
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2021 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/0189337eadab66ea12bcc0ea39a9669a18933b83">0189337e</a></span>)
+            <div class="copyright">Copyright &copy; 2021 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/4cd5b092e9fd84a2ab69ae8d1acf2076b845770d">4cd5b092</a></span>)
             
         </div>
     </footer>
