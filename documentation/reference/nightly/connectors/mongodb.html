@@ -652,11 +652,8 @@ If the connector is stopped before the tasks' snapshots are completed, upon rest
 </tr>
 </table>
 </div>
-<div class="paragraph">
-<p><a id="mongodb-adhoc-snapshot"></a></p>
-</div>
 <div class="sect3">
-<h4 id="_ad_hoc_snapshot"><a class="anchor" href="#_ad_hoc_snapshot"></a>Ad-hoc snapshot</h4>
+<h4 id="mongodb-ad-hoc-snapshots"><a class="anchor" href="#mongodb-ad-hoc-snapshots"></a>Ad hoc snapshots</h4>
 <div class="admonitionblock note">
 <table>
 <tr>
@@ -673,31 +670,47 @@ Please let us know if you encounter any problems while using this extension.</p>
 </table>
 </div>
 <div class="paragraph">
-<p>When the initial snapshot is completed then it is not executed again as further data are acquired via streaming.</p>
+<p>By default, a connector runs an initial snapshot operation only after it starts for the first time.
+Following this initial snapshot, under normal circumstances, the connector does not repeat the snapshot process.
+Any future change event data that the connector captures comes in through the streaming process only.</p>
 </div>
 <div class="paragraph">
-<p>Sometimes it would be really useful to re-execute a snapshot, either completely, or for only a subset of collections.
-Examples for such use cases include:</p>
+<p>However, in some situations the data that the connector obtained during the initial snapshot might become stale, lost, or incomplete.
+To provide a mechanism for recapturing collection data, Debezium includes an option to perform ad hoc snapshots.
+The following changes in a database might be cause for performing an ad hoc snapshot:</p>
 </div>
 <div class="ulist">
 <ul>
 <li>
-<p>a new collection was added into the list of captured collections</p>
+<p>The connector configuration is modified to capture a different set of collections.</p>
 </li>
 <li>
-<p>some of the topics were deleted and their content needs to be rebuilt</p>
+<p>Kafka topics are deleted and must be rebuilt.</p>
 </li>
 <li>
-<p>the data were corrupted due to a configuration error</p>
+<p>Data corruption occurs due to a configuration error or some other problem.</p>
 </li>
 </ul>
 </div>
 <div class="paragraph">
-<p>Debezium can be requested via the <a href="../configuration/signalling.html" class="page">signalling collection</a> mechanism to execute a new snapshot of a defined list of collections.
-The signal is named <code>execute-snapshot</code> and accepts messages in the following format:</p>
+<p>You can re-run a snapshot for a collection for which you previously captured a snapshot by initiating a so-called <em>ad-hoc snapshot</em>.
+Ad hoc snapshots require the use of <a href="../configuration/signalling.html#sending-signals-to-a-debezium-connector" class="page">signaling collections</a>.
+You initiate an ad hoc snapshot by sending a signal request to the Debezium signaling collection.</p>
+</div>
+<div class="paragraph">
+<p>When you initiate an ad hoc snapshot of an existing collection, the connector appends content to the topic that already exists for the collection.
+If a previously existing topic was removed, Debezium can create a topic automatically if <a href="../configuration/topic-auto-create-config.html#customizing-debezium-automatically-created-topics" class="page">automatic topic creation</a> is enabled.</p>
+</div>
+<div class="paragraph">
+<p>Ad hoc snapshot signals specify the collections to include in the snapshot.
+The snapshot can capture the entire contents of the database, or capture only a subset of the collections in the database.</p>
+</div>
+<div class="paragraph">
+<p>You specify the collections to capture by sending an <code>execute-snapshot</code> message to the signaling collection.
+Set the type of the <code>execute-snapshot</code> signal to <code>incremental</code>, and provide the names of the collections to include in the snapshot, as described in the following table:</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 1. Example of a signal record</caption>
+<caption class="title">Table 1. Example of an ad hoc <code>execute-snapshot</code> signal record</caption>
 <colgroup>
 <col style="width: 20%;">
 <col style="width: 20%;">
@@ -714,31 +727,32 @@ The signal is named <code>execute-snapshot</code> and accepts messages in the fo
 <tr>
 <td class="tableblock halign-left valign-top"><p class="tableblock"><code>type</code></p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock"><code>incremental</code></p></td>
-<td class="tableblock halign-left valign-top"><p class="tableblock">The type of the snapshot to be executed. Currently only <code>incremental</code> is supported.<br>
-See the next section for more details.</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Specifies the type of snapshot that you want to run.<br>
+Setting the type is optional.
+Currently, you can request only <code>incremental</code> snapshots.</p></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><p class="tableblock"><code>data-collections</code></p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock"><em>N/A</em></p></td>
-<td class="tableblock halign-left valign-top"><p class="tableblock">An array of qualified names of collections to be snapshotted.<br>
-The format of the names is the same as for <a href="#mongodb-property-signal-data-collection">signal.data.collection</a> configuration option.</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">An array that contains the fully-qualified names of the collection to be snapshotted.<br>
+The format of the names is the same as for the <code>signal.data.collection</code> configuration option.</p></td>
 </tr>
 </tbody>
 </table>
 <div class="paragraph">
-<p>An example of the signal to be triggered is this:</p>
-</div>
-<div class="listingblock">
-<div class="content">
-<pre class="highlightjs highlight"><code class="language-none hljs">db.debeziumsignal.insert({"type": "execute-snapshot", "payload": "{\"data-collections\": [\"db1.collection1\", \"db2.collection2\"]}"})</code></pre>
-</div>
+<div class="title">Triggering an ad hoc snapshot</div>
+<p>You initiate an ad hoc snapshot by adding an entry with the <code>execute-snapshot</code> signal type to the signaling collection.
+After the connector processes the message, it begins the snapshot operation.
+The snapshot process reads the first and last primary key values and uses those values as the start and end point for each collection.
+Based on the number of entries in the collection, and the configured chunk size, Debezium divides the collection into chunks, and proceeds to snapshot each chunk, in succession, one at a time.</p>
 </div>
 <div class="paragraph">
-<p><a id="mongodb-incremental-snapshot"></a></p>
+<p>Currently, the <code>execute-snapshot</code> action type triggers <a href="../configuration/signalling.html#debezium-signaling-incremental-snapshots" class="page">incremental snapshots</a> only.
+For more information, see <a href="#{link-mongodb-connector}.adoc#mongodb-incremental-snapshots" class="page unresolved">Incremental snapshots</a>.</p>
 </div>
 </div>
 <div class="sect3">
-<h4 id="_incremental_snapshot"><a class="anchor" href="#_incremental_snapshot"></a>Incremental snapshot</h4>
+<h4 id="mongodb-incremental-snapshots"><a class="anchor" href="#mongodb-incremental-snapshots"></a>Incremental snapshots</h4>
 <div class="admonitionblock note">
 <table>
 <tr>
@@ -747,7 +761,7 @@ The format of the names is the same as for <a href="#mongodb-property-signal-dat
 </td>
 <td class="content">
 <div class="paragraph">
-<p>This feature is currently in incubating state, i.e. exact semantics, configuration options etc. may change in future revisions, based on the feedback we receive.
+<p>This feature is currently in incubating state. The exact semantics, configuration options, and so forth is subject to change in future revisions, based on the feedback we receive.
 Please let us know if you encounter any problems while using this extension.</p>
 </div>
 </td>
@@ -755,99 +769,236 @@ Please let us know if you encounter any problems while using this extension.</p>
 </table>
 </div>
 <div class="paragraph">
-<p>Initial snapshots are a great way to obtain a consistent set of all data stored in a database upfront.
-But there are also some downsides to this approach, though:</p>
+<p>To provide flexibility in managing snapshots, Debezium includes a supplementary snapshot mechanism, known as <em>incremental snapshotting</em>.
+Incremental snapshots rely on the Debezium mechanism for <a href="../configuration/signalling.html#sending-signals-to-a-debezium-connector" class="page">sending signals to a Debezium connector</a>.
+Incremental snapshots are based on the <a href="https://github.com/debezium/debezium-design-documents/blob/main/DDD-3.md">DDD-3</a> design document.</p>
+</div>
+<div class="paragraph">
+<p>In an incremental snapshot, instead of capturing the full state of a database all at once, as in an initial snapshot, Debezium captures each collection in phases, in a series of configurable chunks.
+You can specify the collections that you want the snapshot to capture and the <a href="#mongodb-property-incremental-snapshot-chunk-size">size of each chunk</a>.
+The chunk size determines the number of rows that the snapshot collects during each fetch operation on the database.
+The default chunk size for incremental snapshots is 1 KB.</p>
+</div>
+<div class="paragraph">
+<p>As an incremental snapshot proceeds, Debezium uses watermarks to track its progress, maintaining a record of each collection row that it captures.
+This phased approach to capturing data provides the following advantages over the standard initial snapshot process:</p>
 </div>
 <div class="ulist">
 <ul>
 <li>
-<p>For larger datasets it can take very long to complete; hours or even days</p>
+<p>You can run incremental snapshots in parallel with streamed data capture, instead of postponing streaming until the snapshot completes.
+The connector continues to capture near real-time events from the change log throughout the snapshot process, and neither operation blocks the other.</p>
 </li>
 <li>
-<p>The snapshot must be completed before the start of streaming</p>
+<p>If the progress of an incremental snapshot is interrupted, you can resume it without losing any data.
+After the process resumes, the snapshot begins at the point where it stopped, rather than recapturing the collection from the beginning.</p>
 </li>
 <li>
-<p>Snapshots are not resumable
-If a snapshot hasn&#8217;t been completed when the connector gets stopped or restarted, the snapshot must be restarted from scratch</p>
-</li>
-<li>
-<p>New collections that are added among the captured ones later are not snapshotted.</p>
+<p>You can run an incremental snapshot on demand at any time, and repeat the process as needed to adapt to database updates.
+For example, you might re-run a snapshot after you modify the connector configuration to add a collection to its <a href="#mongodb-property-table-include-list"><code>table.include.list</code></a> property.</p>
 </li>
 </ul>
 </div>
 <div class="paragraph">
-<p>To mitigate these issues, a new mechanism called <em>incremental snapshotting</em> has been introduced.</p>
-</div>
-<div class="admonitionblock note">
-<table>
-<tr>
-<td class="icon">
-<i class="fa icon-note" title="Note"></i>
-</td>
-<td class="content">
-<div class="paragraph">
-<p>Incremental snapshots can be started current only as <a href="#mongodb-adhoc-snapshot">an ad-hoc snapshot</a>.</p>
-</div>
-</td>
-</tr>
-</table>
-</div>
-<div class="admonitionblock note">
-<table>
-<tr>
-<td class="icon">
-<i class="fa icon-note" title="Note"></i>
-</td>
-<td class="content">
-<div class="paragraph">
-<p>Configuration option <a href="#mongodb-property-signal-data-collection">signal.data.collection</a> must be set.</p>
-</div>
-</td>
-</tr>
-</table>
+<div class="title">Incremental snapshot process</div>
+<p>When you run an incremental snapshot, Debezium sorts each collection by primary key and then splits the collection into chunks based on the <a href="#mongodb-property-incremental-snapshot-chunk-size">configured chunk size</a>.
+Working chunk by chunk, it then captures each collection row in a chunk.
+For each row that it captures, the snapshot emits a <code>READ</code> event.
+That event represents the value of the row when the snapshot for the chunk began.</p>
 </div>
 <div class="paragraph">
-<p>Incremental snapshot is based on <a href="https://github.com/debezium/debezium-design-documents/blob/main/DDD-3.md">DDD-3</a> design document.
-In this case the collection is snapshotted in chunks and streaming and snapshot events are blended together.
-The snaphot events are still denoted using operation <code>r</code> and the <code>snapshot</code> field in <code>source</code> info block is set to <code>incremental</code>.</p>
+<p>As a snapshot proceeds, it’s likely that other processes continue to access the database, potentially modifying collection records.
+To reflect such changes, <code>INSERT</code>, <code>UPDATE</code>, or <code>DELETE</code> operations are committed to the transaction log as per usual.
+Similarly, the ongoing Debezium streaming process continues to detect these change events and emits corresponding change event records to Kafka.</p>
+</div>
+<div class="paragraph">
+<div class="title">How Debezium resolves collisions among records with the same primary key</div>
+<p>In some cases, the <code>UPDATE</code> or <code>DELETE</code> events that the streaming process emits are received out of sequence.
+That is, the streaming process might emit an event that modifies a collection row before the snapshot captures the chunk that contains the <code>READ</code> event for that row.
+When the snapshot eventually emits the corresponding <code>READ</code> event for the row, its value is already superseded.
+To ensure that incremental snapshot events that arrive out of sequence are processed in the correct logical order, Debezium employs a buffering scheme for resolving collisions.
+Only after collisions between the snapshot events and the streamed events are resolved does Debezium emit an event record to Kafka.</p>
+</div>
+<div class="paragraph">
+<div class="title">Snapshot window</div>
+<p>To assist in resolving collisions between late-arriving <code>READ</code> events and streamed events that modify the same collection row, Debezium employs a so-called <em>snapshot window</em>.
+The snapshot windows demarcates the interval during which an incremental snapshot captures data for a specified collection chunk.
+Before the snapshot window for a chunk opens, Debezium follows its usual behavior and emits events from the transaction log directly downstream to the target Kafka topic.
+But from the moment that the snapshot for a particular chunk opens, until it closes, Debezium performs a de-duplication step to resolve collisions between events that have the same primary key..</p>
+</div>
+<div class="paragraph">
+<p>For each data collection, the Debezium emits two types of events, and stores the records for them both in a single destination Kafka topic.
+The snapshot records that it  captures directly from a table are emitted as <code>READ</code> operations.
+Meanwhile, as users continue to update records in the data collection, and the transaction log is updated to reflect each commit, Debezium emits <code>UPDATE</code> or <code>DELETE</code> operations for each change.</p>
+</div>
+<div class="paragraph">
+<p>As the snapshot window opens, and Debezium begins processing a snapshot chunk, it delivers snapshot records to a memory buffer.
+During the snapshot windows, the primary keys of the <code>READ</code> events in the buffer are compared to the primary keys of the incoming streamed events.
+If no match is found, the streamed event record is sent directly to Kafka.
+If Debezium detects a match, it discards the buffered <code>READ</code> event, and writes the streamed record to the destination topic, because the streamed event logically supersede the static snapshot event.
+After the snapshot window for the chunk closes, the buffer contains only <code>READ</code> events for which no related transaction log events exist.
+Debezium emits these remaining <code>READ</code> events to the collection&#8217;s Kafka topic.</p>
+</div>
+<div class="paragraph">
+<p>The connector repeats the process for each snapshot chunk.</p>
+</div>
+<div class="paragraph">
+<div class="title">Triggering an incremental snapshot</div>
+<p>Currently, the only way to initiate an incremental snapshot is to send an <a href="../configuration/signalling.html#debezium-signaling-ad-hoc-snapshots" class="page">ad hoc snapshot signal</a> to the signaling collection on the source database.
+You submit signals to the collection as SQL <code>INSERT</code> queries.
+After Debezium detects the change in the signaling collection, it reads the signal, and runs the requested snapshot operation.</p>
+</div>
+<div class="paragraph">
+<p>The query that you submit specifies the collections to include in the snapshot, and, optionally, specifies the kind of snapshot operation.
+Currently, the only valid option for snapshots operations is the default value, <code>incremental</code>.</p>
+</div>
+<div class="paragraph">
+<p>To specify the collections to include in the snapshot, provide a <code>data-collections</code> array that lists the collections, for example,<br>
+<code>{"data-collections": ["public.MyFirstTable", "public.MySecondTable"]}</code><br></p>
+</div>
+<div class="paragraph">
+<p>The <code>data-collections</code> array for an incremental snapshot signal has no default value.
+If the <code>data-collections</code> array is empty, Debezium detects that no action is required and does not perform a snapshot.</p>
+</div>
+<div class="ulist">
+<div class="title">Prerequisites</div>
+<ul>
+<li>
+<p><a href="../configuration/signalling.html#debezium-signaling-enabling-signaling" class="page">Signaling is enabled</a>.<br></p>
+<div class="ulist">
+<ul>
+<li>
+<p>A signaling data collection exists on the source database and the connector is configured to capture it.</p>
+</li>
+<li>
+<p>The signaling data collection is specified in the <a href="#mongodb-property-signal-data-collection"><code>signal.data.collection</code></a> property.</p>
+</li>
+</ul>
+</div>
+</li>
+</ul>
+</div>
+<div class="olist arabic">
+<div class="title">Procedure</div>
+<ol class="arabic">
+<li>
+<p>Send a SQL query to add the ad hoc incremental snapshot request to the signaling collection:</p>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">INSERT INTO _&lt;signalTable&gt;_ (id, type, data) VALUES (_'&lt;id&gt;'_, _'&lt;snapshotType&gt;'_, '{"data-collections": ["_&lt;tableName&gt;_","_&lt;tableName&gt;_"],"type":"_&lt;snapshotType&gt;_"}');</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>For example,</p>
 </div>
 <div class="listingblock">
-<div class="title">Example</div>
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">INSERT INTO myschema.debezium_signal (id, type, data) VALUES('ad-hoc-1', 'execute-snapshot', '{"data-collections": ["schema1.table1", "schema2.table2"],"type":"incremental"}');</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>The values of the <code>id</code>,<code>type</code>, and <code>data</code> parameters in the command correspond to the <a href="../configuration/signalling.html#debezium-signaling-required-structure-of-a-signaling-data-collection" class="page">fields of the signaling collection</a>.</p>
+</div>
+<div class="paragraph">
+<p>The following collection describes the these parameters:</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 2. Descriptions of fields in a SQL command for sending an incremental snapshot signal to the signaling collection</caption>
+<colgroup>
+<col style="width: 20%;">
+<col style="width: 80%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Value</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>myschema.debezium_signal</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Specifies the fully-qualified name of the signaling collection on the source database</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>ad-hoc-1</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The <code>id</code> parameter specifies an arbitrary string that is assigned as the <code>id</code> identifier for the signal request.<br>
+Use this string to identify logging messages to entries in the signaling collection.
+Debezium does not use this string.
+Rather, during the snapshot, Debezium generates its own <code>id</code> string as a watermarking signal.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>execute-snapshot</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Specifies <code>type</code> parameter specifies the operation that the signal is intended to trigger.<br></p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>data-collections</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">A required component of the <code>data</code> field of a signal that specifies an array of collection names to include in the snapshot.<br>
+The array lists collections by their fully-qualified names, using the same format as you use to specify the name of the connector&#8217;s signaling collection in the <a href="#mongodb-property-signal-data-collection"><code>signal.data.collection</code></a> configuration property.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>incremental</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">An optional <code>type</code> component of the <code>data</code> field of a signal that specifies the kind of snapshot operation to run.<br>
+Currently, the only valid option is the default value, <code>incremental</code>.<br>
+Specifying a <code>type</code> value in the SQL query that you submit to the signaling collection is optional.<br>
+If you do not specify a value, the connector runs an incremental snapshot.</p></td>
+</tr>
+</tbody>
+</table>
+</li>
+</ol>
+</div>
+<div class="paragraph">
+<p>The following example, shows the JSON for an incremental snapshot event that is captured by a connector.</p>
+</div>
+<div class="listingblock">
+<div class="title">Example: Incremental snapshot event message</div>
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
-   "before":null,
-   "after": {
-      "pk":"1",
-      "value":"New data"
-   },
-   "source": {
-...
-      "snapshot":"incremental"
-   },
-   "op":"r",
-   "ts_ms":"1620393591654",
-   "transaction":null
+    "before":null,
+    "after": {
+        "pk":"1",
+        "value":"New data"
+    },
+    "source": {
+        ...
+        "snapshot":"incremental" <i class="conum" data-value="1"></i><b>(1)</b>
+    },
+    "op":"r", <i class="conum" data-value="2"></i><b>(2)</b>
+    "ts_ms":"1620393591654",
+    "transaction":null
 }</code></pre>
 </div>
 </div>
-<div class="paragraph">
-<p>The incremental snapshot events should be understood in a different way than events from an initial snapshot.
-The <code>read</code> events should be understood like a materialization of data in a certain period of time.
-This means that event semantics differ between initial and incremental snapshots:</p>
-</div>
-<div class="ulist">
-<ul>
-<li>
-<p><code>update</code> and <code>delete</code> events can arrive before <code>read</code> events</p>
-</li>
-<li>
-<p>if <code>delete</code> event arrives first then <code>read</code> event is never delivered</p>
-</li>
-<li>
-<p>if <code>update</code> event arrives first then <code>read</code> event will either not be delivered at all or it will be delivered with the updated value</p>
-</li>
-</ul>
-</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 16.6666%;">
+<col style="width: 16.6666%;">
+<col style="width: 66.6668%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Item</th>
+<th class="tableblock halign-left valign-top">Field name</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">1</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>snapshot</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Specifies the type of snapshot operation to run.<br>
+Currently, the only valid option is the default value, <code>incremental</code>.<br>
+Specifying a <code>type</code> value in the SQL query that you submit to the signaling collection is optional.<br>
+If you do not specify a value, the connector runs an incremental snapshot.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">2</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>op</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Specifies the event type.<br>
+The value for snapshot events is <code>r</code>, signifying a <code>READ</code> operation.</p></td>
+</tr>
+</tbody>
+</table>
 <div class="admonitionblock note">
 <table>
 <tr>
@@ -1100,7 +1251,7 @@ This field provides information about every event in the form of a composite of 
 </div>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 2. Overview of change event basic content</caption>
+<caption class="title">Table 3. Overview of change event basic content</caption>
 <colgroup>
 <col style="width: 10%;">
 <col style="width: 20%;">
@@ -1202,7 +1353,7 @@ The value of this field is the document&#8217;s identifier represented as a stri
 </div>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 3. Description of change event key</caption>
+<caption class="title">Table 4. Description of change event key</caption>
 <colgroup>
 <col style="width: 10%;">
 <col style="width: 20%;">
@@ -1262,7 +1413,7 @@ The value of this field is the document&#8217;s identifier represented as a stri
 <p>This example uses a document with an integer identifier, but any valid MongoDB document identifier works the same way, including a document identifier. For a document identifier, an event key&#8217;s <code>payload.id</code> value is a string that represents the updated document&#8217;s original <code>_id</code> field as a MongoDB extended JSON serialization that uses strict mode. The following table provides examples of how different types of <code>_id</code> fields are represented.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch code-wordbreak-col2 code-wordbreak-col3">
-<caption class="title">Table 4. Examples of representing document <code>_id</code> fields in event key payloads</caption>
+<caption class="title">Table 5. Examples of representing document <code>_id</code> fields in event key payloads</caption>
 <colgroup>
 <col style="width: 33.3333%;">
 <col style="width: 33.3333%;">
@@ -1468,7 +1619,7 @@ The value of this field is the document&#8217;s identifier represented as a stri
 </div>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 5. Descriptions of <em>create</em> event value fields</caption>
+<caption class="title">Table 6. Descriptions of <em>create</em> event value fields</caption>
 <colgroup>
 <col style="width: 10%;">
 <col style="width: 20%;">
@@ -1639,7 +1790,7 @@ In the <code>source</code> object, <code>ts_ms</code> indicates the time that th
 </div>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 6. Descriptions of <em>update</em> event value fields</caption>
+<caption class="title">Table 7. Descriptions of <em>update</em> event value fields</caption>
 <colgroup>
 <col style="width: 10%;">
 <col style="width: 20%;">
@@ -1799,7 +1950,7 @@ An <em>update</em> event value does not contain an <code>after</code> field.</p>
 </div>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 7. Descriptions of <em>update</em> event value fields</caption>
+<caption class="title">Table 8. Descriptions of <em>update</em> event value fields</caption>
 <colgroup>
 <col style="width: 10%;">
 <col style="width: 20%;">
@@ -1926,7 +2077,7 @@ It is thus possible if multiple updates are closely following one after the othe
 </div>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 8. Descriptions of <em>delete</em> event value fields</caption>
+<caption class="title">Table 9. Descriptions of <em>delete</em> event value fields</caption>
 <colgroup>
 <col style="width: 10%;">
 <col style="width: 20%;">
@@ -2211,7 +2362,7 @@ Many properties have default values. Information about the properties is organiz
 <p>The following configuration properties are <em>required</em> unless a default value is available.</p>
 </div>
 <table id="debezium-mongodb-connector-required-configuration-properties" class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 9. Required Debezium MongoDB connector configuration properties</caption>
+<caption class="title">Table 10. Required Debezium MongoDB connector configuration properties</caption>
 <colgroup>
 <col style="width: 30%;">
 <col style="width: 25%;">
@@ -2485,7 +2636,7 @@ Defaults to 0, which indicates that the server chooses an appropriate fetch size
 <p>The following <em>advanced</em> configuration properties have good defaults that will work in most situations and therefore rarely need to be specified in the connector&#8217;s configuration.</p>
 </div>
 <table id="debezium-mongodb-connector-advanced-configuration-properties" class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 10. Required Debezium MongoDB connector advanced configuration properties</caption>
+<caption class="title">Table 11. Required Debezium MongoDB connector advanced configuration properties</caption>
 <colgroup>
 <col style="width: 30%;">
 <col style="width: 25%;">
@@ -3574,7 +3725,7 @@ As a result, the secondary node that is elected as the new primary node might be
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2021 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/3670b0c6ef76a78138130f40331381ba02ee2437">3670b0c6</a></span>)
+            <div class="copyright">Copyright &copy; 2021 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/edcd133ec02c04ef4e7b9d1320b75429fe3ac4ea">edcd133e</a></span>)
             
         </div>
     </footer>
