@@ -1,0 +1,141 @@
+---
+layout: post
+title:  Switching to Java 11/17
+date:   2022-04-22 12:00:00 +0100
+tags: [ community, news ]
+author: vjuranek
+---
+
+As you probably noticed, we started to work on Debezium 2.0.
+One of https://issues.redhat.com/browse/DBZ-3899[the planned changes] for the 2.0 release is https://issues.redhat.com/browse/DBZ-4949[the switch to Java 11 as a baseline].
+While some Java implementations still supports Java 8 
+(e.g. OpenJDK will be https://access.redhat.com/articles/1299013[supported by Red Hat] till 2026), 
+free Oracle JDK 8 already https://www.oracle.com/java/technologies/java-se-support-roadmap.html[reached end of life]. 
+So it's time to start thinking about using a more recent JDK and the new major Debezium release is a natural milestone when to do the switch.
+
++++<!-- more -->+++
+
+Since early releases of Debezium 2.0, hopefully from the very first one `Alpha1`, Debezium bits will be compiled to Java 11 byte code.
+Therefore, you will have to use at least Java 11 to run Debezium.
+Also, if you use any of the Debezium bits in your project, you will have to switch to Java 11.
+
+But wait, what does Java 11/17 in the title mean?
+Is it there just to scare you or we are going to actually switch to Java 17?
+
+<dramatic pause here>
+
+No, we don't want to scare you.
+But are really going to switch to Java 17.
+However, only for the tests.
+This will allow us to use more recent Java features in the tests, while users still can stay on Java 11.
+
+== Implementation
+
+Setting different byte code level for code and tests is pretty easy with Maven, 
+you just need to set following system properties:
+
+[source, xml]
+----
+<maven.compiler.release>11</maven.compiler.release>
+<maven.compiler.testRelease>17</maven.compiler.testRelease>
+----
+
+After switching to Java 11, checkstyle plugin and impsort plugin (plugin which takes care about proper order of imports) started to fail.
+However, bumping their versions to the latest releases has solved all the issues.
+
+This was the easy part.
+The most difficult part was the Cassandra connector.
+
+=== Cassandra connector
+
+Cassandra connector now provides support for Cassandra 3 as well as for Cassandra 4.
+Cassandra 4 https://cassandra.apache.org/doc/4.0/cassandra/new/java11.html[works with Java 11], 
+but running Cassandra 3 with Java 11 is not possible (or at least requires some hacking).
+Current test implementation doesn't run Cassandra in a container as we do in tests for other DB connectors, but runs Cassandra in embedded mode.
+Therefore if you want to run the tests with Java 11 (or 17), tests for Cassandra 3 module would fail.
+Obvious solution is to run Cassandra in a container with Java 8.
+This sounds good, but this approach has one pitfall.
+Cassandra connector needs access to Cassandra log files as it reads the dedicated log file to obtain CDC events.
+So the tests need to access Cassandra files in the container.
+This is still quite easily solvable by creating a temporary directory in e.g. `target` directory, giving it access to all users and bind-mounting it to the container.
+Cassandra running in the container can later on use this mounted volume for storing its data.
+The real issue starts when you try to do the cleanup after the tests.
+As Cassandra runs under dedicated user `cassandra` in the container, which is very likely not present on the test machine (or with different UID/GID), 
+cleanup fails when it tries to delete the temporary directory with Cassandra files.
+These files were created by a different user with insufficient rights for other users to delete them.
+Trying to delete them from Cassandra's container on Cassandra exit in some wrapper script turned out to be quite cumbersome and not very reliable.
+The most promising solution seemed to be to start another container with the same `cassandra` user after Cassandra container is stopped,
+bind-mount same directory there and delete all the files from this container.
+
+We considered two option for running containers:
+
+* https://dmp.fabric8.io/[Fabric8 Docker Maven plugin]
+* https://www.testcontainers.org/[Testcontainers]
+
+We use the Fabric8 plugin in the rest of the project, which suggests to use it also in this case to have uniformity across the project.
+On the other hand, using testcontainers would make tests more convenient for the developers (who actually use tests after all!),
+as it allows to run the tests directly from IDE without starting the container manually.
+In the end, the decision was driven by the fact that running a cleanup container is not possible with the Fabric8 plugin.
+Maven doesn't allow to execute different configurations in the same phase 
+and therefore it's not possible to stop the Cassandra container in the `post-integration-test` phase and at the same time run cleanup container in this phase.
+Testcontainers allow starting and stopping containers programmatically when needed.
+It also allows to define the images directly in the code, so we don't need any additional `Dockerfile`
+and cleanup container is just an implementation detail hidden in the test itself.
+Having the ability to run the tests directly from the IDE is a nice benefit on top of these things.
+
+The only tricky thing when using testcontainers was that when we tried to remove the files using Docker `cmd` command,
+testcontainers randomly filed, stating that the container didn't start in spite of the fact that all Cassandra files were actually deleted.
+The container probably ran so fast that it finished before testcontainers noticed it.
+Finally we solved it by running short `sleep` in the container and executing an additional command in the container which does the cleanup.
+
+The final cleanup code using testcontainers looks like this:
+
+[source, xml]
+----
+@AfterClass
+public static void tearDownClass() throws IOException, InterruptedException {
+    destroyTestKeyspace();
+    cassandra.stop();
+
+    GenericContainer clenaup = new GenericContainer(new ImageFromDockerfile()
+            .withDockerfileFromBuilder(builder -> builder
+                    .from("eclipse-temurin:8-jre-focal")
+                    .volume("/var/lib/cassandra")
+                    .cmd("sleep", "10") // Give testcontainers some time to find out container is running.
+                    .build()))
+            .withFileSystemBind(cassandraDir, CASSANDRA_SERVER_DIR, BindMode.READ_WRITE);
+    clenaup.start();
+    clenaup.execInContainer(
+            "rm", "-rf",
+            CASSANDRA_SERVER_DIR + "/data",
+            CASSANDRA_SERVER_DIR + "/cdc_raw_directory",
+            CASSANDRA_SERVER_DIR + "/commitlog",
+            CASSANDRA_SERVER_DIR + "/hints",
+            CASSANDRA_SERVER_DIR + "/saved_caches");
+    clenaup.stop();
+}
+----
+
+Once we solved the issue with Cassandra tests, we were mostly done and were ready to use Java 11/17.
+
+== Open issues
+
+We need more battle testing to be sure that everything works well with Java 11/17.
+Your help with testing and bug reports would be very valuable here and more than welcome.
+Currently we are aware of one minor unsolved issue related to the Java update.
+Some IDEs cannot distinguish between `maven.compiler.release` and `maven.compiler.testRelease` (or it's not very clear to us who to set it up).
+For example this test using https://openjdk.java.net/jeps/378[text block] is marked as an error in the IDE:
+
+[.centered-image.responsive-image]
+====
+++++
+<img src="/assets/images/2022-04-22-switch-to-java-11/idea_error.png" style="max-width:90%;" class="responsive-image">
+++++
+Test using text block in Idea IDE.
+====
+
+You can manually set Java level to 17, but in this case you may unintentionally use Java > 11 features in non-test code without IDE letting you know.
+Moreover, e.g. Idea reset the code level upon any changes in the `pom.xml` files.
+Have you solved this issue?
+Or do you use an IDE which doesn't have issues with mixing different Java levels?
+Please share your experience in the discussion!
