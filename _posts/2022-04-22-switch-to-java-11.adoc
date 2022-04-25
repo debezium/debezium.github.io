@@ -6,17 +6,17 @@ tags: [ community, news ]
 author: vjuranek
 ---
 
-As you probably noticed, we started to work on Debezium 2.0.
-One of https://issues.redhat.com/browse/DBZ-3899[the planned changes] for the 2.0 release is https://issues.redhat.com/browse/DBZ-4949[the switch to Java 11 as a baseline].
+As you probably noticed, we have started work on Debezium 2.0.
+One of https://issues.redhat.com/browse/DBZ-3899[the planned changes] for the 2.0 release is https://issues.redhat.com/browse/DBZ-4949[to switch to Java 11 as a baseline].
 While some Java implementations still supports Java 8 
 (e.g. OpenJDK will be https://access.redhat.com/articles/1299013[supported by Red Hat] till 2026), 
-free Oracle JDK 8 already https://www.oracle.com/java/technologies/java-se-support-roadmap.html[reached end of life]. 
-So it's time to start thinking about using a more recent JDK and the new major Debezium release is a natural milestone when to do the switch.
+free Oracle JDK 8 already https://www.oracle.com/java/technologies/java-se-support-roadmap.html[has reached end of life]. 
+So it's time to start thinking about using a more recent JDK, and the new major Debezium release is a natural milestone when to do the switch.
 
 +++<!-- more -->+++
 
 Since early releases of Debezium 2.0, hopefully from the very first one `Alpha1`, Debezium bits will be compiled to Java 11 byte code.
-Therefore, you will have to use at least Java 11 to run Debezium.
+Therefore, Java 11 will be required to run Debezium in the next major update.
 Also, if you use any of the Debezium bits in your project, you will have to switch to Java 11.
 
 But wait, what does Java 11/17 in the title mean?
@@ -25,8 +25,7 @@ Is it there just to scare you or we are going to actually switch to Java 17?
 <dramatic pause here>
 
 No, we don't want to scare you.
-But are really going to switch to Java 17.
-However, only for the tests.
+We are actually planning to switch to Java 17, but only for the test suite.
 This will allow us to use more recent Java features in the tests, while users still can stay on Java 11.
 
 == Implementation
@@ -55,17 +54,15 @@ Current test implementation doesn't run Cassandra in a container as we do in tes
 Therefore if you want to run the tests with Java 11 (or 17), tests for Cassandra 3 module would fail.
 Obvious solution is to run Cassandra in a container with Java 8.
 This sounds good, but this approach has one pitfall.
-Cassandra connector needs access to Cassandra log files as it reads the dedicated log file to obtain CDC events.
-So the tests need to access Cassandra files in the container.
-This is still quite easily solvable by creating a temporary directory in e.g. `target` directory, giving it access to all users and bind-mounting it to the container.
+The Cassandra connector needs access to Cassandra log files as it reads the dedicated log file to obtain CDC events, so the tests need to access Cassandra files in the container.
+This can be solved quite easily using a temporary directory, .one in e.g `target`, giving access to all users and moutable within the container.
 Cassandra running in the container can later on use this mounted volume for storing its data.
 The real issue starts when you try to do the cleanup after the tests.
 As Cassandra runs under dedicated user `cassandra` in the container, which is very likely not present on the test machine (or with different UID/GID), 
 cleanup fails when it tries to delete the temporary directory with Cassandra files.
 These files were created by a different user with insufficient rights for other users to delete them.
 Trying to delete them from Cassandra's container on Cassandra exit in some wrapper script turned out to be quite cumbersome and not very reliable.
-The most promising solution seemed to be to start another container with the same `cassandra` user after Cassandra container is stopped,
-bind-mount same directory there and delete all the files from this container.
+The most promising solution proved to involve starting a second container with the same `cassandra` user with access to the mounted volume and cleaning up the files after the first Cassandra container had already stopped.
 
 We considered two option for running containers:
 
@@ -78,15 +75,15 @@ as it allows to run the tests directly from IDE without starting the container m
 In the end, the decision was driven by the fact that running a cleanup container is not possible with the Fabric8 plugin.
 Maven doesn't allow to execute different configurations in the same phase 
 and therefore it's not possible to stop the Cassandra container in the `post-integration-test` phase and at the same time run cleanup container in this phase.
-Testcontainers allow starting and stopping containers programmatically when needed.
-It also allows to define the images directly in the code, so we don't need any additional `Dockerfile`
-and cleanup container is just an implementation detail hidden in the test itself.
+Testcontainers allow starting and stopping containers programmatically when needed, 
+allows defining the images directly in code so we don't need any additional `Dockerfile`
+, and cleaning up the container is just an implementation detail hidden in the test itself.
 Having the ability to run the tests directly from the IDE is a nice benefit on top of these things.
 
 The only tricky thing when using testcontainers was that when we tried to remove the files using Docker `cmd` command,
-testcontainers randomly filed, stating that the container didn't start in spite of the fact that all Cassandra files were actually deleted.
+testcontainers randomly failed, stating that the container didn't start in spite of the fact that all Cassandra files were actually deleted.
 The container probably ran so fast that it finished before testcontainers noticed it.
-Finally we solved it by running short `sleep` in the container and executing an additional command in the container which does the cleanup.
+Finally, we solved it by adding a short `sleep` in the container and executing an additional command in the container which does the cleanup.
 
 The final cleanup code using testcontainers looks like this:
 
