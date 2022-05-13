@@ -325,8 +325,19 @@
 <div id="toctitle" class="title">Table of Contents</div>
 <ul class="sectlevel1">
 <li><a href="#_datatype_conversion">Datatype Conversion</a></li>
-<li><a href="#_implementing_converters">Implementing Converters</a></li>
-<li><a href="#_configuring_and_using_converters">Configuring and Using Converters</a></li>
+<li><a href="#implementing-a-custom-converter">Implementing custom converters</a>
+<ul class="sectlevel2">
+<li><a href="#debezium-custom-converter-methods">Custom converter methods</a></li>
+<li><a href="#debezium-custom-converter-example">Debezium custom converter example</a></li>
+<li><a href="#debezium-and-kafka-connect-api-module-dependencies">Debezium and Kafka Connect API module dependencies</a></li>
+</ul>
+</li>
+<li><a href="#configuring-and-using-converters">Configuring and Using Converters</a>
+<ul class="sectlevel2">
+<li><a href="#deploying-a-debezium-custom-converter">Deploying a custom converter</a></li>
+<li><a href="#configuring-a-connectors-to-use-a-custom-converter">Configuring a connector to use a custom converter</a></li>
+</ul>
+</li>
 </ul>
 </div>
 <div class="admonitionblock note">
@@ -349,81 +360,157 @@
 <h2 id="_datatype_conversion"><a class="anchor" href="#_datatype_conversion"></a>Datatype Conversion</h2>
 <div class="sectionbody">
 <div class="paragraph">
-<p>The Debezium connectors map database column types to corresponding Kafka Connect schema types and convert the column values accordingly.
-The specific column type mappings are documented for each of the connectors and represent a reasonable default behavior for most of the time.
-It is still possible that an application requires a specific handling of a certain column type or specific column due to downstream system requirements.
-For instance you might want to export temporal column values as a formatted string instead of milli-seconds since epoch.</p>
+<p>Each field in a Debezium change event record represents a field or column in the source table or data collection.
+When a connector emits a change event record to Kafka, it converts the data type of each field in the source to a Kafka Connect schema type.
+Column values are likewise converted to match the schema type of the destination field.
+For each connector, a default mapping specifies how the connector converts each data type.
+These default mappings are described in the data types documentation for each connector.</p>
 </div>
 <div class="paragraph">
-<p>For this purpose Debezium provides an extension point that allows users to inject their own converters based on their business requirements.
-The converters are written in Java and are enabled and configured via connector properties.</p>
+<p>While the default mappings are generally sufficient, for some applications you might want to apply an alternate mapping.
+For example, you might need a custom mapping if the default mapping exports a column using the format of milliseconds since the UNIX epoch, but your downstream application can only consume the column values as formatted strings.
+You customize data type mappings by developing and deploying a custom converter.
+You configure custom converters to act on all columns of a certain type, or you can narrow their scope so that they apply to a specific table column only.
+The converter function intercepts data type conversion requests for any columns that match a specified criteria, and then performs the specified conversion.
+The converter ignores columns that do not match the specified criteria.</p>
 </div>
 <div class="paragraph">
-<p>During connector startup, all configured converters are instantiated and placed in an registry.
-While the connector-internal schema representation is built, every converter is invoked for every column/field of every table/collection and it can register itself to become responsible for the conversion of the given column or field.</p>
+<p>Custom converters are Java classes that implement the Debezium service provider interface (SPI).
+You enable and configure a custom converter by setting the <code>converters</code> property in the connector configuration.
+The <code>converters</code> property specifies the converters avaialble to a connector, and can include sub-properties that further modify conversion behavior.</p>
 </div>
 <div class="paragraph">
-<p>Whenever a new change is processed by Debezium, the converter is invoked to execute the actual conversion for the registered columns or fields.</p>
+<p>After you start a connector, the converters that are enabled in the connector configuration are instantiated and are added to a registry.
+The registry associates each converter with the columns or fields for it to process.
+Whenever Debezium processes a new change event, it invokes the configured converter to convert the columns or fields for which it is registered.</p>
 </div>
 </div>
 </div>
 <div class="sect1">
-<h2 id="_implementing_converters"><a class="anchor" href="#_implementing_converters"></a>Implementing Converters</h2>
+<h2 id="implementing-a-custom-converter"><a class="anchor" href="#implementing-a-custom-converter"></a>Implementing custom converters</h2>
 <div class="sectionbody">
 <div class="paragraph">
-<p>The converter implementation is a Java class that implements the interface <code>io.debezium.spi.converter.CustomConverter</code>:</p>
+<p>The following example shows a converter implementation of a Java class that implements the interface <code>io.debezium.spi.converter.CustomConverter</code>:</p>
 </div>
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-java hljs" data-lang="java">public interface CustomConverter&lt;S, F extends ConvertedField&gt; {
 
     @FunctionalInterface
-    interface Converter {
+    interface Converter {  <i class="conum" data-value="1"></i><b>(1)</b>
         Object convert(Object input);
     }
 
-    public interface ConverterRegistration&lt;S&gt; {
-        void register(S fieldSchema, Converter converter);
+    public interface ConverterRegistration&lt;S&gt; { <i class="conum" data-value="2"></i><b>(2)</b>
+        void register(S fieldSchema, Converter converter); <i class="conum" data-value="3"></i><b>(3)</b>
     }
 
     void configure(Properties props);
 
-    void converterFor(F field, ConverterRegistration&lt;S&gt; registration);
+    void converterFor(F field, ConverterRegistration&lt;S&gt; registration); <i class="conum" data-value="4"></i><b>(4)</b>
 }</code></pre>
 </div>
 </div>
-<div class="paragraph">
-<p>The method <code>configure()</code> is used to pass converter configuration options into the converter after its instantiation, so it can modify its runtime behaviour for each specific instance.
-The method <code>converterFor()</code> is invoked by Debezium and the converter is required to call <code>registration</code> in case of taking responsibility for the conversion.
-The registration provides the target schema definition and the actual conversion code.
-Schemas are currently represented using Kafka Connect&#8217;s <code>SchemaBuilder</code> API.
-In the future, an independent schema definition API will be added.
-The metadata about the column or field are passed via the <code>field</code> parameter.
-They contain information like table or collection name, column or field name, type name, and others.</p>
+<div class="colist arabic">
+<table>
+<tr>
+<td><i class="conum" data-value="1"></i><b>1</b></td>
+<td>A function for converting data from one type to another.</td>
+</tr>
+<tr>
+<td><i class="conum" data-value="2"></i><b>2</b></td>
+<td>Callback for registering a converter.</td>
+</tr>
+<tr>
+<td><i class="conum" data-value="3"></i><b>3</b></td>
+<td>Registers the given schema and converter for the current field.
+Should not be invoked more than once for the same field.</td>
+</tr>
+<tr>
+<td><i class="conum" data-value="4"></i><b>4</b></td>
+<td>Registers the customized value and schema converter for use with a specific field.</td>
+</tr>
+</table>
 </div>
+<div class="sect2">
+<h3 id="debezium-custom-converter-methods"><a class="anchor" href="#debezium-custom-converter-methods"></a>Custom converter methods</h3>
 <div class="paragraph">
-<p>The following example implements a simple converter that will:</p>
+<p>Implementations of the <code>CustomConverter</code> interface must include the following methods:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>configure()</code></dt>
+<dd>
+<p>Passes the properties specified in the connector configuration to the converter instance.
+The <code>configure</code> method runs when the connector is initialized.
+You can use a converter with multiple connectors and modify its behavior based on the connector&#8217;s property settings.<br>
+The <code>configure</code> method accepts the following argument:</p>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>props</code></dt>
+<dd>
+<p>Contains the properties to pass to the converter instance.
+Each property specifies the format for converting the values of a particular type of column.</p>
+</dd>
+</dl>
+</div>
+</dd>
+<dt class="hdlist1"><code>converterFor()</code></dt>
+<dd>
+<p>Registers the converter to process specific columns or fields in the data source.
+Debezium invokes the <code>converterFor()</code> method to prompt the converter to call <code>registration</code> for the conversion.
+The <code>converterFor</code> method runs once for each column.<br>
+The method accepts the following arguments:</p>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>field</code></dt>
+<dd>
+<p>An object that passes metadata about the field or column that is processed.
+The column metadata can include the name of the column or field, the name of the table or collection, the data type, size, and so forth.</p>
+</dd>
+<dt class="hdlist1"><code>registration</code></dt>
+<dd>
+<p>An object of type <code>io.debezium.spi.converter.CustomConverter.ConverterRegistration</code> that provides the target schema definition and the code for converting the column data.
+The converter calls the <code>registration</code> parameter when the source column matches the type that the converter should process.
+  calls the <code>register</code> method to define the converter for each column in the schema.
+Schemas are represented using the Kafka Connect <a href="https://kafka.apache.org/31/javadoc/org/apache/kafka/connect/data/SchemaBuilder.html"><code>SchemaBuilder</code></a> API.
+In the future, an independent schema definition API will be added.</p>
+</dd>
+</dl>
+</div>
+</dd>
+</dl>
+</div>
+</div>
+<div class="sect2">
+<h3 id="debezium-custom-converter-example"><a class="anchor" href="#debezium-custom-converter-example"></a>Debezium custom converter example</h3>
+<div class="paragraph">
+<p>The following example implements a simple converter that performs the following operations:</p>
 </div>
 <div class="ulist">
 <ul>
 <li>
-<p>accept one parameter named <code>schema.name</code></p>
+<p>Runs the <code>configure</code> method, which configures the converter based on the value of the <code>schema.name</code> property that is specified in the connector configuration.
+The converter configuration is specific to each instance.</p>
 </li>
 <li>
-<p>register itself for every column of type <code>isbn</code> with</p>
+<p>Runs the <code>converterFor</code> method, which registers the converter to process values in source columns for which the data type is set to <code>isbn</code>.</p>
 <div class="ulist">
 <ul>
 <li>
-<p>the target <code>STRING</code> schema named according to the <code>schema.name</code> parameter</p>
+<p>Identifies the target <code>STRING</code> schema based on the value that is specified for the <code>schema.name</code> property.</p>
 </li>
 <li>
-<p>the conversion code that converts the ISBN data to <code>String</code></p>
+<p>Converts ISBN data in the source column to <code>String</code> values.</p>
 </li>
 </ul>
 </div>
 </li>
 </ul>
 </div>
+<div id="example-debezium-simple-custom-converter" class="exampleblock">
+<div class="title">Example 1. A simple custom converter</div>
+<div class="content">
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-java hljs" data-lang="java">public static class IsbnConverter implements CustomConverter&lt;SchemaBuilder, RelationalColumn&gt; {
@@ -446,51 +533,135 @@ They contain information like table or collection name, column or field name, ty
 }</code></pre>
 </div>
 </div>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="debezium-and-kafka-connect-api-module-dependencies"><a class="anchor" href="#debezium-and-kafka-connect-api-module-dependencies"></a>Debezium and Kafka Connect API module dependencies</h3>
 <div class="paragraph">
-<p>To compile the code it is necessary to provide dependencies to the <code>debezium-api</code> and <code>connect-api</code> modules like:</p>
+<p>A custom converter Java project has compile dependencies on the Debezium API and Kafka Connect API library modules.
+These compile dependencies must be included in your project&#8217;s <code>pom.xml</code>, as shown in the following example:</p>
 </div>
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-xml hljs" data-lang="xml">&lt;dependency&gt;
     &lt;groupId&gt;io.debezium&lt;/groupId&gt;
     &lt;artifactId&gt;debezium-api&lt;/artifactId&gt;
-    &lt;version&gt;${version.debezium}&lt;/version&gt;
+    &lt;version&gt;${version.debezium}&lt;/version&gt; <i class="conum" data-value="1"></i><b>(1)</b>
 &lt;/dependency&gt;
 &lt;dependency&gt;
     &lt;groupId&gt;org.apache.kafka&lt;/groupId&gt;
     &lt;artifactId&gt;connect-api&lt;/artifactId&gt;
-    &lt;version&gt;${version.kafka}&lt;/version&gt;
+    &lt;version&gt;${version.kafka}&lt;/version&gt; <i class="conum" data-value="2"></i><b>(2)</b>
 &lt;/dependency&gt;</code></pre>
 </div>
 </div>
-<div class="paragraph">
-<p>where <code>${version.debezium}</code> and <code>${version.kafka}</code> are the versions of Debezium and Apache Kafka, respectively.</p>
+<div class="colist arabic">
+<table>
+<tr>
+<td><i class="conum" data-value="1"></i><b>1</b></td>
+<td><code>${version.debezium}</code> represents the version of the Debezium connector.</td>
+</tr>
+<tr>
+<td><i class="conum" data-value="2"></i><b>2</b></td>
+<td><code>${version.kafka}</code> represents the version of Apache Kafka in your environment.</td>
+</tr>
+</table>
+</div>
 </div>
 </div>
 </div>
 <div class="sect1">
-<h2 id="_configuring_and_using_converters"><a class="anchor" href="#_configuring_and_using_converters"></a>Configuring and Using Converters</h2>
+<h2 id="configuring-and-using-converters"><a class="anchor" href="#configuring-and-using-converters"></a>Configuring and Using Converters</h2>
 <div class="sectionbody">
 <div class="paragraph">
-<p>After the converter is developed it has to be deployed in a JAR file side-by-side with the Debezium connector JARs.
-To enable the converter for a given connector instance it is necessary to provide the connector options like this:</p>
+<p>Custom converters act on specific columns or column types in a source table to specify how to convert the data types in the source to Kafka Connect schema types.
+To use a custom converter with a connector, you deploy the converter JAR file alongside the connector file, and then configure the connector to use the converter.</p>
+</div>
+<div class="sect2">
+<h3 id="deploying-a-debezium-custom-converter"><a class="anchor" href="#deploying-a-debezium-custom-converter"></a>Deploying a custom converter</h3>
+<div class="ulist">
+<div class="title">Prerequisites</div>
+<ul>
+<li>
+<p>You have a custom converter Java program.</p>
+</li>
+</ul>
+</div>
+<div class="ulist">
+<div class="title">Procedure</div>
+<ul>
+<li>
+<p>To use a custom converter with a Debezium connector, export the Java project to a JAR file, and copy the file to the directory that contains the JAR file for each Debezium connector that you want to use it with.<br>
+<br>
+For example, in a typical deployment, the Debezium connector files are stored in subdirectories of a Kafka Connect directory (<code>/kafka/connect</code>), with each connector JAR in its own subdirectory (<code>/kafka/connect/debezium-connector-db2</code>, <code>/kafka/connect/debezium-connector-mysql</code>, and so forth).
+To use a converter with a connector, add the converter JAR file to the connector&#8217;s subdirectory.</p>
+</li>
+</ul>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+To use a converter with multiple connectors, you must place a copy of the converter JAR file in each connector subdirectory.
+</td>
+</tr>
+</table>
+</div>
+</div>
+<div class="sect2">
+<h3 id="configuring-a-connectors-to-use-a-custom-converter"><a class="anchor" href="#configuring-a-connectors-to-use-a-custom-converter"></a>Configuring a connector to use a custom converter</h3>
+<div class="paragraph">
+<p>To enable a connector to use the custom converter, you add properties to the connector configuration that specify the converter name and class.
+If the converter requires further information to customize the formats of specific data types, you can also define other coniguration options to provide that information.</p>
+</div>
+<div class="ulist">
+<div class="title">Procedure</div>
+<ul>
+<li>
+<p>Enable a converter for a connector instance by adding the following mandatory properties to the connector configuration:</p>
+<div class="listingblock">
+<div class="content">
+<pre>converters: <em>&lt;converterSymbolicName&gt;</em> <i class="conum" data-value="1"></i><b>(1)</b>
+<em>&lt;converterSymbolicName&gt;</em>.type: <em>&lt;fullyQualifiedConverterClassName&gt;</em> <i class="conum" data-value="2"></i><b>(2)</b></pre>
+</div>
+</div>
+<div class="colist arabic">
+<table>
+<tr>
+<td><i class="conum" data-value="1"></i><b>1</b></td>
+<td>The <code>converters</code> property is mandatory and enumerates a comma-separated list of symbolic names of the converter instances to use with the connector.
+The values listed for this property serve as prefixes in the names of other properties that you specify for the converter.</td>
+</tr>
+<tr>
+<td><i class="conum" data-value="2"></i><b>2</b></td>
+<td>The <code><em>&lt;converterSymbolicName&gt;</em>.type</code> property is mandatory, and specifies the name of the class that implements the converter.
+For example, for the earlier <a href="#example-debezium-simple-custom-converter">custom converter example</a>, you would add the following properties to the connector configuration:</td>
+</tr>
+</table>
 </div>
 <div class="listingblock">
 <div class="content">
-<pre>converters=isbn
-isbn.type=io.debezium.test.IsbnConverter
-isbn.schema.name=io.debezium.postgresql.type.Isbn</pre>
+<pre>converters: isbn
+isbn.type: io.debezium.test.IsbnConverter</pre>
 </div>
 </div>
-<div class="paragraph">
-<p>The option <code>converters</code> is mandatory and enumerates comma-separated symbolic names of converter instances to be used.
-The symbolic names are used as a prefix for further configuration options.</p>
+</li>
+<li>
+<p>To associate other properties with a custom converter, prefix the property names with the symbolic name of the converter, followed by a dot (<code>.</code>).
+The symbolic name is a label that you specify as a value for the <code>converters</code> property.
+For example, to add a property for the preceding <code>isbn</code> converter to specify the <code>schema.name</code> to pass to the <code>configure</code> method in the converter code, add the following property:</p>
+<div class="listingblock">
+<div class="content">
+<pre>isbn.schema.name: io.debezium.postgresql.type.Isbn</pre>
 </div>
-<div class="paragraph">
-<p><code>isbn.type</code> (generally <code>&lt;prefix&gt;.type</code>) is mandatory and is the name of the class that implements the converter.</p>
 </div>
-<div class="paragraph">
-<p><code>isbn.schema.name</code> is a converter parameter that is passed to the converter&#8217;s <code>configure</code> method as <code>schema.name</code>.</p>
+</li>
+</ul>
+</div>
 </div>
 </div>
 </div>
@@ -502,7 +673,7 @@ The symbolic names are used as a prefix for further configuration options.</p>
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2022 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/5c1e7297947dbf8c5d9ce85292e4a72704777b3e">5c1e7297</a></span>)
+            <div class="copyright">Copyright &copy; 2022 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/d1435e0d4aacc917d38a979b98bfad88a7af2095">d1435e0d</a></span>)
             
         </div>
     </footer>
