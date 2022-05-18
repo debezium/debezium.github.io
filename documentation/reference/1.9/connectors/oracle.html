@@ -354,18 +354,18 @@
 <li><a href="#oracle-temporal-types">Temporal types</a></li>
 <li><a href="#oracle-rowid-types">ROWID types</a></li>
 <li><a href="#oracle-user-defined-types">User-defined types</a></li>
-<li><a href="#oracle-suppplied-types">Oracle-supplied types</a></li>
+<li><a href="#oracle-supplied-types">Oracle-supplied types</a></li>
 <li><a href="#oracle-default-values">Default Values</a></li>
 </ul>
 </li>
 <li><a href="#setting-up-oracle">Setting up Oracle</a>
 <ul class="sectlevel2">
-<li><a href="#_compatibility_with_oracle_installation_types">Compatibility with Oracle installation types</a></li>
-<li><a href="#_schemas_excluded_from_capture">Schemas excluded from capture</a></li>
+<li><a href="#compatibility-of-the-debezium-oracle-connector-with-oracle-installation-types">Compatibility with Oracle installation types</a></li>
+<li><a href="#schemas-that-the-debezium-oracle-connector-excludes-when-capturing-change-events">Schemas excluded from capture</a></li>
 <li><a href="#_preparing_the_database">Preparing the database</a></li>
 <li><a href="#oracle-redo-log-sizing">Redo log sizing</a></li>
 <li><a href="#creating-users-for-the-connector">Creating users for the connector</a></li>
-<li><a href="#_standby_databases">Standby databases</a></li>
+<li><a href="#support-for-oracle-standby-databases">Standby databases</a></li>
 <li><a href="#_failover_databases">Failover databases</a></li>
 </ul>
 </li>
@@ -405,8 +405,7 @@
 <li><a href="#oracle-logs-do-not-contain-offset-perform-new-snapshot">Logs do not contain offset, perform a new snapshot</a></li>
 <li><a href="#oracle-cannot-reference-overflow-table">ORA-25191 - Cannot reference overflow table of an index-organized table</a></li>
 <li><a href="#oracle-pga-aggregate-limit">ORA-04036: PGA memory used by the instance exceeds PGA_AGGREGATE_LIMIT</a></li>
-<li><a href="#oracle-sys-system-change-not-emitted">LogMiner adapter does not capture changes made by SYS or SYSTEM</a></li>
-<li><a href="#oracle-stops-capturing-changes-aws">Connector stops capturing changes from Oracle on AWS</a></li>
+<li><a href="#oracle-oracle-11-exception-ora01882">Connection fails with error <code>ORA-01882: timezone region not found</code></a></li>
 </ul>
 </li>
 </ul>
@@ -435,7 +434,7 @@ While the connector might work with a variety of Oracle versions and editions, o
 <h2 id="how-the-oracle-connector-works"><a class="anchor" href="#how-the-oracle-connector-works"></a>How the Oracle connector works</h2>
 <div class="sectionbody">
 <div class="paragraph">
-<p>To optimally configure and run a Debezium Oracle connector, it is helpful to understand how the connector performs snapshots, streams change events, determines Kafka topic names, and uses metadata.</p>
+<p>To optimally configure and run a Debezium Oracle connector, it is helpful to understand how the connector performs snapshots, streams change events, determines Kafka topic names, uses metadata, and implements event buffering.</p>
 </div>
 <div class="sect2">
 <h3 id="oracle-snapshots"><a class="anchor" href="#oracle-snapshots"></a>Snapshots</h3>
@@ -455,7 +454,7 @@ By default, the connector&#8217;s snapshot mode is set to <code>initial</code>.<
 <div class="olist arabic">
 <ol class="arabic">
 <li>
-<p>Determines the tables to be captured</p>
+<p>Determines the tables to be captured.</p>
 </li>
 <li>
 <p>Obtains a <code>ROW SHARE MODE</code> lock on each of the monitored tables to prevent structural changes from occurring during creation of the snapshot. Debezium holds the locks for only a short time.</p>
@@ -527,12 +526,16 @@ After the snapshot completes, the connector begins to stream event records for s
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>Set this option to restore a database history topic that is lost or corrupted.
 After a restart, the connector runs a snapshot that rebuilds the topic from the source tables.
-You can also set the property to periodically prune the database history topic that experience unexpected growth.
-Note this mode is only safe to be used when it is guaranteed that no schema changes happened since the point in time the connector was shut down before and the point in time the snapshot is taken.</p>
+You can also set the property to periodically prune a database history topic that experiences unexpected growth.<br>
+<br>
+WARNING: Do not use this mode to perform a snapshot if schema changes were committed to the database after the last connector shutdown.</p>
 </div></div></td>
 </tr>
 </tbody>
 </table>
+<div class="paragraph">
+<p>For more information, see <a href="#oracle-property-snapshot-mode"><code>snapshot.mode</code></a> in the table of connector configuration properties.</p>
+</div>
 <div class="sect3">
 <h4 id="oracle-ad-hoc-snapshots"><a class="anchor" href="#oracle-ad-hoc-snapshots"></a>Ad hoc snapshots</h4>
 <div class="paragraph">
@@ -917,7 +920,7 @@ For more information about using the logical topic routing SMT to customize topi
 <div class="sect2">
 <h3 id="oracle-schema-change-topic"><a class="anchor" href="#oracle-schema-change-topic"></a>Schema change topic</h3>
 <div class="paragraph">
-<p>You can configure a Debezium Oracle connector to produce schema change events that describe schema changes that are applied to captured tables in the database.
+<p>You can configure a Debezium Oracle connector to produce schema change events that describe structural changes that are applied to captured tables in the database.
 The connector writes schema change events to a Kafka topic named <code><em>&lt;serverName&gt;</em></code>, where <code><em>serverName</em></code> is the logical server name that is specified in the <a href="#oracle-property-database-server-name"><code>database.server.name</code></a> configuration property.</p>
 </div>
 <div class="paragraph">
@@ -1159,7 +1162,7 @@ The message contains a logical representation of the table schema.</p>
 <td class="tableblock halign-left valign-top"><p class="tableblock">4</p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock"><code>type</code></p></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Describes the kind of change. The value is one of the following:</p>
+<p>Describes the kind of change. The <code>type</code> can be set to one of the following values:</p>
 </div>
 <div class="dlist">
 <dl>
@@ -1203,7 +1206,7 @@ In the case of a table rename, this identifier is a concatenation of <code><em>&
 </table>
 <div class="paragraph">
 <p>In messages that the connector sends to the schema change topic, the message key is the name of the database that contains the schema change.
-In the following example, the <code>payload</code> field contains the key:</p>
+In the following example, the <code>payload</code> field contains the <code>databaseName</code> key:</p>
 </div>
 <div class="listingblock">
 <div class="content">
@@ -1483,10 +1486,10 @@ Any connector property that is prefixed with <code>log.mining.buffer.infinispan.
 <h3 id="scn-jumps"><a class="anchor" href="#scn-jumps"></a>SCN gap detection</h3>
 <div class="paragraph">
 <p>When the Debezium Oracle connector is configured to use LogMiner, it collects change events from Oracle by using a start and end range that is based on system change numbers (SCNs).
-The connector manages this range automatically, increasing or decreasing the range depending on whether the connector is able to stream changes in near real-time, or must process a backlog because of large or bulk transactions in the database.</p>
+The connector manages this range automatically, increasing or decreasing the range depending on whether the connector is able to stream changes in near real-time, or must process a backlog of changes due to the volume of large or bulk transactions in the database.</p>
 </div>
 <div class="paragraph">
-<p>Under certain circumstances, the Oracle database advances the system change number by an unusually high amount, rather than increasing it at a constant rate.
+<p>Under certain circumstances, the Oracle database advances the SCN by an unusually high amount, rather than increasing the SCN value at a constant rate.
 Such a jump in the SCN value can occur because of the way that a particular integration interacts with the database, or as a result of events such as hot backups.</p>
 </div>
 <div class="paragraph">
@@ -1506,14 +1509,15 @@ Such a jump in the SCN value can occur because of the way that a particular inte
 </div>
 <div class="paragraph">
 <p>The connector first compares the difference in the number of changes between the current SCN and the highest SCN in the current mining range.
-If this difference is greater than the minimum gap size, then the connector has potentially detected a SCN gap.
+If the difference between the current SCN value and the highest SCN value is greater than the minimum gap size, then the connector has potentially detected a SCN gap.
 To confirm whether a gap exists, the connector next compares the timestamps of the current SCN and the SCN at the end of the previous mining range.
 If the difference between the timestamps is less than the maximum time interval, then the existence of an SCN gap is confirmed.</p>
 </div>
 <div class="paragraph">
 <p>When an SCN gap occurs, the Debezium connector automatically uses the current SCN as the end point for the range of the current mining session.
 This allows the connector to quickly catch up to the real-time events without mining smaller ranges in between that return no changes because the SCN value was increased by an unexpectedly large number.
-Additionally, the connector will ignore the mining maximum batch size for this iteration only when this occurs.</p>
+When the connector performs the preceding steps in response to an SCN gap, it ignores the value that is specified by the <a href="#oracle-property-log-mining-batch-size-max">log.mining.batch.size.max</a> property.
+After the connector finishes the mining session and catches back up to real-time events, it resumes enforcement of the maximum log mining batch size.</p>
 </div>
 <div class="admonitionblock warning">
 <table>
@@ -1636,18 +1640,23 @@ The value of the key&#8217;s <code>payload</code> field indicates that it is ind
 <div class="sect2">
 <h3 id="oracle-change-event-values"><a class="anchor" href="#oracle-change-event-values"></a>Change event values</h3>
 <div class="paragraph">
-<p>Like the message key, the value of a change event message has a <em>schema</em> section and <em>payload</em> section.
-The payload section of every change event value produced by the Oracle connector has an <em>envelope</em> structure with the following fields:</p>
+<p>The structure of a value in a change event message mirrors the structure of the <a href="#oracle-change-event-keys">message key in the change event</a> in the message, and contains both a <em>schema</em> section and a <em>payload</em> section.</p>
+</div>
+<div class="paragraph">
+<div class="title">Payload of a change event value</div>
+<p>An <em>envelope</em> structure in the payload sections of a change event value contains the following fields:</p>
 </div>
 <div class="dlist">
 <dl>
 <dt class="hdlist1"><code>op</code></dt>
 <dd>
-<p>A mandatory field that contains a string value describing the type of operation. Values for the Oracle connector are <code>c</code> for create (or insert), <code>u</code> for update, <code>d</code> for delete, and <code>r</code> for read (in the case of a snapshot).</p>
+<p>A mandatory field that contains a string value describing the type of operation.
+The <code>op</code> field in the payload of an Oracle connector change event value contains one of the following values: <code>c</code> (create or insert), <code>u</code> (update), <code>d</code> (delete), or <code>r</code> (read, which indicates a snapshot).</p>
 </dd>
 <dt class="hdlist1"><code>before</code></dt>
 <dd>
-<p>An optional field that, if present, contains the state of the row <em>before</em> the event occurred. The structure is described by the <code>server1.INVENTORY.CUSTOMERS.Value</code> Kafka Connect schema, which the <code>server1</code> connector uses for all rows in the <code>inventory.customers</code> table.</p>
+<p>An optional field that, if present, describes the state of the row <em>before</em> the event occurred.
+The structure is described by the <code>server1.INVENTORY.CUSTOMERS.Value</code> Kafka Connect schema, which the <code>server1</code> connector uses for all rows in the <code>inventory.customers</code> table.</p>
 </dd>
 </dl>
 </div>
@@ -1655,11 +1664,32 @@ The payload section of every change event value produced by the Oracle connector
 <dl>
 <dt class="hdlist1"><code>after</code></dt>
 <dd>
-<p>An optional field that if present contains the state of the row <em>after</em> the event occurred. The structure is described by the same <code>server1.INVENTORY.CUSTOMERS.Value</code> Kafka Connect schema used in <code>before</code>.</p>
+<p>An optional field that, if present, contains the state of a row <em>after</em> a change occurs.
+The structure is described by the same <code>server1.INVENTORY.CUSTOMERS.Value</code> Kafka Connect schema that is used for the <code>before</code> field.</p>
 </dd>
 <dt class="hdlist1"><code>source</code></dt>
 <dd>
-<p>A mandatory field that contains a structure describing the source metadata for the event, which in the case of Oracle contains these fields: the Debezium version, the connector name, whether the event is part of an ongoing snapshot or not, the transaction id (not while snapshotting), the SCN of the change, and a timestamp representing the point in time when the record was changed in the source database (during snapshotting, this is the point in time of snapshotting).</p>
+<p>A mandatory field that contains a structure that describes the source metadata for the event.
+In the case of the Oracle connector, the structure includes the following fields:</p>
+<div class="ulist">
+<ul>
+<li>
+<p>The Debezium version.</p>
+</li>
+<li>
+<p>The connector name.</p>
+</li>
+<li>
+<p>Whether the event is part of an ongoing snapshot or not.</p>
+</li>
+<li>
+<p>The transaction id (not includes for snapshots).</p>
+</li>
+<li>
+<p>The SCN of the change.</p>
+</li>
+<li>
+<p>A timestamp that indicates when the record in the source database changed (for snapshots, the timestamp indicates when the snapshot occurred).</p>
 <div class="admonitionblock tip">
 <table>
 <tr>
@@ -1675,21 +1705,25 @@ This field is only present when using the LogMiner connection adapter.</p>
 </tr>
 </table>
 </div>
+</li>
+</ul>
+</div>
 </dd>
 <dt class="hdlist1"><code>ts_ms</code></dt>
 <dd>
-<p>An optional field that, if present, contains the time (using the system clock in the JVM running the Kafka Connect task) at which the connector processed the event.</p>
+<p>An optional field that, if present, contains the time (based on the system clock in the JVM that runs the Kafka Connect task) at which the connector processed the event.</p>
 </dd>
 </dl>
 </div>
 <div class="paragraph">
-<p>And of course, the <em>schema</em> portion of the event message&#8217;s value contains a schema that describes this envelope structure and the nested fields within it.</p>
+<div class="title">Schema of a change event value</div>
+<p>The <em>schema</em> portion of the event message&#8217;s value contains a schema that describes the envelope structure of the payload and the nested fields within it.</p>
 </div>
 </div>
 <div class="sect2">
 <h3 id="oracle-create-events"><a class="anchor" href="#oracle-create-events"></a><em>create</em> events</h3>
 <div class="paragraph">
-<p>Let&#8217;s look at what a <em>create</em> event value might look like for our <code>customers</code> table:</p>
+<p>The following example shows the value of a <em>create</em> event value from the <code>customers</code> table that is described in the <a href="#oracle-change-event-keys">change event keys</a> example:</p>
 </div>
 <div class="listingblock">
 <div class="content">
@@ -1834,15 +1868,15 @@ This field is only present when using the LogMiner connection adapter.</p>
 </div>
 </div>
 <div class="paragraph">
-<p>Examining the <code>schema</code> portion of the preceding event&#8217;s <em>value</em>, we can see how the following schema are defined:</p>
+<p>In the preceding example, notice how the event defines the following schema:</p>
 </div>
 <div class="ulist">
 <ul>
 <li>
-<p>The <em>envelope</em></p>
+<p>The <em>envelope</em> (<code>server1.DEBEZIUM.CUSTOMERS.Envelope</code>).</p>
 </li>
 <li>
-<p>The <code>source</code> structure (which is specific to the Oracle connector and reused across all events).</p>
+<p>The <code>source</code> structure (<code>io.debezium.connector.oracle.Source</code>, which is specific to the Oracle connector and reused across all events).</p>
 </li>
 <li>
 <p>The table-specific schemas for the <code>before</code> and <code>after</code> fields.</p>
@@ -1858,7 +1892,7 @@ This field is only present when using the LogMiner connection adapter.</p>
 <td class="content">
 <div class="paragraph">
 <p>The names of the schemas for the <code>before</code> and <code>after</code> fields are of the form <code><em>&lt;logicalName&gt;</em>.<em>&lt;schemaName&gt;</em>.<em>&lt;tableName&gt;</em>.Value</code>, and thus are entirely independent from the schemas for all other tables.
-This means that when using the <a href="../configuration/avro.html#avro-serialization" class="page">Avro Converter</a>, the resulting Avro schems for <em>each table</em> in each <em>logical source</em> have their own evolution and history.</p>
+As a result, when you use the <a href="../configuration/avro.html#avro-serialization" class="page">Avro converter</a>, the Avro schemas for tables in each logical source have their own evolution and history.</p>
 </div>
 </td>
 </tr>
@@ -1876,8 +1910,8 @@ It describes that a row was created (<code>op=c</code>), and shows that the <cod
 </td>
 <td class="content">
 <div class="paragraph">
-<p>By default, the JSON representations of events are much larger than the rows they describe.
-The increased size results from the JSON representation including both the schema and payload portions of a message.
+<p>By default, the JSON representations of events are much larger than the rows that they describe.
+The larger size is due to the JSON representation including both the schema and payload portions of a message.
 You can use the <a href="../configuration/avro.html#avro-serialization" class="page">Avro Converter</a> to decrease the size of messages that the connector writes to Kafka topics.</p>
 </div>
 </td>
@@ -1888,8 +1922,7 @@ You can use the <a href="../configuration/avro.html#avro-serialization" class="p
 <div class="sect2">
 <h3 id="oracle-update-events"><a class="anchor" href="#oracle-update-events"></a><em>update</em> events</h3>
 <div class="paragraph">
-<p>The value of an <em>update</em> change event on this table has the same <em>schema</em> as the <em>create</em> event. The payload uses the same structure, but it holds different values.
-Here&#8217;s an example:</p>
+<p>The following example shows an <em>update</em> change event that the connector captures from the same table as the preceding <em>create</em> event.</p>
 </div>
 <div class="listingblock">
 <div class="content">
@@ -1924,24 +1957,24 @@ Here&#8217;s an example:</p>
 </div>
 </div>
 <div class="paragraph">
-<p>Comparing the value of the <em>update</em> event to the <em>create</em> (insert) event, notice the following differences in the <code>payload</code> section:</p>
+<p>The payload has the same structure as the payload of a <em>create</em> (insert) event, but the following values are different:</p>
 </div>
 <div class="ulist">
 <ul>
 <li>
-<p>The <code>op</code> field value is now <code>u</code>, signifying that this row changed because of an update</p>
+<p>The value of the <code>op</code> field is <code>u</code>, signifying that this row changed because of an update.</p>
 </li>
 <li>
-<p>The <code>before</code> field now has the state of the row with the values before the database commit</p>
+<p>The <code>before</code> field shows the former state of the row with the values that were present before the <code>update</code> database commit.</p>
 </li>
 <li>
-<p>The <code>after</code> field now has the updated state of the row, and here was can see that the <code>EMAIL</code> value is now <code>anne@example.com</code>.</p>
+<p>The <code>after</code> field shows the updated state of the row, with the <code>EMAIL</code> value now set to <code>anne@example.com</code>.</p>
 </li>
 <li>
-<p>The <code>source</code> field structure has the same fields as before, but the values are different since this event is from a different position in the redo log.</p>
+<p>The structure of the <code>source</code> field includes the same fields as before, but the values are different, because the connector captured the event from a different position in the redo log.</p>
 </li>
 <li>
-<p>The <code>ts_ms</code> shows the timestamp that Debezium processed this event.</p>
+<p>The <code>ts_ms</code> field shows the timestamp that indicates when Debezium processed the event.</p>
 </li>
 </ul>
 </div>
@@ -1984,8 +2017,8 @@ As a result, Debezium emits <em>three</em> events after such an update:</p>
 <div class="sect2">
 <h3 id="oracle-delete-events"><a class="anchor" href="#oracle-delete-events"></a><em>delete</em> events</h3>
 <div class="paragraph">
-<p>So far we&#8217;ve seen samples of <em>create</em> and <em>update</em> events.
-Now, let&#8217;s look at the value of a <em>delete</em> event for the same table. As is the case with <em>create</em> and <em>update</em> events, for a <code><em>delete</em></code> event, the <code>schema</code> portion of the value is exactly the same:</p>
+<p>The following example shows a <em>delete</em> event for the table that is shown in the preceding <em>create</em> and <em>update</em> event examples.
+The <code>schema</code> portion of the <em>delete</em> event is identical to the <code>schema</code> portion for those events.</p>
 </div>
 <div class="listingblock">
 <div class="content">
@@ -2015,29 +2048,29 @@ Now, let&#8217;s look at the value of a <em>delete</em> event for the same table
 </div>
 </div>
 <div class="paragraph">
-<p>If we look at the <code>payload</code> portion, we see a number of differences compared with the <em>create</em> or <em>update</em> event payloads:</p>
+<p>The <code>payload</code> portion of the event reveals several differences when compared to the payload of a <em>create</em> or <em>update</em> event:</p>
 </div>
 <div class="ulist">
 <ul>
 <li>
-<p>The <code>op</code> field value is now <code>d</code>, signifying that this row was deleted</p>
+<p>The value of the <code>op</code> field is <code>d</code>, signifying that the row was deleted.</p>
 </li>
 <li>
-<p>The <code>before</code> field now has the state of the row that was deleted with the database commit.</p>
+<p>The <code>before</code> field shows the former state of the row that was deleted with the database commit.</p>
 </li>
 <li>
-<p>The <code>after</code> field is null, signifying that the row no longer exists</p>
+<p>The value of the <code>after</code> field is <code>null</code>, signifying that the row no longer exists.</p>
 </li>
 <li>
-<p>The <code>source</code> field structure has many of the same values as before, except the <code>ts_ms</code>, <code>scn</code> and <code>txId</code> fields have changed</p>
+<p>The structure of the <code>source</code> field includes many of the keys that exist in <em>create</em> or <em>update</em> events, but the values in the <code>ts_ms</code>, <code>scn</code>, and <code>txId</code> fields are different.</p>
 </li>
 <li>
-<p>The <code>ts_ms</code> shows the timestamp that Debezium processed this event.</p>
+<p>The <code>ts_ms</code> shows a timestamp that indicates when Debezium processed this event.</p>
 </li>
 </ul>
 </div>
 <div class="paragraph">
-<p>This event gives a consumer all kinds of information that it can use to process the removal of this row.</p>
+<p>The <em>delete</em> event provides consumers with the information that they require to process the removal of this row.</p>
 </div>
 <div class="paragraph">
 <p>The Oracle connector&#8217;s events are designed to work with <a href="https://cwiki.apache.org/confluence/display/KAFKA/Log+Compaction">Kafka log compaction</a>,
@@ -2045,7 +2078,7 @@ which allows for the removal of some older messages as long as at least the most
 This allows Kafka to reclaim storage space while ensuring the topic contains a complete dataset and can be used for reloading key-based state.</p>
 </div>
 <div id="oracle-tombstone-events" class="paragraph">
-<p>When a row is deleted, the <em>delete</em> event value listed above still works with log compaction, since Kafka can still remove all earlier messages with that same key.
+<p>When a row is deleted, the <em>delete</em> event value shown in the preceding example still works with log compaction, because Kafka is able to remove all earlier messages that use the same key.
 The message value must be set to <code>null</code> to instruct Kafka to remove <em>all messages</em> that share the same key.
 To make this possible, by default, Debezium&#8217;s Oracle connector always follows a <em>delete</em> event with a special <em>tombstone</em> event that has the same key but <code>null</code> value.
 You can change the default behavior by setting the connector property <a href="#oracle-property-tombstones-on-delete"><code>tombstones.on.delete</code></a>.</p>
@@ -2157,14 +2190,12 @@ In the <code>source</code> object, <code>ts_ms</code> indicates the time that th
 </tbody>
 </table>
 <div class="paragraph">
-<p>Note that since <em>truncate</em> events represent a change made to an entire table and don&#8217;t have a message key,
-unless you&#8217;re working with topics with a single partition,
-there are no ordering guarantees for the change events pertaining to a table (<em>create</em>, <em>update</em>, etc.) and <em>truncate</em> events for that table.
-For instance a consumer may receive an <em>update</em> event only after a <em>truncate</em> event for that table,
-when those events are read from different partitions.</p>
+<p>Because <em>truncate</em> events represent changes made to an entire table, and have no message key, in topics with multiple partitions, there is no guarantee that consumers receive <em>truncate</em> events and change events (<em>create</em>, <em>update</em>, etc.) for to a table in order.
+For example, when a consumer reads events from different partitions, it might receive an <em>update</em> event for a table after it receives a <em>truncate</em> event for the same table.
+Ordering can be guaranteed only if a topic uses a single partition.</p>
 </div>
 <div class="paragraph">
-<p>If <em>truncate</em> events are not desired, they can be filtered out with the <a href="#oracle-property-skipped-operations"><code>skipped.operations</code></a> option.</p>
+<p>If you do not want to capture <em>truncate</em> events, use the <a href="#oracle-property-skipped-operations"><code>skipped.operations</code></a> option to filter them out.</p>
 </div>
 </div>
 </div>
@@ -2404,11 +2435,12 @@ Please let us know if you encounter any problems while using these data types.</
 <td class="content">
 <div class="paragraph">
 <p>Oracle only supplies column values for <code>CLOB</code>, <code>NCLOB</code>, and <code>BLOB</code> data types if they&#8217;re explicitly set or changed in a SQL statement.
-This means that change events will never contain the value of an unchanged <code>CLOB</code>, <code>NCLOB</code>, or <code>BLOB</code> column,
-but a placeholder as defined by the connector property, <code>unavailable.value.placeholder</code>.</p>
+As a result, change events never contain the value of an unchanged <code>CLOB</code>, <code>NCLOB</code>, or <code>BLOB</code> column.
+Instead, they contain placeholders as defined by the connector property, <code>unavailable.value.placeholder</code>.</p>
 </div>
 <div class="paragraph">
-<p>If the value of a <code>CLOB</code>, <code>NCLOB</code>, or <code>BLOB</code> column gets updated, the new value will be contained in the <code>after</code> part of the corresponding update change events whereas the unavailable value placeholder will be used in the <code>before</code> part.</p>
+<p>If the value of a <code>CLOB</code>, <code>NCLOB</code>, or <code>BLOB</code> column is updated, the new value is placed in the <code>after</code> element of the corresponding update change event.
+The <code>before</code> element contains the unavailable value placeholder.</p>
 </div>
 </td>
 </tr>
@@ -2658,8 +2690,8 @@ Contains a structure with two fields: <code>scale</code> of type <code>INT32</co
 <div class="sect2">
 <h3 id="oracle-boolean-types"><a class="anchor" href="#oracle-boolean-types"></a>Boolean types</h3>
 <div class="paragraph">
-<p>Oracle does not natively have support for a <code>BOOLEAN</code> data type; however,
-it is common practice to use other data types with certain semantics to simulate the concept of a logical <code>BOOLEAN</code> data type.</p>
+<p>Oracle does not provide native support for a <code>BOOLEAN</code> data type.
+However, it is common practice to use other data types with certain semantics to simulate the concept of a logical <code>BOOLEAN</code> data type.</p>
 </div>
 <div class="paragraph">
 <p>To enable you to convert source columns to Boolean data types, Debezium provides a <code>NumberOneToBooleanConverter</code> <a href="../development/converters.html#custom-converters" class="page">custom converter</a> that you can use in one of the following ways:</p>
@@ -2686,7 +2718,7 @@ boolean.selector=.*MYTABLE.FLAG,.*.IS_ARCHIVED</code></pre>
 <div class="sect2">
 <h3 id="oracle-temporal-types"><a class="anchor" href="#oracle-temporal-types"></a>Temporal types</h3>
 <div class="paragraph">
-<p>Other than Oracle&#8217;s <code>INTERVAL</code>, <code>TIMESTAMP WITH TIME ZONE</code> and <code>TIMESTAMP WITH LOCAL TIME ZONE</code> data types, the other temporal types depend on the value of the <code>time.precision.mode</code> configuration property.</p>
+<p>Other than the Oracle <code>INTERVAL</code>, <code>TIMESTAMP WITH TIME ZONE</code>, and <code>TIMESTAMP WITH LOCAL TIME ZONE</code> data types, the way that the connector converts temporal types depends on the value of the <code>time.precision.mode</code> configuration property.</p>
 </div>
 <div class="paragraph">
 <p>When the <code>time.precision.mode</code> configuration property is set to <code>adaptive</code> (the default), then the connector determines the literal and semantic type for the temporal types based on the column&#8217;s data type definition so that events <em>exactly</em> represent the values in the database:</p>
@@ -2715,7 +2747,7 @@ boolean.selector=.*MYTABLE.FLAG,.*.IS_ARCHIVED</code></pre>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>io.debezium.time.Timestamp</code><br>
 <br>
-Represents the number of milliseconds past epoch, and does not include timezone information.</p>
+Represents the number of milliseconds since the UNIX epoch, and does not include timezone information.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -2762,7 +2794,7 @@ The string representation of the interval value that follows the pattern <code>P
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>io.debezium.time.Timestamp</code><br>
 <br>
-Represents the number of milliseconds past epoch, and does not include timezone information.</p>
+Represents the number of milliseconds since the UNIX epoch, and does not include timezone information.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -2775,7 +2807,7 @@ Represents the number of milliseconds past epoch, and does not include timezone 
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>io.debezium.time.MicroTimestamp</code><br>
 <br>
-Represents the number of microseconds past epoch, and does not include timezone information.</p>
+Represents the number of microseconds since the UNIX epoch, and does not include timezone information.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -2788,7 +2820,7 @@ Represents the number of microseconds past epoch, and does not include timezone 
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>io.debezium.time.NanoTimestamp</code><br>
 <br>
-Represents the number of nanoseconds past epoch, and does not include timezone information.</p>
+Represents the number of nanoseconds since the UNIX epoch, and does not include timezone information.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -2848,7 +2880,7 @@ Because the level of precision that Oracle supports exceeds the level that the l
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>org.apache.kafka.connect.data.Date</code><br>
 <br>
-Represents the number of days since the epoch.</p>
+Represents the number of days since the UNIX epoch.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -2895,7 +2927,7 @@ The string representation of the interval value that follows the pattern <code>P
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>org.apache.kafka.connect.data.Timestamp</code><br>
 <br>
-Represents the number of milliseconds since epoch, and does not include timezone information.</p>
+Represents the number of milliseconds since the UNIX epoch, and does not include timezone information.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -2908,7 +2940,7 @@ Represents the number of milliseconds since epoch, and does not include timezone
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>org.apache.kafka.connect.data.Timestamp</code><br>
 <br>
-Represents the number of milliseconds since epoch, and does not include timezone information.</p>
+Represents the number of milliseconds since the UNIX epoch, and does not include timezone information.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -2921,7 +2953,7 @@ Represents the number of milliseconds since epoch, and does not include timezone
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>org.apache.kafka.connect.data.Timestamp</code><br>
 <br>
-Represents the number of milliseconds since epoch, and does not include timezone information.</p>
+Represents the number of milliseconds since the UNIX epoch, and does not include timezone information.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -3007,7 +3039,7 @@ At this time, you cannot use the Debezium Oracle connector with any of these use
 </div>
 </div>
 <div class="sect2">
-<h3 id="oracle-suppplied-types"><a class="anchor" href="#oracle-suppplied-types"></a>Oracle-supplied types</h3>
+<h3 id="oracle-supplied-types"><a class="anchor" href="#oracle-supplied-types"></a>Oracle-supplied types</h3>
 <div class="paragraph">
 <p>Oracle provides SQL-based interfaces that you can use to define new types when the built-in or ANSI-supported types are insufficient.
 Oracle offers several commonly used data types to serve a broad array of purposes such as <strong>Any</strong>, <strong>XML</strong>, or <strong>Spatial</strong> types.
@@ -3017,7 +3049,8 @@ At this time, you cannot use the Debezium Oracle connector with any of these dat
 <div class="sect2">
 <h3 id="oracle-default-values"><a class="anchor" href="#oracle-default-values"></a>Default Values</h3>
 <div class="paragraph">
-<p>If a default value is specified for a column in the database schema, the Oracle connector will attempt to propagate this value to the schema of the corresponding Kafka record field. Most common data types are supported, including:</p>
+<p>If a default value is specified for a column in the database schema, the Oracle connector will attempt to propagate this value to the schema of the corresponding Kafka record field.
+Most common data types are supported, including:</p>
 </div>
 <div class="ulist">
 <ul>
@@ -3034,7 +3067,7 @@ At this time, you cannot use the Debezium Oracle connector with any of these dat
 </div>
 <div class="paragraph">
 <p>If a temporal type uses a function call such as <code>TO_TIMESTAMP</code> or <code>TO_DATE</code> to represent the default value, the connector will resolve the default value by making an additional database call to evaluate the function.
-For example, if a <code>DATE</code> column is defined with the default value of <code>TO_DATE('2021-01-02', 'YYYY-MM-DD')</code>, the column&#8217;s default value will be the number of days since epoch for that date or <code>18629</code> in this case.</p>
+For example, if a <code>DATE</code> column is defined with the default value of <code>TO_DATE('2021-01-02', 'YYYY-MM-DD')</code>, the column&#8217;s default value will be the number of days since the UNIX epoch for that date or <code>18629</code> in this case.</p>
 </div>
 <div class="paragraph">
 <p>If a temporal type uses the <code>SYSDATE</code> constant to represent the default value, the connector will resolve this based on whether the column is defined as <code>NOT NULL</code> or <code>NULL</code>.
@@ -3056,14 +3089,14 @@ If you do not intend to use a multi-tenant configuration, it might be necessary 
 <p>For information about using Vagrant to set up Oracle in a virtual machine, see the <a href="https://github.com/debezium/oracle-vagrant-box/">Debezium Vagrant Box for Oracle database</a> GitHub repository.</p>
 </div>
 <div class="sect2">
-<h3 id="_compatibility_with_oracle_installation_types"><a class="anchor" href="#_compatibility_with_oracle_installation_types"></a>Compatibility with Oracle installation types</h3>
+<h3 id="compatibility-of-the-debezium-oracle-connector-with-oracle-installation-types"><a class="anchor" href="#compatibility-of-the-debezium-oracle-connector-with-oracle-installation-types"></a>Compatibility with Oracle installation types</h3>
 <div class="paragraph">
 <p>An Oracle database can be installed either as a standalone instance or using Oracle Real Application Cluster (RAC).
 The Debezium Oracle connector is compatible with both types of installation.</p>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_schemas_excluded_from_capture"><a class="anchor" href="#_schemas_excluded_from_capture"></a>Schemas excluded from capture</h3>
+<h3 id="schemas-that-the-debezium-oracle-connector-excludes-when-capturing-change-events"><a class="anchor" href="#schemas-that-the-debezium-oracle-connector-excludes-when-capturing-change-events"></a>Schemas excluded from capture</h3>
 <div class="paragraph">
 <p>When the Debezium Oracle connector captures tables, it automatically excludes tables from the following schemas:</p>
 </div>
@@ -3150,13 +3183,17 @@ exit;</code></pre>
 </div>
 </div>
 <div class="paragraph">
-<p>In addition, supplemental logging must be enabled for captured tables or the database in order for data changes to capture the <em>before</em> state of changed database rows.
-The following illustrates how to configure this on a specific table, which is the ideal choice to minimize the amount of information captured in the Oracle redo logs.</p>
+<p>To enable Debezium to capture the <em>before</em> state of changed database rows, you must also enable supplemental logging for captured tables or for the entire database.
+The following example illustrates how to configure supplemental logging for all columns in a single <code>inventory.customers</code> table.</p>
 </div>
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-none hljs">ALTER TABLE inventory.customers ADD SUPPLEMENTAL LOG DATA (ALL) COLUMNS;</code></pre>
 </div>
+</div>
+<div class="paragraph">
+<p>Enabling supplemental logging for all table columns increases the volume of the Oracle redo logs.
+To prevent excessive growth in the size of the logs, apply the preceding configuration selectively.</p>
 </div>
 <div class="paragraph">
 <p>Minimal supplemental logging must be enabled at the database level and can be configured as follows.</p>
@@ -3358,7 +3395,7 @@ Without these grants, the connector cannot operate.</p></td>
 </table>
 </div>
 <div class="sect2">
-<h3 id="_standby_databases"><a class="anchor" href="#_standby_databases"></a>Standby databases</h3>
+<h3 id="support-for-oracle-standby-databases"><a class="anchor" href="#support-for-oracle-standby-databases"></a>Standby databases</h3>
 <div class="paragraph">
 <p>An Oracle database can be configured with either a physical or a logical standby environment to provide for recovery after of a production failure.
 At this time, the Debezium Oracle connector cannot use a physical or logical standby database as the change event source.
@@ -3786,7 +3823,7 @@ For example, to define a <code>selector</code> parameter that specifies the subs
 <p><code>1</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The maximum number of tasks that should be created for this connector. The Oracle connector always uses a single task and therefore does not use this value, so the default is always acceptable.</p>
+<p>The maximum number of tasks that to create for this connector. The Oracle connector always uses a single task and therefore does not use this value, so the default is always acceptable.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -3909,19 +3946,9 @@ The connector is also unable to recover its database history topic.</p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>The adapter implementation that the connector uses when it streams database changes.
-You can set the following values:</p>
-</div>
-<div class="dlist">
-<dl>
-<dt class="hdlist1"><code>logminer</code>(default)</dt>
-<dd>
-<p>The connector uses the native Oracle LogMiner API.</p>
-</dd>
-<dt class="hdlist1"><code>xstream</code></dt>
-<dd>
-<p>The connector uses the Oracle XStreams API.</p>
-</dd>
-</dl>
+You can set the following values:
+<code>logminer</code>(default):: The connector uses the native Oracle LogMiner API.
+<code>xstream</code>:: The connector uses the Oracle XStreams API.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -4857,7 +4884,7 @@ It can be useful to set this property if you want the capturing process to alway
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>Specifies a value that the connector compares to the difference between the current and previous SCN values to determine whether an SCN gap exists.
-If the difference between the SCN values  is greater than the specified value, and the time difference is smaller than <a href="#oracle-property-log-mining-scn-gap-detection-time-interval-max-ms"><code>log.mining.scn.gap.detection.time.interval.max.ms</code></a> then an SCN gap is detected, and the connector uses a mining window larger than the configured maximum batch.</p>
+If the difference between the SCN values is greater than the specified value, and the time difference is smaller than <a href="#oracle-property-log-mining-scn-gap-detection-time-interval-max-ms"><code>log.mining.scn.gap.detection.time.interval.max.ms</code></a> then an SCN gap is detected, and the connector uses a mining window larger than the configured maximum batch.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -6231,9 +6258,9 @@ See <a href="#oracle-property-log-mining-transaction-retention-hours"><code>log.
 <p><code>int</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The number of times the system change number has been checked for advancement and remains unchanged.
-This is an indicator that long-running transaction(s) are ongoing and preventing the connector from flushing the latest processed system change number to the connector&#8217;s offsets.
-Under optimal operations, this should always be or remain close to <code>0</code>.</p>
+<p>The number of times that the system change number was checked for advancement and remains unchanged.
+A high value can indicate that a long-running transactions is ongoing and is preventing the connector from flushing the most recently processed system change number to the connector&#8217;s offsets.
+When conditions are optimal, the value should be close to or equal to <code>0</code>.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -7032,14 +7059,14 @@ To determine the parent index-organized table name, use the following SQL:</p>
 <div class="sect2">
 <h3 id="oracle-pga-aggregate-limit"><a class="anchor" href="#oracle-pga-aggregate-limit"></a>ORA-04036: PGA memory used by the instance exceeds PGA_AGGREGATE_LIMIT</h3>
 <div class="paragraph">
-<p>Oracle may issue this error if you&#8217;re connecting to a database that changes very infrequent.
+<p>Oracle might report this error when Debezium connects to a database in which changes occur infrequently.
 The Debezium connector starts an Oracle LogMiner session and reuses this session until a log switch is detected.
-The reuse is both a performance and resource utilization optimization; however, a long-running mining session can cause high PGA memory usage.</p>
+The reuse is both a performance and resource utilization optimization; however, a long-running mining session can cause high Program Global Area (PGA) memory usage.</p>
 </div>
 <div class="paragraph">
-<p>If your redo log switch frequency is low, you can avoid the ORA-04036 error by configuring Oracle to automatically switch logs on a defined frequency.
-A log switch causes the connector to restart the mining session, therefore avoiding high PGA memory usage.
-The following configuration forces Oracle to switch log files every 20 minutes if a log switch hasn&#8217;t occurred within that window:</p>
+<p>If your redo log switches infrequently, you can avoid the ORA-04036 error by specifying how frequently Oracle switches logs.
+A log switch causes the connector to restart the mining session, thereby avoiding high PGA memory usage.
+The following configuration forces Oracle to switch log files every 20 minutes if a log switch does not occur during that interval:</p>
 </div>
 <div class="listingblock">
 <div class="content">
@@ -7047,18 +7074,32 @@ The following configuration forces Oracle to switch log files every 20 minutes i
 </div>
 </div>
 <div class="paragraph">
-<p>This change will likely require SYSDBA permissions, so coordinate with your database administrator.</p>
+<p>Running the preceding query specific administrative privileges.
+Coordinate with your database administrator to implement the change.</p>
 </div>
-</div>
-<div class="sect2">
-<h3 id="oracle-sys-system-change-not-emitted"><a class="anchor" href="#oracle-sys-system-change-not-emitted"></a>LogMiner adapter does not capture changes made by SYS or SYSTEM</h3>
 <div class="paragraph">
-<p>Oracle uses the <code>SYS</code> and <code>SYSTEM</code> accounts for lots of internal changes and therefore the connector automatically filters changes made by these users when fetching changes from LogMiner.
-Never use the <code>SYS</code> or <code>SYSTEM</code> user accounts for changes to be emitted by the Debezium Oracle connector.</p>
+<p>&lt;&lt;&lt;&lt;&lt;&lt;&lt; Updated upstream</p>
 </div>
+<div class="exampleblock">
+<div class="content">
+<div class="paragraph">
+<p>As alternative to adjusting the Oracle <code>ARCHIVE_LAG_TARGET</code> parameter, you can limit the duration of an Oracle LogMiner session by setting the connector configuration option <a href="#oracle-property-log-mining-session-max-ms"><code>log.mining.session.max.ms</code></a>.
+The <code>log.mining.session.max.ms</code> option causes the LogMiner session to restart regularly, whether or not the switch to a new database log occurs.</p>
 </div>
-<div class="sect2">
-<h3 id="oracle-stops-capturing-changes-aws"><a class="anchor" href="#oracle-stops-capturing-changes-aws"></a>Connector stops capturing changes from Oracle on AWS</h3>
+<div class="paragraph">
+<p>&gt;&gt;&gt;&gt;&gt;&gt;&gt; Stashed changes</p>
+</div>
+<div id="oracle-sys-system-change-not-emitted" class="paragraph">
+<p>=== LogMiner adapter does not capture changes made by SYS or SYSTEM</p>
+</div>
+<div class="paragraph">
+<p>Oracle uses the <code>SYS</code> and <code>SYSTEM</code> accounts to carry out many internal changes.
+When the Debezium Oracle connector fetches changes from LogMiner, it automatically filters changes that originate from these administrator accounts.
+To ensure that the connector emit event records when you change a table, never use the <code>SYS</code> or <code>SYSTEM</code> user accounts to modify the table.</p>
+</div>
+<div id="oracle-stops-capturing-changes-aws" class="paragraph">
+<p>=== Connector stops capturing changes from Oracle on AWS</p>
+</div>
 <div class="paragraph">
 <p>Due to the <a href="https://aws.amazon.com/blogs/networking-and-content-delivery/best-practices-for-deploying-gateway-load-balancer">fixed idle timeout of 350 seconds on the AWS Gateway Load Balancer</a>,
 JDBC calls that require more than 350 seconds to complete can hang indefinitely.</p>
@@ -7100,7 +7141,26 @@ For example, such timeouts can occur when a LogMiner session that processes larg
 </div>
 <div class="paragraph">
 <p>The preceding steps configure the TCP network stack to send keep-alive packets every 60 seconds.
-As a result, the AWS Gateway Load Balancer does not timeout when JDBC calls to the LogMiner API take more than 350 seconds to complete, enabling the connector to continue to read changes from the database&#8217;s transaction logs.</p>
+As a result, the AWS Gateway Load Balancer does not timeout when JDBC calls to the LogMiner API take more than 350 seconds to complete, enabling the connector to continue to read changes from the database&#8217;s transaction logs.
+&lt;&lt;&lt;&lt;&lt;&lt;&lt; Updated upstream</p>
+</div>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="oracle-oracle-11-exception-ora01882"><a class="anchor" href="#oracle-oracle-11-exception-ora01882"></a>Connection fails with error <code>ORA-01882: timezone region not found</code></h3>
+<div class="paragraph">
+<p>When you start a connector that uses the Oracle JDBC driver (<code>ojdbc8.jar</code>) to access an Oracle 11g database, the connector might report the following error:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-shell hljs" data-lang="shell">Caused by: java.sql.SQLException: ORA-00604: error occurred at recursive SQL level 1
+ORA-01882: timezone region not found</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>To prevent the preceding error from occurring, add the following setting to the connector configuration: <code>database.oracle.jdbc.timezoneAsRegion=false</code>.
+&gt;&gt;&gt;&gt;&gt;&gt;&gt; Stashed changes</p>
 </div>
 </div>
 </div>
@@ -7113,7 +7173,7 @@ As a result, the AWS Gateway Load Balancer does not timeout when JDBC calls to t
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2022 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/75318905e5575e09e06cb7594186dd21ef1033fd">75318905</a></span>)
+            <div class="copyright">Copyright &copy; 2022 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/239693b981aacda29fed3575156b3d309bc907c8">239693b9</a></span>)
             
         </div>
     </footer>
