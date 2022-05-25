@@ -26,6 +26,7 @@ group :jekyll_plugins do
   gem 'jekyll-paginate-v2'
   gem 'jekyll-archives'
   gem 'jekyll-minifier'
+  gem 'jekyll-github-metadata'
 end
 
 # Windows does not include zoneinfo files, so bundle the tzinfo-data gem
