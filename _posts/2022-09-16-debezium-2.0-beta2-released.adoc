@@ -1,0 +1,263 @@
+---
+layout: post
+title:  Debezium 2.0.0.Beta2 Released
+date:   2022-09-16
+tags: [ releases, mysql, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox ]
+author: ccranfor
+---
+
+I am excited to announce the release of Debezium *2.0.0.Beta2*!
+
+This release contains several breaking changes, stability fixes, and bug fixes, all to inch us closer to 2.0.0.Final.
+Overall, this release contains a total of https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20AND%20fixVersion%20%3D%202.0.0.Beta2%20ORDER%20BY%20component%20ASC[107 issues] that were fixed.
+
++++<!-- more -->+++
+
+If you intend to upgrade to 2.0.0.Beta2, we strongly recommend that you read the release notes before the upgrade to understand all breaking changes.
+The following noteworthy list of changes are those we'll cover in this blog post, some of which are breaking:
+
+* [breaking] link:#new-connector-property-namespaces[New connector property namespaces]
+* [potentially breaking] link:#all-debezium-schemas-are-named[All event schemas properly named and versioned]
+* [potentially breaking] link:#skipped-operations[Skipped operations now includes truncate events by default]
+* link:#mysql-binlog-compression-support[MySQL binlog compression support]
+* link:#cassandra4-incremental-commit-log-support[Cassandra 4 incremental commit log support]
+* link:#pause-and-resume-incremental-snapshots[Pausing and resuming paused incremental snapshots]
+* link:#custom-sql-filtering-incremental-snapshots[Custom SQL filtering for incremental snapshots]
+* link:#signal-collection-automatically-registered[Signal collection now added to table include list automatically]
+* link:#multitasking-vitess[Multitasking support for the Vitess connector]
+
+[[new-connector-property-namespaces]]
+== New connector property namespaces
+
+One of the largest overhauls going into Debezium 2.0 is the introduction of new connector property namespaces.
+Starting in Debezium 2.0 Beta2 and onward, many connector properties have been relocated with new names.
+This is a breaking change and affects most, if not all, connector deployments during the upgrade process.
+
+Debezium previously used the prefix "database." with a plethora of varied connector properties.
+Some of these properties were meant to be passed directly to the JDBC driver and in other cases to the database history implementations, and so on.
+Unfortunately, we identified situations where some properties were being passed to underlying implementations that weren't intended.
+While this wasn't creating any type of regression or problem, it could potentially introduce a future issue if there were property name collisions,
+for example, a JDBC driver property that matched with a "database." prefixed Debezium connector property.
+
+The following describes the changes to the connector properties
+
+* All configurations previously prefixed as `database.history.` are now to be prefixed using `schema.history.internal.` instead.
+* All JDBC pass-thru options previously specified using `database.` prefix should not be prefixed using `driver.` instead.
+* The `database.server.name` connector property renamed to `topic.prefix`.
+* The MongoDB `mongodb.name` connector property aligned to use `topic.prefix` instead.
+
+Again, please review your connector configurations prior to deployment and adjust accordingly.
+
+[[all-debezium-schemas-are-named]]
+== All Debezium event schemas are named and versioned
+
+Debezium change events are emitted with a schema definition, which contains metadata about the fields such as the type, whether it's required, and so on.
+In previous iterations of Debezium, some schema definitions did not have explicit names nor were they being explicitly versioned.
+In this release, we've moved to making sure that all schema definitions have an explicit name and version associated with them.
+The goal of this change is to help with future event structure compatibility, particularly for those who are using schema registries.
+However, if you are currently using a schema registry, be aware that this change may lead to schema compatibility issues during the upgrade process.
+
+[[skipped-operations]]
+== Skipped operations default to truncate events
+
+Debezium supports skipping specific event types by including the `skipped.operations` connector property in the connector's configuration.
+This feature can be useful if you're only interested in a subset of operations, such as only inserts and updates but not deletions.
+
+One specific event type, truncates (`t`), is only supported by a subset of relational connectors and whether these events were to be skipped wasn't consistent.
+In this release, we have aligned the `skipped.operations` behavior so that if the connector supports truncate events, these events are skipped by default.
+
+Please review the following rule-set:
+
+* Connector supports truncate events and isn't the Oracle connector
+* Connector configuration does not specify the `skipped.operations` in the configuration
+
+If all the above are true, then the connector's behavior will change after the upgrade.
+If you wish to continue to emit truncate events, the `skipped.operations=none` configuration will be required.
+
+[[mysql-binlog-compression-support]]
+== MySQL binlog compression support
+
+MySQL added the ability to compress binlog events using the ZSTD algorithm in version 8.0.20.
+To enable compression, the `binlog.transaction_compression` server variable must be toggled `ON`.
+When enabled, the binlog behavior behaves the same as when compression is disabled,
+but instead, the contents of the binlog entries are compressed to save space and are also replicated to replicas after compression,
+allowing the network overhead to be reduced significantly for larger transactions.
+
+In this release, Debezium now supports the reading of binlog entries that have been written with compression enabled.
+If you're interested in reading more about MySQL binlog compression,
+you can refer to the https://dev.mysql.com/doc/refman/8.0/en/binary-log-transaction-compression.html[Binary Log Transaction Compression] section of the MySQL documentation for more details.
+
+[[cassandra4-incremental-commit-log-support]]
+== Cassandra 4 incremental commit log support
+
+https://cassandra.apache.org/doc/latest/cassandra/operating/cdc.html[Cassandra 4] has improved the integration with CDC by adding a feature that when the fsync operation occurs,
+Cassandra will update a CDC-based index file to contain the latest offset values.
+This index file allows CDC implementations to read up to the offset that is considered durable in Cassandra.
+
+In this release, Debezium now uses this CDC-based index file to eliminate the inherent delay in processing CDC events from Cassandra that previously existed.
+This should provide Cassandra users a substantial improvement in CDC with Debezium, and gives an incentive to consider Cassandra 4 over Cassandra 3.
+
+[[pause-and-resume-incremental-snapshots]]
+== Pause and resume incremental snapshots
+
+Incremental snapshots have become an integral feature in Debezium.
+The incremental snapshot feature allows users to re-run a snapshot on one or more collections/tables for a variety of reasons.
+Incremental snapshots were originally introduced with just a _start_ signal.
+We eventually added the ability to _stop_ an ongoing incremental snapshot or to be able to remove a subset of collections/tables from an in-progress incremental snapshot.
+
+In this release, we've built on top of the existing signal foundation and we've introduced two new signals,
+one to _pause_ an in-progress incremental snapshot and then another to _resume_ the incremental snapshot if it has previously been paused.
+To pause an incremental snapshot, a `pause-snapshot` signal must be sent, and to resume, a `resume-snapshot` signal can be used.
+
+These two new signals can be sent using the signal table strategy or the Kafka signal topic strategy for MySQL.
+Please refer to the  https://debezium.io/documentation/reference/2.0/configuration/signalling.html#_signal_actions[signal support documentation] for more details on signals and how they work.
+
+[[custom-sql-filtering-incremental-snapshots]]
+== Custom SQL filtering for incremental snapshots
+
+Although uncommon, there may be scenarios such as a connector misconfiguration, where a specific record or subset of records needs to be re-emitted to the topic.
+Unfortunately, incremental snapshots have traditionally been an all-or-nothing type of process, where we would re-emit all records from a collection or table as a part of the snapshot.
+
+In this release, a new `additional-condition` property can be specified in the signal payload, allowing the signal to dictate a SQL-based predicate to control what subset of records should be included in the incremental snapshot instead of the default behavior of _all rows_.
+
+The following example illustrates sending an incremental snapshot signal for the `products` table, but instead of sending all rows from the table to the topic, the `additional-condition` property has been specified to restrict the snapshot to only send events that relate to product id equal to `12`:
+
+[source,json]
+----
+{
+  "type": "execute-snapshot",
+  "data": {
+    "data-collections": ["inventory.products"],
+    "type": "INCREMENTAL",
+    "additional-condition": "product_id=12"
+  }
+}
+----
+
+We believe this new incremental snapshot feature will be tremendously helpful for a variety of reasons, without always having to re-snapshot all rows when only a subset of data is required.
+
+[[signal-collection-automatically-registered]]
+== Signal collection automatically added to include filters
+
+In prior releases of Debezium, the signal collection/table used for incremental snapshots had to be manually added to your `table.include.list` connector property.
+A big theme in this release was improvements on incremental snapshots, so we've taken this opportunity to streamline this as well.
+Starting in this release, Debezium will automatically add the signal collection/table to the table inclusion filters, avoiding the need for users to manually add it.
+
+This change does not impose any compatibility issues.
+Connector configurations that already include the signal collection/table in the `table.include.list` property will continue to work without requiring any changes.
+However, if you wish to align your configuration with current behavior, you can also safely remove the signal collection/table from the `table.include.list`,
+and Debezium will begin to handle this for you automatically.
+
+[[multitasking-vitess]]
+== Multitasking support for Vitess connector
+
+The Vitess connector previously allowed operation in two different modes that depended entirely on whether the connector configuration specified any shard details.
+Unfortunately in both cases, each resulted in a single task responsible for performing the VStream processing.
+For larger Vitess installations with many shards, this architecture could begin to show latency issues as it may not be able to keep up with all the changes across all shards.
+And even more complex, when specifying the shard details, this required manually resolving the shards across the cluster and starting a single Debezium connector per shard,
+which is both error-prone and more importantly could result in deploying many Debezium connectors.
+
+The Vitess community recognized this and sought to find a solution that addresses all these problems, both from a maintenance and error perspective.
+In Debezium 2.0 Beta2, the Vitess connector now automatically resolves the shards via a discovery mechanism, quite similar to that of MongoDB.
+This discovery mechanism will then split the load across multiple tasks, allowing for a single deployment of Debezium running a task per shard or shard lists, depending on the maximum number of allowed tasks for the connector.
+
+During the upgrade, the Vitess connector will automatically migrate the offset storage to the new format used with the multitasking behavior.
+But be aware that once you've upgraded, you won't be able to downgrade to an earlier version as the offset storage format will have changed.
+
+== Other fixes & improvements
+
+There are many bugfixes and stability changes in this release, some noteworthy are:
+
+* Source info of incremental snapshot events exports wrong data https://issues.redhat.com/browse/DBZ-4329[DBZ-4329]
+* Deprecate internal key/value converter options  https://issues.redhat.com/browse/DBZ-4617[DBZ-4617]
+* "No maximum LSN recorded" log message can be spammed on low-activity databases https://issues.redhat.com/browse/DBZ-4631[DBZ-4631]
+* Redis Sink config properties are not passed to DB history  https://issues.redhat.com/browse/DBZ-5035[DBZ-5035]
+* Upgrade SQL Server driver to 10.2.1.jre8 https://issues.redhat.com/browse/DBZ-5290[DBZ-5290]
+* HTTP sink not retrying failing requests https://issues.redhat.com/browse/DBZ-5307[DBZ-5307]
+* Translation from mongodb document to kafka connect schema fails when nested arrays contain no elements https://issues.redhat.com/browse/DBZ-5434[DBZ-5434]
+* Duplicate SCNs on same thread Oracle RAC mode incorrectly processed https://issues.redhat.com/browse/DBZ-5439[DBZ-5439]
+* Deprecate legacy topic selector for all connectors https://issues.redhat.com/browse/DBZ-5457[DBZ-5457]
+* Remove the dependency of JdbcConnection on DatabaseSchema https://issues.redhat.com/browse/DBZ-5470[DBZ-5470]
+* Missing the regex properties validation before start connector of DefaultRegexTopicNamingStrategy  https://issues.redhat.com/browse/DBZ-5471[DBZ-5471]
+* Create Index DDL fails to parse when using TABLESPACE clause with quoted identifier https://issues.redhat.com/browse/DBZ-5472[DBZ-5472]
+* Outbox doesn't check array consistency properly when it determines its schema https://issues.redhat.com/browse/DBZ-5475[DBZ-5475]
+* Misleading statistics written to the log https://issues.redhat.com/browse/DBZ-5476[DBZ-5476]
+* Remove SQL Server SourceTimestampMode https://issues.redhat.com/browse/DBZ-5477[DBZ-5477]
+* Debezium connector task didn't retry when failover in mongodb 5 https://issues.redhat.com/browse/DBZ-5479[DBZ-5479]
+* Better error reporting for signal table failures https://issues.redhat.com/browse/DBZ-5484[DBZ-5484]
+* Oracle DATADUMP DDL cannot be parsed https://issues.redhat.com/browse/DBZ-5488[DBZ-5488]
+* Upgrade PostgreSQL driver to 42.4.1 https://issues.redhat.com/browse/DBZ-5493[DBZ-5493]
+* Mysql connector parser the ddl statement failed when including keyword "buckets" https://issues.redhat.com/browse/DBZ-5499[DBZ-5499]
+* duplicate call to config.validateAndRecord() in RedisDatabaseHistory https://issues.redhat.com/browse/DBZ-5506[DBZ-5506]
+* DDL statement couldn't be parsed : mismatched input 'ENGINE' https://issues.redhat.com/browse/DBZ-5508[DBZ-5508]
+* Use “database.dbnames” in SQL Server docs https://issues.redhat.com/browse/DBZ-5516[DBZ-5516]
+* LogMiner DML parser incorrectly interprets concatenation operator inside quoted column value https://issues.redhat.com/browse/DBZ-5521[DBZ-5521]
+* Mysql Connector DDL Parser does not parse all privileges https://issues.redhat.com/browse/DBZ-5522[DBZ-5522]
+* CREATE TABLE with JSON-based CHECK constraint clause causes MultipleParsingExceptions https://issues.redhat.com/browse/DBZ-5526[DBZ-5526]
+* Disable preferring DDL before logical schema in history recovery https://issues.redhat.com/browse/DBZ-5535[DBZ-5535]
+* EmbeddedEngine should initialize Connector using SourceConnectorContext https://issues.redhat.com/browse/DBZ-5534[DBZ-5534]
+* Support EMPTY column identifier https://issues.redhat.com/browse/DBZ-5550[DBZ-5550]
+* Use TCCL as the default classloader to load interface implementations https://issues.redhat.com/browse/DBZ-5561[DBZ-5561]
+* max.queue.size.in.bytes is invalid https://issues.redhat.com/browse/DBZ-5569[DBZ-5569]
+* Language type for listings in automatic topic creation https://issues.redhat.com/browse/DBZ-5573[DBZ-5573]
+* Upgrade mysql-binlog-connector-java library version https://issues.redhat.com/browse/DBZ-5574[DBZ-5574]
+* Vitess: Handle VStream close unexpectedly https://issues.redhat.com/browse/DBZ-5579[DBZ-5579]
+* Error when parsing alter sql  https://issues.redhat.com/browse/DBZ-5587[DBZ-5587]
+* Field validation errors are misleading for positive, non-zero expectations https://issues.redhat.com/browse/DBZ-5588[DBZ-5588]
+* Mysql connector can't handle the case-sensitive of rename/change column statement https://issues.redhat.com/browse/DBZ-5589[DBZ-5589]
+* LIST_VALUE_CLAUSE not allowing TIMESTAMP LITERAL https://issues.redhat.com/browse/DBZ-5592[DBZ-5592]
+* Oracle DDL does not support comments on materialized views https://issues.redhat.com/browse/DBZ-5595[DBZ-5595]
+* Oracle DDL does not support DEFAULT ON NULL https://issues.redhat.com/browse/DBZ-5605[DBZ-5605]
+* Datatype mdsys.sdo_geometry not supported https://issues.redhat.com/browse/DBZ-5609[DBZ-5609]
+
+Altogether, a total of https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20AND%20fixVersion%20%3D%202.0.0.Beta2%20ORDER%20BY%20component%20ASC[107 issues] were fixed for this release.
+
+A big thank you to all the contributors from the community who worked on this release:
+https://github.com/ahmedjami[Ahmed ELJAMI],
+https://github.com/ahus1[Alexander Schwartz],
+https://github.com/aloubyansky[Alexey Loubyansky],
+Gabor[Andras],
+https://github.com/ani-sha[Anisha Mohanty],
+https://github.com/roldanbob[Bob Roldan],
+https://github.com/Naros[Chris Cranford],
+https://github.com/davsclaus[Claus Ibsen],
+https://github.com/debjeetsarkar[Debjeet Sarkar],
+https://github.com/ggaborg[Gabor Andras],
+https://github.com/gunnarmorling[Gunnar Morling],
+https://github.com/ruanhang1993[Hang Ruan],
+https://github.com/harveyyue[Harvey Yue],
+https://github.com/HenryCaiHaiying[Henry Cai],
+https://github.com/nicholas-fwang[Inki Hwang],
+https://github.com/jcechace[Jakub Cechacek],
+https://github.com/DerGut[Jannik Steinmann],
+https://github.com/jeremy-l-ford[Jeremy Ford],
+https://github.com/novotnyJiri[Jiri Novotny],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/kgalieva[Katerina Galieva],
+https://github.com/winklerm[Marek Winkler],
+https://github.com/MartinMedek[Martin Medek],
+https://github.com/nitinitt[Nitin Chhabra],
+https://github.com/thangdc94[Phạm Ngọc Thắng],
+https://github.com/roldanbob[Robert Roldan],
+https://github.com/druud[Ruud H.G. van Tol],
+https://github.com/jaegwonseo[Seo Jae-kwon],
+https://github.com/morozov[Sergei Morozov],
+https://github.com/smiklosovic[Stefan Miklosovic],
+https://github.com/ramanenka[Vadzim Ramanenka],
+https://github.com/vivekwassan[Vivek Wassan],
+https://github.com/vjuranek[Vojtech Juranek],
+https://github.com/GOODBOY008[Zhongqiang Gong],
+https://github.com/BetaCat0[合龙 张],
+https://github.com/comil4444[崔世杰], and
+https://github.com/pkgonan[민규 김]!
+
+== What's next?
+
+With the release of Debezium 2.0 Beta2, we're in the home stretch toward 2.0.0.Final.
+The community should expect a CR1 by the end of September and 2.0.0.Final released by the middle of October.
+
+In addition, our very own Gunnar Morling and I will be guests on the upcoming https://quarkus.io/insights[Quarkus Insights] podcast, episode #103.
+We will be discussing Debezium and Quarkus, how Debezium leverages the power of Quarkus, a virtual how-to on embedding Debezium in a Quarkus-based application, and discussing all new features in Debezium 2.0.
+Be sure to check out the podcast and let us what you think!
+
+
