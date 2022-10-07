@@ -1,0 +1,474 @@
+---
+layout: post
+title: "Debezium for Oracle - Part 1: Installation and Setup"
+date:  2022-09-30 12:00:00 0000
+tags:  [ debezium, oracle, examples ]
+author: ccranfor
+---
+
+:TARGET_REDO_LOG_SIZE: 400
+
+This post is part of a 3-part series to explore using Debezium to ingest changes from an Oracle database using Oracle LogMiner.
+Throughout the series, we'll examine all the steps to setting up a proof of concept (POC) deployment for Debezium for Oracle.
+We will discuss setup and configurations as well as the nuances of multi-tenancy.
+We will also dive into any known pitfalls and concerns you may need to know and how to debug specific problems.
+And finally, we'll talk about performance and monitoring to maintain a healthy connector deployment.
+
+Throughout this exercise, we hope that this will show you just how simple it is to deploy Debezium for Oracle.
+This installation and setup portion of the series may seem quite complicated, but many of these steps likely already exist in a pre-existing environment.
+We will dive into each step, explaining it is essential should you use a container image deployment.
+
++++<!-- more -->+++
+
+So without any further delay, let's dive right in!
+
+== What is Oracle?
+
+As ironic as the question may seem, some people may not know what an Oracle database is.
+An Oracle database is a relational database management system (RBDMS), a database that stores and provides access to data points that are often related.
+The database is developed and marketed by Oracle Corporation and is one of the most trusted and widely used relational database engines in the market,
+providing a scalable relational database architecture.
+
+An Oracle database consists of a collection of schemas that represent a collection of logical structures of data or schema objects.
+A schema object can be anything from a trigger, view, table, data type, sequence, procedure, function, and others.
+Furthermore, Oracle 12 introduced a multi-tenant architecture, allowing a single database instance to function as a multi-tenant container database (CDB) that houses zero, one, or many customer-created pluggable databases (PDBs).
+
+The goal, install an Oracle database, connect Debezium to Oracle, and convert ingested changes into change events stored in Apache Kafka.
+
+[id=install-oracle]
+== Installing Oracle
+
+To get started, we will need a running Oracle database environment.
+One of the easiest ways to do this is to use https://www.docker.com[Docker] by deploying a container running the Oracle database.
+Oracle has published such containers in their https://container-registry.oracle.com/[container registry], allowing anyone to run the database and test-drive it.the dat
+You can skip this section if you intend to ingest changes from an existing Oracle database.
+
+[NOTE]
+====
+The Oracle container images are all pre-built using Oracle with multi-tenancy.
+This means we will follow the setups according to a multi-tenant architecture.
+Some minor adjustments may be needed if you're using an installation that does not use multi-tenancy.
+====
+
+For this exercise, we're going to use https://container-registry.oracle.com/ords/f?p=113:4:11477241761337:::4:P4_REPOSITORY,AI_REPOSITORY,AI_REPOSITORY_NAME,P4_REPOSITORY_NAME,P4_EULA_ID,P4_BUSINESS_AREA_ID:9,9,Oracle%20Database%20Enterprise%20Edition,Oracle%20Database%20Enterprise%20Edition,1,0&cs=318vPzAxLqFaC2tslO9ao27bihoUQ6MP-WvtaqYfx_ifILYwLl_2hLJU5hG8HeJv8G5w9JXbcv4i-DZD7zgTDtg[this container image].
+Using `docker pull`, the image is pulled after authenticating with the Oracle container registry using the following command:
+
+[source,shell,subs="attributse"]
+----
+docker pull container-registry.oracle.com/database/enterprise:latest
+----
+
+To start the container, use the `docker run` command.
+Several environment variables, such as the database SID, pluggable database name, and password, are required since the database container image must first install the Oracle database.
+
+[source,shell,subs="attributse"]
+----
+docker run -d \
+  --name dbz_oracle21 \
+  -p 1521:1521 \
+  -e ORACLE_SID=ORCLCDB \
+  -e ORACLE_PDB=ORCLPDB1 \
+  -e ORACLE_PWD=oraclepw \
+  container-registry.oracle.com/database/enterprise:latest
+----
+
+The `ORACLE_SID` refers to the system/service ID used to identify the database.
+Since we are using multi-tenancy, we will use the name `ORCLCDB` to represent the _container database_, or CDB.
+In Oracle's multi-tenant architecture, the `ORACLE_PDB` refers to the system/service ID used to identify the _pluggable database_, or PDB.
+And finally, the `ORACLE_PWD` refers to the password used for the `SYS` and `SYSTEM` users, which we'll use later.
+
+[NOTE]
+====
+The container will persist data to database files on the container's filesystem.
+The data will be lost when removing the container.
+To persist the data outside the container, please refer to the Oracle registry's README to understand how to set a volume on the `docker run` command.
+====
+
+We explicitly started the docker container as a daemon, a background process.
+If you wish to see what is happening within the container, you can use the command `docker logs -f dbz_oracle21` to tail the container's database log.
+
+For the next few minutes, the database will be configured and installed inside the container, which happens when a new container starts and no initial configuration and database exists.
+You will know whether the installation was successful by looking for a banner in the logs that would look similar to the following:
+
+[source,shell,subs="attributse"]
+----
+#########################
+DATABASE IS READY TO USE!
+#########################
+----
+
+At this point, the installation has concluded, and it's safe to move on to the next section.
+
+== Configuring Oracle
+
+Several database configurations are necessary to ingest changes from an Oracle database.
+If you are using a pre-existing environment, you may be able to skip some of these steps.
+
+The following configurations are necessary:
+
+1. link:#configure-oracle-archive-logs[Archive logs]
+2. link:#configure-oracle-redo-logs[Redo logs]
+3. link:#configure-oracle-logging[Supplemental logging]
+4. link:#configure-oracle-users[Users and tablespaces/schemas in CDB and PDB]
+
+[id=configure-oracle-archive-logs]
+=== Configure Oracle: Archive logs
+
+Oracle saves filled groups of redo logs (the database transaction logs) to one or more offline destinations, collectively known as the archived redo log or the archive logs.
+Changes main in a primary database are replicated to logical or physical standby environments using archive logs.
+
+A log switch happens when a redo log fills up and is archived.
+Debezium ingests changes across both redo and archive logs. Debezium requires access to the archive log to finish processing redo entries when the redo log is archived.
+
+The Oracle container registry image used in the link:#install_oracle[Install Oracle] section does not have archive logging enabled.
+If you use another image or a pre-existing environment, you must check whether archive logging is enabled.
+To check the status, use the `SYS` user and the password defined during the installation for `ORACLE_PWD` to connect to the `ORCLCDB` database and execute the following query:
+
+[source,sql,subs="attributse"]
+----
+SELECT LOG_MODE FROM V$DATABASE
+----
+
+If the column contains `ARCHIVELOG`, then archive logging is enabled.
+If the column contains the value `NOARCHIVELOG`, archive logging isn't enabled, and further configuration is necessary.
+
+When setting up the Oracle archive log, not only do we need to enable the logging feature, but we'll also need to specify a location on the disk to store the logs.
+If you are using a pre-existing environment, you will need to consult with your database administrator for this.
+Most database servers store archive log files using special paths, and you will need to know if Oracle Automatic Storage Management (ASM) is used or what volume has adequate space on the database server.
+
+Let's open a terminal to the Oracle database container.
+We want to connect to the database container using SQL*Plus to use a client that allows easy unmounting and restarting of the database.
+So in a new terminal, execute:
+
+[source,shell,subs="attributes"]
+----
+docker exec -it dbz_oracle21 -e ORACLE_SID=ORCLCDB sqlplus sys as sysdba
+----
+
+[NOTE]
+====
+If you connect to an existing Oracle environment, you can also `ssh` to the database server's shell to run SQL*Plus.
+====
+
+The above command will start Oracle's SQL*Plus, a command line Oracle SQL client.
+The client will ask for your password, which will be the same as the `ORACLE_PWD` environment variable or `oraclepw` if you're using the Oracle registry container.
+Use your environment's `SYS` user password when connecting to an existing Oracle environment.
+
+We need to set two database parameters:
+
+`db_recovery_file_dest_size`::
+The number of bytes available to store archive logs.
+
+[WARNING]
+====
+Suppose the size of the existing archive logs and the next log to be archived exceeds this configured value.
+In that case, the Oracle database archiver process will block.
+If all redo logs require archiving and the archiver process is blocked, the database prevents changes until the archiver process unblocks.
+Deleting older archive logs using the `RMAN` utility unblocks the archiver process, allowing any pending redo logs to be archived.
+So it's generally a good idea to pick a decent size based on your database retention policy.
+====
+
+`db_recovery_file_dest`::
+The location on the disk where the archive logs are stored.
+
+[WARNING]
+====
+This location must be readable and writable by the Oracle database user, often called the `oracle` user.
+====
+
+To set these values, we'll execute the following SQL commands inside the SQL*Plus terminal window where we've already connected to the database as the `SYS` user.
+Again, if you're connecting to a pre-existing environment, please consult your database administrator before you proceed here.
+
+[source,sql]
+----
+ALTER SYSTEM SET db_recovery_file_dest_size = 10G;
+ALTER SYSTEM SET db_recovery_file_dest = '/opt/oracle/oradata/ORCLCDB' scope=spfile;
+SHUTDOWN IMMEDIATE
+STARTUP MOUNT
+ALTER DATABASE ARCHIVELOG;
+ALTER DATABASE OPEN;
+ARCHIVE LOG LIST;
+----
+
+The above `ALTER` statements adjust the database parameters, specifying that the retention of archive logs is up to a maximum of 10GB and that `/opt/oracle/oradata/ORCLCDB` is where the logs are stored.
+
+The final output from SQL*Plus should show the following:
+
+[source,shell]
+----
+SQL> Database log mode	     Archive Mode
+Automatic archival	         Enabled
+Archive destination	        USE_DB_RECOVERY_FILE_DEST
+Oldest online log sequence         1
+Next log sequence to archive       3
+Current log sequence	       3
+----
+
+The configuration of the archive logs is complete, and when a database log switch occurs, the Oracle ARCH Process will convert the redo log to an archive log stored in the location specified on the disk.
+
+[NOTE]
+====
+Oracle supports the notion of multiple archive log destinations, allowing the storage of a redo log at different file locations.
+Multiple storage locations are common when using Oracle DataGuard to transfer copies of the archive logs to a secondary server for disaster recovery or business intelligence.
+We will not cover how to configure this in this blog post, but it is worth noting that functionality exists and can be helpful.
+====
+
+[id=configure-oracle-redo-logs]
+=== Configure Oracle: Redo logs
+
+Oracle's transaction log is known as a redo log.
+These logs are vital as they're used in a database crash or media failure to recover to a checkpoint.
+Unfortunately, Oracle container images often use a redo log configuration that isn't useful for Debezium.
+
+There are two link:/documentation/reference/stable/connectors/oracle.html#oracle-property-log-mining-strategy[log mining strategies] for Debezium's Oracle connector.
+The strategy controls how the connector interacts with Oracle LogMiner and how the connector ingests schema and table changes.
+
+`redo_log_catalog`::
+The data dictionary will be written periodically to the redo logs, causing a higher generation of archive logs over time.
+This setting enables tracking DDL changes, so if a table's schema changes, this will be the ideal strategy for that purpose.
+
+`online_catalog`::
+The data dictionary will not be written periodically to the redo logs, leaving the generation of archive logs consistent with current behavior.
+Oracle LogMiner will mine changes substantially faster; however, this performance comes at the cost of *not* tracking DDL changes.
+If a table's schema remains constant, this will be the ideal strategy for that purpose.
+
+When using the `online_catalog` mode, you can safely skip this step entirely.
+
+When using the `redo_log_catalog` mode (the default), the redo log size is critical to reducing the frequency of log switches.
+The LogMiner session restarts and the data dictionary is rebuilt in the redo logs when a log switch occurs.
+The dictionary is read back by LogMiner and used to track DDL changes when the session restarts, which can lead to a slight initial session delay while the dictionary tables are populated.
+Overall you gain better performance when the redo log is large enough to write the data dictionary to a single log file.
+
+The Oracle container registry images come configured with a redo log size of `200MB`.
+This default size is too small when using the default mining strategy, so we will adjust this so that the logs use a size of `{TARGET_REDO_LOG_SIZE}MB`.
+
+[NOTE]
+====
+When working with Oracle installed without multi-tenancy, using `{TARGET_REDO_LOG_SIZE}MB` may still be slightly small since a host of base tables exist in the root database but do not exist in the pluggable databases when multi-tenancy is enabled.
+Please use `500MB` instead if you're ingesting changes from an Oracle environment without multi-tenancy at a minimum.
+
+Regardless of multi-tenancy, these values should be much more significant in your production environment.
+Your DBA will be able to use Oracle's sizing guide to determine the best value based on the log switch frequency and load on the system.
+====
+
+Before making any changes, it's essential to examine the current state of your environment.
+In the same terminal where you enabled archive logging, execute the following SQL to determine the current log sizes.
+
+[source,sql,subs="attributes"]
+----
+SELECT GROUP#, BYTES/1024/1024 SIZE_MB, STATUS FROM V$LOG ORDER BY 1;
+----
+
+The Oracle container registry image will return the following output:
+
+[source,sql,subs="attributes"]
+----
+    GROUP#    SIZE_MB STATUS
+---------- ---------- ----------------
+	 1	  200 INACTIVE
+	 2	  200 INACTIVE
+	 3	  200 CURRENT
+----
+
+This output tells us there are 3 log groups, and each group consumes `200MB` of space per log.
+Additionally, the status associated with each group is crucial as it represents the current state of that log.
+
+The following describes the log statues in detail:
+
+`INACTIVE`::
+This means Oracle has initialized the log and isn't currently in use.
+`ACTIVE`::
+This means Oracle has initialized the log and is currently in use.
+The redo log is required and in use in case of a failure so the database can safely recover.
+`CURRENT`::
+This means Oracle is currently writing to this log.
+When working with Oracle Real Application Clusters (RAC), multiple logs can be marked as current, representing a log per cluster node.
+`UNUSED`::
+This means Oracle has not initialized the log and isn't in use.
+
+Now, using the same terminal window, execute the following SQL to determine the filenames and locations of the redo logs.
+
+[source,sql,subs="attributes"]
+----
+SELECT GROUP#, MEMBER FROM V$LOGFILE ORDER BY 1, 2;
+----
+
+The Oracle container registry image will return the following output:
+
+[source,sql,subs="attributes"]
+----
+    GROUP# MEMBER
+---------- ---------------------------------------------------
+	 1 /opt/oracle/oradata/ORCLCDB/redo01.log
+	 2 /opt/oracle/oradata/ORCLCDB/redo02.log
+	 3 /opt/oracle/oradata/ORCLCDB/redo03.log
+----
+
+We can glean from this that each log group consists of a single redo log.
+Oracle does support the notion of multiple logs per group, allowing for what is called multiplexing.
+You will generally only see this in a production environment and occasionally in a test environment, but it's rare to see this in a development or container environment.
+
+The goal is to adjust the `BYTES` column in the `V$LOG` table to have a value of `{TARGET_REDO_LOG_SIZE}MB`.
+Unfortunately, the only way to make this adjustment is to drop and re-create the log group, and this is only possible if the `STATUS` of the group is either `INACTIVE` or `UNUSED`.
+Since log group 1 was `INACTIVE` above, we'll start with it, but you can safely perform this procedure on the log groups in any order.
+
+In the terminal where SQL*Plus is running, execute the following:
+
+[source,sql,subs="attributes"]
+----
+ALTER DATABASE CLEAR LOGFILE GROUP 1;
+ALTER DATABASE DROP LOGFILE GROUP 1;
+ALTER DATABASE ADD LOGFILE GROUP 1 ('/opt/oracle/oradata/ORCLCDB/redo01.log') size {TARGET_REDO_LOG_SIZE}M REUSE;
+----
+
+This will drop and re-create the log group with the size of `{TARGET_REDO_LOG_SIZE}MB`.
+We will use the same log file name in the `MEMBER` column from the `VLOGFILE` table.
+If the database uses multiplexing, with multiple log files per log group, use a comma-delimited list of filenames to register each log file.
+
+Continue the above procedure for all log groups, changing the log group and filenames accordingly until all `INACTIVE` or `UNUSED` groups have a size of `{TARGET_REDO_LOG_SIZE}MB`.
+Once all that remains to be changed are those that are `CURRENT`, you can issue a log switch on the database to advance the database to the next redo log using the following SQL:
+
+[source,sql,subs="attributes"]
+----
+ALTER SYSTEM SWITCH LOGFILE;
+----
+
+If you recheck the size of the logs in the `V$LOG`, you'll see the output looks like the following:
+
+[source,sql,subs="attributes"]
+----
+SQL> SELECT GROUP#, BYTES/1024/1024 SIZE_MB, STATUS FROM V$LOG ORDER BY 1;
+
+    GROUP#    SIZE_MB STATUS
+---------- ---------- ----------------
+	 1	  {TARGET_REDO_LOG_SIZE} CURRENT
+	 2	  {TARGET_REDO_LOG_SIZE} UNUSED
+	 3	  200 ACTIVE
+----
+
+We now need to wait for the database to eventually switch the status of log group 3 to `INACTIVE`.
+The switch could take several minutes, so be patient and recheck the size periodically.
+Once the status reaches `INACTIVE`, modify the final log group and filename using the same procedure.
+
+One last check of the `V$LOG` table after the final log group, we'll see everything looks in order:
+
+[source,sql,subs="attributes"]
+----
+SQL> SELECT GROUP#, BYTES/1024/1024 SIZE_MB, STATUS FROM V$LOG ORDER BY 1;
+
+    GROUP#    SIZE_MB STATUS
+---------- ---------- ----------------
+	 1	  {TARGET_REDO_LOG_SIZE} CURRENT
+	 2	  {TARGET_REDO_LOG_SIZE} UNUSED
+	 3	  {TARGET_REDO_LOG_SIZE} UNUSED
+----
+
+At this point, we have modified all redo log sizes, reducing the frequency of log switches when Debezium executes the data dictionary build steps.
+
+[id=configure-oracle-logging]
+=== Configure Oracle: Supplemental Logging
+
+Oracle redo logs are used primarily for instance and media recovery because the data required for those operations gets recorded automatically.
+LogMiner cannot be used by default because Oracle does not provide any supplemental log data out of the box.
+Since Debezium relies on LogMiner, supplemental logging must be enabled at a minimum for Debezium to perform any change data capture for Oracle.
+
+Two different strategies can be used to set supplemental logging:
+
+1. Database supplemental logging
+2. Table supplemental logging
+
+For Debezium to interface with LogMiner and work with chained rows and various storage arrangements, database supplemental logging must be enabled at a minimum level.
+To enable this level, execute the following SQL in the current SQL*Plus terminal:
+
+[source,sql]
+----
+ALTER DATABASE ADD SUPPLEMENTAL LOG DATA;
+----
+
+We will cover table-based supplemental logging in a later section when we discuss configuring the connector.
+
+[id=configure-oracle-users]
+=== Configure Oracle: User setup
+
+For the Debezium connector to capture change events, it must establish a JDBC connection to the database and execute a series of LogMiner APIs.
+A user account will require specific permissions to access these LogMiner APIs and gather data from the captured tables.
+
+When using multi-tenant architecture, as is found with the Oracle container registry image, there are effectively two databases that we will have to work with, `ORCLCDB` (the container or root database) and `ORCLPDB1` (the pluggable database).
+All captured tables will be created and maintained from within the PDB, but there will be moments when the connector will need to access the root database to read specific system tables.
+
+Therefore in a multi-tenant architecture, we must first set up the two tablespaces that our user account will use.
+To create these tablespaces, execute the following SQL from within the SQL*Plus terminal:
+
+[source,sql,sub="attributes"]
+----
+CONNECT sys/oraclepw@ORCLCDB as sysdba;
+CREATE TABLESPACE logminer_tbs DATAFILE '/opt/oracle/oradata/ORCLCDB/logminer_tbs.dbf'
+  SIZE 25M REUSE AUTOEXTEND ON MAXSIZE UNLIMITED;
+
+CONNECT sys/oraclepw@ORCLPDB1 as sysdba;
+CREATE TABLESPACE logminer_tbs DATAFILE '/opt/oracle/oradata/ORCLCDB/ORCLPDB1/logminer_tbs.dbf'
+  SIZE 25M REUSE AUTOEXTEND ON MAXSIZE UNLIMITED;
+----
+
+[NOTE]
+====
+If the deployment is not on an Oracle database with multi-tenancy enabled, creating the second tablespace within the `ORCLPDB1` database is unnecessary.
+Additionally, ensure the path provided for the tablespace, credentials, and database SID are all correct for your installation.
+You may need to consult with your DBA to have the tablespace created correctly.
+====
+
+Once the tablespaces exist, it is now time to create the user account itself.
+If you are using a multi-tenant environment, the user name must use the common-user prefix so that Oracle creates it in both the CDB root database and the PDB pluggable database; otherwise, the user name can be anything.
+Since we are working with a multi-tenant database installation with our container, we will create a user account called `c##dbzuser`.
+
+[source,sql]
+----
+CONNECT sys/oraclepw@ORCLCDB as sysdba;
+
+CREATE USER c##dbzuser IDENTIFIED BY dbz DEFAULT TABLESPACE LOGMINER_TBS
+  QUOTA UNLIMITED ON LOGMINER_TBS
+  CONTAINER=ALL;
+----
+
+The user account requires several permissions.
+At the time of this publication, the list of permissions included the following:
+
+[source,sql]
+----
+GRANT CREATE SESSION TO c##dbzuser CONTAINER=ALL;
+GRANT SET CONTAINER TO c##dbzuser CONTAINER=ALL;
+GRANT SELECT ON V_$DATABASE TO c##dbzuser CONTAINER=ALL;
+GRANT FLASHBACK ANY TABLE TO c##dbzuser CONTAINER=ALL;
+GRANT SELECT ANY TABLE TO c##dbzuser CONTAINER=ALL;
+GRANT SELECT_CATALOG_ROLE TO c##dbzuser CONTAINER=ALL;
+GRANT EXECUTE_CATALOG_ROLE TO c##dbzuser CONTAINER=ALL;
+GRANT SELECT ANY TRANSACTION TO c##dbzuser CONTAINER=ALL;
+GRANT SELECT ANY DICTIONARY TO c##dbzuser CONTAINER=ALL;
+GRANT LOGMINING TO c##dbzuser CONTAINER=ALL;
+
+GRANT CREATE TABLE TO c##dbzuser CONTAINER=ALL;
+GRANT LOCK ANY TABLE TO c##dbzuser CONTAINER=ALL;
+GRANT CREATE SEQUENCE TO c##dbzuser CONTAINER=ALL;
+
+GRANT EXECUTE ON DBMS_LOGMNR TO c##dbzuser CONTAINER=ALL;
+GRANT EXECUTE ON DBMS_LOGMNR_D TO c##dbzuser CONTAINER=ALL;
+
+GRANT SELECT ON V_$LOG TO c##dbzuser CONTAINER=ALL;
+GRANT SELECT ON V_$LOG_HISTORY TO c##dbzuser CONTAINER=ALL;
+GRANT SELECT ON V_$LOGMNR_LOGS TO c##dbzuser CONTAINER=ALL;
+GRANT SELECT ON V_$LOGMNR_CONTENTS TO c##dbzuser CONTAINER=ALL;
+GRANT SELECT ON V_$LOGMNR_PARAMETERS TO c##dbzuser CONTAINER=ALL;
+GRANT SELECT ON V_$LOGFILE TO c##dbzuser CONTAINER=ALL;
+GRANT SELECT ON V_$ARCHIVED_LOG TO c##dbzuser CONTAINER=ALL;
+GRANT SELECT ON V_$ARCHIVE_DEST_STATUS TO c##dbzuser CONTAINER=ALL;
+GRANT SELECT ON V_$TRANSACTION TO c##dbzuser CONTAINER=ALL;
+----
+
+You can refer to the latest link:/documentation/reference/stable/connectors/oracle.html#creating-users-for-the-connector[documentation] to review whether the required grants may have changed.
+We have created the connector user we will use in the configuration and given the user all the necessary database permissions.
+
+== Conclusion
+
+In this part of the series, we have covered what Oracle is and why it is so popular.
+We've also covered installing an Oracle database using a container and configuring the Oracle instance to allow Debezium to ingest changes.
+In the link:/blog/2022/10/06/debezium-oracle-series-part-2/[next part] of the series, we'll dive into deploying the Debezium Oracle connector on Apache Kafka Connect.
