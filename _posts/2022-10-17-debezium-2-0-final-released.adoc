@@ -1,0 +1,677 @@
+---
+layout: post
+title:  Debezium 2.0.0.Final Released
+date:   2022-10-17
+tags: [ releases, mysql, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox, mongodb ]
+author: ccranfor
+---
+
+Today it's my great pleasure to announce the availability of Debezium *2.0.0.Final*!
+
+Since our 1.0 release in December 2019, the community has worked vigorously to build a comprehensive open-source low-latency platform for change data capture (CDC).
+Over the past three years, we have extended Debezium's portfolio to include a stable connector for Oracle, a community led connector for Vitess, the introduction of incremental snapshots, multi-partition support, and so much more.
+With the help of our active community of contributors and committers, Debezium is the de facto leader in the CDC space, deployed to production within lots of organizations from across multiple industries, using hundreds of connectors to stream data changes out of thousands of database platforms.
+
+The 2.0 release marks a new milestone for Debezium, one that we are proud to share with each of you.
+
++++<!-- more -->+++
+
+In this post, we're going to take a deep dive into all changes in Debezium 2.0, discussing the new features and explaining all the possible breaking changes that could have an impact during the upgrade process.
+As always we highly recommend that you take a look at the link:Please refer to the link:/releases/2.0/release-notes#release-2.0.0-final[release notes] to learn more about all fixed bugs, update procedures, etc.
+[release notes], especially when upgrading from an older release.
+
+* link:#core-changes[Changes to core Debezium]
+* link:#cassandra-changes[Changes to Cassandra connector]
+* link:#mongodb-changes[Changes to MongoDB connector]
+* link:#mysql-changes[Changes to MySQL connector]
+* link:#oracle-changes[Changes to Oracle connector]
+* link:#postgres-changes[Changes to PostgreSQL connector]
+* link:#vitess-changes[Changes to Vitess connector]
+* link:#container-changes[Changes for Debezium container images]
+* link:#community-spaces[Community spaces]
+
+[id="core-changes"]
+== Changes to core Debezium
+
+The fundamental core of Debezium has changed quite a bit in Debezium 2.0.
+In this section, we're going to dive into the changes with Debezium's core, and discuss how those changes impact all users of Debezium.
+
+=== Java 11 is required
+
+We have wanted to make the leap to Java 11 for quite some time, and we felt that with Debezium 2.0 this was the right moment.
+With Java 11, this enables us to take advantage of new language features, such as the new `String` API and `Predicate` support changes within the code base, while also benefiting from many of the Java peformance improvements.
+
+Our very own Vojtech Juranek published link:/blog/2022/05/04/switch-to-java-11/[this blog] where he discusses the switch to Java 11 in detail.
+The Java 11 runtime will be required moving forward to use Debezium, so be sure that Java 11 is available prior to upgrading.
+
+=== Improved Incremental Snapshots
+
+==== Stopping
+
+Since we first introduced incremental snapshots, users have asked for a way to stop an in-progress snapshot.
+To accomplish this, we have added a new signal, `stop-snapshot`, which allows stopping an in-progress incremental snapshot.
+This signal is to be sent just like any other, by inserting a row into the signal table/collection, as shown below:
+
+[source,sql]
+----
+INSERT INTO schema.signal_table (id, type,data)
+VALUES ('unique-id', 'stop-snapshot', '_<signal payload>_`);
+----
+
+The `stop-snapshot` payload looks very similar to its `execute-snapshot` counterpart.
+An example:
+
+[source,json]
+----
+{
+  "data-collections": ["schema1.table1", "schema2.table2"],
+  "type": "incremental"
+}
+----
+
+This example removes both `schema1.table1` and `schema2.table2` from the incremental snapshot, so long as the table or collection had not already finished its incremental snapshot.
+If other tables or collections remain outstanding after the removal of those specified by `data-collections`, the incremental snapshot will continue to process those that are outstanding.
+If no other table or collection remains, the incremental snapshot will stop.
+
+Another example of a `stop-snapshot` payload is quite simply:
+[source,json]
+----
+{
+  "type": "incremental"
+}
+----
+
+This example does not specify the `data-collections` property, it is optional for the `stop-snapshot` signal.
+When this property isn't specified, the signal implies the current in-progress incremental snapshot should be stopped entirely.
+This gives the ability to stop an incremental snapshot without knowledge of the current or outstanding tables or collections yet to be captured.
+
+==== Pausing and Resuming
+
+Incremental snapshots have become an integral feature in Debezium.
+The incremental snapshot feature allows users to re-run a snapshot on one or more collections/tables for a variety of reasons.
+Incremental snapshots were originally introduced with just a _start_ signal.
+We eventually added the ability to _stop_ an ongoing incremental snapshot or to be able to remove a subset of collections/tables from an in-progress incremental snapshot.
+
+In this release, we've built on top of the existing signal foundation and we've introduced two new signals,
+one to _pause_ an in-progress incremental snapshot and then another to _resume_ the incremental snapshot if it has previously been paused.
+To pause an incremental snapshot, a `pause-snapshot` signal must be sent, and to resume, a `resume-snapshot` signal can be used.
+
+These two new signals can be sent using the signal table strategy or the Kafka signal topic strategy for MySQL.
+Please refer to the  https://debezium.io/documentation/reference/2.0/configuration/signalling.html#_signal_actions[signal support documentation] for more details on signals and how they work.
+
+==== Using Regular Expressions
+
+Incremental snapshot signals have required the use of explicit table/collection names in the `data-collections` payload attribute.
+While this worked well, there may be situations where broad capture configurations could take advantage of regular expression usage.
+We already support regular expressions in connector configuration options, such as include/exclude lists, so it made sense to extend that to incremental snapshots as well.
+
+Starting in Debezium 2.0, all incremental snapshot signals can use regular expressions in the `data-collections` payload property.
+Using one of the stop signal examples from above, the payload can be rewritten using regular expressions:
+
+[source,json]
+----
+{
+  "data-collections": ["schema[1|2].table[1|2]"],
+  "type": "incremental"
+}
+----
+
+Just like the explicit usage, this signal with regular expressions would also stop both `schema1.table1` and `schema2.table2`.
+
+==== Applying filters with SQL conditions
+
+Although uncommon, there may be scenarios such as a connector misconfiguration, where a specific record or subset of records needs to be re-emitted to the topic.
+Unfortunately, incremental snapshots have traditionally been an all-or-nothing type of process, where we would re-emit all records from a collection or table as a part of the snapshot.
+
+In this release, a new `additional-condition` property can be specified in the signal payload, allowing the signal to dictate a SQL-based predicate to control what subset of records should be included in the incremental snapshot instead of the default behavior of _all rows_.
+
+The following example illustrates sending an incremental snapshot signal for the `products` table, but instead of sending all rows from the table to the topic, the `additional-condition` property has been specified to restrict the snapshot to only send events that relate to product id equal to `12`:
+
+[source,json]
+----
+{
+  "type": "execute-snapshot",
+  "data": {
+    "data-collections": ["inventory.products"],
+    "type": "INCREMENTAL",
+    "additional-condition": "product_id=12"
+  }
+}
+----
+
+We believe this new incremental snapshot feature will be tremendously helpful for a variety of reasons, without always having to re-snapshot all rows when only a subset of data is required.
+
+==== Signal database collection added to inclusion filter automatically
+
+In prior releases of Debezium, the signal collection/table used for incremental snapshots had to be manually added to your `table.include.list` connector property.
+A big theme in this release was improvements on incremental snapshots, so we've taken this opportunity to streamline this as well.
+Starting in this release, Debezium will automatically add the signal collection/table to the table inclusion filters, avoiding the need for users to manually add it.
+
+This change does not impose any compatibility issues.
+Connector configurations that already include the signal collection/table in the `table.include.list` property will continue to work without requiring any changes.
+However, if you wish to align your configuration with current behavior, you can also safely remove the signal collection/table from the `table.include.list`,
+and Debezium will begin to handle this for you automatically.
+
+=== Transaction Metadata changes
+
+A transaction metadata event describes the _beginning_ and the _end_ (commit) of a database transaction.
+These events are useful for a variety of reasons, including auditing.
+By default, transaction metadata events are not generated by a connector and to enable this feature, the `provide.transaction.metadata` option must be enabled.
+
+In Debezium 2.0, both `BEGIN` and `END` events include a new field, `ts_ms`, which is the database timestamp of when the transaction either began or committed depending on the event type.
+An example of such an event now looks like:
+
+[source,json]
+----
+{
+  "status": "END",
+  "id": "12345",
+  "event_count": 2,
+  "ts_ms": "1657033173441",
+  "data_collections": [
+    {
+      "data_collection": "s1.a",
+      "event_count": 1
+    },
+    {
+      "data_collection": "s2.a",
+      "event_count": 1
+    }
+  ]
+}
+----
+
+If you are already using the transaction metadata feature, new events will contain this field after upgrading.
+
+If you are not using the transaction metadata feature but find this useful, simply add the `provide.transaction.metadata` option set to _true_ to your connector configuration.
+By default, metadata events are emitted to a topic named after your `topic.prefix` option.
+This can be overridden by specifying the `transaction.topic` option, as shown below:
+
+[source,properties]
+----
+topic.prefix=server1
+provide.transaction.metadata=true
+transaction.topic=my-transaction-events
+----
+
+In this example, all transaction metadata events will be emitted to `my-transaction-events`.
+Please see your connector specific configuration for more details.
+
+=== Multi-partition mode now the default
+
+Many database platforms support multi-tenancy out of the box, meaning you can have one installation of the database engine and have many unique databases.
+In cases like SQL Server, this traditionally required a separate connector deployment for each unique database.
+Over the last year, a large effort has been made to break down that barrier and to introduce a common way that any single connector deployment could connect and stream changes from multiple databases.
+
+The first notable change is with the SQL Server connector's configuration option, `database.dbname`.
+This option has been replaced with a new option called `database.names`.
+As multi-partition mode is now default, this new `database.names` option can be specified using a comma-separated list of database names, as shown below:
+
+[source,properties]
+----
+database.names=TEST1,TEST2
+----
+
+In this example, the connector is being configured to capture changes from two unique databases on the same host installation.
+The connector will start two unique tasks in Kafka Connect and each task will be responsible for streaming changes from its respective database concurrently.
+
+The second notable change is with connector metrics naming.
+A connector exposes JMX metrics via beans that are identified with a unique name.
+With multi-partition mode the default with multiple tasks, each task requires its own metrics bean and so a change in the naming strategy was necessary.
+
+In older versions of Debezium using SQL Server as an example, metrics were available using the following naming strategy:
+
+[source,properties]
+----
+debezium.sql_server:type=connector-metrics,server=<sqlserver.server.name>,context=<context>
+----
+
+In this release, the naming strategy now includes a new `task` component in the JMX MBean name:
+
+[source,properties]
+----
+debezium.sql_server:type=connector-metrics,server=<sqlserver.server.name>,task=<task.id>,context=<context>
+----
+
+Please review your metrics configurations as the naming changes could have an impact when collecting Debezium metrics.
+
+=== New storage module
+
+In this release, we have introduced a new `debezium-storage` set of artifacts for file- and kafka- based database history and offset storage.
+This change is the first of several future implementations set to support platforms such as Amazon S3, Redis, and possibly JDBC.
+
+For users who install connectors via plugin artifacts, this should be a seamless change as all dependencies are bundled in those plugin downloadable archives.
+For users who may embed Debezium in their applications or who may be building their own connector, be aware you may need to add a new storage dependency depending on which storage implementations used.
+
+=== Pluggable topic selector
+
+Debezium's default topic naming strategy emits change events to topics named `database.schema.table`.
+If you require that topics be named differently, an SMT would normally be added to the connector configuration to adjust this behavior.
+But, this presents a challenge in situations where one of the components of this topic name, perhaps the database or table name, contains a dot (`.`) and perhaps an SMT doesn't have adequate context.
+
+In this release, a new `TopicNamingStrategy` was introduced to allow fully customizing this behavior directly inside Debezium.
+The default naming strategy implementation should suffice in most cases, but if you find that it doesn't you can provide a custom implementation of the `TopicNamingStrategy` contract to fully control various namings used by the connector.
+To provide your own custom strategy, you would specify the `topic.naming.strategy` connector option with the fully-qualified class name of the strategy, as shown below:
+
+[source,properties]
+----
+topic.naming.strategy=org.myorganization.MyCustomTopicNamingStrategy
+----
+
+This custom strategy is not just limited to controlling the names of topics for table mappings, but also for schema changes, transaction metadata, and heartbeats.
+You can refer to the `DefaultTopicNamingStrategy` found https://github.com/debezium/debezium/blob/main/debezium-core/src/main/java/io/debezium/schema/DefaultTopicNamingStrategy.java[here] as an example.
+This feature is still incubating, and we'll continue to improve and develop it as feedback is received.
+
+=== Improved unique index handling
+
+A table does not have to have a primary key to be captured by a Debezium connector.
+In cases where a primary key is not defined, Debezium will inspect a table's unique indices to see whether a reasonable key substitution can be made.
+In some situations, the index may refer to columns such as `CTID` for PostgreSQL or `ROWID` in Oracle.
+These columns are not visible nor user-defined, but instead are hidden synthetic columns generated automatically by the database.
+In addition, the index may also use database functions to transform the column value that is stored, such as `UPPER` or `LOWER` for example.
+
+In this release, indices that rely on hidden, auto-generated columns, or columns wrapped in database functions are no longer eligible as primary key alternatives.
+This guarantees that when relying on an index as a primary key rather than a defined primary key itself, the generated message's primary key value tuple directly maps to the same values used by the database to represent uniqueness.
+
+=== New configuration namespaces
+
+One of the largest overhauls going into Debezium 2.0 is the introduction of new connector property namespaces.
+Starting in Debezium 2.0 Beta2 and onward, many connector properties have been relocated with new names.
+This is a breaking change and affects most, if not all, connector deployments during the upgrade process.
+
+Debezium previously used the prefix "database." with a plethora of varied connector properties.
+Some of these properties were meant to be passed directly to the JDBC driver and in other cases to the database history implementations, and so on.
+Unfortunately, we identified situations where some properties were being passed to underlying implementations that weren't intended.
+While this wasn't creating any type of regression or problem, it could potentially introduce a future issue if there were property name collisions,
+for example, a JDBC driver property that matched with a "database." prefixed Debezium connector property.
+
+The following describes the changes to the connector properties
+
+* All configurations previously prefixed as `database.history.` are now to be prefixed using `schema.history.internal.` instead.
+* All JDBC pass-thru options previously specified using `database.` prefix should now be prefixed using `driver.` instead.
+* The `database.server.name` connector property renamed to `topic.prefix`.
+* The MongoDB `mongodb.name` connector property aligned to use `topic.prefix` instead.
+
+Again, please review your connector configurations prior to deployment and adjust accordingly.
+
+=== All schemas named and versioned
+
+Debezium change events are emitted with a schema definition, which contains metadata about the fields such as the type, whether it's required, and so on.
+In previous iterations of Debezium, some schema definitions did not have explicit names nor were they being explicitly versioned.
+In this release, we've moved to making sure that all schema definitions have an explicit name and version associated with them.
+The goal of this change is to help with future event structure compatibility, particularly for those who are using schema registries.
+However, if you are currently using a schema registry, be aware that this change may lead to schema compatibility issues during the upgrade process.
+
+=== Truncate events are skipped by default
+
+Debezium supports skipping specific event types by including the `skipped.operations` connector property in the connector's configuration.
+This feature can be useful if you're only interested in a subset of operations, such as only inserts and updates but not deletions.
+
+One specific event type, truncates (`t`), is only supported by a subset of relational connectors and whether these events were to be skipped wasn't consistent.
+In this release, we have aligned the `skipped.operations` behavior so that if the connector supports truncate events, these events are skipped by default.
+
+Please review the following rule-set:
+
+* Connector supports truncate events and isn't the Oracle connector
+* Connector configuration does not specify the `skipped.operations` in the configuration
+
+If all the above are true, then the connector's behavior will change after the upgrade.
+If you wish to continue to emit truncate events, the `skipped.operations=none` configuration will be required.
+
+=== Change in `schema.name.adjustment` behavior
+
+The `schema.name.adjustment.mode` configuration property controls how schema names should be adjusted for compatibility with the message converter used by the connector.
+This configuration option can be one of two values:
+
+`avro`::
+Replicates the characters that cannot be used in the Avro type name with an underscore.
+`none`::
+Does not adjust the names, even when non-Avro compliant characters are detected.
+
+In prior releases, Debezium always defaulted to the safe value of `avro`; however, starting with Debezium 2.0.0.CR1 the default value will now be `none`.
+We believe that given that the use of Avro serialization is something opted in by users based on their needs, this option should align with the same opt-in behavior.
+
+The safe upgrade path would be to adjust your configuration and explicitly use `schema.name.adjustment.mode` as `avro` and use the default for new connector deployments.
+But you can also review your topic names and configurations, checking that no underscore substitutions are happening and ergo this change will have no impact.
+
+[id="cassandra-changes"]
+== Changes to Cassandra connector
+
+=== Cassandra 4 incremental commit log support
+
+https://cassandra.apache.org/doc/latest/cassandra/operating/cdc.html[Cassandra 4] has improved the integration with CDC by adding a feature that when the fsync operation occurs,
+Cassandra will update a CDC-based index file to contain the latest offset values.
+This index file allows CDC implementations to read up to the offset that is considered durable in Cassandra.
+
+In this release, Debezium now uses this CDC-based index file to eliminate the inherent delay in processing CDC events from Cassandra that previously existed.
+This should provide Cassandra users a substantial improvement in CDC with Debezium, and gives an incentive to consider Cassandra 4 over Cassandra 3.
+
+[id="mongodb-changes"]
+== Changes to MongoDB connector
+
+=== Removal of the oplog implementation
+
+In Debezium 1.8, we introduced the new MongoDB change stream feature while also deprecating the oplog implementation.
+The transition to change streams offers a variety of benefits, such as being able to stream changes from non-primary nodes,
+the ability to emit update events with a full document representation for downstream consumers,
+and so much more.  In short, change streams is just a much more superior way to perform change data capture with MongoDB.
+
+The removal of the oplog implementation also means that MongoDB 3.x is no longer supported.
+If you are using MongoDB 3.x, you will need to upgrade to at least MongoDB 4.0 or later with Debezium 2.0.
+
+=== Before state support (MongoDB    6.0)
+
+MongoDB 6 supports capturing the state of the document before the change is applied.
+This has long since been a feature that has been available only to the relational-based connectors, but this now enables Debezium to also include the `before` field as part of the event's payload for MongoDB.
+
+To enable this new MongoDB 6+ behavior, the `capture.mode` setting has been adjusted to include two new values:
+
+`change_streams_with_pre_image`::
+The change event will also contain the full document from _before_ the change as well as the final state of the document fields that were changed as a part of the change event.
+
+`change_streams_update_full_with_pre_image`::
+When an update occurs, not only will the full document be present to represent the current state after the update, but the event will also contain the full document from _before_ the change as well.
+
+[NOTE]
+====
+The MongoDB `before` field behavior is only available on MongoDB 6 or later.
+If you are using a version of MongoDB before 6.0, the `before` field is omitted from the event output, even if configured.
+====
+
+[id="mysql-changes"]
+== Changes to MySQL connector
+
+=== Legacy MySQL implementation removed
+
+As some of you may or may not know, we implemented the MySQL connector based on the common-connector framework back in Debezium 1.5 (Feb 2021).
+As a part of that re-write, we introduced the ability for MySQL users to enable the legacy connector behavior using the configuration option `internal.implementation` set as `legacy`.
+This legacy implementation was deprecated in favor of the new common-connector framework behavior.
+With Debezium 2.0, this `internal.implementation` configuration option and the legacy connector implementation have been removed.
+
+If your current connector deployment relies on this legacy implementation, you should be aware that by upgrading to Debezium 2.0, the connector will no longer use that older implementation and will use the common-connector implementation only.
+Feature-wise, both implementations are on-par with one another with one exception: the legacy implementation had experimental support for changing filter configurations.
+If you have relied on this legacy behavior, be aware that feature is no longer available.
+
+=== Binlog Compression Support
+
+In this release, Debezium now supports reading of binlog entries that have been written with compression enabled.
+In version 8.0.20, MySQL adds the ability to compress binlog events using the ZSTD algorithm.
+To enable compression, you must toggle the `binlog.transaction_compression` variable on the MySQL server to `ON`.
+When compression is enabled, the binlog behaves as usual, except that the contents of the binlog entries are compressed to save space,
+and are replicated to in compressed format to replicas,
+significantly reducing network overhead for larger transactions.
+
+If you're interested in reading more about MySQL binlog compression,
+you can refer to the https://dev.mysql.com/doc/refman/8.0/en/binary-log-transaction-compression.html[Binary Log Transaction Compression] section of the MySQL documentation for more details.
+
+[id="oracle-changes"]
+== Changes to Oracle connector
+
+=== Oracle source info changes
+
+The `source` information block is a section in the change event's payload that describes the database attributes of what generated the change event.
+For example, this section includes the system change number, the database timestamp of the change, and the transaction the change was part of.
+
+In this release, we identified a regression where the `scn` field did not correctly reflect the right `source` of where the change event occurred.
+While it isn't abnormal for Oracle to generate multiple changes with the same system change number, we did find a regression that caused the wrong system change number to get assigned to each individual event within a scoped transaction, which made it difficult for some to use this information for auditing purposes.
+The `source.scn` field should now correctly reflect the system change number from Oracle LogMiner or Oracle Xstream.
+
+Additionally, several new fields were added to the `source` information block to improve integration with the LogMiner implementation and Oracle RAC.
+An example of the new source information block:
+
+[source,json]
+----
+{
+    "source": {
+        "version": "2.0.0.Alpha3",
+        "name": "server1",
+        "ts_ms": 1520085154000,
+        "txId": "6.28.807",
+        "scn": "2122184",
+        "commit_scn": "2122185",
+        "rs_id": "001234.00012345.0124",
+        "ssn": 0,
+        "redo_thread": 1
+    }
+}
+----
+
+The newly added fields are:
+
+`rs_id`::
+Specifies the rollback segment identifier associated with the change.
+
+`ssn`::
+Specifies the SQL sequence number, this combined with the `rs_id` represent a unique tuple for a change.
+
+`redo_thread`::
+Specifies the actual database redo thread that managed the change's lifecycle.
+
+Whether using Oracle Standalone or RAC, these values will always be provided when using Oracle LogMiner.
+These values have more importance on an Oracle RAC installation because you have multiple database servers manipulating the shared database concurrently.
+These fields specifically annotate which node and at what position on that node that the change originated.
+
+=== Oracle connector offset changes
+
+In an Oracle Real Application Clusters (RAC) environment, multiple nodes access and manipulate the Oracle database concurrently.
+Each node maintains its own redo log buffers and executes its own redo writer thread.
+This means that at any given moment, each node has its own unique "position" and these will differ entirely on the activity that takes place on each respective node.
+
+In this release, a small change was necessary in https://issues.redhat.com/browse/DBZ-5245[DBZ-5245] to support Oracle RAC.
+Previously, the connector offsets maintained a field called `scn` which represented this "position" of where the connector should stream changes from.
+But since each node could be at different positions in the redo, a single `scn` value was inadequate for Oracle RAC.
+
+The old Oracle connector offsets looked like this:
+
+[source,json]
+----
+{
+  "scn": "1234567890",
+  "commit_scn": "2345678901",
+  "lcr_position": null,
+  "txId": null
+}
+----
+
+Starting in Debezium 2.0, the new offset structure now has this form:
+
+[source,json]
+----
+{
+  "scn": "1234567890:00124.234567890.1234:0:1,1234567891:42100.0987656432.4321:0:2",
+  "commit_scn": "2345678901",
+  "lcr_position": null,
+  "txId": null
+}
+----
+
+You will notice that the `scn` field now consists of a comma-separated list of values, where each entry represents a tuple of values.
+This new tuple has the format of `scn:rollback-segment-id:ssn:redo-thread`.
+
+This change is forward compatible, meaning that once you have upgraded to Debezium 2.0, an older version of the connector will be unable to read the offsets.
+If you do upgrade and decide to rollback, be aware the offsets will require manually adjusting the offset's `scn` field to simply contain a string of the most recent `scn` value across all redo threads.
+
+=== Oracle commit user in change events
+
+The source information block of change events carry a variety of context about where the change event originated.
+In this release, the Oracle connector now includes the user who made the database change in the captured change event.
+A new field, `user_name`, can now be found in the source info block with this new information.
+This field is optional, and is only available when changes are emitted using the LogMiner-based implementation.
+This field may also contain the value of `UNKNOWN` if the user associated with a change is dropped prior to the change being captured by the connector.
+
+[id="postgres-changes"]
+== Changes to PostgreSQL connector
+
+=== Support for wal2json removed
+
+Throughout Debezium's lifecycle, the PostgreSQL connector has supported multiple decoder implementations, including `decoderbufs`, `wal2json`, and `pgoutput`.
+Both the `decoderbufs` and `wal2json` plugins have required special libraries to  be installed on the database server to capture changes from PostgreSQL.
+
+With PostgreSQL 9.6 marked as https://www.postgresql.org/support/versioning/[end of life] in November 2021, we felt now was a great opportunity to streamline the number of supported decoders.
+With PostgreSQL 10 and later supporting the `pgoutput` decoder natively, we concluded that it made sense to remove support for the `wal2json` plugin in Debezium 2.0.
+
+If you are still using PostgreSQL 9.6 or the `wal2json` decoder, you will be required to upgrade to PostgreSQL 10+ or to either to the `decoderbufs` or the native `pgoutput` plugin to use Debezium going forward.
+
+[id="vitess-changes"]
+== Changes to Vitess connector
+
+=== Multitasking support for Vitess
+
+The Vitess connector previously allowed operation in two different modes that depended entirely on whether the connector configuration specified any shard details.
+Unfortunately in both cases, each resulted in a single task responsible for performing the VStream processing.
+For larger Vitess installations with many shards, this architecture could begin to show latency issues as it may not be able to keep up with all the changes across all shards.
+And even more complex, when specifying the shard details, this required manually resolving the shards across the cluster and starting a single Debezium connector per shard,
+which is both error-prone and more importantly could result in deploying many Debezium connectors.
+
+The Vitess community recognized this and sought to find a solution that addresses all these problems, both from a maintenance and error perspective.
+In Debezium 2.0 Beta2, the Vitess connector now automatically resolves the shards via a discovery mechanism, quite similar to that of MongoDB.
+This discovery mechanism will then split the load across multiple tasks, allowing for a single deployment of Debezium running a task per shard or shard lists, depending on the maximum number of allowed tasks for the connector.
+
+During the upgrade, the Vitess connector will automatically migrate the offset storage to the new format used with the multitasking behavior.
+But be aware that once you've upgraded, you won't be able to downgrade to an earlier version as the offset storage format will have changed.
+
+[id="container-changes"]
+== Changes for Debezium container images
+
+=== Support for ARM64
+
+There has been a shift in recent years with the performance of ARM64, even at AWS where their 64-bit ARM processors have projected performance over the latest x86-64 processors.
+This has helped put an emphasis across the industry at looking at the cost benefits of supporting both architectures with containers.
+
+Since Debezium has traditionally released `linux/amd64` -based container images, this required that you either run the images using emulation of inside a Virtual Machine.
+This leads to unnecessary overhead and potential performance concerns and the goal of Debezium is low-latency and hyper speed!
+Starting with Debezium 2.0, Debezium is now also released using `ARM64` -based container images, reducing the overhead needed.
+
+We hope the new ARM64 container images improve the adoption of Debezium, and show that we're committed to delivering the best change data capture experience across the industry universally.
+
+[id="community-spaces"]
+== Community spaces
+
+Later this week, there will be several new _community-driven_ discussion spaces available on our Zulip chat platform.
+We will be publishing a blog post that discusses the purpose of these new channels and their goals, but we wanted to also include a note here about this new feature.
+
+Unlike the `#users` channel that is meant to provide community-driven support,
+these spaces are meant to provide a place for the community to discuss experiences with specific database technologies, Debezium services, and topics that are substantially broader than just support.
+These spaces will be divided by technology, allowing the user community to target specific areas of interest easily, and engage in discussions that pertain to specific databases and services.
+
+These spaces are not meant to be support venues, we will still expect those to continue to foster in the `#users` channel going forward, so keep an eye out for these new community spaces later this week and the blog to follow.
+
+== Other fixes & improvements
+
+There were many bugfixes, stability changes, and improvements throughout the development of Debezium 2.0.
+Altogether, a total of https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20AND%20fixVersion%20in%20(2.0.0.Alpha1%2C%202.0.0.Alpha2%2C%202.0.0.Alpha3%2C%202.0.0.Beta1%2C%202.0.0.Beta2%2C%202.0.0.CR1%2C%202.0.0.Final)%20ORDER%20BY%20component%20ASC[463 issues] were fixed for this release.
+
+A big thank you to all the contributors from the community who worked on this major release:
+Wang Min Chao,
+Rotem[Adhoh],
+https://github.com/ahmedjami[Ahmed ELJAMI],
+https://github.com/almartino[Alberto Martino],
+https://github.com/ahus1[Alexander Schwartz],
+https://github.com/aloubyansky[Alexey Loubyansky],
+https://github.com/AlexMiroshnikov[Alexey Miroshnikov],
+Gabor[Andras],
+https://github.com/ajunwalker[Andrew Walker],
+https://github.com/jchipmunk[Andrey Pustovetov],
+https://github.com/ani-sha[Anisha Mohanty],
+https://github.com/avis408[Avinash Vishwakarma],
+https://github.com/xinbinhuang[Bin Huang],
+https://github.com/roldanbob[Bob Roldan],
+https://github.com/bmorganpa[Brad Morgan],
+https://github.com/calinilie[Calin Laurentiu Ilie],
+https://github.com/chadthman[Chad Marmon],
+https://github.com/ProofOfPizza[Chai Stofkoper],
+https://github.com/Naros[Chris Cranford],
+https://github.com/Chrisss93[Chris Lee],
+https://github.com/davsclaus[Claus Ibsen],
+https://github.com/connorszczepaniak-wk[Connor Szczepaniak],
+https://github.com/cmartinez-enve[César Martínez],
+https://github.com/debjeetsarkar[Debjeet Sarkar],
+Mikhail[Dubrovin],
+https://github.com/elirag[Eliran Agranovich],
+https://github.com/EthanZ328[Ethan Zou],
+https://github.com/ezerk[Ezer Karavani],
+https://github.com/ggaborg[Gabor Andras],
+https://github.com/giljae[Giljae Joo],
+https://github.com/gunnarmorling[Gunnar Morling],
+https://github.com/ruanhang1993[Hang Ruan],
+https://github.com/harveyyue[Harvey Yue],
+https://github.com/HenryCaiHaiying[Henry Cai],
+https://github.com/Himanshu-LT[Himanshu Mishra],
+https://github.com/blcksrx[Hossein Torabi],
+https://github.com/nicholas-fwang[Inki Hwang],
+https://github.com/ismailsimsek[Ismail Simsek],
+https://github.com/jcechace[Jakub Cechacek],
+https://github.com/domsj[Jan Doms],
+https://github.com/DerGut[Jannik Steinmann],
+https://github.com/jerrinot[Jaromir Hamala],
+https://github.com/jeremy-l-ford[Jeremy Ford],
+https://github.com/Jiabao-Sun[Jiabao Sun],
+https://github.com/novotnyJiri[Jiri Novotny],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/joschi[Jochen Schalanda],
+https://github.com/yannickzj[Jun Zhao],
+https://github.com/kanha-gupta[Kanha Gupta],
+https://github.com/kgalieva[Katerina Galieva],
+https://github.com/LarsWerkman[Lars Werkman],
+https://github.com/winklerm[Marek Winkler],
+https://github.com/markallanson[Mark Allanson],
+https://github.com/alwaysbemark[Mark Bereznitsky],
+https://github.com/MartinMedek[Martin Medek],
+https://github.com/mimaison[Mickael Maison],
+https://github.com/mikekamornikov[Mike Kamornikov],
+https://github.com/yzia2000[Mohammad Yousuf Minhaj Zia],
+https://github.com/nathan-bradshaw-at[Nathan Bradshaw],
+https://github.com/nathan-smit-1[Nathan Smit],
+https://github.com/krnaveen14[Naveen Kumar KR],
+https://github.com/nilshartmann[Nils Hartmann],
+https://github.com/nirolevy[Nir Levy],
+https://github.com/nitinitt[Nitin Chhabra],
+https://github.com/zalmane[Oren Elias],
+https://github.com/ypt[Paul Tzen],
+https://github.com/pmalon[Paweł Malon],
+https://github.com/smallYellowCat[Pengwei Dou],
+https://github.com/thangdc94[Phạm Ngọc Thắng],
+https://github.com/PlugaruT[Plugaru Tudor],
+Oskar[Polak],
+https://github.com/rahulkhanna2[Rahul Khanna],
+https://github.com/rajdangwal[Rajendra Dangwal],
+https://github.com/rk3rn3r[René Kerner],
+https://github.com/roldanbob[Robert Roldan],
+https://github.com/druud[Ruud H.G. van Tol],
+https://github.com/sagarrao12[Sagar Rao],
+https://github.com/Sage-Pierce[Sage Pierce],
+https://github.com/jaegwonseo[Seo Jae-kwon],
+https://github.com/morozov[Sergei Morozov],
+https://github.com/shichao-an[Shichao An],
+https://github.com/smiklosovic[Stefan Miklosovic],
+https://github.com/tim-patterson[Tim Patterson],
+https://github.com/troeselereos[Timo Roeseler],
+https://github.com/ramanenka[Vadzim Ramanenka],
+https://github.com/vivekwassan[Vivek Wassan],
+https://github.com/vjuranek[Vojtech Juranek],
+https://github.com/xinbinhuang[Xinbin Huang],
+https://github.com/y5w[Yang],
+https://github.com/spicy-sauce[Yossi Shirizli],
+https://github.com/GOODBOY008[Zhongqiang Gong],
+https://github.com/gmouss[moustapha mahfoud],
+https://github.com/yangrong688[yangrong688],
+https://github.com/BetaCat0[合龙 张],
+https://github.com/comil4444[崔世杰], and
+https://github.com/pkgonan[민규 김]!
+
+== What's next?
+
+While we are heading into the holiday season, we have started the work on Debezium 2.1, which will be out later this year.
+Some potential features you can expect include:
+
+* Truncate support for MySQL
+* PostgreSQL 15 support
+* JDBC history and offset storage support
+
+As always, this roadmap is heavily influenced by the community, i.e. you.
+So if you would like to see any particular items here, please let us know.
+For now, lets celebrate the hard work in the release of Debezium 2.0 and look forward to what's coming later this year and in 2023!
+
+Onwards and Upwards!
+
+
