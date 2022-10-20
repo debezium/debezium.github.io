@@ -1,0 +1,199 @@
+---
+layout: post
+title:  Debugging flaky tests
+date:   2022-10-20
+tags: [ community, tests]
+author: vjuranek
+---
+
+When developing the tests for your project, sooner or later you will probably get into the situation when some of the tests fail randomly.
+These tests, also known as flaky tests, are very unpleasant as you never know if the failure was random or there is a regression in your code.
+In the worst case you just ignore these tests because you know they are flaky.
+Most of the testing frameworks even have a dedicated annotation or other means to express that the test is flaky and if it fails, the failure should be ignored.
+The value of such a test is very questionable.
+The best thing you can do with such a test is of course to fix it so that it doesn't fail randomly.
+That's easy to say, but harder to do.
+The hardest part is usually to make the test fail in your development environment so that you can debug it and understand why it fails and what is the root cause of the failure.
+In this blog post I'll try to show a few techniques which may help you to simulate random test failures on you local machine.
+
++++<!-- more -->+++
+
+From my experience the most common reason for randomly failing tests is either not properly cleaned environment or slow environment.
+Both such situations are quite common in CI environments.
+Failures due to interference with other tests were more common in the past.
+Nowadays, when usage of virtual machines and containers is quite common, this is usually not an issue.
+Also, tests isolation implemented by various CI as a services offerings is done well.
+The downside of using a CI as a service is that you usually cannot log into the machine and debug the tests there.
+Therefore, you have to either enable debug logs and wait for the next failure or guess what the reason was and try to simulate it on your local machine.
+
+The most common root cause of random failures in CI environments is slowness of various kinds.
+This is the result of overcommitting the resources in virtual environments or resource limits put on the VMs/containers.
+Therefore one of the most powerful ways to simulate random test failure locally is to restrict test resources on your local environment.
+Let's see what the common options are and how to do it.
+
+== Running tests in one thread
+
+One possible way to slow down your tests, especially when you have a multi-threaded application, is to execute the tests on a single thread or limited number of threads.
+On the Linux operating system, it’s pretty easy with the `taksset` command.
+https://man7.org/linux/man-pages/man1/taskset.1.html[taskset] tell the Linux scheduler to attach given process to specified CPU core.
+To run e.g. Debezium MySQL https://github.com/debezium/debezium/blob/main/debezium-connector-mysql/src/test/java/io/debezium/connector/mysql/TransactionMetadataIT.java[TransactionMetadataIT] on a single CPU core, you just need to run
+
+```
+taskset -c 0 mvn verify -DskipTests -Dit.test=DebeziumEngineIT
+```
+
+which would execute the tests on CPU #0.
+
+== Limiting container resources
+
+On the Debezium project we use containers for tests heavily.
+We run the databases against the tests run in the containers.
+What we often need is not to slow down the tests itself, but the database.
+Docker provides quite a lot of  https://docs.docker.com/config/containers/resource_constraints/[options] how to limit container resources.
+The most useful is usually limiting the CPU using `--cpus` parameter.
+This allows us to limit the amount of CPU Docker can use for running the container.
+The nice thing here is that it can be a float number, so you can e.g. limit containers to use only half of CPU time by setting `--cpus=0.5`.
+In a similar way you can also limit other resource, like e.g. RAM.
+
+The common Debezium workflow is to run the containers from Maven, using https://dmp.fabric8.io/[Docker Maven plugin].
+The plugin provides https://dmp.fabric8.io/#property-configuration[long list of properties] which you can configure, including properties for limiting container resources.
+However, there is one caveat with this option.
+With current release, `docker.cpus` expect https://github.com/fabric8io/docker-maven-plugin/issues/1608[long number] instead of float and have a meaning, roughly saying, how many CPU nano seconds from one second cycle the container can take.
+E.g. equivalent of `--cpus=0.5` would be:
+
+```
+mvn docker:start -Ddocker.cpus=500000000
+```
+
+This issue was https://github.com/fabric8io/docker-maven-plugin/pull/1609[fixed] recently and should be in the next Docker Maven plugin release, so once Debezium upgrade to the next version, you should be able use `docker.cpus` in the same way as you would use when running the container from the command line.
+Other Docker Maven plugin properties, e.g. `docker.memory` should work as expected.
+
+== Imposing network latency
+
+Another common source of random test failures is network latency.
+There's probably not any easy way to simulate it on a local machine and one has to use some kind of proxy.
+Fortunately, there is a proxy exactly for this purpose - https://github.com/Shopify/toxiproxy[Toxiproxy].
+It's a dedicated proxy to simulate various network failures and latencies.
+It has a rich feature set and moreover it's pretty easy to set it up, so it's a pleasure to work with it.
+Let's see how to set it up with Debezium tests on a local machine.
+
+You can install Toxiproxy locally (on Fedora by running `sudo dnf install toxiproxy`) or download it in a container:
+
+```
+docker pull ghcr.io/shopify/toxiproxy
+```
+
+We are going to run Toxiproxy in a container, but it's also convenient to install it locally as it contains a CLI utility to send commands to the Toxyproxy.
+Otherwise we would have to run the commands from the container.
+For simplicity, we will use a CLI tool installed locally.
+Toxyproxi allows us to send commands over HTTP and listens on port 8474.
+Therefore, when we start Toxyproxy, we need to expose this port.
+Another port we need to expose is the one for the database for which the Toxiproxy will serve as a proxy.
+In our example we will use MySQL, therefore we need to expose port 3306.
+We can of course use any other port, but in such a case we would need to pass additional parameter to the Debezium test, namely `database.port` pointing to the port exposed by Toxiproxy.
+Again, for simplicity, let's stick with the default port 3306.
+Also, as we are going to run the Debezium tests from the local machine (not from a container), we need to attach Toxiproxy to the localhost network, which is by default named `host`.
+Putting everything together, we can run Toxiproxy container as follows:
+
+```
+docker run --rm -p 8474:8474 -p 3306:3306 --net=host -it ghcr.io/shopify/toxiproxy
+```
+
+Now we also have to start our database.
+As the port 3306 is already occupied by Toxiproxy, we have to choose another one, let's say 3307:
+
+```
+mvn docker:start -Dmysql.port=3307
+```
+
+The last missing piece is to tell Toxiproxy for which ports it should create the proxy.
+In our case it's from port 3306 (listen port `-l`) to 3307 (upstream port `-u`):
+
+```
+toxiproxy-cli create mysql -l 0.0.0.0:3306 -u 0.0.0.0:3307
+```
+This command creates a new proxy within Toxiproxy, called `mysql`.
+There can be multiple proxies.
+We can list all the proxies by running
+
+```
+toxiproxy-cli list
+```
+
+which gives you output like this:
+
+----
+$ toxiproxy-cli list
+Name                    Listen          Upstream                Enabled         Toxics
+======================================================================================
+mysql                   [::]:3306       0.0.0.0:3307            enabled         None
+----
+
+Now let's try if everything works and run some test:
+
+```
+mvn verify -DskipTests -Ddatabase.hostname=localhost -Pskip-integration-tests -Dit.test=TransactionMetadataIT
+```
+
+Everything should run as normal as we haven't created any toxics (latencies or failure) yet.
+It's just a check that the proxy works correctly.
+If everything works, let's create a toxic now:
+
+```
+toxiproxy-cli toxic add mysql --type latency --attribute latency=500 -n mysql_latency
+```
+
+This will add a network latency of 500 ms on the mysql proxy. The toxic is named "mysql_latency".
+
+You can get more details about specified proxy by running `inspect` command:
+
+```
+toxiproxy-cli inspect mysql
+```
+
+with output like this:
+
+----
+$ toxiproxy-cli inspect mysql
+Name: mysql     Listen: [::]:3306       Upstream: 0.0.0.0:3307
+======================================================================
+Upstream toxics:
+Proxy has no Upstream toxics enabled.
+
+Downstream toxics:
+mysql_latency:  type=latency    stream=downstream       toxicity=1.00   attributes=[    jitter=0        latency=500     ]
+----
+
+Now, run the test again.
+Did you observe that the test ran substantially longer?
+If yes, everything works as expected, as we added latency to every call to the database.
+
+This is a simple example of adding toxic to the Toxiproxy.
+Toxiproxy provides many more options and ways to configure the toxics.
+See https://github.com/Shopify/toxiproxy[Toxiproxy] for more details.
+
+Once we are done, we can remove toxic
+
+```
+toxiproxy-cli toxic remove mysql -n mysql_latency
+```
+
+as well as proxy itself:
+
+```
+toxiproxy-cli delete mysql
+```
+
+or simply stop and delete the container.
+
+== Summary
+
+In this blog post I tried to show a couple of techniques which may help you to simulate flaky test failures locally.
+All of them try to make the test environment less responsive, namely by limiting CPU or imposing network latencies using Toxiproxy.
+There are many other reasons why the tests can be flaky, in many parts of your application stack, and also there are many other tools which can inject various kinds of failures (e.g. disk failures).
+So this post is not by far exhaustive.
+But I hope it will help you to debug at least some of the flaky tests, if not in the Debezium project, then at least in your own project.
+
+All these things, especially Toxiproxy, can be also used on a regular basis, even in the CI, to spot various hidden issues in the project which appears only when the environment where it runs doesn't behave nicely.
+
+Feel free to share in the discussion any other tips on how to debug flaky tests and what kind of tools you find handy.
