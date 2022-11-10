@@ -407,16 +407,7 @@
 <li><a href="#oracle-xstreams-dbms-lob-package">XStream and DBMS_LOB</a></li>
 </ul>
 </li>
-<li><a href="#oracle-when-things-go-wrong">Behavior when things go wrong</a>
-<ul class="sectlevel2">
-<li><a href="#oracle-logs-do-not-contain-offset-perform-new-snapshot">Logs do not contain offset, perform a new snapshot</a></li>
-<li><a href="#oracle-cannot-reference-overflow-table">ORA-25191 - Cannot reference overflow table of an index-organized table</a></li>
-<li><a href="#oracle-pga-aggregate-limit">ORA-04036: PGA memory used by the instance exceeds PGA_AGGREGATE_LIMIT</a></li>
-<li><a href="#oracle-sys-system-change-not-emitted">LogMiner adapter does not capture changes made by SYS or SYSTEM</a></li>
-<li><a href="#oracle-stops-capturing-changes-aws">Connector stops capturing changes from Oracle on AWS</a></li>
-<li><a href="#oracle-oracle-11-exception-ora01882">Connection fails with error <code>ORA-01882: timezone region not found</code></a></li>
-</ul>
-</li>
+<li><a href="#oracle-frequently-asked-questions">Frequently Asked Questions</a></li>
 </ul>
 </div>
 </div>
@@ -7567,121 +7558,103 @@ This diverged behavior is captured in <a href="https://issues.redhat.com/browse/
 </div>
 </div>
 <div class="sect1">
-<h2 id="oracle-when-things-go-wrong"><a class="anchor" href="#oracle-when-things-go-wrong"></a>Behavior when things go wrong</h2>
+<h2 id="oracle-frequently-asked-questions"><a class="anchor" href="#oracle-frequently-asked-questions"></a>Frequently Asked Questions</h2>
 <div class="sectionbody">
-<div class="paragraph">
-<p>Debezium is a distributed system that captures all changes in multiple upstream databases; it never misses or loses an event.
-When the system is operating normally or being managed carefully then Debezium provides <em>exactly once</em> delivery of every change event record.</p>
-</div>
-<div class="paragraph">
-<p>If a fault occurs, Debezium does not lose any events.
-However, while it is recovering from the fault, it might repeat some change events.
-In these abnormal situations, Debezium, like Kafka, provides <em>at least once</em> delivery of change events.</p>
-</div>
-<div class="paragraph">
-<p>The rest of this section describes how Debezium handles various kinds of faults and problems.</p>
-</div>
-<div class="sect2">
-<h3 id="oracle-logs-do-not-contain-offset-perform-new-snapshot"><a class="anchor" href="#oracle-logs-do-not-contain-offset-perform-new-snapshot"></a>Logs do not contain offset, perform a new snapshot</h3>
-<div class="paragraph">
-<p>In some cases, after the Debezium Oracle connector restarts, it reports the following error:</p>
-</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><strong>Is Oracle 11g supported?</strong></dt>
+<dd>
+<p>Oracle 11g is not supported; however, we do aim to be backward compatible with Oracle 11g on a best-effort basis.
+We rely on the community to communicate compatibility concerns with Oracle 11g as well as provide bug fixes when a regression is identified.</p>
+</dd>
+<dt class="hdlist1"><strong>Isn&#8217;t Oracle LogMiner deprecated?</strong></dt>
+<dd>
+<p>No, Oracle only deprecated the continuous mining option with Oracle LogMiner in Oracle 12c and removed that option starting with Oracle 19c.
+The Debezium Oracle connector does not rely on this option to function, and therefore can safely be used with newer versions of Oracle without any impact.</p>
+</dd>
+<dt class="hdlist1"><strong>How do I change the position in the offsets?</strong></dt>
+<dd>
+<p>The Debezium Oracle connector maintains two critical values in the offsets, a field named <code>scn</code> and another named <code>commit_scn</code>.
+The <code>scn</code> field is a string that represents the low-watermark starting position the connector used when capturing changes.</p>
+<div class="olist arabic">
+<ol class="arabic">
+<li>
+<p>Find out the name of the topic that contains the connector offsets.
+This is configured based on the value set as the  <code>offset.storage.topic</code> configuration property.</p>
+</li>
+<li>
+<p>Find out the last offset for the connector, the key under which it is stored and identify the partition used to store the offset.
+This can be done using the <code>kafkacat</code> utility script provided by the Kafka broker installation.
+An example might look like this:</p>
 <div class="listingblock">
 <div class="content">
-<pre class="highlightjs highlight"><code class="language-none hljs">Online REDO LOG files or archive logs do not contain the offset scn xxxxxxx. Please perform a new snapshot.</code></pre>
+<pre class="highlightjs highlight"><code class="language-shell hljs" data-lang="shell">kafkacat -b localhost -C -t my_connect_offsets -f 'Partition(%p) %k %s\n'
+Partition(11) ["inventory-connector",{"server":"server1"}] {"scn":"324567897", "commit_scn":"324567897: 0x2832343233323:1"}</code></pre>
 </div>
 </div>
 <div class="paragraph">
-<p>After the connector examines the redo and archive logs, if it cannot find the SCN that is recorded in the connector offsets, it returns the preceding error.
-Because the connector uses the SCN to determine where to resume processing, if the expected SCN if not found, a new snapshot must be completed.</p>
+<p>The key for <code>inventory-connector</code> is <code>["inventory-connector",{"server":"server1"}]</code>, the partition is <code>11</code> and the last offset is the contents that follows the key.</p>
 </div>
-<div class="paragraph">
-<p>You might find that the <code>V$ARCHIVED_LOG</code> table contains a record with an SCN that matches the expected range.
-However, the record might not be available for mining.
-To be available for mining, a record must include a filename in the <code>NAME</code> column, a value of <code>NO</code> in the <code>DELETED</code> column, and a value of <code>A</code> (available) in the <code>STATUS</code> column.
-If a record does not match any of these criteria, it is considered incomplete and cannot be mined.</p>
-</div>
-<div class="paragraph">
-<p>At a minimum, archive logs must be retained for as long as the longest downtime window of the connector.</p>
-</div>
-<div class="admonitionblock note">
-<table>
-<tr>
-<td class="icon">
-<i class="fa icon-note" title="Note"></i>
-</td>
-<td class="content">
-<div class="paragraph">
-<p>Records that have no value in the <code>NAME</code> column no longer exist in the file system.
-In such records, the value of the <code>DELETED</code> field is set to <code>YES</code>, and the <code>STATUS</code> field is set to <code>D</code> to indicate that the log is deleted.</p>
-</div>
-</td>
-</tr>
-</table>
-</div>
-</div>
-<div class="sect2">
-<h3 id="oracle-cannot-reference-overflow-table"><a class="anchor" href="#oracle-cannot-reference-overflow-table"></a>ORA-25191 - Cannot reference overflow table of an index-organized table</h3>
-<div class="paragraph">
-<p>Oracle might issue this error during the snapshot phase when encountering an index-organized table (IOT).
-This error means that the connector has attempted to execute an operation that must be executed against the parent index-organized table that contains the specified overflow table.</p>
-</div>
-<div class="paragraph">
-<p>To resolve this, the IOT name used in the SQL operation should be replaced with the parent index-organized table name.
-To determine the parent index-organized table name, use the following SQL:</p>
-</div>
+</li>
+<li>
+<p>To move back to a previous offset the connector should be stopped and the following command has to be issued:</p>
 <div class="listingblock">
 <div class="content">
-<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">SELECT IOT_NAME
-  FROM DBA_TABLES
- WHERE OWNER='&lt;tablespace-owner&gt;'
-   AND TABLE_NAME='&lt;iot-table-name-that-failed&gt;'</code></pre>
+<pre class="highlightjs highlight"><code class="language-shell hljs" data-lang="shell">echo '["inventory-connector",{"server":"server1"}]|{"scn":"3245675000","commit_scn":"324567500"}' | \
+kafkacat -P -b localhost -t my_connect_offsets -K \| -p 11</code></pre>
 </div>
 </div>
 <div class="paragraph">
-<p>The connector&#8217;s <code>table.include.list</code> or <code>table.exclude.list</code> configuration options should then be adjusted to explicitly include or exclude the appropriate tables to avoid the connector from attempting to capture changes from the child index-organized table.</p>
+<p>This writes to partition <code>11</code> of the <code>my_connect_offsets</code> topic the given key and offset value.
+In this example, we are reversing the connector back to SCN <code>3245675000</code> rather than <code>324567897</code>.</p>
 </div>
+</li>
+</ol>
 </div>
-<div class="sect2">
-<h3 id="oracle-pga-aggregate-limit"><a class="anchor" href="#oracle-pga-aggregate-limit"></a>ORA-04036: PGA memory used by the instance exceeds PGA_AGGREGATE_LIMIT</h3>
+</dd>
+<dt class="hdlist1"><strong>What happens if the connector cannot find logs with a given offset SCN?</strong></dt>
+<dd>
+<p>The Debezium connector maintains a low and high -watermark SCN value in the connector offsets.
+The low-watermark SCN represents the starting position and must exist in the available online redo or archive logs in order for the connector to start successfully.
+When the connector reports it cannot find this offset SCN, this indicates that the logs that are still available do not contain the SCN and therefore the connector cannot mine changes from where it left off.</p>
 <div class="paragraph">
-<p>Oracle might report this error when Debezium connects to a database in which changes occur infrequently.
-The Debezium connector starts an Oracle LogMiner session and reuses this session until a log switch is detected.
-The reuse is both a performance and resource utilization optimization; however, a long-running mining session can cause high Program Global Area (PGA) memory usage.</p>
+<p>When this happens, there are two options.
+The first is to remove the history topic and offsets for the connector and restart the connector, taking a new snapshot as suggested.
+This will guarantee that no data loss will occur for any topic consumers.
+The second is to manually manipulate the offsets, advancing the SCN to a position that is available in the redo or archive logs.
+This will cause changes that occurred between the old SCN value and the newly provided SCN value to be lost and not written to the topics.
+This is not recommended.</p>
+</div>
+</dd>
+<dt class="hdlist1"><strong>What&#8217;s the difference between the various mining strategies?</strong></dt>
+<dd>
+<p>The Debezium Oracle connector provides two options for <code>log.mining.strategy</code>.</p>
+<div class="paragraph">
+<p>The default is <code>redo_in_catalog</code>, and this instructs the connector to write the Oracle data dictionary to the redo logs everytime a log switch is detected.
+This data dictionary is necessary for Oracle LogMiner to track schema changes effectively when parsing the redo and archive logs.
+This option will generate more than usual numbers of archive logs but allows tables being captured to be manipulated in real-time without any impact on capturing data changes.
+This option generally requires more Oracle database memory and will cause the Oracle LogMiner session and process to take slightly longer to start after each log switch.</p>
 </div>
 <div class="paragraph">
-<p>If your redo log switches infrequently, you can avoid the ORA-04036 error by specifying how frequently Oracle switches logs.
-A log switch causes the connector to restart the mining session, thereby avoiding high PGA memory usage.
-The following configuration forces Oracle to switch log files every 20 minutes if a log switch does not occur during that interval:</p>
+<p>The alternative option, <code>online_catalog</code>, does not write the data dictionary to the redo logs.
+Instead, Oracle LogMiner will always use the online data dictionary that contains the current state of the table&#8217;s structure.
+This also means that if a table&#8217;s structure changes and no longer matches the online data dictionary, Oracle LogMiner will be unable to resolve table or column names if the table&#8217;s structure is changed.
+This mining strategy option should not be used if the tables being captured are subject to frequent schema changes.
+It&#8217;s important that all data changes be lock-stepped with the schema change such that all changes have been captured from the logs for the table, stop the connector, apply the schema change, and restart the connector and resume data changes on the table.
+This option requires less Oracle database memory and Oracle LogMiner sessions generally start substantially faster since the data dictionary does not need to be loaded or primed by the LogMiner process.</p>
 </div>
-<div class="listingblock">
-<div class="content">
-<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">ALTER SYSTEM SET archive_lag_target=1200 scope=both;</code></pre>
-</div>
-</div>
-<div class="paragraph">
-<p>Running the preceding query requires specific administrative privileges.
-Coordinate with your database administrator to implement the change.</p>
-</div>
-<div class="paragraph">
-<p>As alternative to adjusting the Oracle <code>ARCHIVE_LAG_TARGET</code> parameter, you can limit the duration of an Oracle LogMiner session by setting the connector configuration option <a href="#oracle-property-log-mining-session-max-ms"><code>log.mining.session.max.ms</code></a>.
-The <code>log.mining.session.max.ms</code> option causes the LogMiner session to restart regularly, whether or not the switch to a new database log occurs.</p>
-</div>
-</div>
-<div class="sect2">
-<h3 id="oracle-sys-system-change-not-emitted"><a class="anchor" href="#oracle-sys-system-change-not-emitted"></a>LogMiner adapter does not capture changes made by SYS or SYSTEM</h3>
-<div class="paragraph">
-<p>Oracle uses the <code>SYS</code> and <code>SYSTEM</code> accounts to carry out many internal changes.
-When the Debezium Oracle connector fetches changes from LogMiner, it automatically filters changes that originate from these administrator accounts.
-To ensure that the connector emit event records when you change a table, never use the <code>SYS</code> or <code>SYSTEM</code> user accounts to modify the table.</p>
-</div>
-</div>
-<div class="sect2">
-<h3 id="oracle-stops-capturing-changes-aws"><a class="anchor" href="#oracle-stops-capturing-changes-aws"></a>Connector stops capturing changes from Oracle on AWS</h3>
-<div class="paragraph">
+</dd>
+<dt class="hdlist1"><strong>Why are changes made by SYS or SYSTEM users not captured?</strong></dt>
+<dd>
+<p>The Oracle database uses the <code>SYS</code> and <code>SYSTEM</code> user accounts to perform a multitude of internal operations in the redo logs that are not important for change data capture.
+When the Debezium Oracle connector reads changes from Oracle LogMiner, changes made by these two user accounts are filtered out automatically.
+So if you are using either of these two user accounts and not seeing change events, this is why changes made by those users are not captured.
+You should use a designated non-system user account to perform all changes you wish to be captured.</p>
+</dd>
+<dt class="hdlist1"><strong>Why does the connector appear to stop capturing changes on AWS?</strong></dt>
+<dd>
 <p>Due to the <a href="https://aws.amazon.com/blogs/networking-and-content-delivery/best-practices-for-deploying-gateway-load-balancer">fixed idle timeout of 350 seconds on the AWS Gateway Load Balancer</a>,
 JDBC calls that require more than 350 seconds to complete can hang indefinitely.</p>
-</div>
 <div class="paragraph">
 <p>In situations where calls to the Oracle LogMiner API take more than 350 seconds to complete, a timeout can be triggered, causing the AWS Gateway Load Balancer to hang.
 For example, such timeouts can occur when a LogMiner session that processes large amounts of data runs concurrently with Oracle&#8217;s periodic checkpointing task.</p>
@@ -7721,21 +7694,74 @@ For example, such timeouts can occur when a LogMiner session that processes larg
 <p>The preceding steps configure the TCP network stack to send keep-alive packets every 60 seconds.
 As a result, the AWS Gateway Load Balancer does not timeout when JDBC calls to the LogMiner API take more than 350 seconds to complete, enabling the connector to continue to read changes from the database&#8217;s transaction logs.</p>
 </div>
-</div>
-<div class="sect2">
-<h3 id="oracle-oracle-11-exception-ora01882"><a class="anchor" href="#oracle-oracle-11-exception-ora01882"></a>Connection fails with error <code>ORA-01882: timezone region not found</code></h3>
-<div class="paragraph">
-<p>When you start a connector that the Oracle JDBC driver (<code>ojdbc8.jar</code>) to access an Oracle 11g database, the connector might report the following error:</p>
-</div>
+</dd>
+<dt class="hdlist1"><strong>What&#8217;s the cause for ORA-01555 and how to handle it?</strong></dt>
+<dd>
+<p>The Debezium Oracle connector uses flashback queries when the initial snapshot phase executes.
+A flashback query is a special type of query that relies on the flashback area, maintained by the database&#8217;s <code>UNDO_RETENTION</code> database parameter, to return the results of a query based on what the contents of the table had at a given time, or in our case at a given SCN.
+By default, Oracle generally only maintains an undo or flashback area for approximately 15 minutes unless this has been increased or decreased by your database administrator.
+For configurations that capture large tables, it may take longer than 15 minutes or your configured <code>UNDO_RETENTION</code> to perform the initial snapshot and this will eventually lead to this exception:</p>
 <div class="listingblock">
 <div class="content">
-<pre class="highlightjs highlight"><code class="language-shell hljs" data-lang="shell">Caused by: java.sql.SQLException: ORA-00604: error occurred at recursive SQL level 1
-ORA-01882: timezone region not found</code></pre>
+<pre class="highlightjs highlight"><code class="language-none hljs">ORA-01555: snapshot too old: rollback segment number 12345 with name "_SYSSMU11_1234567890$" too small</code></pre>
 </div>
 </div>
 <div class="paragraph">
-<p>To prevent the preceding error from occurring, add the following setting to the connector configuration: <code>database.oracle.jdbc.timezoneAsRegion=false</code>.</p>
+<p>The first way to deal with this exception is to work with your database administrator and see whether they can increase the <code>UNDO_RETENTION</code> database parameter temporarily.
+This does not require a restart of the Oracle database, so this can be done online without impacting database availability.
+However, changing this may still lead to the above exception or a "snapshot too old" exception if the tablespace has inadequate space to store the necessary undo data.</p>
 </div>
+<div class="paragraph">
+<p>The second way to deal with this exception is to not rely on the initial snapshot at all, setting the <code>snapshot.mode</code> to <code>schema_only</code> and then instead relying on incremental snapshots.
+An incremental snapshot does not rely on a flashback query and therefore isn&#8217;t subject to ORA-01555 exceptions.</p>
+</div>
+</dd>
+<dt class="hdlist1"><strong>What&#8217;s the cause for ORA-04036 and how to handle it?</strong></dt>
+<dd>
+<p>The Debezium Oracle connector may report an ORA-04036 exception when the database changes occur infrequently.
+An Oracle LogMiner session is started and re-used until a log switch is detected.
+The session is re-used as it provides the optimal performance utilization with Oracle LogMiner, but should a long-running mining session occur, this can lead to excessive PGA memory usage, eventually causing an exception like this:</p>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-none hljs">ORA-04036: PGA memory used by the instance exceeds PGA_AGGREGATE_LIMIT</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>This exception can be avoided by specifying how frequent Oracle switches redo logs or how long the Debezium Oracle connector is allowed to re-use the mining session.
+The Debezium Oracle connector provides a configuration option, <a href="#oracle-property-log-mining-session-max-ms"><code>log.mining.session.max.ms</code></a>, which controls how long the current Oracle LogMiner session can be re-used for before being closed and a new session started.
+This allows the database resources to be kept in-check without exceeding the PGA memory allowed by the database.</p>
+</div>
+</dd>
+<dt class="hdlist1"><strong>What&#8217;s the cause for ORA-01882 and how to handle it?</strong></dt>
+<dd>
+<p>The Debezium Oracle connector may report the following exception when connecting to an Oracle database:</p>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-none hljs">ORA-01882: timezone region not found</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>This happens when the timezone information cannot be correctly resolved by the JDBC driver.
+In order to solve this driver related problem, the driver needs to be told to not resolve the timezone details using regions.
+This can be done by specifying a driver pass through property using <code>driver.oracle.jdbc.timezoneAsRegion=false</code>.</p>
+</div>
+</dd>
+<dt class="hdlist1"><strong>What&#8217;s the cause for ORA-25191 and how to handle it?</strong></dt>
+<dd>
+<p>The Debezium Oracle connector automatically ignores index-organized tables (IOT) as they are not supported by Oracle LogMiner.
+However, if an ORA-25191 exception is thrown, this could be due to a unique corner case for such a mapping and the additional rules may be necessary to exclude these automatically.
+An example of an ORA-25191 exception might look like this:</p>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-none hljs">ORA-25191: cannot reference overflow table of an index-organized table</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>If an ORA-25191 exception is thrown, please raise a Jira issue with the details about the table and it&#8217;s mappings, related to other parent tables, etc.
+As a workaround, the include/exclude configuration options can be adjusted to prevent the connector from accessing such tables.</p>
+</div>
+</dd>
+</dl>
 </div>
 </div>
 </div>
@@ -7747,7 +7773,7 @@ ORA-01882: timezone region not found</code></pre>
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2022 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/2294a4ddb3f7afc29a5191fbf21ae5aed41e1c92">2294a4dd</a></span>)
+            <div class="copyright">Copyright &copy; 2022 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/b718a8169874f1210807406799ae297323d669e1">b718a816</a></span>)
             
         </div>
     </footer>
