@@ -1,0 +1,150 @@
+---
+layout: post
+title:  Debezium 2.1.0.Alpha1 Released
+date:   2022-11-10
+tags: [ releases, mongodb, mysql, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox ]
+author: ccranfor
+---
+
+It's my pleasure to announce the first release of the Debezium 2.1 series, *2.1.0.Alpha1*!
+
+The Debezium 2.1.0.Alpha1 release includes quite a number of bug fixes but also some noteworthy improvements and new features including but not limited to:
+
+* Support for PostgreSQL 15
+* Single Message Transformation (SMT) predicate support in Debezium engine
+* Capturing TRUNCATE as change event in MySQL table topics
+* Oracle LogMiner performance improvements
+* New Redis-based storage module
+
++++<!-- more -->+++
+
+Let's take a few moments and dive into some of these in more detail!
+
+== SMT predicate support in Debezium engine
+
+Single Message Transformations (SMTs) are a critical part of a change event's lifecycle and they can apply any number of messaging patterns to the emitted change event.
+For example, a database table may have a specific column that gets emitted as a part of Debezium's change events, but you want this field to be excluded so that the field isn't present in the persisted event inside Kafka.
+This can be done using a single message transformation (SMT).
+
+However, Debezium emits a number of different event types such as heartbeat, schema change, and data change events.
+Each of these events have their own event structure and there may come a point where a specific SMT should only be applied to a specific event type or if a specific event has a certain criteria.
+One way to evaluate whether the SMT should be applied was to do this evaluation inside the SMT itself, checking its event type or all the criteria to see whether the SMT should be applied or if the SMT should return the event unchanged.
+
+Kafka Connect later introduced a concept called _predicates_, which is where a set of external rules can be specified in the connector configuration and must be evaluated to determine whether the SMT should be fired for an event or whether the SMT is skipped.
+This has enormous benefits because it allows developers to write very specific transformations that focus on a singular mutation and its entirely up to the user to determine whether that SMT should be applied or not using _predicates_.
+
+Starting in Debezium 2.1, the power of Single Message Transformation (SMT) predicates can be harnessed when using the Debezium Engine or Debezium Server.
+An example configuration might like this:
+
+[source,properties]
+----
+# Define the filter transformation, linking it to the IsFoo predicate/rule
+debezium.transforms=Filter
+debezium.transforms.Filter.type=org.apache.kafka.connect.transforms.Filter
+debezium.transforms.Filter.predicate=IsFoo
+
+# Define the IsFoo predicate/rule
+debezium.predicates=IsFoo
+debezium.predicates.IsFoo.type=org.apache.kafka.connect.transforms.predicates.TopicNameMatches
+debezium.predicates.IsFoo.pattern=foo
+----
+
+With these additional `debezium.predicates.*` configuration properties, it is possible to define a set of rules that must be evaluated to determine whether the `Filter` SMT will be fired or skipped in the transformation chain.
+In the example above, the predicate checks to see whether the event's topic name matches `foo` and if it does, the `Filter` transformation will be fired.
+If the topic name does not match `foo`, the `Filter` transformation is skipped.
+
+To read more about applying Single Message Transformations (SMTs) selectively using predicates, see:
+
+* https://debezium.io/documentation/reference/2.1/transformations/applying-transformations-selectively.html[Using SMT predicates to selectively apply transformations]
+* https://debezium.io/documentation/reference/2.1/operations/debezium-server.html#debezium-predicates-configuration-options[Debezium Server predicates configuration and set up]
+
+== Capture MySQL TRUNCATE as change event
+
+Debezium has supported the concept of emitting a change event to signal a `TRUNCATE TABLE` scenario for PostgreSQL and Oracle for quite a while.
+Starting with Debezium 2.1, this behavior has been extended to the MySQL connector.
+
+By default, the connector configuration option, `skipped.operations`, automatically skips `TRUNCATE` events if they're detected.
+This means that by default, there will not be anything emitted when the connector detects this pattern.
+In order to support emission of such events, the `skipped.operations` configuration property must be specified with a value of `none` or other operation types that do not include the `t` (truncate) type.
+
+Once the connector is configured to emit events for `TRUNCATE` operations, a new data change event type will be emitted to the table topics.
+These event types signal that the table or collection has been truncated.  The event's payload will looking like this:
+
+[source,json]
+----
+"payload": {
+  "source": {
+    ...
+  },
+  "op": "t",
+  "ts_ms": 1465581029523
+}
+----
+
+The most notable point here is that truncate events do not contain a `before` or `after` state.
+
+== New Redis-based storage module
+
+Debezium recently modularized parts of its codebase around persisting offsets and schema history into a set of modules supporting File and Kafka -based implementation.
+In Debezium 2.1, a new module was introduced to support persisting to Redis data stores.
+
+The following fully-qualified class names can be used to persist offsets or schema history to Redis data stores:
+
+* `io.debezium.storage.redis.offset.RedisOffsetBackingStore`
+* `io.debezium.storage.redis.history.RedisSchemaHistory`
+
+If you have manually installed Debezium, be sure to include the `debezium-storage-redis` artifact on your classpath if it does not exist in order to gain access to these new implementations.
+
+For information about what options can be configured with this new implementation, please see the https://debezium.io/documentation/reference/2.1/operations/debezium-server.html#debezium-source-configuration-properties[source configuration] section of the Debezium Server documentation and look for configuration options prefixed with:
+
+* `debezium.source.offset.storage.redis.*`
+* `debezium.source.schema.history.internal.redis.*`
+
+== Other fixes
+
+There were quite a number of bugfixes and stability changes in this release, some noteworthy are:
+
+* Missing snapshot pending transactions https://issues.redhat.com/browse/DBZ-5482[DBZ-5482]
+* Using snapshot.mode ALWAYS uses SCN from offsets https://issues.redhat.com/browse/DBZ-5626[DBZ-5626]
+* MongoDB multiple tasks monitor misalignment https://issues.redhat.com/browse/DBZ-5629[DBZ-5629]
+* UNIQUE INDEX with NULL value throws exception when lob.enabled is true https://issues.redhat.com/browse/DBZ-5682[DBZ-5682]
+* Columns are not excluded when doing incremental snapshots https://issues.redhat.com/browse/DBZ-5727[DBZ-5727]
+* NullPointerException thrown during snapshot of tables in Oracle source connector https://issues.redhat.com/browse/DBZ-5738[DBZ-5738]
+* Hostname not available for load balanced ocp services in ARO https://issues.redhat.com/browse/DBZ-5753[DBZ-5753]
+* Exclude Oracle Compression Advisor tables from capture to avoid infinite loop https://issues.redhat.com/browse/DBZ-5756[DBZ-5756]
+* Message with LSN 'LSN{XYZ}' not present among LSNs seen in the location phase https://issues.redhat.com/browse/DBZ-5792[DBZ-5792]
+
+Altogether, https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20AND%20fixVersion%20%3D%202.1.0.Alpha1%20ORDER%20BY%20component%20ASC[55 issues] were fixed for this release.
+A big thank you to all the contributors from the community who worked on this release:
+https://github.com/adasari[Anil Dasari],
+https://github.com/ani-sha[Anisha Mohanty],
+https://github.com/roldanbob[Bob Roldan],
+https://github.com/Naros[Chris Cranford],
+https://github.com/enzo-cappa[Enzo Cappa],
+https://github.com/ggaborg[Gabor Andras],
+https://github.com/harveyyue[Harvey Yue],
+https://github.com/BetaCat0[Helong Zhang],
+https://github.com/hdulay[Hubert Dulay],
+https://github.com/jcechace[Jakub Cechacek],
+https://github.com/janjwerner-confluent[Jan Werner],
+https://github.com/jeremy-l-ford[Jeremy Ford],
+https://github.com/novotnyJiri[Jiri Novotny],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/dude0001[Mark Lambert],
+https://github.com/MartinMedek[Martin Medek],
+https://github.com/obabec[Ondrej Babec],
+https://github.com/rajdangwal[Rajendra Dangwal],
+https://github.com/chtitux[Théophile Helleboid],
+https://github.com/vjuranek[Vojtech Juranek], and
+https://github.com/ywu-stripe[Yang Wu]!
+
+== What's Next?
+
+So as we continue to work on Debezium 2.1, we've been able to include a number of the expected changes in today's release, but we still do intend to deliver on a new Single Message Transformation (SMT) for generating change event deltas before the end of the year.
+There is also some much anticipated changes for Debezium UI, such as supporting editing of connector configurations and much more.
+
+You can find this information and what else to expect as a part of Debezium in 2023 in our recently updated link:/roadmap/[road map].
+We have quite a lot of new features planned for next year, and we would love to hear your feedback or suggestions on things that may not be on the roadmap you'd like to see.
+Be sure to get in touch with us on the mailing list if there is.
+
+Until next time...
