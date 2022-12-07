@@ -385,7 +385,7 @@
 <li><a href="#debezium-mongodb-kafka-connect-process-stops-gracefully">Kafka Connect process stops gracefully</a></li>
 <li><a href="#debezium-mongodb-kafka-connect-process-crashes">Kafka Connect process crashes</a></li>
 <li><a href="#debezium-mongodb-kafka-process-becomes-unavailable">Kafka becomes unavailable</a></li>
-<li><a href="#debezium-mongodb-connector-is-stopped-for-a-long-interval">Connector is stopped for a long interval</a></li>
+<li><a href="#debezium-mongodb-connector-is-stopped-for-a-long-interval">Connector fails after it is stopped for a long interval if <code>snapshot.mode</code> is set to <code>initial</code></a></li>
 <li><a href="#mongodb-crash-results-in-lost-commits">MongoDB loses writes</a></li>
 </ul>
 </li>
@@ -2568,7 +2568,20 @@ If you include this property in the configuration, do not set the <code>collecti
 <p><code>initial</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Specifies the criteria for running a snapshot upon startup of the connector. The default is <strong>initial</strong>, and specifies that the connector reads a snapshot when either no offset is found or if the change stream no longer contains the previous offset. The <strong>never</strong> option specifies that the connector should never use snapshots, instead the connector should proceed to tail the log.</p>
+<p>Specifies the criteria for performing a snapshot when the connector starts.
+Set the property to one of the following values:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>initial</code></dt>
+<dd>
+<p>When the connector starts, if it does not detect a value in its offsets topic, it performs a snapshot of the database.</p>
+</dd>
+<dt class="hdlist1"><code>never</code></dt>
+<dd>
+<p>When the connector starts, it skips the snapshot process and immediately begins to stream change events for operations that the database records to the oplog.</p>
+</dd>
+</dl>
 </div></div></td>
 </tr>
 <tr>
@@ -3901,31 +3914,24 @@ The number of duplicate events depends on the offset flush period and the volume
 </div>
 </div>
 <div class="sect2">
-<h3 id="debezium-mongodb-connector-is-stopped-for-a-long-interval"><a class="anchor" href="#debezium-mongodb-connector-is-stopped-for-a-long-interval"></a>Connector is stopped for a long interval</h3>
+<h3 id="debezium-mongodb-connector-is-stopped-for-a-long-interval"><a class="anchor" href="#debezium-mongodb-connector-is-stopped-for-a-long-interval"></a>Connector fails after it is stopped for a long interval if <code>snapshot.mode</code> is set to <code>initial</code></h3>
 <div class="paragraph">
-<p>If the connector is gracefully stopped, the replica sets can continue to be used and any new changes are recorded in MongoDB&#8217;s oplog.
-When the connector is restarted, it will resume streaming changes for each replica set where it last left off, recording change events for all of the changes that were made while the connector was stopped.
-If the connector is stopped long enough such that MongoDB purges from its oplog some operations that the connector has not read, then upon startup the connector will perform a snapshot.</p>
+<p>If the connector is gracefully stopped, users might continue to perform operations on replica set members.
+Changes that occur while the connector is offline continue to be recorded in MongoDB&#8217;s oplog.
+In most cases, after the connector is restarted, it reads the offset value in the oplog to determine the last operation that it streamed for each replica set, and then resumes streaming changes from that point.
+After the restart, database operations that occurred while the connector was stopped are emitted to Kafka as usual, and after some time, the connector catches up with the database.
+The amount of time required for the connector to catch up depends on the capabilities and performance of Kafka and the volume of changes that occurred in the database.</p>
 </div>
 <div class="paragraph">
-<p>A properly configured Kafka cluster is capable of massive throughput.
-Kafka Connect is written with Kafka best practices, and given enough resources will also be able to handle very large numbers of database change events.
-Because of this, when a connector has been restarted after a while, it is very likely to catch up with the database, though how quickly will depend upon the capabilities and performance of Kafka and the volume of changes being made to the data in MongoDB.</p>
+<p>However, if the connector remains stopped for a long enough interval, it can occur that MongoDB purges the oplog during the time that the connector is inactive, resulting in the loss of information about the connector&#8217;s last position.
+After the connector restarts, it cannot resume streaming, because the oplog no longer contains the previous offset value that marks the last operation that the connector processed.
+The connector also cannot perform a snapshot, as it typically would when the <code>snapshot.mode</code> property is set to <code>initial</code>, and no offset value is present.
+In this case, a mismatch exists, because the oplog does not contain the value of the previous offset, but the offset value is present in the connector&#8217;s internal Kafka offsets topic.
+An error results and the connector fails.</p>
 </div>
-<div class="admonitionblock note">
-<table>
-<tr>
-<td class="icon">
-<i class="fa icon-note" title="Note"></i>
-</td>
-<td class="content">
 <div class="paragraph">
-<p>If the connector remains stopped for long enough, MongoDB might purge older oplog files and the connector&#8217;s last position may be lost.
-In this case, when the connector configured with <em>initial</em> snapshot mode (the default) is finally restarted, the MongoDB server will no longer have the starting point and the connector will fail with an error.</p>
-</div>
-</td>
-</tr>
-</table>
+<p>To recover from the failure, delete the failed connector, and create a new connector with the same configuration but with a different connector name.
+When you start the new connector, it performs a snapshot to ingest the state of database, and then resumes streaming.</p>
 </div>
 </div>
 <div class="sect2">
@@ -3949,7 +3955,7 @@ As a result, the secondary node that is elected as the new primary node might be
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2022 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/4f0ec3c799f1ed0e4fcc5e48064b109abc7a2e79">4f0ec3c7</a></span>)
+            <div class="copyright">Copyright &copy; 2022 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/b2c9678b74a153b27fa14232efb83061bce8aa34">b2c9678b</a></span>)
             
         </div>
     </footer>
