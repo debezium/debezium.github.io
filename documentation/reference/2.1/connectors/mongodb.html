@@ -120,6 +120,9 @@
   <li class="nav-item" data-depth="2">
     <a class="nav-link" href="vitess.html">Vitess</a>
   </li>
+  <li class="nav-item" data-depth="2">
+    <a class="nav-link" href="spanner.html">Spanner</a>
+  </li>
 </ul>
   </li>
   <li class="nav-item" data-depth="1">
@@ -385,7 +388,7 @@
 <li><a href="#debezium-mongodb-kafka-connect-process-stops-gracefully">Kafka Connect process stops gracefully</a></li>
 <li><a href="#debezium-mongodb-kafka-connect-process-crashes">Kafka Connect process crashes</a></li>
 <li><a href="#debezium-mongodb-kafka-process-becomes-unavailable">Kafka becomes unavailable</a></li>
-<li><a href="#debezium-mongodb-connector-is-stopped-for-a-long-interval">Connector is stopped for a long interval</a></li>
+<li><a href="#debezium-mongodb-connector-is-stopped-for-a-long-interval">Connector fails after it is stopped for a long interval if <code>snapshot.mode</code> is set to <code>initial</code></a></li>
 <li><a href="#mongodb-crash-results-in-lost-commits">MongoDB loses writes</a></li>
 </ul>
 </li>
@@ -782,11 +785,30 @@ Debezium emits these remaining <code>READ</code> events to the collection&#8217;
 <div class="paragraph">
 <p>The connector repeats the process for each snapshot chunk.</p>
 </div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
 <div class="paragraph">
-<div class="title">Triggering an incremental snapshot</div>
+<p>Incremental snapshots are currently supported for single replica set deployments only.
+This limitation will be removed in the next version.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+</div>
+<div class="sect3">
+<h4 id="mongodb-triggering-an-incremental-snapshot"><a class="anchor" href="#mongodb-triggering-an-incremental-snapshot"></a>Triggering an incremental snapshot</h4>
+<div class="paragraph">
 <p>Currently, the only way to initiate an incremental snapshot is to send an <a href="../configuration/signalling.html#debezium-signaling-ad-hoc-snapshots" class="page">ad hoc snapshot signal</a> to the signaling collection on the source database.
-You submit signals to the collection as SQL <code>INSERT</code> queries.
-After Debezium detects the change in the signaling collection, it reads the signal, and runs the requested snapshot operation.</p>
+You submit a signal to the signaling collection by using the MongoDB <code>insert()</code> method.</p>
+</div>
+<div class="paragraph">
+<p>After Debezium detects the change in the signaling collection, it reads the signal, and runs the requested snapshot operation.</p>
 </div>
 <div class="paragraph">
 <p>The query that you submit specifies the collections to include in the snapshot, and, optionally, specifies the kind of snapshot operation.
@@ -794,7 +816,7 @@ Currently, the only valid option for snapshots operations is the default value, 
 </div>
 <div class="paragraph">
 <p>To specify the collections to include in the snapshot, provide a <code>data-collections</code> array that lists the collections or an array of regular expressions used to match collections, for example,<br>
-<code>{"data-collections": ["public.MyFirstTable", "public.MySecondTable"]}</code><br></p>
+<code>{"data-collections": ["public.Collection1", "public.Collection2"]}</code><br></p>
 </div>
 <div class="paragraph">
 <p>The <code>data-collections</code> array for an incremental snapshot signal has no default value.
@@ -810,7 +832,7 @@ If the <code>data-collections</code> array is empty, Debezium detects that no ac
 <div class="paragraph">
 <p>If the name of a collection that you want to include in a snapshot contains a dot (<code>.</code>) in the name of the database, schema, or table, to add the collection to the <code>data-collections</code> array, you must escape each part of the name in double quotes.<br>
 <br>
-For example, to include a table that exists in the <code><strong>public</strong></code> schema and that has the name <code><strong>My.Table</strong></code>, use the following format: <code><strong>"public"."My.Table"</strong></code>.</p>
+For example, to include a data collection that exists in the <code><strong>public</strong></code> database, and that has the name <code><strong>MyCollection</strong></code>, use the following format: <code><strong>"public"."MyCollection"</strong></code>.</p>
 </div>
 </td>
 </tr>
@@ -838,10 +860,10 @@ For example, to include a table that exists in the <code><strong>public</strong>
 <div class="title">Procedure</div>
 <ol class="arabic">
 <li>
-<p>Send a SQL query to add the ad hoc incremental snapshot request to the signaling collection:</p>
+<p>Insert a snapshot signal document into the signaling collection:</p>
 <div class="listingblock">
 <div class="content">
-<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">INSERT INTO _&lt;signalTable&gt;_ (id, type, data) VALUES (_'&lt;id&gt;'_, _'&lt;snapshotType&gt;'_, '{"data-collections": ["_&lt;tableName&gt;_","_&lt;tableName&gt;_"],"type":"_&lt;snapshotType&gt;_"}');</code></pre>
+<pre class="highlightjs highlight"><code class="language-bash hljs" data-lang="bash"><em>&lt;signalDataCollection&gt;</em>.insert({"<em>id" : _&lt;idNumber&gt;</em>,"type" : <em>&lt;snapshotType&gt;</em>, "data" : {"data-collections" ["<em>&lt;collectionName&gt;</em>", "<em>&lt;collectionName&gt;</em>"],"type": <em>&lt;snapshotType&gt;</em>}});</code></pre>
 </div>
 </div>
 <div class="paragraph">
@@ -849,54 +871,60 @@ For example, to include a table that exists in the <code><strong>public</strong>
 </div>
 <div class="listingblock">
 <div class="content">
-<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">INSERT INTO myschema.debezium_signal (id, type, data) VALUES('ad-hoc-1', 'execute-snapshot', '{"data-collections": ["schema1.table1", "schema2.table2"],"type":"incremental"}');</code></pre>
+<pre class="highlightjs highlight"><code class="language-bash hljs" data-lang="bash">db.debeziumSignal.insert({ <i class="conum" data-value="1"></i><b>(1)</b>
+"type" : "execute-snapshot", <i class="conum" data-value="2"></i><b>(2)</b> <i class="conum" data-value="3"></i><b>(3)</b>
+"data" : {
+"data-collections" ["\"public\".\"Collection1\"", "\"public\".\"Collection2\""], <i class="conum" data-value="4"></i><b>(4)</b>
+"type": "incremental"} <i class="conum" data-value="5"></i><b>(5)</b>
+});</code></pre>
 </div>
 </div>
 <div class="paragraph">
 <p>The values of the <code>id</code>,<code>type</code>, and <code>data</code> parameters in the command correspond to the <a href="../configuration/signalling.html#debezium-signaling-description-of-required-structure-of-a-signaling-data-collection" class="page">fields of the signaling collection</a>.</p>
 </div>
 <div class="paragraph">
-<p>The following collection describes the these parameters:</p>
+<p>The following table describes the parameters in the example:</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 2. Descriptions of fields in a SQL command for sending an incremental snapshot signal to the signaling collection</caption>
+<caption class="title">Table 2. Descriptions of fields in a MongoDB insert() command for sending an incremental snapshot signal to the signaling collection</caption>
 <colgroup>
-<col style="width: 20%;">
-<col style="width: 80%;">
+<col style="width: 4%;">
+<col style="width: 11%;">
+<col style="width: 85%;">
 </colgroup>
 <thead>
 <tr>
+<th class="tableblock halign-left valign-top">Item</th>
 <th class="tableblock halign-left valign-top">Value</th>
 <th class="tableblock halign-left valign-top">Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td class="tableblock halign-left valign-top"><p class="tableblock"><code>myschema.debezium_signal</code></p></td>
-<td class="tableblock halign-left valign-top"><p class="tableblock">Specifies the fully-qualified name of the signaling collection on the source database</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">1</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>db.debeziumSignal</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Specifies the fully-qualified name of the signaling collection on the source database.</p></td>
 </tr>
 <tr>
-<td class="tableblock halign-left valign-top"><p class="tableblock"><code>ad-hoc-1</code></p></td>
-<td class="tableblock halign-left valign-top"><p class="tableblock">The <code>id</code> parameter specifies an arbitrary string that is assigned as the <code>id</code> identifier for the signal request.<br>
+<td class="tableblock halign-left valign-top"><p class="tableblock">2</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">null</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The <code>_id</code> parameter specifies an arbitrary string that is assigned as the <code>id</code> identifier for the signal request.<br>
+The insert method in the preceding example omits use of the optional <code>_id</code> parameter.
+Because the document does not explicitly assign a value for the parameter, the arbitrary id that MongoDB automatically assigns to the document becomes the <code>id</code> identifier for the signal request.<br>
 Use this string to identify logging messages to entries in the signaling collection.
-Debezium does not use this string.
+Debezium does not use this identifier string.
 Rather, during the snapshot, Debezium generates its own <code>id</code> string as a watermarking signal.</p></td>
 </tr>
 <tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">3</p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock"><code>execute-snapshot</code></p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock">Specifies <code>type</code> parameter specifies the operation that the signal is intended to trigger.<br></p></td>
 </tr>
 <tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">4</p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock"><code>data-collections</code></p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock">A required component of the <code>data</code> field of a signal that specifies an array of collection names or regular expressions to match collection names to include in the snapshot.<br>
 The array lists regular expressions which match collections by their fully-qualified names, using the same format as you use to specify the name of the connector&#8217;s signaling collection in the <a href="#mongodb-property-signal-data-collection"><code>signal.data.collection</code></a> configuration property.</p></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><p class="tableblock"><code>incremental</code></p></td>
-<td class="tableblock halign-left valign-top"><p class="tableblock">An optional <code>type</code> component of the <code>data</code> field of a signal that specifies the kind of snapshot operation to run.<br>
-Currently, the only valid option is the default value, <code>incremental</code>.<br>
-Specifying a <code>type</code> value in the SQL query that you submit to the signaling collection is optional.<br>
-If you do not specify a value, the connector runs an incremental snapshot.</p></td>
 </tr>
 </tbody>
 </table>
@@ -955,10 +983,12 @@ The value for snapshot events is <code>r</code>, signifying a <code>READ</code> 
 </tr>
 </tbody>
 </table>
+</div>
+<div class="sect3">
+<h4 id="mongodb-stopping-an-incremental-snapshot"><a class="anchor" href="#mongodb-stopping-an-incremental-snapshot"></a>Stopping an incremental snapshot</h4>
 <div class="paragraph">
-<div class="title">Stopping an incremental snapshot</div>
-<p>Incremental snapshots can also be stopped by sending a signal to the collection on the source database.
-You submit signals to the collection as SQL <code>INSERT</code> queries.
+<p>You can also stop an incremental snapshot by sending a signal to the collection on the source database.
+You submit a stop snapshot signal by inserting a document into the to the signaling collection.
 After Debezium detects the change in the signaling collection, it reads the signal, and stops the incremental snapshot operation if it&#8217;s in progress.</p>
 </div>
 <div class="paragraph">
@@ -986,10 +1016,10 @@ After Debezium detects the change in the signaling collection, it reads the sign
 <div class="title">Procedure</div>
 <ol class="arabic">
 <li>
-<p>Send a SQL query to stop the ad hoc incremental snapshot to the signaling collection:</p>
+<p>Insert a stop snapshot signal document into the signaling collection:</p>
 <div class="listingblock">
 <div class="content">
-<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">INSERT INTO _&lt;signalTable&gt;_ (id, type, data) values (_'&lt;id&gt;'_, 'stop-snapshot', '{"data-collections": ["_&lt;tableName&gt;_","_&lt;tableName&gt;_"],"type":"incremental"}');</code></pre>
+<pre class="highlightjs highlight"><code class="language-bash hljs" data-lang="bash"><em>&lt;signalDataCollection&gt;</em>.insert({"<em>id" : _&lt;idNumber&gt;</em>,"type" : "stop-snapshot", "data" : {"data-collections" ["<em>&lt;collectionName&gt;</em>", "<em>&lt;collectionName&gt;</em>"],"type": "incremental"}});</code></pre>
 </div>
 </div>
 <div class="paragraph">
@@ -997,74 +1027,71 @@ After Debezium detects the change in the signaling collection, it reads the sign
 </div>
 <div class="listingblock">
 <div class="content">
-<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">INSERT INTO myschema.debezium_signal (id, type, dat) values ('ad-hoc-1', 'stop-snapshot', '{"data-collections": ["schema1.table1", "schema2.table2"],"type":"incremental"}');</code></pre>
+<pre class="highlightjs highlight"><code class="language-bash hljs" data-lang="bash">db.debeziumSignal.insert({ <i class="conum" data-value="1"></i><b>(1)</b>
+"type" : "stop-snapshot", <i class="conum" data-value="2"></i><b>(2)</b> <i class="conum" data-value="3"></i><b>(3)</b>
+"data" : {
+"data-collections" ["\"public\".\"Collection1\"", "\"public\".\"Collection2\""], <i class="conum" data-value="4"></i><b>(4)</b>
+"type": "incremental"} <i class="conum" data-value="5"></i><b>(5)</b>
+});</code></pre>
 </div>
 </div>
 <div class="paragraph">
-<p>The values of the <code>id</code>, <code>type</code>, and <code>data</code> parameters in the command correspond to the <a href="../configuration/signalling.html#debezium-signaling-description-of-required-structure-of-a-signaling-data-collection" class="page">fields of the signaling collection</a>.</p>
+<p>The values of the <code>id</code>, <code>type</code>, and <code>data</code> parameters in the signal command correspond to the <a href="../configuration/signalling.html#debezium-signaling-description-of-required-structure-of-a-signaling-data-collection" class="page">fields of the signaling collection</a>.</p>
 </div>
 <div class="paragraph">
-<p>The following collection describes these parameters:</p>
+<p>The following table describes the parameters in the example:</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 3. Descriptions of fields in a SQL command for sending a stop incremental snapshot signal to the signaling collection</caption>
+<caption class="title">Table 3. Descriptions of fields in an insert command for sending a stop incremental snapshot document to the signaling collection</caption>
 <colgroup>
-<col style="width: 20%;">
-<col style="width: 80%;">
+<col style="width: 4%;">
+<col style="width: 11%;">
+<col style="width: 85%;">
 </colgroup>
 <thead>
 <tr>
+<th class="tableblock halign-left valign-top">Item</th>
 <th class="tableblock halign-left valign-top">Value</th>
 <th class="tableblock halign-left valign-top">Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td class="tableblock halign-left valign-top"><p class="tableblock"><code>myschema.debezium_signal</code></p></td>
-<td class="tableblock halign-left valign-top"><p class="tableblock">Specifies the fully-qualified name of the signaling collection on the source database</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">1</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>db.debeziumSignal</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Specifies the fully-qualified name of the signaling collection on the source database.</p></td>
 </tr>
 <tr>
-<td class="tableblock halign-left valign-top"><p class="tableblock"><code>ad-hoc-1</code></p></td>
-<td class="tableblock halign-left valign-top"><p class="tableblock">The <code>id</code> parameter specifies an arbitrary string that is assigned as the <code>id</code> identifier for the signal request.<br>
+<td class="tableblock halign-left valign-top"><p class="tableblock">2</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">null</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The insert method in the preceding example omits use of the optional <code>_id</code> parameter.
+Because the document does not explicitly assign a value for the parameter, the arbitrary id that MongoDB automatically assigns to the document becomes the <code>id</code> identifier for the signal request.<br>
 Use this string to identify logging messages to entries in the signaling collection.
-Debezium does not use this string.</p></td>
+Debezium does not use this identifier string.</p></td>
 </tr>
 <tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">3</p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock"><code>stop-snapshot</code></p></td>
-<td class="tableblock halign-left valign-top"><p class="tableblock">Specifies <code>type</code> parameter specifies the operation that the signal is intended to trigger.<br></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The <code>type</code> parameter specifies the operation that the signal is intended to trigger.<br></p></td>
 </tr>
 <tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">4</p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock"><code>data-collections</code></p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock">An optional component of the <code>data</code> field of a signal that specifies an array of collection names or regular expressions to match collection names to remove from the snapshot.<br>
 The array lists regular expressions which match collections by their fully-qualified names, using the same format as you use to specify the name of the connector&#8217;s signaling collection in the <a href="#mongodb-property-signal-data-collection"><code>signal.data.collection</code></a> configuration property.
 If this component of the <code>data</code> field is omitted, the signal stops the entire incremental snapshot that is in progress.</p></td>
 </tr>
 <tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">5</p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock"><code>incremental</code></p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock">A required component of the <code>data</code> field of a signal that specifies the kind of snapshot operation that is to be stopped.<br>
 Currently, the only valid option is <code>incremental</code>.<br>
-Specifying a <code>type</code> value in the SQL query that you submit to the signaling collection is required.<br>
-If you do not specify a value, the signal will not stop the incremental snapshot.</p></td>
+If you do not specify a <code>type</code> value, the signal fails to stop the incremental snapshot.</p></td>
 </tr>
 </tbody>
 </table>
 </li>
 </ol>
-</div>
-<div class="admonitionblock note">
-<table>
-<tr>
-<td class="icon">
-<i class="fa icon-note" title="Note"></i>
-</td>
-<td class="content">
-<div class="paragraph">
-<p>Incremental snapshots are currently supported for single replica set deployments only.
-This limitation will be removed in the next version.</p>
-</div>
-</td>
-</tr>
-</table>
 </div>
 </div>
 </div>
@@ -1673,7 +1700,7 @@ The value of this field is the document&#8217;s identifier represented as a stri
     "payload": { <i class="conum" data-value="5"></i><b>(5)</b>
       "after": "{\"_id\" : {\"$numberLong\" : \"1004\"},\"first_name\" : \"Anne\",\"last_name\" : \"Kretchmar\",\"email\" : \"annek@noanswer.org\"}", <i class="conum" data-value="6"></i><b>(6)</b>
       "source": { <i class="conum" data-value="7"></i><b>(7)</b>
-        "version": "2.1.0.Alpha2",
+        "version": "2.1.0.Final",
         "connector": "mongodb",
         "name": "fulfillment",
         "ts_ms": 1558965508000,
@@ -1854,7 +1881,7 @@ In the <code>source</code> object, <code>ts_ms</code> indicates the time that th
         "truncatedArrays": null
       },
       "source": { <i class="conum" data-value="6"></i><b>(6)</b>
-        "version": "2.1.0.Alpha2",
+        "version": "2.1.0.Final",
         "connector": "mongodb",
         "name": "fulfillment",
         "ts_ms": 1558965508000,
@@ -1992,7 +2019,7 @@ It is thus possible if multiple updates are closely following one after the othe
       "ts_ms": 1465495462115, <i class="conum" data-value="2"></i><b>(2)</b>
       "before":"{\"_id\": {\"$numberLong\": \"1004\"},\"first_name\": \"Anne Marie\",\"last_name\": \"Kretchmar\",\"email\": \"annek@noanswer.org\"}",<i class="conum" data-value="3"></i><b>(3)</b>
       "source": { <i class="conum" data-value="4"></i><b>(4)</b>
-        "version": "2.1.0.Alpha2",
+        "version": "2.1.0.Final",
         "connector": "mongodb",
         "name": "fulfillment",
         "ts_ms": 1558965508000,
@@ -2140,7 +2167,7 @@ Note that MongoDB Atlas only supports secure connections via SSL, i.e. the <a hr
 <ol class="arabic">
 <li>
 <p>Download the
-<a href="https://repo1.maven.org/maven2/io/debezium/debezium-connector-mongodb/2.1.0.Alpha2/debezium-connector-mongodb-2.1.0.Alpha2-plugin.tar.gz">connector&#8217;s plug-in archive</a>,</p>
+<a href="https://repo1.maven.org/maven2/io/debezium/debezium-connector-mongodb/2.1.0.Final/debezium-connector-mongodb-2.1.0.Final-plugin.tar.gz">connector&#8217;s plug-in archive</a>,</p>
 </li>
 <li>
 <p>Extract the JAR files into your Kafka Connect environment.</p>
@@ -2568,7 +2595,20 @@ If you include this property in the configuration, do not set the <code>collecti
 <p><code>initial</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Specifies the criteria for running a snapshot upon startup of the connector. The default is <strong>initial</strong>, and specifies that the connector reads a snapshot when either no offset is found or if the change stream no longer contains the previous offset. The <strong>never</strong> option specifies that the connector should never use snapshots, instead the connector should proceed to tail the log.</p>
+<p>Specifies the criteria for performing a snapshot when the connector starts.
+Set the property to one of the following values:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>initial</code></dt>
+<dd>
+<p>When the connector starts, if it does not detect a value in its offsets topic, it performs a snapshot of the database.</p>
+</dd>
+<dt class="hdlist1"><code>never</code></dt>
+<dd>
+<p>When the connector starts, it skips the snapshot process and immediately begins to stream change events for operations that the database records to the oplog.</p>
+</dd>
+</dl>
 </div></div></td>
 </tr>
 <tr>
@@ -3901,31 +3941,24 @@ The number of duplicate events depends on the offset flush period and the volume
 </div>
 </div>
 <div class="sect2">
-<h3 id="debezium-mongodb-connector-is-stopped-for-a-long-interval"><a class="anchor" href="#debezium-mongodb-connector-is-stopped-for-a-long-interval"></a>Connector is stopped for a long interval</h3>
+<h3 id="debezium-mongodb-connector-is-stopped-for-a-long-interval"><a class="anchor" href="#debezium-mongodb-connector-is-stopped-for-a-long-interval"></a>Connector fails after it is stopped for a long interval if <code>snapshot.mode</code> is set to <code>initial</code></h3>
 <div class="paragraph">
-<p>If the connector is gracefully stopped, the replica sets can continue to be used and any new changes are recorded in MongoDB&#8217;s oplog.
-When the connector is restarted, it will resume streaming changes for each replica set where it last left off, recording change events for all of the changes that were made while the connector was stopped.
-If the connector is stopped long enough such that MongoDB purges from its oplog some operations that the connector has not read, then upon startup the connector will perform a snapshot.</p>
+<p>If the connector is gracefully stopped, users might continue to perform operations on replica set members.
+Changes that occur while the connector is offline continue to be recorded in MongoDB&#8217;s oplog.
+In most cases, after the connector is restarted, it reads the offset value in the oplog to determine the last operation that it streamed for each replica set, and then resumes streaming changes from that point.
+After the restart, database operations that occurred while the connector was stopped are emitted to Kafka as usual, and after some time, the connector catches up with the database.
+The amount of time required for the connector to catch up depends on the capabilities and performance of Kafka and the volume of changes that occurred in the database.</p>
 </div>
 <div class="paragraph">
-<p>A properly configured Kafka cluster is capable of massive throughput.
-Kafka Connect is written with Kafka best practices, and given enough resources will also be able to handle very large numbers of database change events.
-Because of this, when a connector has been restarted after a while, it is very likely to catch up with the database, though how quickly will depend upon the capabilities and performance of Kafka and the volume of changes being made to the data in MongoDB.</p>
+<p>However, if the connector remains stopped for a long enough interval, it can occur that MongoDB purges the oplog during the time that the connector is inactive, resulting in the loss of information about the connector&#8217;s last position.
+After the connector restarts, it cannot resume streaming, because the oplog no longer contains the previous offset value that marks the last operation that the connector processed.
+The connector also cannot perform a snapshot, as it typically would when the <code>snapshot.mode</code> property is set to <code>initial</code>, and no offset value is present.
+In this case, a mismatch exists, because the oplog does not contain the value of the previous offset, but the offset value is present in the connector&#8217;s internal Kafka offsets topic.
+An error results and the connector fails.</p>
 </div>
-<div class="admonitionblock note">
-<table>
-<tr>
-<td class="icon">
-<i class="fa icon-note" title="Note"></i>
-</td>
-<td class="content">
 <div class="paragraph">
-<p>If the connector remains stopped for long enough, MongoDB might purge older oplog files and the connector&#8217;s last position may be lost.
-In this case, when the connector configured with <em>initial</em> snapshot mode (the default) is finally restarted, the MongoDB server will no longer have the starting point and the connector will fail with an error.</p>
-</div>
-</td>
-</tr>
-</table>
+<p>To recover from the failure, delete the failed connector, and create a new connector with the same configuration but with a different connector name.
+When you start the new connector, it performs a snapshot to ingest the state of database, and then resumes streaming.</p>
 </div>
 </div>
 <div class="sect2">
@@ -3949,7 +3982,7 @@ As a result, the secondary node that is elected as the new primary node might be
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2022 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/e910c52d45cc4a167c1184d7ded7ac28a838c99c">e910c52d</a></span>)
+            <div class="copyright">Copyright &copy; 2022 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/83ceefeeda601ca3be5ffabdf7ee280f2a613f41">83ceefee</a></span>)
             
         </div>
     </footer>
