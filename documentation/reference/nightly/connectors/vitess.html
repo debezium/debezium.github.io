@@ -339,6 +339,7 @@
 <li><a href="#vitess-overview">Overview</a></li>
 <li><a href="#how-the-vitess-connector-works">How the connector works</a>
 <ul class="sectlevel2">
+<li><a href="#vitess-snapshot">Snapshot</a></li>
 <li><a href="#vitess-streaming-changes">Streaming changes</a></li>
 <li><a href="#vitess-topic-names">Topics names</a></li>
 <li><a href="#vitess-transaction-metadata">Transaction metadata</a></li>
@@ -381,6 +382,7 @@
 <li><a href="#vitess-kafka-connect-process-crashes">Kafka Connect process crashes</a></li>
 <li><a href="#vitess-kafka-becomes-unavailable">Kafka becomes unavailable</a></li>
 <li><a href="#vitess-connector-is-stopped-for-a-duration">Connector is stopped for a duration</a></li>
+<li><a href="#vitess-connector-failed-before-finishing-the-snapshot">Connector fails before finishing the snapshot</a></li>
 <li><a href="#limitations-with-earlier-vitess-versions">Limitations with earlier Vitess versions</a></li>
 </ul>
 </li>
@@ -391,7 +393,11 @@
 For information about the Vitess versions that are compatible with this connector, see the <a href="https://debezium.io/releases/">Debezium release overview</a>.</p>
 </div>
 <div class="paragraph">
-<p>The connector does not support snapshot feature at the moment. The first time it connects to a Vitess cluster, it starts from the current VGTID location of the keyspace and continuously captures row-level changes that insert, update, and delete database content and that were committed to a Vitess keyspace. The connector generates data change event records and streams them to Kafka topics. For each table, the default behavior is that the connector streams all generated events to a separate Kafka topic for that table. Applications and services consume data change event records from that topic.</p>
+<p>When the connector first connects to a Vitess cluster, it takes a consistent snapshot of the keyspace.
+After that snapshot is complete, the connector continuously captures row-level changes that are committed to a Vitess keyspace to insert, update, or delete database content.
+The connector generates data change event records and streams them to Kafka topics.
+For each table, the default behavior is that the connector streams all generated events to a separate Kafka topic for that table.
+Applications and services can then consume data change event records from the resulting topic.</p>
 </div>
 </div>
 </div>
@@ -411,7 +417,18 @@ For information about the Vitess versions that are compatible with this connecto
 <p>The connector produces a change event for every row-level insert, update, and delete operation that was captured and sends change event records for each table in a separate Kafka topic. Client applications read the Kafka topics that correspond to the database tables of interest, and can react to every row-level event they receive from those topics.</p>
 </div>
 <div class="paragraph">
-<p>The connector is tolerant of failures. As the connector reads changes and produces events, it records the VGTID position for each event. If the connector stops for any reason (including communication failures, network problems, or crashes), upon restart the connector continues reading the WAL where it last left off.</p>
+<p>The underlying MySQL implementation in Vitess purges binary logs based on some configurable period of time.
+Because the contents of the binlog might not be complete, the connector requires another mechanism to ensure that it captures the complete content of a particular database.
+Thus, when the connector connects to a database for the first time, it performs a consistent snapshot of the database.
+After the connector completes the snapshot, it continues streaming changes from the exact point at which the snapshot was made.
+In this way, the connector starts with a consistent view of all of the data, and does not omit any changes that were made while the snapshot was being taken.</p>
+</div>
+<div class="paragraph">
+<p>The connector is tolerant of failures.
+As the connector reads changes and produces events, it records the VGTID position for each event.
+If the connector stops for any reason (including communication failures, network problems, or crashes), after the connectors restarts, it continues reading the WAL from the point at which it stopped.
+This behavior does not apply to snapshots. If the connector stops during a snapshot, after a restart, the connector does not continue performing snapshots where it last left off.
+We&#8217;ll talk later about how the connector behaves <a href="#vitess-when-things-go-wrong">when things go wrong</a>.</p>
 </div>
 </div>
 </div>
@@ -419,7 +436,31 @@ For information about the Vitess versions that are compatible with this connecto
 <h2 id="how-the-vitess-connector-works"><a class="anchor" href="#how-the-vitess-connector-works"></a>How the connector works</h2>
 <div class="sectionbody">
 <div class="paragraph">
-<p>To optimally configure and run a Debezium Vitess connector, it is helpful to understand how the connector streams change events, determines Kafka topic names, and uses metadata.</p>
+<p>To optimally configure and run a Debezium Vitess connector, it is helpful to understand how the connector performs snapshots, streams change events, determines Kafka topic names, and uses metadata.</p>
+</div>
+<div class="sect2">
+<h3 id="vitess-snapshot"><a class="anchor" href="#vitess-snapshot"></a>Snapshot</h3>
+<div class="paragraph">
+<p>Typically, a MySQL server is not configured to retain the complete history of the database in the binary logs.
+As a result, the connector is unable to read the entire history of the database from the binary logs.
+For this reason, the first time that the connector starts, it performs an initial consistent snapshot of the database.
+You can change this behavior by setting the <a href="#vitess-property-snapshot-mode"><code>snapshot.mode</code> connector configuration property</a> to a value other than <code>initial</code>.
+This snapshot feature is built on <a href="https://vitess.io/docs/design-docs/vreplication/vstream/vscopy/">VStream Copy</a> introduced in version 7.0.</p>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>Automatic retry of a failed snapshot is expected to be available in a future release.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
 </div>
 <div class="sect2">
 <h3 id="vitess-streaming-changes"><a class="anchor" href="#vitess-streaming-changes"></a>Streaming changes</h3>
@@ -1029,7 +1070,7 @@ It is possible to override the table&#8217;s primary key by setting the <a href=
             "connector": "vitess",
             "name": "my_sharded_connector",
             "ts_ms": 1559033904863,
-            "snapshot": true,
+            "snapshot": false,
             "db": "",
             "keyspace": "commerce",
             "table": "customers",
@@ -1124,7 +1165,7 @@ However, by using the <a href="../configuration/avro.html" class="page">Avro con
 <p>Database (a.k.a keyspace) and table that contains the new row</p>
 </li>
 <li>
-<p>If the event was part of a snapshot</p>
+<p>If the event was part of a snapshot (always <code>false</code>)</p>
 </li>
 <li>
 <p>Offset of the operation in the database binlog</p>
@@ -1194,7 +1235,7 @@ In the <code>source</code> object, <code>ts_ms</code> indicates the time that th
             "connector": "vitess",
             "name": "my_sharded_connector",
             "ts_ms": 1559033904863,
-            "snapshot": null,
+            "snapshot": false,
             "db": "",
             "keyspace": "commerce",
             "table": "customers",
@@ -1249,7 +1290,7 @@ In the <code>source</code> object, <code>ts_ms</code> indicates the time that th
 <p>Database (a.k.a keyspace) and table that contains the new row</p>
 </li>
 <li>
-<p>If the event was part of a snapshot</p>
+<p>If the event was part of a snapshot (always <code>false</code>)</p>
 </li>
 <li>
 <p>Offset of the operation in the database log</p>
@@ -1315,7 +1356,7 @@ In the <code>source</code> object, <code>ts_ms</code> indicates the time that th
             "connector": "vitess",
             "name": "my_sharded_connector",
             "ts_ms": 1559033904863,
-            "snapshot": null,
+            "snapshot": false,
             "db": "",
             "keyspace": "commerce",
             "table": "customers",
@@ -1370,7 +1411,7 @@ In the <code>source</code> object, <code>ts_ms</code> indicates the time that th
 <p>Database (a.k.a keyspace) and table that contains the new row</p>
 </li>
 <li>
-<p>If the event was part of a snapshot</p>
+<p>If the event was part of a snapshot (always <code>false</code>)</p>
 </li>
 <li>
 <p>Offset of the operation in the database log</p>
@@ -2560,6 +2601,30 @@ If <code>table_a</code> has a an <code>id</code> column, and <code>regex_1</code
 </ul>
 </div></div></td>
 </tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="vitess-property-snapshot-mode"></a><a href="#vitess-property-snapshot-mode"><code>snapshot.mode</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>initial</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies the criteria for performing a snapshot when the connector starts.
+Set the property to one of the following values:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>initial</code></dt>
+<dd>
+<p>When the connector starts, if it does not detect a value in its offsets topic, it performs a snapshot of the database.</p>
+</dd>
+<dt class="hdlist1"><code>never</code></dt>
+<dd>
+<p>When the connector starts, it skips the snapshot process and immediately begins to stream change events for operations that the database records to the binary logs.</p>
+</dd>
+</dl>
+</div></div></td>
+</tr>
 </tbody>
 </table>
 <div id="vitess-advanced-configuration-properties" class="paragraph">
@@ -2953,6 +3018,16 @@ For example, if the topic prefix is <code>fulfillment</code>, the default topic 
 </div>
 </div>
 <div class="sect2">
+<h3 id="vitess-connector-failed-before-finishing-the-snapshot"><a class="anchor" href="#vitess-connector-failed-before-finishing-the-snapshot"></a>Connector fails before finishing the snapshot</h3>
+<div class="paragraph">
+<p>If a snapshot fails to complete, the connector does not automatically reattempt the snapshot.
+If the connector is restarted with the previous offset, the connector skips the snapshot process and immediately begins to stream change events.</p>
+</div>
+<div class="paragraph">
+<p>Consequently, to recover from the failure, <a href="https://debezium.io/documentation/faq/#how_to_remove_committed_offsets_for_a_connector/">remove the connector offsets manually</a> and start the connector.</p>
+</div>
+</div>
+<div class="sect2">
 <h3 id="limitations-with-earlier-vitess-versions"><a class="anchor" href="#limitations-with-earlier-vitess-versions"></a>Limitations with earlier Vitess versions</h3>
 <div class="ulist">
 <div class="title">Vitess 8.0.0</div>
@@ -2982,7 +3057,7 @@ E.g. <code>"3"</code> will be emitted as the value instead of <code>"L"</code> i
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2022 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/bcd6787cdce2f0a49350f0e242bcb6f5a1ecc8f4">bcd6787c</a></span>)
+            <div class="copyright">Copyright &copy; 2022 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/0f01851b0546eb96a6b9dde4a79c5ecab92801b6">0f01851b</a></span>)
             
         </div>
     </footer>
