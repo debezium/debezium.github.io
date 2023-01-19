@@ -1,0 +1,259 @@
+---
+layout: post
+title:  Debezium 2.2.0.Alpha1 Released
+date:   2023-01-19
+tags: [ releases, mongodb, mysql, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox ]
+author: ccranfor
+---
+
+It's my pleasure to announce not only the first release of the Debezium 2.2 series, but also the first release of Debezium in 2023, *2.2.0.Alpha*!
+
+The Debezium 2.2.0.Alpha1 release includes some breaking changes, a number of bug fixes, and some noteworthy improvements and features, including but not limited to:
+
+* [Breaking Change] - `ZonedTimestamp` values will no longer truncate fractional seconds.
+* [New] - Support ingesting changes from an Oracle logical stand-by database
+* [New] - Support Amazon S3 buckets using the Debezium Storage API
+* [New] - Support retrying database connections during connector start-up
+* [New] - Debezium Server sink connector support for Apache RocketMQ and Infinispan
+
++++<!-- more -->+++
+
+Let's take a few moments and dive into some of the features in more detail!
+
+== Breaking Change
+
+An edge case was reported in https://issues.redhat.com/browse/issues/DBZ-5996[DBZ-5996] where if a temporal column used `ZonedTimestamp` and if the column's value had `0` micro or nanoseconds, rather than emitting the value as `2023-01-19T12:30:00.123000Z`, the value would be emitted in a truncated way as `2023-01-19T12:30:00.123Z`.
+This could lead to other issues with converters used in the event pipeline when the output from that column could be formatted inconsistently.
+
+In order to remedy the edge case, the `ZonedTimestamp` implementation will now pad the fraction-based seconds value of the column's value to the length/scale of the source database column.
+Using the example above of a `TIMESTAMP(6)` MySQL column type, the emitted value will now properly reflect a value of `2023-01-19T12:30:00.123000Z`.
+
+While this change in behavior is likely to have minimal impact to most users, we wanted to bring attention to it in the event that you've perhaps used other means to handle this edge case in your pipelines.
+If you have, you should be able to rely on Debezium to emit the value consistently, even when the fraction-based seconds is `0`.
+
+== Ingesting changes from Oracle logical stand-bys
+
+The Debezium for Oracle connector normally manages what is called a _flush table_, which is an internal table used to manage the flush cycles used by the Oracle Log Writer Buffer (LGWR) process.
+This flushing process requires that the user account the connector uses to have permission to create and write to this table.
+Logical stand-by databases often have more restrictive rules about data manipulation and may even be read-only, therefore, writing to the database is unfavorable or even not permissible.
+
+To support an Oracle read-only logical stand-by database, we introduced a flag to disable the creation and management of this _flush table_.
+This feature can be used with both Oracle Standalone and Oracle RAC installations, and is currently considered incubating, meaning its subject to change in the future.
+
+In order to enable Oracle read-only logical stand-by support, add the following connector option:
+
+[source,properties]
+----
+internal.log.mining.read.only=true
+----
+
+In a future version, we plan to add support for an Oracle read-only physical stand-by database.
+
+[NOTE]
+====
+This configuration option is prefixed with `internal.`, meaning that it's considered an undocumented and experimental feature.
+The semantics and behavior of this option are subject to change in future versions that may not be guaranteed forward or backward compatible.
+====
+
+== Using Amazon S3 buckets with Storage API
+
+Debezium provides a Storage API framework that enables connectors to store offset and schema history state in a variety of persistence datastores.
+Moreover, the framework enables contributors to extend the API by adding  new storage implementations with ease.
+Currently, the Storage API framework supports the local FileSystem, a Kafka Topic, or Redis datastores.
+
+With Debezium 2.2, we're pleased to add Amazon S3 buckets as part of that framework, allowing the schema history to be persisted to an S3 bucket.
+An example connector configuration using S3 might look like the following:
+
+[source.properties]
+----
+...
+schema.history.internal=io.debezium.storage.s3.history
+schema.history.internal.s3.access.key.id=aa
+schema.history.internal.s3.secret.access.key=bb
+schema.history.internal.s3.region.name=aws-global
+schema.history.internal.s3.bucket.name=debezium
+schema.history.internal.s3.object.name=db-history.log
+schema.history.internal.s3.endpoint=http://<server>:<port>
+----
+
+`schema.history.internal.s3.access.key.id`::
+Specifies the access key required to authenticate to S3.
+`schema.history.internal.s3.secret.access.key`::
+Specifies the secret access key required to authenticate to S3.
+`schema.history.internal.s3.region.name`::
+Specifies the region where the S3 bucket is available.
+`schema.history.internal.s3.bucket.name`::
+Specifies the name of the S3 bucket where the schema history is to be persisted.
+`schema.history.internal.s3.object.name`::
+Specifies the object name in the bucket where the schema history is to be persisted.
+`schema.history.internal.s3.endpoint`::
+Specifies the S3 endpoint with the format of `http://<server>:<port>`.
+
+== Retry database connections on start-up
+
+In previous releases of Debezium, the connector start-up phase used a fail-fast strategy.
+Simply put, this meant that if we couldn't connect, authenticate, or performs any of the start-up phase steps required by the connector, the connector would enter a `FAILED` state.
+
+One specific problem area for users is if the connector gracefully starts, runs for a period of time, and then eventually encounters some fatal error.
+If the error is related to a resource that wasn't accessed during the connector's start-up lifecycle, the connector would typically gracefully restart just fine.
+However, the situation is different if the problem was related to the database's availability and the database was still unavailable during the connector's start-up phase.
+In this situation, the connector would fail-fast, and would enter a `FAILED` state, requiring manual intervention.
+
+The fail-fast approach served Debezium well over the years, but in a world where a resource can come and go without warning, it became clear that changes were needed to improve Debezium's reliability and resiliency.
+While the Kafka Connect's retry/back-off framework has helped in this regard, that doesn't address the concerns with start-up resources being unavailable with how the code is currently written.
+
+Debezium 2.2 changes this landscape, shifting how we integrate with Kafka Connect's source connector API slightly.
+Instead of accessing potentially unavailable resources during the start-up lifecycle, we moved that access to a later phase in the connector's lifecycle.
+In effect, the Debezium start-up code is executed lazily that accesses potentially unavailable resources, which allows us to take advantage of the Kafka Connect retry/back-off framework even during our start-up code.
+In short, if the database is still unavailable during the connector's start-up, the connector will continue to retry/back-off if Kafka Connect retries are enabled.
+Only once the maximum number of retry attempts has been reached or a non-retriable error occurs will the connector task enter a `FAILED` state.
+
+We hope this brings more reliability and resiliency for the Debezium experience, improving how errors are handled in an ever-changing landscape, and provides a solid foundation to manage connector lifecycles.
+
+== RocketMQ and Infinispan support in Debezium Server
+
+Debezium Server is a Quarkus-based framework that allows executing a Debezium connector from the command line, without Kafka or Kafka Connect, allowing the delivery of Debezium change events to any destination framework.
+With Debezium 2.2, two new sink connectors have been added to Debezium Server to support sending change events to Apache RocketMQ and to Infinispan.
+
+=== RocketMQ
+
+https://rocketmq.apache.org[Apache RocketMQ] is a cloud-native messaging, eventing, and streaming real-time data processing platform that covers cloud-edge-device collaboration scenarios.
+In order to integrate Debezium Server with RocketMQ, the Debezium Server `application.properties` must be modified to include the following entries:
+
+.application.properties
+[source,properties]
+----
+debezium.sink.type=rocketmq
+debezium.sink.rocketmq.producer.name.srv.addr=<hostname>:<port>
+debezium.sink.rocketmq.producer.group=debezuim-group
+debezium.sink.rocketmq.producer.max.message.size=4194304
+debezium.sink.rocketmq.producer.send.msg.timeout=3000
+debezium.sink.rocketmq.producer.acl.enabled=false
+debezium.sink.rocketmq.producer.access.key=<access-key>
+debezium.sink.rocketmq.producer.secret.key=<secret-key>
+----
+
+The above configuration specifies that the sink type to be used is `rocketmq`, which enables the use of the RocketMQ module.
+The following is a description of each of the properties shown above:
+
+`debezium.sink.rocketmq.producer.name.srv.addr`::
+Specifies the host and port where Apache RocketMQ is available.
+`debezium.sink.rocketmq.producer.group`::
+Specifies the name associated with the Apache RocketMQ producer group.
+`debezium.sink.rocketmq.producer.max.message.size`::
+(Optional) Specifies the maximum number of bytes a message can be. Defaults to `4193404` (4MB).
+`debezium.sink.rocketmq.producer.send.msg.timeout`::
+(Optional) Specifies the timeout in milliseconds when sending messages. Defaults to `3000` (3 seconds).
+`debezium.sink.rocketmq.producer.acl.enabled`::
+(Optional) Controls whether access control lists are enabled. Defaults to `false`.
+`debezium.sink.rocketmq.producer.access.key`::
+(Optional) The access key used for connecting to the Apache RocketMQ cluster.
+`debezium.sink.rocketmq.producer.secret.key`::
+(Optional) The access secret used for connecting to the Apache RocketMQ cluster.
+
+For more information on using Debezium Server with RocketMQ, see the xref:/documentation/reference/2.2/operations/debezium-server.html#_apache_rocketmq[documentation].
+
+=== Infinispan
+
+https://infinispan.org[Infinispan] is an in-memory, distributed data store that offers flexible deployment options with robust capabilities to store, manage, and process data.
+Infinispan is based on the notion of a key-value store that allows storing any data type.
+In order to integrate Debezium Server with Infinispan, the Debezium Server `application.properties` must be modified to include the following entries:
+
+.application.properties
+[source,properties]
+----
+debezium.sink.type=infinispan
+debezium.sink.infinispan.server.host=<hostname>
+debezium.sink.infinispan.server.port=<port>
+debezium.sink.infinispan.cache=<cache-name>
+debezium.sink.infinispan.user=<user>
+debezium.sink.infinispan.password=<password>
+----
+
+The above configuration specifies that the sink type to be used is `infinispan`, which enables the use of the Infinispan module.
+The following is a description of each of the properties shown above:
+
+`debezium.sink.infinispan.server.host`::
+Specifies the host name of one of the servers in the Infinispan cluster.
+This configuration option can also supply a comma-separated list of hostnames as well, such as `hostname1,hostname2`.
+`debezium.sink.infinispan.server.port`::
+Specifies the port of the Infinispan cluster.
+Defaults to `11222`.
+`debezium.sink.infinispan.cache`::
+Specifies the name of the Infinispan cache to write change events.
+[NOTE]
+====
+The Infinispan sink requires that the cache be created manually ahead of time.
+This enables the ability to create the cache with any variable configuration needed to fit your requirements.
+====
+
+`debezium.sink.infinispan.user`::
+An optional configuration to specify the user to authenticate with, if authentication is required.
+`debezium.sink.infinispan.password`::
+An optional configuration to specify the password for the authenticating user, if authentication is required.
+
+For more information on using Debezium Server with Infinispan, see the xref:/documentation/reference/2.2/operations/debezium-server.html#_infinispan[documentation].
+
+== Other fixes
+
+There were quite a number of bugfixes and stability changes in this release, some noteworthy are:
+
+* Remove option for specifying driver class from MySQL Connector https://issues.redhat.com/browse/DBZ-4663[DBZ-4663]
+* Debezium is not working with Apicurio and custom truststores https://issues.redhat.com/browse/DBZ-5282[DBZ-5282]
+* Show/Hide password does not work on Connectors View details screen https://issues.redhat.com/browse/DBZ-5322[DBZ-5322]
+* Oracle cannot undo change https://issues.redhat.com/browse/DBZ-5907[DBZ-5907]
+* Postgresql Data Loss on restarts https://issues.redhat.com/browse/DBZ-5915[DBZ-5915]
+* Add support for Connect Headers to Debezium Server https://issues.redhat.com/browse/DBZ-5926[DBZ-5926]
+* Oracle Multithreading lost data https://issues.redhat.com/browse/DBZ-5945[DBZ-5945]
+* Spanner connector is missing JSR-310 dependency https://issues.redhat.com/browse/DBZ-5959[DBZ-5959]
+* Truncate records incompatible with ExtractNewRecordState https://issues.redhat.com/browse/DBZ-5966[DBZ-5966]
+* Computed partition must not be negative https://issues.redhat.com/browse/DBZ-5967[DBZ-5967]
+* Table size log message for snapshot.select.statement.overrides tables not correct https://issues.redhat.com/browse/DBZ-5985[DBZ-5985]
+* NPE in execute snapshot signal with exclude.tables config on giving wrong table name https://issues.redhat.com/browse/DBZ-5988[DBZ-5988]
+* There is a problem with postgresql connector parsing the boundary value of money type https://issues.redhat.com/browse/DBZ-5991[DBZ-5991]
+* Log statement for unparseable DDL statement in MySqlDatabaseSchema contains placeholder https://issues.redhat.com/browse/DBZ-5993[DBZ-5993]
+* Postgresql connector parses the null of the money type into 0 https://issues.redhat.com/browse/DBZ-6001[DBZ-6001]
+* Postgres LSN check should honor event.processing.failure.handling.mode https://issues.redhat.com/browse/DBZ-6012[DBZ-6012]
+
+Altogether, https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20AND%20fixVersion%20%3D%202.2.0.Alpha1%20ORDER%20BY%20component%20ASC[42 issues] were fixed for this release.
+A big thank you to all the contributors from the community who worked on this release:
+Akshansh Jain,
+Gabor,
+https://github.com/adasari[Anil Dasari],
+https://github.com/akanimesh7[Animesh Kumar],
+https://github.com/ani-sha[Anisha Mohanty],
+https://github.com/roldanbob[Bob Roldan],
+https://github.com/Naros[Chris Cranford],
+https://github.com/erdinctaskin[Erdinç Taşkın],
+https://github.com/govi20[Govinda Sakhare],
+https://github.com/harveyyue[Harvey Yue],
+https://github.com/blcksrx[Hossein Torabi],
+https://github.com/indraraj[Indra Shukla],
+https://github.com/jakzal[Jakub Zalas],
+https://github.com/jeremy-l-ford[Jeremy Ford],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/joschi[Jochen Schalanda],
+https://github.com/Lucascanna[Luca Scannapieco],
+https://github.com/mfvitale[Mario Fiore Vitale],
+https://github.com/dude0001[Mark Lambert],
+https://github.com/rajdangwal[Rajendra Dangwal],
+https://github.com/sunxiaojian[Sun Xiao Jian],
+https://github.com/vjuranek[Vojtech Juranek],
+https://github.com/yoheimuta[Yohei Yoshimuta], and
+https://github.com/yoheimuta[yohei yoshimuta]!
+
+== What's Next?
+
+As the road to Debezium 2.2 is just starting, this initial release covers quite a lot of the features we've outlined our recent 2023 xref:/roadmap[road map] update.
+However, there are still a number of features that are still in active development, which include:
+
+* Configurable signal channels, enabling users to send signals not only from a database table or a Kafka topic, but also from other means such as an HTTP endpoint, the file system, etc.
+* The Debezium JDBC sink connector that supports native Debezium change events out-of-the-box, without requiring the use of the Event Flattening transformation.
+* A new single message transformation, `ExtractChangedRecordState`, that supports adding headers to the emitted event that describes that fields were changed or unchanged by the source event.
+* And a plethora of enhancements to Debezium's UI
+
+As we continue development on Debezium 2.2 and bugfixes to Debezium 2.1, we would love to hear your feedback or suggestions, whether it's regarding our road map, the changes in this release, or something you'd like to see that we haven't mentioned.
+Be sure to get in touch with us on the https://groups.google.com/g/debezium[mailing list] or our https://debezium.zulipchat.com/login/#narrow/stream/302529-users[chat] if there is.
+Or if you just want to stop by and give us a "Hello", we'd wecome that too.
+
+Until next time...
