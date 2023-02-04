@@ -10,9 +10,9 @@ In this post, we are going to talk about a CDC-CQRS pipeline between a normalize
 
 You can find the complete source code of the example https://github.com/purnima-jain/cdc-cqrs-pipeline[here]. Refer to the https://github.com/purnima-jain/cdc-cqrs-pipeline/blob/master/README.md[README.md] for details on building and running the example code. 
 
-The example is centered around three microservices: order-write-service, order-aggregation-service and order-write-service. These services are implemented as Spring-Boot applications in Java. 
+The example is centered around three microservices: `order-write-service`, `order-aggregation-service` and `order-read-service`. These services are implemented as Spring-Boot applications in Java. 
 
-The order-write-service exposes two REST endpoints which persist shipping-details and item-details in their respective tables on MySQL database. Debezium tails the MySQL bin logs to capture any events in both these tables and publishes messages to Kafka topics. These topics are consumed by order-aggregation-service which is a Kafka-Streams application that joins data from both of these topics to create an Order-Aggregate object which is then published to a third topic. This topic is consumed by MongoDB Sink Connector and the data is persisted in MongoDB which is served by order-read-service.
+The `order-write-service` exposes two REST endpoints which persist shipping-details and item-details in their respective tables on MySQL database. Debezium tails the MySQL bin logs to capture any events in both these tables and publishes messages to Kafka topics. These topics are consumed by `order-aggregation-service` which is a Kafka-Streams application that joins data from both of these topics to create an Order-Aggregate object which is then published to a third topic. This topic is consumed by MongoDB Sink Connector and the data is persisted in MongoDB which is served by `order-read-service`.
 
 The overall architecture of the solution can be seen in the following diagram:
 
@@ -24,7 +24,7 @@ The overall architecture of the solution can be seen in the following diagram:
 ====
 
 == REST Application: order-write-service
-The first component that triggers the workflow starts is the order-write-service. This has been implemented as a Spring-Boot application and exposes two REST end-points:
+The first component that triggers the workflow starts is the `order-write-service`. This has been implemented as a Spring-Boot application and exposes two REST end-points:
 
 - POST: `api/shipping-details` to persist shipping details in the MySQL database
 - POST: `api/item-details` to persist item details in the MySQL database
@@ -85,7 +85,7 @@ In our case, we will be using Debezium MySQL Source connector to capture any new
 }
 ----
 
-This sets up an instance of io.debezium.connector.mysql.MySqlConnector, capturing changes from the specified MySQL instance. Note that by means of a table whitelist, only changes from the `SHIPPING_DETAILS` and `ITEM_DETAILS` tables are captured. It also applies a single message transform (SMT) named `ExtractNewRecordState` which extracts the `after` field from a Debezium change event in a Kafka record. The SMT replaces the original change event with only its `after` field to create a simple Kafka record.
+This sets up an instance of `io.debezium.connector.mysql.MySqlConnector`, capturing changes from the specified MySQL instance. Note that by means of a table whitelist, only changes from the `SHIPPING_DETAILS` and `ITEM_DETAILS` tables are captured. It also applies a single message transform (SMT) named `ExtractNewRecordState` which extracts the `after` field from a Debezium change event in a Kafka record. The SMT replaces the original change event with only its `after` field to create a simple Kafka record.
 
 By default, the Kafka topic name is “serverName.schemaName.tableName” which as per our connector configuration translates to:
 
@@ -93,15 +93,58 @@ By default, the Kafka topic name is “serverName.schemaName.tableName” which 
 - `app-mysql-server.app-mysql-db.shipping_details`
 
 == Kafka-Streams Application: order-aggregation-service
-The Kafka-Streams application, namely order-aggregation-service, is going to process data from the two Kafka cdc-topics. These topics receive CDC events based on the shipping-details and item-details relations found in MySQL.
+The Kafka-Streams application, namely `order-aggregation-service`, is going to process data from the two Kafka cdc-topics. These topics receive CDC events based on the shipping-details and item-details relations found in MySQL.
 
 With that in place, the KStreams topology to create and maintain DDD order-aggregates on-the-fly can be built as follows. 
 
 The application reads the data from the shipping-details-cdc-topic. Since the Kafka topic records are in Debezium JSON format with unwrapped envelopes we need to parse the order-id and the shipping-details from it to create a KTable with order-id as the key and shipping-details as the value.
 
+[source,java]
+----
+// Shipping Details Read
+KStream<String, String> shippingDetailsSourceInputKStream = streamsBuilder.stream(shippingDetailsTopicName, Consumed.with(STRING_SERDE, STRING_SERDE));
+
+// Change the Json value of the message to ShippingDetailsDto
+KStream<String, ShippingDetailsDto> shippingDetailsDtoWithKeyAsOrderIdKStream = shippingDetailsSourceInputKStream
+			.map((orderIdJson, shippingDetailsJson) -> new KeyValue<>(parseOrderId(orderIdJson), parseShippingDetails(shippingDetailsJson)));
+
+// Convert KStream to KTable
+KTable<String, ShippingDetailsDto> shippingDetailsDtoWithKeyAsOrderIdKTable = shippingDetailsDtoWithKeyAsOrderIdKStream.toTable(
+			Materialized.<String, ShippingDetailsDto, KeyValueStore<Bytes, byte[]>>as(SHIPPING_DETAILS_DTO_STATE_STORE).withKeySerde(STRING_SERDE).withValueSerde(SHIPPING_DETAILS_DTO_SERDE));			
+----
+
 Similarly, the application reads the data from the item-details-cdc-topic and parses the order-id and the item from each individual message to group-by all the items pertaining to the same order-id in one list which is then aggregated to a KTable with order-id as key and the list of items pertaining to that specific order-id as value.
 
+[source,java]
+----
+// Item Details Read
+KStream<String, String> itemDetailsSourceInputKStream = streamsBuilder.stream(itemDetailsTopicName, Consumed.with(STRING_SERDE, STRING_SERDE));
+
+// Change the Key of the message from ItemId + OrderId to only OrderId and parse the Json value to ItemDto
+KStream<String, ItemDto> itemDtoWithKeyAsOrderIdKStream = itemDetailsSourceInputKStream
+			.map((itemIdOrderIdJson, itemDetailsJson) -> new KeyValue<>(parseOrderId(itemIdOrderIdJson), parseItemDetails(itemDetailsJson)));
+
+// Group all the ItemDtos for each OrderId
+KGroupedStream<String, ItemDto> itemDtoWithKeyAsOrderIdKGroupedStream = itemDtoWithKeyAsOrderIdKStream.groupByKey(Grouped.with(STRING_SERDE, ITEM_DTO_SERDE));		
+
+// Aggregate all the ItemDtos pertaining to each OrderId in a list
+KTable<String, ArrayList<ItemDto>> itemDtoListWithKeyAsOrderIdKTable = itemDtoWithKeyAsOrderIdKGroupedStream.aggregate(
+		(Initializer<ArrayList<ItemDto>>) ArrayList::new,
+		(orderId, itemDto, itemDtoList) -> addItemToList(itemDtoList, itemDto),
+		Materialized.<String, ArrayList<ItemDto>, KeyValueStore<Bytes, byte[]>>as(ITEM_DTO_STATE_STORE).withKeySerde(STRING_SERDE).withValueSerde(ITEM_DTO_ARRAYLIST_SERDE));
+----
+
 With both the KTables having order-id as the key, it’s easy enough to join them using order-id to create an aggregate called Order-Aggregate. Order-Aggregate is a composite object created by assimilating data from both the shipping-details as well as the item-details. This Order-Aggregate is then written to an order-aggregate Kafka topic.
+
+[source,java]
+----
+// Joining the two tables: shippingDetailsDtoWithKeyAsOrderIdKTable and itemDtoListWithKeyAsOrderIdKTable
+ValueJoiner<ShippingDetailsDto, ArrayList<ItemDto>, OrderAggregate> shippingDetailsAndItemListJoiner = (shippingDetailsDto, itemDtoList) -> instantiateOrderAggregate(shippingDetailsDto, itemDtoList);
+KTable<String, OrderAggregate> orderAggregateKTable = shippingDetailsDtoWithKeyAsOrderIdKTable.join(itemDtoListWithKeyAsOrderIdKTable, shippingDetailsAndItemListJoiner);
+
+// Outputting to Kafka Topic
+orderAggregateKTable.toStream().to(orderAggregateTopicName, Produced.with(STRING_SERDE, ORDER_AGGREGATE_SERDE));
+----
 
 == Kafka-Connect Sink Connector: MongoDB Connector
 The sink connector is a Kafka Connect connector that reads data from Apache Kafka and writes data to some data-store. Using a MongoDB sink connector, it is easy to have the DDD aggregates written into MongoDB. All it needs is a configuration which can be posted to the REST API of Kafka Connect in order to run the connector.
@@ -134,12 +177,12 @@ The sink connector is a Kafka Connect connector that reads data from Apache Kafk
 The DDD aggregate is written to the database `order_db` in the collection `order` on MongoDB. The order-id becomes the `_id` of the table and the `order` column stores the order-aggregate as JSON.
 
 == REST Application: order-read-service
-The Order Aggregate persisted in MongoDB is served via a REST endpoint in order-read-service. 
+The Order Aggregate persisted in MongoDB is served via a REST endpoint in `order-read-service`. 
 
 - GET: `api/order/{order-id}` to retrieve the order from the MongoDB database
 
 == Execution Instructions
-The complete source code for this blog post is provided https://github.com/purnima-jain/cdc-cqrs-pipeline[here] in Github. Begin by cloning this repository and changing into the cdc-cqrs-pipeline directory. The project provides a Docker Compose file with services for all the components:
+The complete source code for this blog post is provided https://github.com/purnima-jain/cdc-cqrs-pipeline[here] in Github. Begin by cloning this repository and changing into the `cdc-cqrs-pipeline` directory. The project provides a Docker Compose file with services for all the components:
 
 - MySQL
 - Adminer (formerly known as phpMinAdmin), to manage MySQL via browser
@@ -151,11 +194,11 @@ The complete source code for this blog post is provided https://github.com/purni
 
 Once all services have started, register an instance of the Debezium MySQL connector & MongoDB Connector by executing the `Create-MySQL-Debezium-Connector` and `Create-MongoDB-Sink-Connector` request respectively from `cdc-cqrs-pipeline.postman_collection.json`. Execute the request `Get-All-Connectors` to verify that the connectors have been properly created.
 
-Change into the individual directories and execute the three Spring-Boot applications:
+Change into the individual directories and spin-up the three Spring-Boot applications:
 
-- order-write-service: runs on port no `8070`
-- order-aggregation-service: runs on port no `8071`
-- order-read-service: runs on port no `8072`
+- `order-write-service`: runs on port no `8070`
+- `order-aggregation-service`: runs on port no `8071`
+- `order-read-service`: runs on port no `8072`
 
 With this, our setup is complete.
 
