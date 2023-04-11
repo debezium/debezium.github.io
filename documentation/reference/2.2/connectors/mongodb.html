@@ -123,6 +123,9 @@
   <li class="nav-item" data-depth="2">
     <a class="nav-link" href="spanner.html">Spanner</a>
   </li>
+  <li class="nav-item" data-depth="2">
+    <a class="nav-link" href="jdbc.html">Jdbc</a>
+  </li>
 </ul>
   </li>
   <li class="nav-item" data-depth="1">
@@ -158,6 +161,12 @@
   </li>
   <li class="nav-item" data-depth="2">
     <a class="nav-link" href="../transformations/applying-transformations-selectively.html">Using SMT Predicates to Selectively Apply Transformations</a>
+  </li>
+  <li class="nav-item" data-depth="2">
+    <a class="nav-link" href="../transformations/partition-routing.html">Partition Routing</a>
+  </li>
+  <li class="nav-item" data-depth="2">
+    <a class="nav-link" href="../transformations/header-to-value.html">HeaderToValue</a>
   </li>
 </ul>
   </li>
@@ -345,7 +354,7 @@
 <ul class="sectlevel1">
 <li><a href="#mongodb-overview">Overview</a>
 <ul class="sectlevel2">
-<li><a href="#_change_stream">Change Stream</a></li>
+<li><a href="#change-streams">Change streams</a></li>
 </ul>
 </li>
 <li><a href="#how-the-mongodb-connector-works">How the MongoDB connector works</a>
@@ -424,27 +433,29 @@ When a new server is added to a replica set, that server first performs an <a hr
 This new server becomes a secondary (and able to handle queries) when it catches up to the tail of the primary&#8217;s oplog.</p>
 </div>
 <div class="sect2">
-<h3 id="_change_stream"><a class="anchor" href="#_change_stream"></a>Change Stream</h3>
+<h3 id="change-streams"><a class="anchor" href="#change-streams"></a>Change streams</h3>
 <div class="paragraph">
-<p>The Debezium MongoDB connector uses a similar replication mechanism to the one described above, though it does not actually become a member of the replica set.
-The main difference is that the connector does not read the oplog directly, but delegates capturing and decoding the oplog to MongoDB&#8217;s <a href="https://docs.mongodb.com/manual/changeStreams/">Change Streams</a> feature.
-With change streams, the MongoDB server exposes changes to collections as an event stream.
-The Debezium connector watches the stream and delivers the changes downstream.
-And, when the connector sees a replica set for the first time, it looks at the oplog to get the last recorded transaction and then performs a snapshot of the primary&#8217;s databases and collections.
-When all the data is copied, the connector then creates a change stream from the position it read earlier from the oplog.</p>
+<p>Although the Debezium MongoDB connector does not become part of a replica set, it uses a similar replication mechanism to obtain oplog data.
+The main difference is that the connector does not read the oplog directly.
+Instead, it delegates the capture and decoding of oplog data to the MongoDB <a href="https://docs.mongodb.com/manual/changeStreams/">change streams</a> feature.
+With change streams, the MongoDB server exposes the changes that occur in a collection as an event stream.
+The Debezium connector monitors the stream and then delivers the changes downstream.
+The first time that the connector detects a replica set, it examines the oplog to obtain the last recorded transaction, and then performs a snapshot of the primary&#8217;s databases and collections.
+After the connector finishes copying the data, it creates a change stream beginning from the oplog position that it read earlier.</p>
 </div>
 <div class="paragraph">
-<p>As the MongoDB connector processes changes, it periodically records the position in the oplog/stream where the event originated.
-When the connector stops, it records the last oplog/stream position that it processed, so that upon restart it simply begins streaming from that position.
-In other words, the connector can be stopped, upgraded or maintained, and restarted some time later, and it will pick up exactly where it left off without losing a single event.
-Of course, MongoDB&#8217;s oplogs are usually capped at a maximum size, which means that the connector should not be stopped for too long, or else some of the operations in the oplog might be purged before the connector has a chance to read them.
-In this case, upon restart the connector will detect the missing oplog operations, perform a snapshot, and then proceed with streaming the changes.</p>
+<p>As the MongoDB connector processes changes, it periodically records the position at which the event originated in the oplog stream.
+When the connector stops, it records the last oplog stream position that it processed, so that after a restart it can resume streaming from that position.
+In other words, the connector can be stopped, upgraded or maintained, and restarted some time later, and always pick up exactly where it left off without losing a single event.
+Of course, MongoDB oplogs are usually capped at a maximum size, so if the connector is stopped for long periods, operations in the oplog might be purged before the connector has a chance to read them.
+In this case, after a restart the connector detects the missing oplog operations, performs a snapshot, and then proceeds to stream changes.</p>
 </div>
 <div class="paragraph">
 <p>The MongoDB connector is also quite tolerant of changes in membership and leadership of the replica sets, of additions or removals of shards within a sharded cluster, and network problems that might cause communication failures.
 The connector always uses the replica set&#8217;s primary node to stream changes, so when the replica set undergoes an election and a different node becomes primary, the connector will immediately stop streaming changes, connect to the new primary, and start streaming changes using the new primary node.
-Likewise, if connector experiences any problems communicating with the replica set primary, it will try to reconnect (using exponential backoff so as to not overwhelm the network or replica set) and continue streaming changes from where it last left off.
-In this way the connector is able to dynamically adjust to changes in replica set membership and to automatically handle communication failures.</p>
+Similarly, if connector is unable to communicate with the replica set primary, it attempts to reconnect (using exponential backoff so as to not overwhelm the network or replica set).
+After connection is reestablished, the connector continues to stream changes from the last event that it captured.
+In this way the connector dynamically adjusts to changes in replica set membership, and automatically handles communication disruptions.</p>
 </div>
 <div class="ulist">
 <div class="title">Additional resources</div>
@@ -513,31 +524,26 @@ This will allow the connector to create one task for each replica set, and will 
 <p>The Debezium MongoDB connector can capture changes from a single <a href="https://docs.mongodb.com/manual/replication/">MongoDB replica set</a>.
 Production replica sets require a minimum of <a href="https://docs.mongodb.com/manual/core/replica-set-architecture-three-members/">at least three members</a>.</p>
 <div class="paragraph">
-<p>To use the MongoDB connector with a replica set, provide the addresses of one or more replica set servers as <em>seed addresses</em> through the connector&#8217;s <code>mongodb.hosts</code> property.
-The connector will use these seeds to connect to the replica set, and then once connected will get from the replica set the complete set of members and which member is primary.
-The connector will start a task to connect to the primary and capture the changes from the primary&#8217;s oplog.
-When the replica set elects a new primary, the task will automatically switch over to the new primary.</p>
+<p>To use the MongoDB connector with a replica set, you must set the value of the <code>mongodb.connection.string</code> property in the connector configuration to the <a href="https://www.mongodb.com/docs/manual/reference/connection-string/">replica set connection string</a>.
+When the connector is ready to begin capturing changes from a MongoDB change stream, it starts a connection task.
+The connection task then uses the specified connection string to establish a connection to an available replica set member.</p>
 </div>
-<div class="admonitionblock note">
+</dd>
+</dl>
+</div>
+<div class="admonitionblock warning">
 <table>
 <tr>
 <td class="icon">
-<i class="fa icon-note" title="Note"></i>
+<i class="fa icon-warning" title="Warning"></i>
 </td>
 <td class="content">
 <div class="paragraph">
-<p>When MongoDB is fronted by a proxy (such as with Docker on OS X or Windows), then when a client connects to the replica set and discovers the members, the MongoDB client will exclude the proxy as a valid member and will attempt and fail to connect directly to the members rather than go through the proxy.</p>
-</div>
-<div class="paragraph">
-<p>In such a case, set the connector&#8217;s optional <code>mongodb.members.auto.discover</code> configuration property to <code>false</code> to instruct the connector to forgo membership discovery and instead simply use the first seed address (specified via the <code>mongodb.hosts</code> property) as the primary node.
-This may work, but still make cause issues when election occurs.</p>
+<p>Due to changes in the way that the connector manages database connections, this release of Debezium no longer supports use of the <code>mongodb.members.auto.discover</code> property to prevent the connector from performing membership discovery.</p>
 </div>
 </td>
 </tr>
 </table>
-</div>
-</dd>
-</dl>
 </div>
 <div id="mongodb-sharded-cluster" class="dlist">
 <dl>
@@ -555,13 +561,44 @@ This may work, but still make cause issues when election occurs.</p>
 <li>
 <p>One or more <em>routers</em> (also called <code>mongos</code>) to which clients connect and that routes requests to the appropriate shards</p>
 <div class="paragraph">
-<p>To use the MongoDB connector with a sharded cluster, configure the connector with the host addresses of the <em>configuration server</em> replica set. When the connector connects to this replica set, it discovers that it is acting as the configuration server for a sharded cluster, discovers the information about each replica set used as a shard in the cluster, and will then start up a separate task to capture the changes from each replica set. If new shards are added to the cluster or existing shards removed, the connector will automatically adjust its tasks accordingly.</p>
+<p>To use the MongoDB connector with a sharded cluster, in the connector configuration, set the value of the <code>mongodb.connection.string</code> property to the  <a href="https://www.mongodb.com/docs/manual/reference/connection-string/">sharded cluster connection string</a>.</p>
 </div>
 </li>
 </ul>
 </div>
 </dd>
 </dl>
+</div>
+<div class="admonitionblock warning">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-warning" title="Warning"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>The <code>mongodb.connection.string</code> property replaces the deprecated <code>mongodb.hosts</code> property that was used to provide earlier versions of the connector with the host address of the <em>configuration server</em> replica.
+In the current release, use <code>mongodb.connection.string</code> to provide the connector with the addresses of MongoDB routers, also known as <code>mongos</code>.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>When the connector connects to sharded cluster, it discovers the information about each replica set that represents a shard in the cluster.
+The connector uses a separate task to capture changes from each shard.
+As shards are added or removed from the cluster, the connector  dynamically adjusts the numbers of tasks to compensate for the change.</p>
+</div>
+</td>
+</tr>
+</table>
 </div>
 <div id="mongodb-standalone-server" class="dlist">
 <dl>
@@ -1731,7 +1768,7 @@ The value of this field is the document&#8217;s identifier represented as a stri
     "payload": { <i class="conum" data-value="5"></i><b>(5)</b>
       "after": "{\"_id\" : {\"$numberLong\" : \"1004\"},\"first_name\" : \"Anne\",\"last_name\" : \"Kretchmar\",\"email\" : \"annek@noanswer.org\"}", <i class="conum" data-value="6"></i><b>(6)</b>
       "source": { <i class="conum" data-value="7"></i><b>(7)</b>
-        "version": "2.2.0.Alpha3",
+        "version": "2.2.0.Beta1",
         "connector": "mongodb",
         "name": "fulfillment",
         "ts_ms": 1558965508000,
@@ -1922,7 +1959,7 @@ There is a new structured field <code>updateDescription</code> with a few additi
         "truncatedArrays": null
       },
       "source": { <i class="conum" data-value="6"></i><b>(6)</b>
-        "version": "2.2.0.Alpha3",
+        "version": "2.2.0.Beta1",
         "connector": "mongodb",
         "name": "fulfillment",
         "ts_ms": 1558965508000,
@@ -2060,7 +2097,7 @@ It is thus possible if multiple updates are closely following one after the othe
       "ts_ms": 1465495462115, <i class="conum" data-value="2"></i><b>(2)</b>
       "before":"{\"_id\": {\"$numberLong\": \"1004\"},\"first_name\": \"Anne Marie\",\"last_name\": \"Kretchmar\",\"email\": \"annek@noanswer.org\"}",<i class="conum" data-value="3"></i><b>(3)</b>
       "source": { <i class="conum" data-value="4"></i><b>(4)</b>
-        "version": "2.2.0.Alpha3",
+        "version": "2.2.0.Beta1",
         "connector": "mongodb",
         "name": "fulfillment",
         "ts_ms": 1558965508000,
@@ -2208,7 +2245,7 @@ Note that MongoDB Atlas only supports secure connections via SSL, i.e. the <a hr
 <ol class="arabic">
 <li>
 <p>Download the
-<a href="https://repo1.maven.org/maven2/io/debezium/debezium-connector-mongodb/2.2.0.Alpha3/debezium-connector-mongodb-2.2.0.Alpha3-plugin.tar.gz">connector&#8217;s plug-in archive</a>,</p>
+<a href="https://repo1.maven.org/maven2/io/debezium/debezium-connector-mongodb/2.2.0.Beta1/debezium-connector-mongodb-2.2.0.Beta1-plugin.tar.gz">connector&#8217;s plug-in archive</a>,</p>
 </li>
 <li>
 <p>Extract the JAR files into your Kafka Connect environment.</p>
@@ -2246,7 +2283,7 @@ Optionally, you can filter out collections that are not needed.</p>
   "name": "inventory-connector", <i class="conum" data-value="1"></i><b>(1)</b>
   "config": {
     "connector.class": "io.debezium.connector.mongodb.MongoDbConnector", <i class="conum" data-value="2"></i><b>(2)</b>
-    "mongodb.hosts": "rs0/192.168.99.100:27017", <i class="conum" data-value="3"></i><b>(3)</b>
+    "mongodb.connection.string": "mongodb://192.168.99.100:27017/?replicaSet=rs0", <i class="conum" data-value="3"></i><b>(3)</b>
     "topic.prefix": "fullfillment", <i class="conum" data-value="4"></i><b>(4)</b>
     "collection.include.list": "inventory[.]*" <i class="conum" data-value="5"></i><b>(5)</b>
   }
@@ -2265,7 +2302,7 @@ Optionally, you can filter out collections that are not needed.</p>
 </tr>
 <tr>
 <td><i class="conum" data-value="3"></i><b>3</b></td>
-<td>The host addresses to use to connect to the MongoDB replica set.</td>
+<td>The connection string to use to connect to the MongoDB replica set.</td>
 </tr>
 <tr>
 <td><i class="conum" data-value="4"></i><b>4</b></td>
@@ -2411,13 +2448,14 @@ Many properties have default values. Information about the properties is organiz
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="mongodb-property-mongodb-hosts"></a><a href="#mongodb-property-mongodb-hosts"><code>mongodb.hosts</code></a></p>
+<p><a id="mongodb-property-mongodb-connection-string"></a><a href="#mongodb-property-mongodb-connection-string"><code>mongodb.connection.string</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>No default</p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The comma-separated list of hostname and port pairs (in the form 'host' or 'host:port') of the MongoDB servers in the replica set. The list can contain a single hostname and port pair. If <code>mongodb.members.auto.discover</code> is set to <code>false</code>, then the host and port pair should be prefixed with the replica set name (e.g., <code>rs0/localhost:27017</code>).<br>
+<p>Specifies a <a href="https://www.mongodb.com/docs/manual/reference/connection-string/">connection string</a> that the connector uses to connect to a MongoDB replica set.
+This property replaces the <code>mongodb.hosts</code> property that was available in previous versions of the MongoDB connector.<br>
 <br></p>
 </div>
 <div class="admonitionblock note">
@@ -2428,8 +2466,8 @@ Many properties have default values. Information about the properties is organiz
 </td>
 <td class="content">
 <div class="paragraph">
-<p>It is mandatory to provide the current primary address.
-This limitation will be removed in the next Debezium release.</p>
+<p>Connectors that capture changes from a sharded MongoDB cluster use this connection string only during the initial shard discovery process when <a href="#mongodb-property-mongodb-connection-mode"><code>mongodb.connection.mode</code></a> is set to <code>replica_set</code>.
+After the initial discovery process, connection strings are generated for each individual shard.</p>
 </div>
 </td>
 </tr>
@@ -2438,16 +2476,26 @@ This limitation will be removed in the next Debezium release.</p>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="mongodb-property-mongodb-connection-string"></a><a href="#mongodb-property-mongodb-connection-string"><code>mongodb.connection.string</code></a></p>
+<p><a id="mongodb-property-mongodb-connection-mode"></a><a href="#mongodb-property-mongodb-connection-mode"><code>mongodb.connection.mode</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>No default</p>
+<p><code>replica_set</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Specifies a connection string that the connector uses during the initial discovery of a MongoDB replica set.
-To use this option, you must set the value of <code>mongodb.members.auto.discover</code> to <code>true</code>.
-Do not set this property and the <code>mongodb.hosts</code> property at the same time.<br>
-<br></p>
+<p>Specifies the strategy that the connector uses when it connects to a <code>sharded</code> MongoDB cluster.
+Set this property to one of the following values:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>replica_set</code></dt>
+<dd>
+<p>The connector establishes individual connections to the replica set for each shard.</p>
+</dd>
+<dt class="hdlist1"><code>sharded</code></dt>
+<dd>
+<p>The connector establishes a single connection to the database, based on the value of the <a href="#mongodb-property-mongodb-connection-string"><code>mongodb-connection-string</code></a>.+</p>
+</dd>
+</dl>
 </div>
 <div class="admonitionblock note">
 <table>
@@ -2457,12 +2505,22 @@ Do not set this property and the <code>mongodb.hosts</code> property at the same
 </td>
 <td class="content">
 <div class="paragraph">
-<p>The connector uses this connection string only during the initial replica set discovery process.
-During this discovery process, the connector ignores connection values that are specified in other properties (<code>mongodb.user</code>, <code>mongodb.password</code>, <code>mongodb.authsource</code>, SSL configuration properties, and so forth).
-After the discovery process completes, when the connector attempts to establish a direct connection to a primary replica set member, the connector then returns to using the standard connection properties,
-and it ignores values in <code>mongodb.connection.string</code>.
-However, if credential information is not present elsewhere in the configuration, the connector can extract credential information from the value of the connection string.
-For example, if the <code>mongodb.user</code> property is not set, but the connection string includes the MongoDB username, the connector reads the information from the string.</p>
+<p>The <code>replica_set</code> options allows the connector to distribute shard processing across multiple connector tasks.
+However, in this configuration, the connector bypasses the MongoDB router when it connects to individual shards, which is not recommended by MongoDB.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="admonitionblock warning">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-warning" title="Warning"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>Switching between connection modes invalidates stored offsets, which triggers a new snapshot.</p>
 </div>
 </td>
 </tr>
@@ -2759,7 +2817,25 @@ Fully-qualified names for fields are of the form <em>databaseName</em>.<em>colle
 <p><code>1</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The maximum number of tasks that should be created for this connector. The MongoDB connector will attempt to use a separate task for each replica set, so the default is acceptable when using the connector with a single MongoDB replica set. When using the connector with a MongoDB sharded cluster, we recommend specifying a value that is equal to or more than the number of shards in the cluster, so that the work for each replica set can be distributed by Kafka Connect.</p>
+<p>Specifies the maximum number of tasks that the connector uses to connect to a sharded cluster.
+When you use the connector with a single MongoDB replica set, the default value is acceptable.
+But when a cluster contains multiple shards, to enable Kafka Connect to distribute the work for each replica set, specify a value that is equal to or greater than the number of shards in the cluster.
+The MongoDB connector can then use a separate task to connect to the replica set for each shard in the cluster.</p>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>This property has an effect only when the connector is connected to a sharded MongoDB cluster and the <a href="#mongodb-property-mongodb-connection-mode"><code>mongodb.connection.mode</code></a> property is set to <code>replica_set</code>.
+When the <a href="#mongodb-property-mongodb-connection-mode"><code>mongodb.connection.mode</code></a> is set to <code>sharded</code>, or if the connector is connected to an unsharded MongoDB replica set deployment, the connector ignores this setting, and defaults to using only a single task.</p>
+</div>
+</td>
+</tr>
+</table>
 </div></div></td>
 </tr>
 <tr>
@@ -2866,6 +2942,32 @@ Defaults to 0, which indicates that the server chooses an appropriate fetch size
 <p>See <a href="../configuration/avro.html#avro-naming" class="page">Avro naming</a> for more details.</p>
 </div></div></td>
 </tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="mongodb-property-mongodb-hosts"></a><a href="#mongodb-property-mongodb-hosts"><code>mongodb.hosts</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The comma-separated list of hostname and port pairs (in the form 'host' or 'host:port') of the MongoDB servers in the replica set. The list can contain a single hostname and port pair.<br>
+<br></p>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>This property is deprecated and should be replaced by <a href="#mongodb-property-mongodb-connection-string"><code>+mongodb.connection.string</code></a>.</p>
+</div>
+</td>
+</tr>
+</table>
+</div></div></td>
+</tr>
 </tbody>
 </table>
 <div class="paragraph">
@@ -2970,17 +3072,6 @@ For example, if you set <code>max.queue.size=1000</code>, and <code>max.queue.si
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>Positive integer value that specifies the maximum number of failed connection attempts to a replica set primary before an exception occurs and task is aborted. Defaults to 16, which with the defaults for <code>connect.backoff.initial.delay.ms</code> and <code>connect.backoff.max.delay.ms</code> results in just over 20 minutes of attempts before failing.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="mongodb-property-mongodb-members-auto-discover"></a><a href="#mongodb-property-mongodb-members-auto-discover"><code>mongodb.members.auto.discover</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>true</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Boolean value that specifies whether the addresses in 'mongodb.hosts' are seeds that should be used to discover all members of the cluster or replica set (<code>true</code>), or whether the address(es) in <code>mongodb.hosts</code> should be used as is (<code>false</code>). The default is <code>true</code> and should be used in all cases except where MongoDB is <a href="#mongodb-replicaset">fronted by a proxy</a>.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -4101,7 +4192,7 @@ As a result, the secondary node that is elected as the new primary node might be
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2022 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/94336fae6d00dad8c99363c0d3485d52fc5fadc3">94336fae</a></span>)
+            <div class="copyright">Copyright &copy; 2022 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/f27d3e07615927bd9659d3aae77829fab5296852">f27d3e07</a></span>)
             
         </div>
     </footer>
