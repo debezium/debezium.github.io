@@ -1,0 +1,730 @@
+---
+layout: post
+title:  Debezium 2.2.0.Final Released
+date:   2023-04-20
+tags: [ releases, mysql, postgres, sqlserver, cassandra, oracle, db2, vitess, mongodb, spanner ]
+author: ccranfor
+---
+
+Today, it's with great joy that we can announce the availability of Debezium *2.2.0.Final*!
+
+Many of you may have noticed, this release cadence took a bit longer than our traditional three-months.
+While we normally prefer to keep to our usual cadence, this shift gives us a unique opportunity to ship Debezium 2.2 with tons of new features and bug fixes, but also major upgrades to several core components.
+
++++<!-- more -->+++
+
+Table of Contents:
+
+* xref:debezium-2-2-breaking-changes[]
+* xref:debezium-2-2-whats-new[]
+* xref:other-fixes-improvements[]
+* xref:whats-next[]
+
+[id=debezium-2-2-breaking-changes]
+== Breaking changes
+
+Before we dive into what's new and changed, lets take a moment and discuss several breaking changes that took place in the Debezium 2.2 release:
+
+* xref:breaking-change-zonedtimestamp-truncation[]
+* xref:breaking-change-topic-and-schema-naming-changes[]
+* xref:breaking-change-oracle-source-info-block-changes[]
+* xref:breaking-change-debezium-server-repository[]
+* xref:breaking-change-sunset-dockerio[]
+
+[id=breaking-change-zonedtimestamp-truncation]
+=== ZonedTimestamp truncation
+
+An edge case was reported in https://issues.redhat.com/browse/issues/DBZ-5996[DBZ-5996] where if a temporal column used `ZonedTimestamp` and if the column's value had `0` micro or nanoseconds, rather than emitting the value as `2023-01-19T12:30:00.123000Z`, the value would be emitted in a truncated way as `2023-01-19T12:30:00.123Z`.
+This could lead to other issues with converters used in the event pipeline when the output from that column could be formatted inconsistently.
+
+In order to remedy the edge case, the `ZonedTimestamp` implementation will now pad the fraction-based seconds value of the column's value to the length/scale of the source database column.
+Using the example above of a `TIMESTAMP(6)` MySQL column type, the emitted value will now properly reflect a value of `2023-01-19T12:30:00.123000Z`.
+
+While this change in behavior is likely to have minimal impact to most users, we wanted to bring attention to it in the event that you've perhaps used other means to handle this edge case in your pipelines.
+If you have, you should be able to rely on Debezium to emit the value consistently, even when the fraction-based seconds is `0`.
+
+[id=breaking-change-topic-and-schema-naming-changes]
+=== Topic and Schema naming changes
+
+Debezium previously sanitized topic and schema names by using an underscore (`_`) to replace non-ASCII characters that would lead to unsupported topic or schema names when using schema registries.
+However, if this non-ASCII character was the only difference between two similar topics or schema names that otherwise only varied by case, this would lead to other problems.
+
+In order to address this in the most compatible way, Debezium now uses a strategy-based approach to map characters uniquely.
+As a side effect of this change, the `sanitize.field.names` configuration property has been retired and replaced by this new strategy-based approach.
+
+Each connector supports two configuration properties to control this behavior:
+
+`schema.name.adjustment.mode`:: Specifies how schema names should be adjusted for compatibility with the message converter.
+`field.name.adjustment.mode`:: Specifies how field names should be adjusted for compatibility with the message converter.
+
+These two connector configuration properties support three modes:
+
+`none`::
+No adjustment is made to the schema or field names, passed as-is.
+`avro`::
+Replaces characters that cannot be used in Avro with an underscore (`_`).
+`avro_unicode`::
+Replaces underscores (`_`) and characters that cannot be used in Avro with unicode-based characters.
+
+This now allows you to pick the most appropriate strategy based on your table or collection naming convention.
+
+[id=breaking-change-oracle-source-info-block-changes]
+=== Oracle source-information block changes
+
+All Debezium change events related to inserts, updates, and deletes contain a `source` info block in the event's payload.
+For the Oracle connector, this block contains a special field called `ssn` that represents the SQL sequence number for this change.
+
+It has been identified that there were corner cases where the value sourced from the database for this field could exceed the maximum value of `2,147,483,647`, or the maximum value of an `INT32` data type.
+To fix this corner case, we've changed the data type from `INT32` to `INT64`, which allows up to a maximum value of  `9,223,372,036,854,775,807`.
+
+This change should be entirely non-invasive, but we wanted to bring attention to this should you have pipelines that could be storing this value in a sink system or if you are using a schema registry.
+
+[id=breaking-change-debezium-server-repository]
+=== Debezium Server moved to new repository
+
+Debezium Server is a standalone Quarkus-based runtime for Debezium source connectors enabling the integration with various platforms like EventHubs, PubSub, Pulsar, Redis, and Kafka, to name a few.
+With this release, we have moved the code related to Debezium Server to its own https://www.github.com/debezium/debezium-server[GitHub repository].
+
+This change was required in order to support building Debezium Server to include connectors that are not part of the main Debezium repository, connectors such as Db2, Google Spanner, Cassandra 4, and Vitess.
+Therefore, this means that starting with this release, Debezium Server now ships with all connectors (excluding Cassandra 3) by default.
+
+[NOTE]
+====
+Cassandra 3 is excluded due to some technical limitations with class loading that creates conflicts with Cassandra 4.
+We are aware of this and plan to deliver a solution to include Cassandra 3 in the future.
+====
+
+[id=breaking-change-sunset-dockerio]
+=== Sunset container image publication to docker.io
+
+Debezium intends to sunset publishing container images to `docker.io` in June 2023.
+Some may be aware of recent policy changes at Docker around the reduction of their free organization plans, a plan that is used by a number of open-source projects including Debezium.
+
+While Docker walked back their decision, this does raise a question about whether this could happen in the future.
+Debezium has been dual publishing container artifacts to `docker.io` and `quay.io` for quite some time, and we plan to continue doing so throughout this upcoming quarter with the *preview* releases of Debezium 2.3.
+
+However, effective with the release of *Debezium 2.3.0.Final* at the end of June 2023, Debezium will cease publishing container artifacts to `docker.io` and will only be publishing container images moving forward to `quay.io`.
+
+[id=debezium-2-2-whats-new]
+== What's new?
+
+Debezium 2.2 is packed with a plethora of new features, most notable are:
+
+* Containers
+** xref:new-jolokia[]
+* Core
+** xref:new-database-connection-retries-startup[]
+** xref:new-extract-changed-record-state-smt[]
+** xref:new-drop-fields-extract-new-record-state-smt[]
+** xref:new-parallel-snapshots[]
+** xref:new-incremental-snapshots-surrogate-key[]
+** xref:new-quarkus-3[]
+* Connectors
+** JDBC
+*** xref:new-jdbc-sink[]
+** Oracle
+*** xref:new-oracle-logical-standby[]
+** Spanner
+*** xref:new-spanner-postgresql-dialect[]
+* Debezium Server
+** xref:new-infinispan-sink[]
+** xref:new-rabbitmq-sink[]
+** xref:new-rocketmq-sink[]
+** xref:new-pulsar-async-delivery[]
+* Outbox Quarkus Extension
+** xref:new-outbox-reactive-extension[]
+* Storage API
+** xref:new-storage-amazon-s3-bucket[]
+** xref:new-storage-rocketmq[]
+
+[id=new-jolokia]
+=== Jolokia support
+
+Jolokia is a JMX-HTTP bridge that provides an alternative to using JSR-160 to gather metrics.
+It is an agent based approach that improves traditional JMX by introducing unique features like bulk requests and fine-grained security policies.
+
+With Debezium 2.2, the `debezium/connect` image now ships with Jolokia, but this agent isn't enabled by default.
+In order to enable Jolokia support, the container must be started with `ENABLE_JOLOKIA` set to `true`.
+By default, Jolokia will bind to port 8778 when enabled.
+
+In the event that a different port is required, Jolokia will need to be enabled differently.
+For example, in order to enable Jolokia using port 9779, do not set the `ENABLE_JOLOKIA` but instead configure the `KAFKA_OPTS` environment variable as follows:
+
+[source,propreties]
+----
+-e KAFKA_OPTS="-javaagent:$(ls "$KAFKA_HOME"/libs/jolokia-jvm-*.jar)=port=9779,host=*"
+----
+
+By specifying the above environment variable, Jolokia's JMX-HTTP bridge will be available on port 9779 of the container.
+
+[NOTE]
+====
+Do not forget to add the Jolokia port to the container's list of exposed ports when starting.
+====
+
+[id=new-database-connection-retries-startup]
+=== Database connections retried on connector start-up
+
+In previous releases of Debezium, the connector start-up phase used a fail-fast strategy.
+Simply put, this meant that if we couldn't connect, authenticate, or performs any of the start-up phase steps required by the connector, the connector would enter a `FAILED` state.
+
+One specific problem area for users is if the connector gracefully starts, runs for a period of time, and then eventually encounters some fatal error.
+If the error is related to a resource that wasn't accessed during the connector's start-up lifecycle, the connector would typically gracefully restart just fine.
+However, the situation is different if the problem was related to the database's availability and the database was still unavailable during the connector's start-up phase.
+In this situation, the connector would fail-fast, and would enter a `FAILED` state, requiring manual intervention.
+
+The fail-fast approach served Debezium well over the years, but in a world where a resource can come and go without warning, it became clear that changes were needed to improve Debezium's reliability and resiliency.
+While the Kafka Connect's retry/back-off framework has helped in this regard, that doesn't address the concerns with start-up resources being unavailable with how the code is currently written.
+
+Debezium 2.2 changes this landscape, shifting how we integrate with Kafka Connect's source connector API slightly.
+Instead of accessing potentially unavailable resources during the start-up lifecycle, we moved that access to a later phase in the connector's lifecycle.
+In effect, the Debezium start-up code is executed lazily that accesses potentially unavailable resources, which allows us to take advantage of the Kafka Connect retry/back-off framework even during our start-up code.
+In short, if the database is still unavailable during the connector's start-up, the connector will continue to retry/back-off if Kafka Connect retries are enabled.
+Only once the maximum number of retry attempts has been reached or a non-retriable error occurs will the connector task enter a `FAILED` state.
+
+We hope this brings more reliability and resiliency for the Debezium experience, improving how errors are handled in an ever-changing landscape, and provides a solid foundation to manage connector lifecycles.
+
+[id=new-extract-changed-record-state-smt]
+=== ExtractNewRecordState single message transformation
+
+We have heard from the community on several occasions that it would great to have an out-of-the-box way to determine what values have changed in a Debezium change event.
+The new single message transform (SMT) `ExtractChangedRecordState` aims to deliver on this request by adding metadata to the event identifying which fields changed or were unchanged.
+
+In order to get started with this new transformation, configure it as part of your connector configuration:
+
+[source,properties]
+----
+transforms=changes
+transforms.changes.type=io.debezium.transforms.ExtractChangedRecordState
+transforms.changes.header.changed=ChangedFields
+transforms.changes.header.unchanged=UnchangedFields
+----
+
+This transformation can be configured to disclose either what fields changed by setting `header.changed`, what fields are unchanged by setting `header.unchanged`, or both by setting both properties as shown above.
+The transformation will add a new header with the specified name, and it's value will include a collection of field names based on whether you've configured changes, non-changes, or both.
+
+[id=new-drop-fields-extract-new-record-state-smt]
+=== Drop fields using ExtractNewRecordState single message transformation
+
+The `ExtractNewRecordState` single message transformation is extremely useful in situations where you need to consume the Debezium change event in a _flattened_ format.
+This SMT has been changed in this release to add the ability to drop fields from the payload and the message key of the event.
+
+This new feature introduces three new configuration properties for the transformation:
+
+`drop.fields.header.name`::
+The Kafka message header name to use for listing field names in the source message that are to be dropped.
+`drop.fields.from.key`::
+Specifies whether to remove fields also from the key, defaults to `false`.
+`drop.fields.keep.schema.compatible`::
+Specifies whether to remove fields that are only optional, defaults to `true`.
+
+[NOTE]
+====
+When using Avro, schema compatibility is extremely important.
+This is why we opted to enforce schema compatibility by default.
+If a field is configured to be dropped but it is non-optional, the field will not be removed from the key nor the payload unless schema compatibility is disabled.
+====
+
+These new configuration options allow for some exciting ways to manipulate change events.
+For example, to emit events with only changed fields, pairing the `ExtractNewRecordState` with the new `ExtractChangedRecordState` transformation makes this extremely simple and straightforward.
+An example configuration to only emit changed columns would look like the following:
+
+[source,properties]
+----
+transforms=changes,extract
+transforms.changes.type=io.debezium.transforms.ExtractChangedRecordState
+transforms.changes.header.unchanged=UnchangedFields
+transforms.extract.type=io.debezium.transforms.ExtractNewRecordState
+transforms.extract.drop.fields.header.name=UnchangedFields
+----
+
+The above configuration will explicitly not include unchanged fields from the event's payload value.
+If a field in the key did not change, it will be unaffected because `drop.fields.from.key` was left as its default of `false`.
+And finally, if a field in the event's payload is to be dropped because it did not change, but it's not optional, it will continue to be included in the transformation's output event to comply with schema compatibility.
+
+[id=new-parallel-snapshots]
+=== Parallel Snapshots
+
+Debezium's relational database initial snapshot process has always been single-threaded.
+This limitation primarily stems from the complexities of ensuring data consistency across multiple transactions.
+
+Starting in Debezium 2.2, we're adding a new and initially optional way to utilize multiple threads to perform consistent database snapshot for a connector.
+This implementation uses these multiple threads to execute table-level snapshots in parallel.
+
+In order to take advantage of this new feature, specify `snapshot.max.threads` in your connector's configuration and when this property has a value greater than `1`, parallel snapshots will be used.
+
+.Example configuration using parallel snapshots
+[source,properties]
+----
+snapshot.max.threads=4
+----
+
+In the example above, if the connector needs to snapshot more than 4 tables, there will be at most 4 tables being snapshot in parallel.
+When one thread finishes processing a table, it will get a new table to snapshot from the queue and the process continues until all tables have been snapshot.
+
+[NOTE]
+====
+This feature is considered _incubating_, but we strongly suggest that new connector deployments give this feature a try.
+We would welcome any and all feedback on how to improve this going forward.
+====
+
+[id=new-incremental-snapshots-surrogate-key]
+=== Incremental snapshots using surrogate key
+
+Debezium's incremental snapshot feature has been a tremendous success.
+It provides an efficient way to perform a consist snapshot of data that can be resumed, which is critical when the snapshot consists of large volumes of data.
+
+However, incremental snapshots do have specific requirements that must be met before the feature can be used.
+One of those requirements is all tables being snapshot must use a primary key.
+You may ask, why does a table have no primary key, and we aren't going to debate that here today; however, suffice to say this occurs more often than you may think.
+
+With Debezium 2.2, incremental snapshots can be performed on key-less tables as long as there is one column that is unique and can be considered a "surrogate key" for incremental snapshot purposes.
+
+
+[WARNING]
+====
+The surrogate key feature is not supported by MongoDB; only relational connectors.
+====
+
+To provide the surrogate key column data in an incremental snapshot signal, the signal's payload must include the new surrogate key attribute, `surrogate-key`.
+
+.An example incremental snapshot signal payload specifying a surrogate key
+[source.json]
+----
+{
+  "data-collections": [ "public.mytab" ],
+  "surrogate-key": "customer_ref"
+}
+----
+
+In the above example, an incremental snapshot will be started for table `public.mytab` and the incremental snapshot will use the `customer_ref` column as the primary key for generating the snapshot windows.
+
+[WARNING]
+====
+A surrogate key cannot be defined using multiple columns, only a *single* column.
+====
+
+However, the surrogate key feature isn't just applicable for tables with no primary keys.
+There are a series of advantages when using this feature with tables that have primary keys:
+
+1. One clear advantage is when the table's primary key consists of multiple columns.
+The query generates a disjunction predicate for each column in the primary key, and it's performance is highly dependent on the environment.
+Reducing the number of columns down to a single column often performs universally.
+
+2. Another advantage is when the surrogate key is based on a numeric data type while the primary key column is based on a character-based data type.
+Relational databases generally perform predicate evaluation more efficiently with numeric comparisons  rather than character comparisons.
+By adjusting the query to use a numeric data type in this case, query performance could be better.
+
+[id=new-quarkus-3]
+=== Quarkus 3 support
+
+Quarkus is a Kubernetes Native Java stack that combines the best Java libraries to create fast, low footprint applications.
+The Debezium Server runtime is based on Quarkus as well as part of Debezium UI.
+Additionally, the Debezium Outbox extension is also based on the Quarkus platform.
+
+The upgrade to Quarkus 3 introduces a number of improvements, including using the latest stable releases of a plethora of Java libraries, including the migration from Java EE to Jakarta EE.
+If you are not familiar with this migration, previously most Java EE platform classes were bundled in the package `javax.\*`.
+Over the past year or two, more applications have started the move from JavaEE or J2EE to Jakarta EE, and Quarkus 3 marks this transition era.
+Overall, the only real change is that classes that previously resided in `javax.*` now are placed in `jakarta.*`.
+
+If your application makes use of the Debezium Quarkus Outbox extension, be aware that in order to use Debezium 2.2 with Quarkus, you will need to migrate to Quarkus 3.
+This also means that if you want to take advantage of the Outbox extension for Reactive data sources, you will be required to use Quarkus 3 as well.
+
+Finally, if you are developing or maintaining sink adapters for Debezium Server, you will also need to make adjustments to using the new Jakarta EE annotations rather than the older Java EE annotations.
+
+[id=new-jdbc-sink]
+=== JDBC Sink connector
+
+The Debezium 2.2 release ushers in a new era for Debezium which has had a longstanding focus purely on providing a set of source connectors for relational and non-relational databases.
+This release alters that landscape, introducing a new JDBC sink connector implementation.
+
+The Debezium JDBC sink connector is quite different from other vendor implementations in that it is capable of ingesting change events emitted by Debezium connectors without the need for event flattening.
+This has the potential to reduce the processing footprint in your pipeline, simplifies the pipeline's configuration, and allows Debezium's JDBC sink connector to take advantage of numerous Debezium source connector features such as column type propagation and much more.
+
+Getting started with the Debezium JDBC sink connector is quite simple, lets take a look at an example.
+
+Let's say we have a Kafka topic called `orders` that contains Debezium change events that were created without using the `ExtractNewRecordState` transformation from MySQL.
+A simple configuration to ingest these change events into a PostgreSQL database might look this the following:
+
+[source,json]
+----
+{
+  "name": "mysql-to-postgres-pipeline",
+  "config": {
+    "connector_class": "io.debezium.connector.jdbc.JdbcSinkConnector",
+    "topics": "orders",
+    "connection.url": "jdbc://postgresql://<host>:<port>/<database>",
+    "connection.user": "<username>",
+    "connection.password": "<password>",
+    "insert.mode": "upsert",
+    "delete.enabled": "true",
+    "primary.key.mode": "record_key",
+    "schema.evolution": "basic"
+  }
+}
+----
+
+In this example, we've specified a series of `connection.*` properties that define the connection string and credentials for accessing the destination PostgreSQL database.
+Additionally, records will use _UPSERT_ semantics when writing to the destination database, choosing to use an insert if the record doesn't exist or updating the record if it does.
+We have also enabled schema evolution and specified that a table's key columns should be derived from the event's primary key.
+
+The JDBC sink connector presently has support for the following relational databases:
+
+* Db2
+* MySQL
+* Oracle
+* PostgreSQL
+* SQL Server
+
+We do intend to add additional dialects in the future, and if there one you'd like to see, please get in touch with us either  on our mailing list, in chat, or opening a Jira enhancement.
+
+[id=new-oracle-logical-standby]
+=== Ingest changes from Oracle Logical standby instances
+
+The Debezium for Oracle connector normally manages what is called a _flush table_, which is an internal table used to manage the flush cycles used by the Oracle Log Writer Buffer (LGWR) process.
+This flushing process requires that the user account the connector uses to have permission to create and write to this table.
+Logical stand-by databases often have more restrictive rules about data manipulation and may even be read-only, therefore, writing to the database is unfavorable or even not permissible.
+
+To support an Oracle read-only logical stand-by database, we introduced a flag to disable the creation and management of this _flush table_.
+This feature can be used with both Oracle Standalone and Oracle RAC installations, and is currently considered incubating, meaning its subject to change in the future.
+
+In order to enable Oracle read-only logical stand-by support, add the following connector option:
+
+[source,properties]
+----
+internal.log.mining.read.only=true
+----
+
+In a future version, we plan to add support for an Oracle read-only physical stand-by database.
+
+[id=new-spanner-postgresql-dialect]
+=== Google Spanner PostgreSQL dialect support
+
+Google's Cloud Spanner platform supports a PostgreSQL interface, which combines the scalability and reliability of the Google Spanner platform with the familiarity and portability of PostgreSQL.
+When operating Google Spanner with this PostgreSQL interface, metadata of columns and tables is different than when using the standard GoogleSQL dialect.
+
+This release extends the Debezium Spanner connector support not only for the GoogleSQL dialect but also for users that use the Spanner PostgreSQL dialect feature.
+This means regardless of which dialect your spanner environment relies on, you will be able to capture change events from Spanner using the Debezium Spanner connector seamlessly.
+
+[id=new-infinispan-sink]
+=== Infinispan sink adapter
+
+https://infinispan.org[Infinispan] is an in-memory, distributed data store that offers flexible deployment options with robust capabilities to store, manage, and process data.
+Infinispan is based on the notion of a key-value store that allows storing any data type.
+In order to integrate Debezium Server with Infinispan, the Debezium Server `application.properties` must be modified to include the following entries:
+
+.application.properties
+[source,properties]
+----
+debezium.sink.type=infinispan
+debezium.sink.infinispan.server.host=<hostname>
+debezium.sink.infinispan.server.port=<port>
+debezium.sink.infinispan.cache=<cache-name>
+debezium.sink.infinispan.user=<user>
+debezium.sink.infinispan.password=<password>
+----
+
+The above configuration specifies that the sink type to be used is `infinispan`, which enables the use of the Infinispan module.
+The following is a description of each of the properties shown above:
+
+`debezium.sink.infinispan.server.host`::
+Specifies the host name of one of the servers in the Infinispan cluster.
+This configuration option can also supply a comma-separated list of hostnames as well, such as `hostname1,hostname2`.
+`debezium.sink.infinispan.server.port`::
+Specifies the port of the Infinispan cluster.
+Defaults to `11222`.
+`debezium.sink.infinispan.cache`::
+Specifies the name of the Infinispan cache to write change events.
+[NOTE]
+====
+The Infinispan sink requires that the cache be created manually ahead of time.
+This enables the ability to create the cache with any variable configuration needed to fit your requirements.
+====
+
+`debezium.sink.infinispan.user`::
+An optional configuration to specify the user to authenticate with, if authentication is required.
+`debezium.sink.infinispan.password`::
+An optional configuration to specify the password for the authenticating user, if authentication is required.
+
+For more information on using Debezium Server with Infinispan, see the xref:/documentation/reference/2.2/operations/debezium-server.html#_infinispan[documentation].
+
+[id=new-rabbitmq-sink]
+=== RabbitMQ sink adapter
+
+Debezium 2.2 introduces a new sink adapter to the Debezium Server portfolio, allowing Debezium users to send change events to RabbitMQ.
+The following configuration shows a simple example of how easy it is to configure:
+
+[source,properties]
+----
+debezium.sink.type=rabbitmq
+
+# Connection details
+debezium.sink.rabbitmq.connection.host=<hostname>
+debezium.sink.rabbitmq.connection.port=<port>
+
+# The routing key specifies an override of where events are published
+debezium.sink.rabbitmq.routingKey=<routing-key>
+
+# The default is 30 seconds, specified in milliseconds
+debezium.sink.rabbitmq.ackTimeout=30000
+----
+
+The `debezium.sink.rabbitmq.connection.*` properties are required while the latter two properties for `routingKey` and `ackTimeout` are optional or have preset defaults that should be sufficient for most use cases.
+
+[id=new-rocketmq-sink]
+=== RocketMQ sink adapter
+
+https://rocketmq.apache.org[Apache RocketMQ] is a cloud-native messaging, eventing, and streaming real-time data processing platform that covers cloud-edge-device collaboration scenarios.
+In order to integrate Debezium Server with RocketMQ, the Debezium Server `application.properties` must be modified to include the following entries:
+
+.application.properties
+[source,properties]
+----
+debezium.sink.type=rocketmq
+debezium.sink.rocketmq.producer.name.srv.addr=<hostname>:<port>
+debezium.sink.rocketmq.producer.group=debezuim-group
+debezium.sink.rocketmq.producer.max.message.size=4194304
+debezium.sink.rocketmq.producer.send.msg.timeout=3000
+debezium.sink.rocketmq.producer.acl.enabled=false
+debezium.sink.rocketmq.producer.access.key=<access-key>
+debezium.sink.rocketmq.producer.secret.key=<secret-key>
+----
+
+The above configuration specifies that the sink type to be used is `rocketmq`, which enables the use of the RocketMQ module.
+The following is a description of each of the properties shown above:
+
+`debezium.sink.rocketmq.producer.name.srv.addr`::
+Specifies the host and port where Apache RocketMQ is available.
+`debezium.sink.rocketmq.producer.group`::
+Specifies the name associated with the Apache RocketMQ producer group.
+`debezium.sink.rocketmq.producer.max.message.size`::
+(Optional) Specifies the maximum number of bytes a message can be. Defaults to `4193404` (4MB).
+`debezium.sink.rocketmq.producer.send.msg.timeout`::
+(Optional) Specifies the timeout in milliseconds when sending messages. Defaults to `3000` (3 seconds).
+`debezium.sink.rocketmq.producer.acl.enabled`::
+(Optional) Controls whether access control lists are enabled. Defaults to `false`.
+`debezium.sink.rocketmq.producer.access.key`::
+(Optional) The access key used for connecting to the Apache RocketMQ cluster.
+`debezium.sink.rocketmq.producer.secret.key`::
+(Optional) The access secret used for connecting to the Apache RocketMQ cluster.
+
+For more information on using Debezium Server with RocketMQ, see the xref:/documentation/reference/2.2/operations/debezium-server.html#_apache_rocketmq[documentation].
+
+[id=new-pulsar-async-delivery]
+=== Pulsar asynchronous event delivery
+
+In prior versions of the Debezium Server Pulsar sink, the adapter leveraged the `send()` method to deliver messages in a synchronous way.
+While this works for sending one-off messages, this has the potential to introduce connector latency as the method waits an acknowledgement of send operation sequentially.
+Since the Debezium Server sink adapters are provided a collection of events to deliver, the synchronous nature just does not perform well.
+
+Starting Debezium 2.2, the Pulsar sink will now use `sendAsync()` to asynchronously deliver the batch of events to Pulsar, netting a substantial increase in overall throughput.
+While each event within the batch is delivered asynchronously, the adapter will only proceed to the next batch once the current batch is acknowledged in entirety.
+
+[id=new-outbox-reactive-extension]
+=== Reactive Quarkus Outbox extension
+
+The https://debezium.io/blog/2019/02/19/reliable-microservices-data-exchange-with-the-outbox-pattern/[outbox pattern] is an approach that many microservices leverage to share data across microservice boundaries.
+We introduced the Debezium Outbox Quarkus Extension in Debezium 1.1 back in early 2020, and it has allowed Quarkus users to leverage the outbox pattern with ease using Debezium.
+
+Thanks to https://github.com/ingmarfjolla[Ingmar Fjolla], Debezium 2.2 includes a new reactive-based implementation of the Debezium Outbox Quarkus Extension.
+This new implementation is based on Vert.x and Hibernate Reactive, providing a fully asynchronous solution to the outbox pattern using Debezium.
+
+This new extension is included in the Quarkus 3 platform released later this month.
+However if you want to get started with it today, you can easily drop it directly into your project's configuration using the following coordinates:
+
+.Maven coordinates
+[source,xml]
+----
+<dependency>
+  <groupId>io.debezium</groupId>
+  <artifactId>debezium-quarkus-outbox-reactive</artifactId>
+  <version>2.2.0.Final</version>
+</dependency>
+----
+
+.Gradle coordinates
+[source,properties]
+----
+io.debezium:debezium-quarkus-outbox-reactive:2.2.0.Final
+----
+
+[id=new-storage-amazon-s3-bucket]
+=== Amazon S3 bucket storage support
+
+Debezium provides a Storage API framework that enables connectors to store offset and schema history state in a variety of persistence datastores.
+Moreover, the framework enables contributors to extend the API by adding  new storage implementations with ease.
+Currently, the Storage API framework supports the local FileSystem, a Kafka Topic, or Redis datastores.
+
+With Debezium 2.2, we're pleased to add Amazon S3 buckets as part of that framework, allowing the schema history to be persisted to an S3 bucket.
+An example connector configuration using S3 might look like the following:
+
+[source.properties]
+----
+...
+schema.history.internal=io.debezium.storage.s3.history
+schema.history.internal.s3.access.key.id=aa
+schema.history.internal.s3.secret.access.key=bb
+schema.history.internal.s3.region.name=aws-global
+schema.history.internal.s3.bucket.name=debezium
+schema.history.internal.s3.object.name=db-history.log
+schema.history.internal.s3.endpoint=http://<server>:<port>
+----
+
+`schema.history.internal.s3.access.key.id`::
+Specifies the access key required to authenticate to S3.
+`schema.history.internal.s3.secret.access.key`::
+Specifies the secret access key required to authenticate to S3.
+`schema.history.internal.s3.region.name`::
+Specifies the region where the S3 bucket is available.
+`schema.history.internal.s3.bucket.name`::
+Specifies the name of the S3 bucket where the schema history is to be persisted.
+`schema.history.internal.s3.object.name`::
+Specifies the object name in the bucket where the schema history is to be persisted.
+`schema.history.internal.s3.endpoint`::
+Specifies the S3 endpoint with the format of `http://<server>:<port>`.
+
+[id=new-storage-rocketmq]
+=== RocketMQ storage support
+
+Debezium's new storage API has been a huge success over this past year.
+We initially started with our original file and Kafka based implementations for offset and schema history storage, but that has since grown to support storing schema history on other platforms such as Amazon S3 and Redis.
+
+This release continues to expand on this by adding a new schema history storage implementation for Rocket MQ.
+In order to get started with storing your schema history into Rocket MQ, the `debezium-storage-rocketmq` dependency must first be on the classpath and accessible by the connector runtime.
+
+Once the dependency exists, the only remaining step will be configuring the schema history connector configuration.
+The following example shows basic usage of the Rocket MQ schema history:
+
+[source,properties]
+----
+schema.history.internal.rocketmq.topic=schema-history
+schema.history.internal.rocketmq.name.srv.addr=172.17.15.2
+schema.history.internal.rocketmq.acl.enabled=true
+schema.history.internal.rocketmq.access.key=<rocketmq-access-key>
+schema.history.internal.rocketmq.secret.key=<rocketmq-secret-key>
+schema.history.internal.rocketmq.recovery.attempts=5
+schema.history.internal.rocketmq.recovery.poll.interval.ms=1000
+schema.history.internal.rocketmq.store.record.timeout.ms=2000
+----
+
+`schema.history.internal.rocketmq.topic`::
+Specifies the topic name where the schema history will be stored.
+`schema.history.internal.rocketmq.name.srv.addr`::
+Specifies the service discovery service nameserver for Rocket MQ.
+`schema.history.internal.rocketmq.acl.enabled`::
+Specifies whether access control lists (ACLs) are enabled, defaults to `false`.
+`schema.history.internal.rocketmq.access.key`::
+Specifies the Rocket MQ access key, required only if ACLs are enabled.
+`schema.history.internal.rocketmq.secret.key`::
+Specifies the Rocket MQ secret key, required only if ACLs are enabled.
+`schema.history.internal.rocketmq.recovery.attempts`::
+Specifies the number of sequential attempts that no data is returned before recovery completes.
+`schema.history.internal.rocketmq.recovery.poll.interval.ms`::
+Specifies the number of milliseconds for each poll attempt to recover the history.
+`schema.history.internal.rocketmq.store.record.timeout.ms`::
+Specifies the number of milliseconds for a write to Rocket MQ to complete before timing out.
+
+[id=other-fixes-improvements]
+== Other fixes & improvements
+
+There were many bugfixes, stability changes, and improvements throughout the development of Debezium 2.2.
+Altogether, a total of https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20AND%20fixVersion%20in%20(2.2.0.Alpha1%2C%202.2.0.Alpha2%2C%202.2.0.Alpha3%2C%202.2.0.Beta1%2C%202.2.0.CR1%2C%202.2.0.Final)%20ORDER%20BY%20component%20ASC[228 issues] were fixed for this release.
+
+A big thank you to all the contributors from the community who worked on this release:
+Akshansh Jain,
+Đỗ Ngọc Sơn,
+https://github.com/AnatolyPopov[Anatolii Popov],
+https://github.com/ggaborg[Gabor Andras]
+https://github.com/adasari[Anil Dasari],
+https://github.com/akanimesh7[Animesh Kumar],
+https://github.com/ani-sha[Anisha Mohanty],
+https://github.com/roldanbob[Bob Roldan],
+https://github.com/btiernay[Bobby Tiernay],
+https://github.com/bruth[Byron Ruth],
+https://github.com/Naros[Chris Cranford],
+https://github.com/erdinctaskin[Erdinç Taşkın],
+https://github.com/EugeneAbramchuk[Eugene Abramchuk],
+https://github.com/ggaborg[Gabor Andras],
+https://github.com/govi20[Govinda Sakhare],
+https://github.com/gunnarmorling[Gunnar Morling],
+https://github.com/harveyyue[Harvey Yue],
+https://github.com/henkosch[Henrik Schnell],
+https://github.com/HenryCaiHaiying[Henry Cai],
+https://github.com/blcksrx[Hossein Torabi],
+https://github.com/indraraj[Indra Shukla],
+https://github.com/ingmarfjolla[Ingmar Fjolla],
+https://github.com/ismailsimsek[Ismail Simsek],
+https://github.com/jbarrieault[Jacob Barrieault],
+https://github.com/sugarcrm-jgminder[Jacob Gminder],
+https://github.com/jcechace[Jakub Cechacek],
+https://github.com/jakzal[Jakub Zalas],
+https://github.com/jeremy-l-ford[Jeremy Ford],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/joschi[Jochen Schalanda],
+https://github.com/echatman-ias[Liz Chatman],
+https://github.com/lokesh1729[Lokesh Sanapalli],
+https://github.com/Lucascanna[Luca Scannapieco],
+https://github.com/mfvitale[Mario Fiore Vitale],
+https://github.com/alwaysbemark[Mark Bereznitsky],
+https://github.com/dude0001[Mark Lambert],
+https://github.com/MartinMedek[Martin Medek],
+https://github.com/MehmetFiratKomurcu[Mehmet Firat Komurcu],
+https://github.com/MyLanPangzi[My Lang Pangzi],
+https://github.com/nirolevy[Nir Levy],
+https://github.com/olivierboudet[Olivier Boudet],
+https://github.com/obabec[Ondrej Babec],
+https://github.com/smallYellowCat[Pengwei Dou],
+https://github.com/PlugaruT[Plugaru Tudor],
+https://github.com/rnowling-memphis[RJ Nowling],
+https://github.com/rajdangwal[Rajendra Dangwal],
+https://github.com/roldanbob[Robert Roldan],
+https://github.com/ironakj[Ronak Jain],
+https://github.com/Apteryx0[Russell Mora],
+https://github.com/morozov[Sergei Morozov],
+https://github.com/smiklosovic[Stefan Miklosovic],
+https://github.com/subodh1810[Subodh Kant Chaturvedi],
+https://github.com/sunxiaojian[Sun Xiao Jian],
+https://github.com/twthorn[Thomas Thornton],
+https://github.com/chtitux[Théophile Helleboid],
+https://github.com/Tideri-Tim2[Tim Loes],
+https://github.com/vjuranek[Vojtech Juranek],
+https://github.com/vjuranek[Vojtěch Juránek],
+https://github.com/xinbinhuang[Xinbin Huang],
+https://github.com/y5w[Yang Wu],
+https://github.com/yoheimuta[Yohei Yoshimuta],
+https://github.com/zzzming[ming luo],
+https://github.com/imtj1[tony joseph],
+https://github.com/yoheimuta[yohei yoshimuta], and
+https://github.com/caicancai[蔡灿材]!
+
+[id=whats-next]
+== What's Next?
+
+We began pre-planning Debezium 2.3 several weeks ago and with 2.2 shipped, our focus will now be on the next minor release.
+With Debezium 2.2 release cycle being a tad longer than normal, the release cycle for 2.3 will be condensed as we want to return to our end-of-quarter release cadence.
+In order to achieve that goal, we've chosen to focus on the following features for the next minor release:
+
+Configurable Signal Channels::
+The goal of this change is to provide a way in which signals can be sent to a connector from a variety of sources, including things like the filesystem, Kafka topic, database table, etc.
+
+Exactly once delivery semantics::
+Debezium currently only guarantees at-least-once delivery semantics, meaning that a change event could be written to a topic more than once in the case of unsafe shutdowns or failures of a connector.
+Kafka and by extension Kafka Connect, now support exactly-once delivery and we want to explore this feature as part of Debezium.
+The goal is to focus adding this to at least once connector as a proof of concept and based on feedback, extend this to all connectors.
+
+Kubernetes operator for Debezium Server::
+Debezium Server has gained quite a bit of exposure in recent months, both with new sink adapters and just general usage by the community.
+We want to bring the power of Kubernetes to Debezium Server, introducing an operator that you can deploy in order to manage the full lifecycle of a Debezium Server deployment.
+
+Ingestion from Oracle using OpenLogReplicator::
+The Debezium Oracle connector presents supports ingestion of changes using XStream or LogMiner.
+We want to build a proof-of-concept using OpenLogReplicator, a native application that is capable of reading the Oracle redo and archive logs directly from the file system.
+We do not intend to replace either of the existing adapters with this new approach, but to instead extend the connector's functionality to offer alternatives to data ingestion that  may have less overhead.
+
+Debezium UI Enhancements::
+We believe there is a lot of unlocked potential with Debezium UI, so this release will focus on improving that overall user experience by adding new features like starting/stopping ad-hoc snapshots, editing connector deployments, and displaying critical connector metrics.
+
+While the team intends to focus on the above improvements, we would really like your feedback or suggestions.
+If you have anything that you'd like to share, be sure to get in touch with us on the https://groups.google.com/g/debezium[mailing list] or our https://debezium.zulipchat.com/login/#narrow/stream/302529-users[chat].
+
+Until next time...
