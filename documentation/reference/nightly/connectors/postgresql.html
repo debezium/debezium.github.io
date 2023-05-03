@@ -406,6 +406,7 @@
 <li><a href="#supported-postgresql-topologies">Supported PostgreSQL topologies</a></li>
 <li><a href="#postgresql-wal-disk-space">WAL disk space consumption</a></li>
 <li><a href="#postgresql-deploying-multiple-connectors">Setting up multiple connectors for same database server</a></li>
+<li><a href="#upgrading-postgresql">Upgrading PostgreSQL</a></li>
 </ul>
 </li>
 <li><a href="#postgresql-deployment">Deployment</a>
@@ -4471,6 +4472,144 @@ Again, regularly emitting events solves the problem.</p>
 <p>See <a href="#postgresql-property-slot-name"><code>slot.name</code></a> and <a href="#postgresql-property-publication-name"><code>publication.name</code></a> on how to set a unique replication slot name and publication name for each connector.</p>
 </div>
 </div>
+<div class="sect2">
+<h3 id="upgrading-postgresql"><a class="anchor" href="#upgrading-postgresql"></a>Upgrading PostgreSQL</h3>
+<div class="paragraph">
+<p>When you upgrade the PostgreSQL database that Debezium uses, you must take specific steps to protect against data loss and to ensure that Debezium continues to operate.
+In general, Debezium is resilient to interruptions caused by network failures and other outages.
+For example, when a database server that a connector monitors stops or crashes, after the connector re-establishes communication with the PostgreSQL server, it continues to read from the last position recorded by the log sequence number (LSN) offset.
+The connector retrieves information about the last recorded offset from the Kafka Connect offsets topic, and queries the configured PostgreSQL replication slot for a log sequence number (LSN) with the same value.</p>
+</div>
+<div class="paragraph">
+<p>For the connector to start and to capture change events from a PostgreSQL database, a replication slot must be present.
+However, as part of the PostgreSQL upgrade process, replication slots are removed, and the original slots are not restored after the upgrade completes.
+As a result, when the connector restarts and requests the last known offset from the replication slot, PostgreSQL cannot return the information.</p>
+</div>
+<div class="paragraph">
+<p>You can create a new replication slot, but you must do more than create a new slot to guard against data loss.
+A new replication slot can provide the LSNs only for changes the occur after you create the slot; it cannot provide the offsets for events that occurred before the upgrade.
+When the connector restarts, it first requests the last known offset from the Kafka offsets topic.
+It then sends a request to the replication slot to return information for the offset retrieved from the offsets topic.
+But the new replication slot cannot provide the information that the connector needs to resume streaming from the expected position.
+The connector then skips any existing change events in the log, and only resumes streaming from the most recent position in the log.
+This can lead to silent data loss: the connector emits no records for the skipped events, and it does not provide any information to indicate that events were skipped.</p>
+</div>
+<div class="paragraph">
+<p>For guidance about how to perform a PostgreSQL database upgrade so that Debezium can continue to capture events while minimizing the risk of data loss, see the following procedure.</p>
+</div>
+<div class="olist arabic">
+<div class="title">Procedure</div>
+<ol class="arabic">
+<li>
+<p>Temporarily stop applications that write to the database, or put them into a read-only mode.</p>
+</li>
+<li>
+<p>Back up the database.</p>
+</li>
+<li>
+<p>Temporarily disable write access to the database.</p>
+</li>
+<li>
+<p>Verify that any changes that occurred in the database before you blocked write operations are saved to the write-ahead log (WAL), and that the WAL LSN is reflected on the replication slot.</p>
+</li>
+<li>
+<p>Provide the connector with enough time to capture all event records that are written to the replication slot.<br>
+This step ensures that all change events that occurred before the downtime are accounted for, and that they are saved to Kafka.</p>
+</li>
+<li>
+<p>Verify that the connector has finished consuming entries from the replication slot by checking the value of the flushed LSN.</p>
+</li>
+<li>
+<p>Shut down the connector gracefully by stopping Kafka Connect.<br>
+Kafka Connect stops the connectors, flushes all event records to Kafka, and records the last offset received from each connector.<br></p>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>As an alternative to stopping the entire Kafka Connect cluster, you can stop the connector by deleting it.
+Do not remove the offset topic, because it might be shared by other Kafka connectors.
+Later, after you restore write access to the database and you are ready to restart the connector, you must recreate the connector.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+</li>
+<li>
+<p>As a PostgreSQL administrator, drop the replication slot on the primary database server.
+Do not use the <a href="#postgresql-property-slot-drop-on-stop"><code>slot.drop.on.stop</code></a> property to drop the replication slot.
+This property is for testing only.</p>
+</li>
+<li>
+<p>Stop the database.</p>
+</li>
+<li>
+<p>Perform the upgrade using an approved PostgreSQL upgrade procedure, such as <code>pg_upgrade</code>, or <code>pg_dump</code> and <code>pg_restore</code>.</p>
+</li>
+<li>
+<p>(Optional) Use a standard Kafka tool to remove the connector offsets from the offset storage topic.<br>
+For an example of how to remove connector offsets, see <a href="https://debezium.io/documentation/faq/#how_to_remove_committed_offsets_for_a_connector">how to remove connector offsets</a> in the Debezium community FAQ.</p>
+</li>
+<li>
+<p>Restart the database.</p>
+</li>
+<li>
+<p>As a PostgreSQL administrator, create a Debezium logical replication slot on the database.
+You must create the slot before enabling writes to the database.
+Otherwise, Debezium cannot capture the changes, resulting in data loss.</p>
+</li>
+<li>
+<p>Verify that the publication that defines the tables for Debezium to capture is still present after the upgrade.
+If the publication is not available, connect to the database as a PostgreSQL administrator to create a new publication.</p>
+</li>
+<li>
+<p>If it was necessary to create a new publication in the previous step, update the Debezium connector configuration to add the name of the new publication to the <a href="#postgresql-property-publication-name"><code>publication.name</code></a> property.</p>
+</li>
+<li>
+<p>In the connector configuration, rename the connector.</p>
+</li>
+<li>
+<p>In the connector configuration, set <a href="#postgresql-property-slot-name"><code>slot.name</code></a> to the name of the Debezium replication slot.</p>
+</li>
+<li>
+<p>Verify that the new replication slot is available.</p>
+</li>
+<li>
+<p>Restore write access to the database and restart any applications that write to the database.</p>
+</li>
+<li>
+<p>In the connector configuration, set the <a href="#postgresql-property-snapshot-mode"><code>snapshot.mode</code></a> property to <code>never</code>, and then restart the connector.</p>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>If you were unable to verify that Debezium finished reading all database changes in Step 6, you can configure the connector to perform a new snapshot by setting <code>snapshot.mode=initial</code>.
+If necessary, you can confirm whether the connector read all changes from the replication slot by checking the contents of a database backup that was taken immediately before the upgrade.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+</li>
+</ol>
+</div>
+<div class="ulist">
+<div class="title">Additional resources</div>
+<ul>
+<li>
+<p><a href="#postgresql-server-configuration">Configuring replication slots for Debezium</a></p>
+</li>
+</ul>
+</div>
+</div>
 </div>
 </div>
 <div class="sect1">
@@ -6791,7 +6930,7 @@ If the primary server goes down, a new primary must be promoted.</p>
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2023 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/789f44043bca4efbd0a4405b0c494de378d22a7c">789f4404</a></span>)
+            <div class="copyright">Copyright &copy; 2023 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/b0bae55f4b5e6521f6d905858b6fa75646b3f812">b0bae55f</a></span>)
             
         </div>
     </footer>
