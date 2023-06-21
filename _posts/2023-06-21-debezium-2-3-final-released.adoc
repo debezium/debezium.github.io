@@ -1,0 +1,486 @@
+---
+layout: post
+title:  Debezium 2.3.0.Final Released
+date:   2023-06-21
+tags:   [ releases, mongodb, mysql, postgres, sqlserver, caassandra, oracle, db2, vitess, outbox, spanner ]
+author: ccranfor
+---
+
+The team has been quite busy these last couple months preparing for a condensed release timeline for Debezium 2.3,
+and I am thrilled to announce that the next installment has arrived, Debezium *2.3.0.Final* is now available!
+
+Despite a condensed release schedule, this release is packed with tons of new features and improvements.
+Debezium 2.3 includes a brand-new notification subsystem,
+a rewrite of the signal subsystem to support additional means to send signals to Debezium connectors,
+the introduction of the JDBC storage module to maintain Debezium state in relational databases,
+parallelization of Vitess shard processing,
+PostgreSQL connector replica identity improvements,
+a brand-new Debezium Server operator for Kubernetes,
+support for exactly-once semantics for the PostgreSQL connector,
+and improvements to the Oracle connector.
+
+Let's take a few moments and talk about any breaking changes and all these improvements and why they're so important!
+
+* link:#breaking-changes[Breaking changes]
+* link:#new-features[New features and improvements]
+* link:#other-fixes[Other changes]
+* link:#whats-next[What's next]
+
+You can also find a full list of changes in Debezium 2.3's https://debezium.io/releases/2.3/release-notes[release notes].
+
+[#breaking-changes]
+== Breaking changes
+
+We generally attempt to avoid as many breaking changes across minor releases as possible, but unfortunately sometimes such changes are inevitable, particularly if a feature may have been introduced as _experimental_.
+Debezium 2.3 introduces two breaking changes depending on whether you are upgrading from a preview release or an earlier stable version:
+
+* link:#postgresql-mysql-secure-connection-changes[PostgreSQL / MySQL secure connection changes]
+* link:#jdbc-storage-encoding-changes[JDBC storage encoding changes]
+
+[#postgresql-mysql-secure-connection-changes]
+=== PostgreSQL / MySQL secure connection changes
+
+Debezium for PostgreSQL and MySQL can be configured to use a secured SSL connection.
+For PostgreSQL, this can be done by configuring https://debezium.io/documentation/reference/2.3/connectors/postgresql.html#postgresql-property-database-sslmode[`database.sslmode`] while for MySQL this can be done with https://debezium.io/documentation/reference/2.3/connectors/mysql.html#mysql-property-database-ssl-mode[`database.ssl.mode`].
+
+With Debezium 2.3, this configuration option no longer defaults to `disable` (PostgreSQL) or `disabled` (MySQL) but instead defaults to `prefer` (PostgreSQL) and `preferred` (MySQL).
+This means that when attempting to connect using an encrypted, secure connection is unavailable, the connector will fallback to using an unsecured connection by default unless configured otherwise.
+
+[#jdbc-storage-encoding-changes]
+=== JDBC storage encoding changes
+
+Debezium 2.3.0.alpha1 introduced the new _experimental_ JDBC storage module.
+This storage module defaulted to using UTF-16 as it's default encoding; however, most databases prefer UTF-8 as a default.
+If you are upgrading from Debezium 2.3.0.Alpha1, Debezium 2.3.0.Beta1 and later now use UTF-8 when storing data using the JDBC storage module to align with typical database defaults.
+
+[#new-features]
+== New features and improvements
+
+Debezium 2.3 includes a plethora of new features improvements, which include the following:
+
+* link:#debezium-server-operator[Debezium Server Operator for Kubernetes]
+* link:#notifications[New notification subsystem]
+* link:#signals[New extensible signal subsystem with new channels]
+* link:#jmx-signals-notifications[JMX signal and notification integration]
+* link:#jdbc-storage[New JDBC storage module]
+* link:#exactly-once-delivery[Exactly once delivery for PostgreSQL streaming]
+* link:#replica-identity[PostgreSQL replica identity changes]
+* link:#rac-specify-sid[Oracle RAC improvements]
+
+[#debezium-server-operator]
+=== Debezium Server Operator for Kubernetes
+
+This release introduces a _preview_ version of the new Debezium Operator, providing the ability to deploy and manage Debezium Server instances within Kubernetes.
+Debezium Server allows you to stream change events from your data sources to a wide variety of messaging infrastructures.
+Our goal is to provide a Kafka-less alternative for the Debezium community who wish to utilize Kubernetes for scalability and high availability deployments.
+
+Presently, the documentation is sparse as the operator is in early incubation stages; however, we do intend to improve upon this in upcoming release cycles.
+You can find a https://github.com/debezium/debezium-operator#quickstart-example[deployment example] and basic description of the https://github.com/debezium/debezium-operator#debeziumserverspec-reference[custom resource specification] in the github repository that you can use as a reference for the short-term.
+
+We do not recommend a production deployment of this component at this time; however, we encourage users to provide community feedback.
+The feedback will be valuable in evaluating if the component is feature ready or if there are still areas of improvement to meet everyone's needs.
+
+[#notifications]
+=== New notification subsystem
+
+Debezium 2.3 introduces a brand-new feature called notifications, allowing Debezium to emit events that can be consumed by any external system to know the status of various stages of Debezium's lifecycle.
+
+Notification events are represented as a series of key/value tuples, with a structure that contains several out-of-the-box fields.
+The following is an example of a simple notification event.
+
+.Example Notification Event
+[source,json]
+----
+{
+  "id": "c485ccc3-16ff-47cc-b4e8-b56a57c3bad2",
+  "aggregate_type": "Snapshot",
+  "type": "Started",
+  "additional_data": {
+    ...
+  }
+}
+----
+
+Each notification event consists of an `id` field, a UUID to identify the notification,
+an `aggregate_type` field to which the notification is related based on the concept of domain-driven design,
+a `type` field that is mean to given more detail about the aggregate type itself,
+and an optional `additional_data` field which consists of a map of string-based key/value pairs with additional information about the event.
+
+At this time, there are two notification event types supported by Debezium:
+
+* Status of the initial snapshot
+* Monitoring of the incremental snapshot
+
+==== Initial Snapshot Notifications
+
+An initial snapshot is the consistent capture of the existing data when a connector first starts.
+An initial snapshot event will have an aggregate type with the value of `"Initial Snapshot"` and the type of event will consist of one of three logical values:
+
+`SKIPPED`:: Represents the initial snapshot was skipped.
+`ABORTED`:: Represents the initial snapshot was aborted.
+`COMPLETED`:: Represents the initial snapshot has concluded successfully.
+
+The following is an example of a notification about the completion of the initial snapshot:
+
+.Example snapshot completed event
+[source,json]
+----
+{
+  "id": "5563ae14-49f8-4579-9641-c1bbc2d76f99",
+  "aggregate_type": "Initial Snapshot",
+  "type": "COMPLETED"
+}
+----
+
+==== Incremental Snapshot Notifications
+
+An incremental snapshot is a capture of the existing data from a configured set of tables while the connector is actively streaming changes.
+An incremental snapshot event will have an aggregate type with the value of `"Incremental Snapshot"` and the type will consist of one of several logical values:
+
+`STARTED`:: Indicates an incremental snapshot has started.
+`PAUSED`:: Indicates an incremental snapshot has been temporarily paused.
+`RESUMED`:: Indicates an incremental snapshot that had been paused has now resumed.
+`STOPPED`:: Indicates an incremental snapshot has stopped.
+`IN_PROGRESS`:: Indicates an incremental snapshot is in-progress.
+`TABLE_SCAN_COMPLETED`:: Indicates an incremental snapshot has concluded for a given table.
+`COMPLETED`:: Indicates that an incremental snapshot has concluded for all tables.
+
+==== Configuring Notifications
+
+Debezium notifications are configured via the connector's configuration.
+The following examples show how to configure the out-of-the-box Kafka Topic or Log based channels.
+
+.Using a Kafka Topic
+[source,json]
+----
+{
+  "notification.enable.channels": "sink",
+  "notification.sink.topic.name": "debezium_notifications",
+  ...
+}
+----
+
+.Using the connector logs
+[source,json]
+----
+{
+    "notification.enable.channels": "log"
+}
+----
+
+[#signals]
+=== New extensible signal subsystem
+
+Debezium has supported the concept of a signal since the introduction of the Incremental Snapshot feature well back in Debezium 1.x.
+Signals are important as it allows you to provide metadata to instruct Debezium to perform a given task, whether that task is to write an entry to the connector log or perform an ad-hoc incremental snapshot.
+
+In Debezium 2.3, the signal subsystem was reworked to introduce the concept called _channel_, which represents a medium for which Debezium watches or listens and reacts to signals.
+In previous versions, there was one channel supported universally across connectors, which was the database signal table.
+In this release, these channels have been unified and the following are available out of the box:
+
+* Database signal table
+* Kafka signal topic
+* Filesystem
+* JMX
+
+But that's not all, the signal channel contract is extensible, allowing you to write a custom implementation and make that available to your connectors with ease.
+
+[#jmx-signals-notifications]
+=== JMX signals and notifications integration
+
+Debezium 2.3 previously introduced both a new signal channel and notification feature.
+This feature allows external applications to easily integrate with Debezium, sending signals to perform various tasks such as ad-hoc incremental snapshots, and to receive notifications about the progress of such tasks.
+This release builds on top of that functionality to allow the ability to send signals and receive notifications via JMX.
+
+==== Sending signals
+
+In this release, the signal channel subsystem has been improved to support sending signals via JMX.
+From the `jconsole` window, you can now see there are two new subsections for a connector, a notifications and signal section shown below:
+
+[.imageblock.centered-image]
+====
+++++
+<img src="/assets/images/jconsole-signal-notifications.png" class="responsive-image" alt="JConsole JMX metrics">
+++++
+====
+
+The new `signals` section allows you to invoke an operation on the JMX bean in order to transmit a signal to Debezium.
+This signal resembles the logical signal table structure where it accepts 3 parameters, a unique identifier, the signal type, and finally the signal payload.
+The following illustrates what this looks like from `jconsole`:
+
+[.imageblock.centered-image]
+====
+++++
+<img src="/assets/images/jconsole-send-signal.png" class="responsive-image" alt="JConsole Sending Signals">
+++++
+====
+
+==== Receiving notifications
+
+The new `notifications` section allows you to receive and react to notifications captured by the JMX bean from Debezium.
+The Debezium JMX bean will buffer all notifications to ensure that no notification is missed.
+The following illustrates what this looks like from `jconsole`:
+
+[.imageblock.centered-image]
+====
+++++
+<img src="/assets/images/jconsole-receive-notification.png" class="responsive-image" alt="JConsole Receive Notifications">
+++++
+====
+
+[NOTE]
+====
+The JMX bean does not automatically clear the notification queue.
+In order to avoid memory concerns, be sure to invoke the `reset` method on the notifications bean once you've processed all notifications.
+====
+
+We look forward to your feedback on this new way to integrate signals and notifications with Debezium over JMX.
+
+[#jdbc-storage]
+=== New JDBC storage subsystem
+
+Debezium 2.3 introduces a new storage module implementation supporting the persistence of schema history and offset data in a datastore via JDBC.
+For environments where you may not have easy access to persistent filesystems, this offers yet another alternative for storage via a remote, persistent storage platform.
+
+In order to take advantage of this new module, the following dependency must be added to your project or application:
+
+.Maven coordinates
+[source,xml]
+----
+<dependency>
+    <groupId>io.debezium</groupId>
+    <artifactId>debezium-storage-jdbc</artifactId>
+    <version>2.3.0.Final</version>
+</dependency>
+----
+
+The following examples show how to configure Offset or Schema History storage via the JDBC storage module:
+
+.Configuration example for Offset JDBC storage
+[source,json]
+----
+{
+  "offset.storage.jdbc.url": "<jdbc-connection-url>",
+  "offset.storage.jdbc.user": "dbuser",
+  "offset.storage.jdbc.password": "secret",
+  "offset.storage.jdbc.offset_table_name": "debezium_offset_storage"
+}
+----
+
+.Configuration example for Schema History JDBC storage
+[source,json]
+----
+{
+  "schema.history.internal.jdbc.url": "<jdbc-connection-url>",
+  "schema.history.internal.jdbc.user": "dbuser",
+  "schema.history.internal.jdbc.password": "secret",
+  "schema.history.internal.jdbc.schema.history.table.name": "debezium_database_history"
+}
+----
+
+[#exactly-once-delivery]
+=== Exactly once delivery for PostgreSQL streaming
+
+Debezium has traditionally been an at-least-once delivery solution, guaranteeing that no change is ever missed.
+Exactly-Once is a proposal by the Apache Kafka community as a part of https://cwiki.apache.org/confluence/display/KAFKA/KIP-618%3A+Exactly-Once+Support+for+Source+Connectors[KIP-618].
+This proposal aims to address a common problem with producers (source connectors) when a producer retries, it may re-send a batch of events to the Kafka broker even if that batch had already been committed by the broker.
+This means there are situations where duplicate events may be sent and not every consumer (sink connector) may be capable of handling such situations easily.
+
+Debezium plans to roll out exactly-once delivery semantics in a phased style.
+There are specific corner cases around snapshotting and streaming and these can vary by connector.
+And with that, Debezium 2.3 starts out by specifically only adding support for exactly-once semantics for the PostgreSQL during its _streaming phase_ only!
+
+In order to take advantage of exactly-once delivery, there is no connector configuration changes required; however, your Kafka Connect worker configuration will need to be adjusted to enable this feature.
+You can find a reference to the new configuration properties in https://cwiki.apache.org/confluence/display/KAFKA/KIP-618%3A+Exactly-Once+Support+for+Source+Connectors#KIP618:ExactlyOnceSupportforSourceConnectors-Newproperties[KIP-618].
+
+[NOTE]
+====
+If you are mixing connectors on the same connect cluster that do and do not support exactly once delivery,
+you will not be able to set `exactly.once.support` in the worker configuration to `required` as this will cause connectors that do not support this feature to fail validation at start-up.
+====
+
+[#replica-identity]
+=== PostgreSQL replica identity changes
+
+Debezium 2.3 introduces a new PostgreSQL connector feature called "Autoset Replica Identity".
+
+Replica identity is PostgreSQL's way to identify what columns are captured in the database transaction logs for inserts, updates, and deletes.
+This new feature allows configuring a table's replica identity via connector configuration and delegating the responsibility of setting this configuration to the connector at start-up.
+
+The new configuration option, `replica.identity.autoset.values`, specifies a comma-separated list of table and replica identity tuples.
+If the table already has a given replica identity, the identity will be overwritten to match what is specified in this configuration if the table is included.
+PostgreSQL supports several replica identity types, more information on these can be found in the https://debezium.io/documentation/reference/2.3/connectors/postgresql.html#postgresql-replica-identity[documentation].
+
+When specifying the `replica.identity.autoset.values`, the value is a comma-separated list of values where each element uses the format of `<fully-qualified-table-name>:<replica-identity>`.
+An example is shown below where two tables are configured to have full replica identity:
+
+[source,json]
+----
+{
+  "replica.identity.autoset.values": "public.table1:FULL,public.table2:FULL"
+}
+----
+
+[#rac-specify-sid]
+=== Oracle RAC improvements
+
+When connecting to an Oracle RAC installation, you must specify a `rac.nodes` configuration property with a minimum of the host or IP address of all individual nodes across the cluster.
+Older versions of the connector also supported a varied format, allowing the inclusion of a port for each node as not every node on the cluster may use the same port.
+
+Debezium 2.3 improves the Oracle RAC support by also acknowledging that each node may not necessarily use the same Oracle Site Identifier (SID),
+and therefore, the SID can also now be included in the `rac.nodes` configuration property to support such installations.
+
+The following example illustrates connecting to two Oracle RAC nodes, each using different ports and SID parameters:
+
+.An example configuration
+[source,json]
+----
+{
+  "connector.class": "io.debezium.connector.oracle.OracleConnector",
+  "rac.nodes": "host1.domain.com:1521/ORCLSID1,host2.domain.com:1522/ORCLSID2",
+  ...
+}
+----
+
+[#other-fixes]
+== Other fixes
+
+There were quite a number of bugfixes and stability changes in this release, some noteworthy are:
+
+* Debezium Server stops sending events to Google Cloud Pub/Sub https://issues.redhat.com/browse/DBZ-5175[DBZ-5175]
+* Toasted varying character array and date array are not correcly processed https://issues.redhat.com/browse/DBZ-6122[DBZ-6122]
+* Upgrade to Infinispan 14.0.11.Final to fix CVE-2022-45047 https://issues.redhat.com/browse/DBZ-6193[DBZ-6193]
+* Introduce LogMiner query filtering modes https://issues.redhat.com/browse/DBZ-6254[DBZ-6254]
+* Lock contention on LOG_MINING_FLUSH table when multiple connectors deployed https://issues.redhat.com/browse/DBZ-6256[DBZ-6256]
+* Ensure that the connector can start from a stale timestamp more than one hour into the past https://issues.redhat.com/browse/DBZ-6307[DBZ-6307]
+* The rs_id field is null in Oracle change event source information block https://issues.redhat.com/browse/DBZ-6329[DBZ-6329]
+* Add JWT authentication to HTTP Client https://issues.redhat.com/browse/DBZ-6348[DBZ-6348]
+* Using pg_replication_slot_advance which is not supported by PostgreSQL10. https://issues.redhat.com/browse/DBZ-6353[DBZ-6353]
+* log.mining.transaction.retention.hours should reference last offset and not sysdate https://issues.redhat.com/browse/DBZ-6355[DBZ-6355]
+* Support multiple tasks when streaming shard list https://issues.redhat.com/browse/DBZ-6365[DBZ-6365]
+* Code Improvements for skip.messages.without.change https://issues.redhat.com/browse/DBZ-6366[DBZ-6366]
+* Kinesis Sink - AWS Credentials Provider https://issues.redhat.com/browse/DBZ-6372[DBZ-6372]
+* Toasted hstore are not correctly processed https://issues.redhat.com/browse/DBZ-6379[DBZ-6379]
+* Oracle DDL shrink space for table partition can not be parsed https://issues.redhat.com/browse/DBZ-6386[DBZ-6386]
+* __source_ts_ms r (read) operation date is set to future for SQL Server https://issues.redhat.com/browse/DBZ-6388[DBZ-6388]
+* PostgreSQL connector task fails to resume streaming because replication slot is active https://issues.redhat.com/browse/DBZ-6396[DBZ-6396]
+* Date and Time values without timezones are not persisted correctly based on database.time_zone https://issues.redhat.com/browse/DBZ-6399[DBZ-6399]
+* MongoDB connector crashes on invalid resume token https://issues.redhat.com/browse/DBZ-6402[DBZ-6402]
+* Snapshot step 5 - Reading structure of captured tables time too long  https://issues.redhat.com/browse/DBZ-6439[DBZ-6439]
+* NPE on read-only MySQL connector start up https://issues.redhat.com/browse/DBZ-6440[DBZ-6440]
+* Oracle parallel snapshots do not properly set PDB context when using multitenancy https://issues.redhat.com/browse/DBZ-6457[DBZ-6457]
+* [MariaDB] Add support for userstat plugin keywords https://issues.redhat.com/browse/DBZ-6459[DBZ-6459]
+* Debezium Server cannot recover from Google Pub/Sub errors https://issues.redhat.com/browse/DBZ-6461[DBZ-6461]
+* "Ignoring invalid task provided offset" https://issues.redhat.com/browse/DBZ-6463[DBZ-6463]
+* Oracle snapshot.include.collection.list should be prefixed with databaseName in documentation. https://issues.redhat.com/browse/DBZ-6474[DBZ-6474]
+* Db2 connector can fail with NPE on notification sending https://issues.redhat.com/browse/DBZ-6485[DBZ-6485]
+* ExtractNewRecordState SMT in combination with HeaderToValue SMT results in Unexpected field name exception https://issues.redhat.com/browse/DBZ-6486[DBZ-6486]
+* BigDecimal fails when queue memory size limit is in place https://issues.redhat.com/browse/DBZ-6490[DBZ-6490]
+* Allow schema to be specified in the Debezium Sink Connector configuration https://issues.redhat.com/browse/DBZ-6491[DBZ-6491]
+* ORACLE table can not be captured, got runtime.NoViableAltException https://issues.redhat.com/browse/DBZ-6492[DBZ-6492]
+* Signal poll interval has incorrect default value https://issues.redhat.com/browse/DBZ-6496[DBZ-6496]
+* Oracle JDBC driver 23.x throws ORA-18716 - not in any time zone https://issues.redhat.com/browse/DBZ-6502[DBZ-6502]
+* Alpine postgres images should use llvm/clang 15 explicitly https://issues.redhat.com/browse/DBZ-6506[DBZ-6506]
+* FileSignalChannel is not loaded https://issues.redhat.com/browse/DBZ-6509[DBZ-6509]
+* Utilize event.processing.failure.handling.mode in Vitess replication connection https://issues.redhat.com/browse/DBZ-6510[DBZ-6510]
+* MySqlReadOnlyIncrementalSnapshotChangeEventSource enforces Kafka dependency during initialization https://issues.redhat.com/browse/DBZ-6511[DBZ-6511]
+* Debezium incremental snapshot chunk size documentation unclear or incorrect https://issues.redhat.com/browse/DBZ-6512[DBZ-6512]
+* Error value of negative seconds in convertOracleIntervalDaySecond https://issues.redhat.com/browse/DBZ-6513[DBZ-6513]
+* Debezium incremental snapshot chunk size documentation unclear or incorrect https://issues.redhat.com/browse/DBZ-6515[DBZ-6515]
+* Only use error processing mode on certain errors https://issues.redhat.com/browse/DBZ-6523[DBZ-6523]
+* [PostgreSQL] LTree data is not being captured by streaming https://issues.redhat.com/browse/DBZ-6524[DBZ-6524]
+* Oracle Connector: Snapshot fails with specific combination https://issues.redhat.com/browse/DBZ-6528[DBZ-6528]
+* Use better hashing function for PartitionRouting https://issues.redhat.com/browse/DBZ-6529[DBZ-6529]
+* Table order is incorrect on snapshots https://issues.redhat.com/browse/DBZ-6533[DBZ-6533]
+* Start publishing nightly images for Debezium Operator https://issues.redhat.com/browse/DBZ-6541[DBZ-6541]
+* Start releasing images for Debezium Operator https://issues.redhat.com/browse/DBZ-6542[DBZ-6542]
+* Unhandled NullPointerException in PartitionRouting will crash the whole connect plugin https://issues.redhat.com/browse/DBZ-6543[DBZ-6543]
+* Bug in field.name.adjustment.mode Property https://issues.redhat.com/browse/DBZ-6559[DBZ-6559]
+* Operator sets incorrect value of transformation.predicate when no predicate is specified https://issues.redhat.com/browse/DBZ-6560[DBZ-6560]
+* Upgrade MySQL JDBC driver to 8.0.33 https://issues.redhat.com/browse/DBZ-6563[DBZ-6563]
+* Upgrade Google Cloud BOM to 26.17.0 https://issues.redhat.com/browse/DBZ-6570[DBZ-6570]
+* Kubernetes-Config extension interferes with SSL tests due to k8 devservice starting up https://issues.redhat.com/browse/DBZ-6574[DBZ-6574]
+* MySQL read-only connector with Kafka signals enabled fails on start up https://issues.redhat.com/browse/DBZ-6579[DBZ-6579]
+* Redis schema history can fail upon startup https://issues.redhat.com/browse/DBZ-6580[DBZ-6580]
+
+Altogether, https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20AND%20fixVersion%20in%20(2.3.0.Alpha1%2C%202.3.0.Beta1%2C%202.3.0.CR1%2C%202.3.0.Final)%20ORDER%20BY%20component%20ASC[138 issues] were fixed for this release.
+A big thank you to all the contributors from the community who worked on this release:
+https://github.com/isacandrei[Andrei Isac],
+https://github.com/angsdey2[Angshuman Dey],
+https://github.com/adasari[Anil Dasari],
+https://github.com/ani-sha[Anisha Mohanty],
+https://github.com/bpaquet[Bertrand Paquet],
+https://github.com/roldanbob[Bob Roldan],
+https://github.com/brenoavm[Breno Moreira],
+https://github.com/Naros[Chris Cranford],
+https://github.com/cjmencias[Christian Jacob Mencias],
+https://github.com/TechIsCool[David Beck],
+https://github.com/fredlegaucher[Frederic Laurent],
+https://github.com/ddsr-ops[Gong Chang Hua],
+https://github.com/harveyyue[Harvey Yue],
+https://github.com/Hidetomi[Hidetomi Umaki],
+https://github.com/uidoyen[Hussain Ansari],
+https://github.com/indraraj[Indra Shukla],
+https://github.com/ismailsimsek[Ismail Simsek],
+https://github.com/jcechace[Jakub Cechacek],
+https://github.com/jehrenzweig-pi[Jesse Ehrenzweig],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/joschi[Jochen Schalanda],
+https://github.com/subkanthi[Kanthi Subramanian],
+https://github.com/kgalieva[Katerina Galieva],
+https://github.com/mfvitale[Mario Fiore Vitale],
+https://github.com/MartinMedek[Martin Medek],
+https://github.com/miguelbirdie[Miguel Angel Sotomayor],
+https://github.com/nancyxu123[Nancy Xu],
+https://github.com/nirolevy[Nir Levy],
+https://github.com/obabec[Ondrej Babec],
+https://github.com/zalmane[Oren Elias],
+https://github.com/rnowling-memphis[RJ Nowling],
+https://github.com/rk3rn3r[René Kerner],
+https://github.com/roldanbob[Robert Roldan],
+https://github.com/ironakj[Ronak Jain],
+https://github.com/eizners[Sergey Eizner],
+https://github.com/ShuranZhang[Shuran Zhang],
+https://github.com/sclarkson-zoomcare[Stephen Clarkson],
+https://github.com/twthorn[Thomas Thornton],
+https://github.com/tommyk-gears[Tommy Karlsson],
+https://github.com/imtj1[Tony Joseph],
+https://github.com/vjuranek[Vojtech Juranek], and
+https://github.com/caicancai[蔡灿材]!
+
+== What's next?
+
+With Debezium 2.3 out, our major focus will be coordinating bugfixes to any reports for Debezium 2.3, but primarily on the upcoming new preview release for Debezium 2.4.
+
+Debezium 2.4 is planned with a ton of changes, and we intend to tackle these changes in a bucketed fashion, with each bucket being assigned a priority.
+As with any schedule, priorities are subject to change but the following is an outline of what to expect:
+
+Priority 1::
+ * [Core] TimescaleDB single message transformation support
+ * [Core] Timezone single message transformation to ease usages with Debezium temporal types
+ * [Core] Initial snapshot notifications
+ * [MongoDB] Database-wide change stream support
+ * [MongoDB] Multi-task deployment metrics support
+ * [Oracle] OpenLogReplicator adapter support
+ * [Oracle] XML, LONG, RAW, and LONG RAW data type support
+ * [Universal] Exactly-Once semantics support for other connectors
+ * [Dependencies] Apache Kafka 3.5.x support
+
+Priority 2::
+ * [Operator] Next steps for Debezium operator
+ * [Core] Ad-hoc blocking snapshot
+ * [Dependencies] Use OpenTelemetry
+
+Priority 3::
+ * [Embedded Engine] Parallelization support
+ * [MongoDB] Parallel incremental snapshots support
+ * [MySQL] Parallel schema snapshots support
+
+This is not an exhaustive list and its quite ambitious, but given the shortened time with Debezium 2.3, we hope the extra few weeks on Debezium 2.4 will make this next minor release possible with all these features and much more.
+The roadmap will be updated this week to align with the above for Debezium 2.4 and the future, so please be sure to get in touch with us on the https://groups.google.com/g/debezium[mailing list] or our https://debezium.zulipchat.com/login/#narrow/stream/302529-users[chat] if you have any ideas or suggestions.
+
+Otherwise, I expect with summer in full swing for those of us in the north, holidays and much-deserved time-off will be normal for the next several months.
+To those who travel or intend to take some time for yourselves and family, enjoy and be safe!
+
+Until next time...
+
