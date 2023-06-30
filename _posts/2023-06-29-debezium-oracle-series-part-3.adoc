@@ -1,0 +1,340 @@
+---
+layout: post
+title: "Debezium for Oracle - Part 3: Performance and Debugging"
+date:  2022-06-29 12:00:00 0000
+tags:  [ debezium, oracle, examples ]
+author: ccranfor
+---
+
+This post is the final part of a 3-part series to explore using Debezium to ingest changes from an Oracle database using Oracle LogMiner.
+In case you missed it, the first installment of this series is found link:/blog/2022/09/30/debezium-oracle-series-part-1/[here] and the second installment is found link:/blog/2022/10/06/debezium-oracle-series-part-3[here].
+
+In this third and final installment, we are going to build on what we have done in the previous two posts, focusing on the following areas:
+
+* link:#performance[Performance optimizations]
+* link:#debugging[How to debug and assess problems and how to resolve them]
+
++++<!-- more -->+++
+
+== What to know before we start
+
+This installment is going to focus on a number of highly technical Oracle database features, and these often are within the realm of an Oracle database administrator's area of expertise.
+Depending on your permissions and roles within your environment, you may not necessarily have access to all the tools and commands that will be discussed herein, so you may need to coordinate with your database administrator if you are working in a non-personal environment.
+
+Additionally, this post picks where we last left off in link:/blog/2022/10/06/debezium-oracle-series-part-2/[Part 2].
+We had previously deployed a full Kafka ecosystem with Zookeeper, a Kafka broker, and a Kafka Connect environment.
+These are not necessarily a requirement in this series, but if you would like to follow along manually, I encourage you to follow the steps in the earlier parts of the series to quickly get started.
+
+== What is Oracle and why is it complex?
+
+I touched on the first part of this briefly in link:/blog/2022/09/30/debezium-oracle-series-part-1[Part 1], but I believe it bears a much deeper answer to support some of the technical concepts we're going to discuss today.
+
+A common take-away from newcomers or those unfamiliar with Oracle often ask, "Why is everything with Oracle always complex?".
+Most often, these users either have little database experience or have exposure to other open source database solutions that in broad, general terms are easier and simpler to use, particularly directly out of the box.
+So why is that?
+
+Oracle was first released to the public over four decades ago in 1979, making it the oldest and the most popular database in the world.
+In the top five most popular, Microsoft SQL Server is the next oldest at three decades released in 1989 and the others all being half the age of Oracle or less.
+
+What has helped drive Oracle's market share has been its ability to innovate fast, retain compatibility with existing database platform users, and being flexible enough to provide you features now that you may not need until the future.
+This has lent itself to allow Oracle to thrive unlike its competition, but we all know that flexibility often comes at the cost of other things; and traditionally that has been at the hand of ease of use.
+Oracle has a broad and extensive arsenal of tools at your disposal, but these are often tightly coupled leading to complex installations and configurations, but the advantage beyond its flexibility is that it's the best at what it does, so often the trade-off is worth it.
+
+As we go through the following parts of this installment, I hope this context provides a newfound perspective.
+While it may seem commonplace to think that many of Oracle's oddities when compared to its competition are pain points, in reality they're strengths that have perpetually defined Oracle at the forefront of a critical space in the age of big data.
+
+[id=performance]
+== Performance
+
+When choosing to use change data capture (CDC) pipelines, low-latency is very often a driving factor.
+Whether you are using CDC to provide event-driven communication between microservices or complex data replication, it's important that events arrive as soon as possible, so throughput and performance are often at the forefront of evaluating a solution's merit, often immediately after reliability.
+
+In this section, we're going to cover several configuration properties of the Debezium Oracle connector that can allow you to optimize the connector's performance based on your environment and needs.
+
+* link:#performance-disk-io[Disk IO]
+* link:#performance-redo-log-size[Redo Log Size]
+* link:#performance-log-mining-strategy[Log Mining Strategy]
+* link:#performance-batch-size[Batch size]
+* link:#performance-query-filter-mode[Query filter mode]
+
+[id=performance-disk-io]
+=== Disk IO
+
+A fundamental aspect of the Debezium Oracle connector's implementation is that it uses Oracle APIs to work with the LogMiner process to read the redo and archive logs.
+These logs are managed by two Oracle processes, the Oracle LogWriter (LGWR) and the Oracle Archiver (ARCH).
+The details around these two processes are less important to the discussion other than the fact they're responsible for management of both the current redo logs used by the Oracle database and the creation of the archive logs that contain the past historical changes made to Oracle.
+
+The Debezium Oracle connector uses the LogMiner API to read these redo and archive logs off disk and generate change events.
+Unfortunately, redo and archive logs cannot be retained on the database server indefinitely.
+Often, logs can be several gigabytes in size, and when combined with supplemental log configurations, an Oracle database can generate many logs in short periods of time, thus disk space gets consumed quickly.
+When these redo or archive logs exist on a networked drive or a high-latency device, this has a direct impact on LogMiner's ability to read and provide the change event data to the connector as quickly as possible.
+
+One possible way to improve performance is to coordinate with your Oracle database administrator to see if you can retain more archive logs longer even if its on a separate mounted disk but local to the database machine.
+Oracle provides the ability to define what is called https://docs.oracle.com/en/database/oracle/oracle-database/23/refrn/LOG_ARCHIVE_DEST.html#GUID-AACE967D-EF85-43F4-B895-5E510ABADCC3[log archive destinations], and it supports up to a maximum of 31 different paths where archive logs can be written by the Archiver process.
+
+It's likely not uncommon that your database administrator may have configured several log archive destinations already for other processes such as GoldenGate, DataGuard, or others.
+If such paths have been defined, and they have a log retention policy that aligns with your ingestion rates, you can safely use Debezium with those destinations if one already exists.
+If no path has been defined, you can create a new one following the aforementioned Oracle documentation link.
+
+To have Debezium use a specific log archive destination, the https://debezium.io/documentation/reference/stable/connectors/oracle.html#oracle-property-log-mining-archive-destination-name[log.mining.archive.destination.name] connector property must be provided.
+
+[IMPORTANT]
+====
+This configuration is only applicable for use with the Oracle LogMiner adapter and has no impact when ingesting changes using Oracle XStream.
+====
+
+.An example using LOG_ARCHIVE_DEST_5
+[source,json]
+----
+{
+  "log.mining.archive.destination.name": "LOG_ARCHIVE_DEST_5",
+  ...
+}
+----
+
+[NOTE]
+====
+The physical path to the logs will be obtained from Oracle directly, you only need to specify the destination name the database administrator configured.
+====
+
+[id=performance-redo-log-size]
+=== Redo Log Size
+
+Oracle's redo logs are used primarily for recovery and instance failures.
+When an instance is first created, the administrator provides a starting size for redo logs.
+If the size of the redo logs is too small or even too large, this can have a direct impact on the performance of your instance.
+
+For example, the size of redo logs has a direct impact on how frequent the Oracle Archiver (ARCH) process transitions redo logs to archive logs, which is referred to as a _log switch_.
+Generally, Oracle recommends that administrators minimize the number of log switches in small windows, but this can vary depending on a number of factors like volume or logging configurations.
+
+A log switch is a fairly expensive operation because it's the moment in time when a redo log is copied by the Archiver process to an archive log and a new redo log is allocated.
+If there is ever a period when the Archiver process falls behind and all redo logs have filled, Oracle's database can degrade or even halt if a checkpoint cannot occur because all current redo logs are full and awaiting archival.
+
+If you are using an image of Oracle based on https://github.com/oracle/docker-images[Oracle Docker Images], you will have noticed that by default the redo logs created are extremely small, several megabytes each.
+For development purposes, this is fine out of the box, but when using such an instance for any type of serious integration such as Debezium; this simply doesn't work well, especially with the default mining strategy which we'll discuss in more detail in the next section.
+
+However, small redo log sizes aren't the only problem.
+If the redo log files are sized too large, this can have an adverse impact on the read time from disk, making the gap while the connector waits for changes even longer as there is the need to perform more Disk IO due to larger files.
+
+[NOTE]
+====
+Resizing Oracle's redo logs requires existing knowledge of the database server paths and where it is safe to store those files; therefore, since that information is environment dependent, we aren't going to cover directly how to do this here.
+Oracle provides excellent https://docs.oracle.com[documentation] on how to do this!
+====
+
+Unfortunately, there simply isn't a single answer for what size you should use.
+This requires a bit of finesse, science, and heuristics of your environment to gauge what is the best choice, but this is at least a tool in your arsenal to adjust as needed.
+
+[id=performance-log-mining-strategy]
+=== Log Mining Strategy
+
+In link:/blog/post/2022/10/06/debezium-oracle-series-part-2#configure-oracle-redo-logs[Part 2], we covered two link:/documentation/reference/stable/connectors/oracle.html#oracle-property-log-mining-strategy[log mining strategies] for the Debezium Oracle connector.
+These strategies control how the connector interacts with Oracle LogMiner and how specific entries from the redo logs are ingested for both schema and table changes.
+
+Redo logs store redo entries and not all redo entries store explicitly every pierce of data needed to re-construct the change that occurred.
+For example, DML operations (inserts, updates, deletes) do not refer to table or column names but rather object identifiers.
+These object identifiers and their respective versions change in the data dictionary as modifications are made to a column or a table.
+This means that the identifier and/or its version will differ from a redo entry for the same table before and after a schema change.
+
+The log mining strategy controls precisely how redo entries are interpreted by Oracle LogMiner, primarily by either writing the data dictionary to the end of the redo logs or omitting this step.
+There are benefits to using either strategy and we're going to dive into what those are and why you may use one strategy over another.
+
+Default Mining Strategy::
+The default mining strategy is the safest choice, but it is also the most expensive.
+This strategy will append a copy of the data dictionary to the redo logs when a log switch is observed. +
+ +
+The benefits to this strategy is that schema changes and the ingestion of data changes are seamlessly handled by Oracle LogMiner.
+In other words, if an `INSERT` is followed by an `ALTER TABLE` and that is followed by an `UPDATE`, Oracle LogMiner will safely deduce the right table and column names from the old and the new object ids and versions.
+This means that Debezium will be able to safely ingest that change event as one might expect. +
+ +
+The expensive part of this strategy is two-fold.
+First, it requires that the connector append a copy of the data dictionary periodically to the redo logs and a natural step by Oracle is to perform a full log switch after writing the dictionary.
+This means that more archive logs will be generated by the online catalog strategy we'll discuss shortly.
+Secondly, it also requires that when a LogMiner process begins to mine the redo logs, it must first read and prepare a section of the SGA with all the dictionary metadata so that resolution of table and column names can happen properly.
+Depending on the size of the redo logs and more appropriately the dictionary segment of the logs, this can take upwards of several minutes to prepare.
+So you can probably guess that when you combine this strategy with a poorly configured redo log size, this can easily create a performance bottleneck.
+
+[IMPORTANT]
+====
+It is *not recommended* to ever deploy multiple Oracle connectors using this strategy, but instead use a single Oracle connector.
+====
+
+Online Catalog Strategy::
+The online catalog mining strategy is used when specifying the strategy as `online_catalog`.
+Unlike the default mining strategy, this strategy does not write any additional data to the redo logs, but instead, relies on the current data dictionary to resolve table and column names. +
+ +
+The benefits to this strategy is that since we are not writing any dictionary details to the redo logs, redo logs will only transition to archive logs based on existing database activity.
+In short, Debezium will not influence this frequency, making it easier to manage the volume of archive logs created.
+Secondly, because no dictionary details are written to the logs and the number of log switches remains constant to existing behavior, a mining session starts nearly instantaneously and there is no need for LogMiner to prepare any dictionary metadata as the existing data dictionary satisfies that requirement as-is. +
+ +
+Unfortunately, this strategy does have a single restriction and that is schema changes are not observed seamlessly.
+In other words, if a redo entry refers to an object id/version that does not match the object id/version in the online data dictionary, Oracle LogMiner is incapable of reconstructing the SQL for that operation. +
+ +
+However, schema changes can be handled with this strategy, but it requires doing schema changes in a lock-step fashion.
+In other words, you would you halt changes on the table, wait until the last change for the table has been captured by Debezium, apply the schema change, wait for the schema change to be emitted by Debezium, and finally data resume changes on the table.
+
+[NOTE]
+====
+This strategy provides the optimal performance gain both for Oracle and the connector.
+
+The only requirement is that if a table's schema isn't stataic and you may have changes to it periodically, if you can perform the schema changes in lock-step as described above, you can safely perform schema changes using this strategy; otherwise schema changes should be avoided on the table(s) being captured.
+
+Finally, this strategy should be used if deploying multiple Oracle connectors on the same Oracle database.
+====
+
+In conclusion, the mining strategy chosen can have significant impacts on the performance of the database as well as the ingestion rate of the Debezium Oracle connector.
+It's important to weigh the benefits and consequences of this choice based on what is possible given your environment.
+
+[IMPORTANT]
+====
+There is an effort underway to bridge these two strategies and deliver a solution that provides all the performance benefits of the online catalog strategy and the seamless schema management provided by the default mining strategy.
+The progress for this effort can be found in https://issues.redhat.com/brwose/DBZ-3401[DBZ-3401].
+====
+
+[id=performance-batch-size]
+=== Batch size
+
+The Debezium Oracle connector uses an adaptive batch size algorithm to determine the number of rows that will be fetched per database call.
+The algorithm is controlled by the following configuration properties:
+
+`log.mining.batch.size.default`::
+This specifies the default number of rows that will be fetched per database call.
+`log.mining.batch.size.min`::
+This specifies the minimum number of database rows that will be fetched per database call.
+`log.mining.batch.size.max`::
+This specifies the maximum number of database rows that will be fetched per database call.
+
+These settings give the connector the ability to read more data and reduce network latency when the connector has fallen behind or observed a large transaction in the logs at the expense of consuming more SGA and JVM memory temporarily and using less SGA and JVM memory when the connector has caught up to near real-time changes.
+
+The connector defaults for these are great starting points, but depending on your change event volume, it may be wise to increase or even shrink these settings based on your environment to improve performance.
+
+[id=performance-query-filter-mode]
+=== Query filter mode
+
+Any developer who has ever worked on a SQL-based application will tell you that just because a query performs well in one environment or at one point in time doesn't mean that the same query will be as efficient in another environment or even the future as the data set changes.
+That's why with Debezium 2.3, we added a new feature called https://debezium.io/documentation/reference/stable/connectors/oracle.html#oracle-property-log-mining-query-filter-mode[log.mining.query.filter.mode].
+
+Through various discussions with Oracle community users with various installations, volume sizes, and integrations, we concluded that the LogMiner query used by the Oracle connector simply cannot be a one-size fits all solution.
+In order to be the most efficient, we needed to provide the user community with a way they can tune the LogMiner query that best satisfies their configuration and their environment.
+
+There are currently three options for how the LogMiner query is constructed and each influence how the query's where-clause is generated.
+
+`none`::
+Specifies that no additional predicates are added to the LogMiner query.
+Instead, all filtering is delegated primarily to the Oracle connector.
+This has the highest network bandwidth usage of all the options and can have the highest throughput depending on the volume of redo entries.
+For lower volume installations, this can easily perform the fastest but does not scale well as the volume of redo entries increases.
+
+`in`::
+Specifies that the schema and table include/exclude filters are applied using a SQL in-clause.
+By default, the include/exclude configuration options support comma-separated lists of regular expressions; however, if you elect to avoid the use of regular expressions, you can apply database-level filters to the LogMiner query more efficiently by using this query filter mode.
+An in-clause is much more efficient over using disjunctions or Oracle's `REGEXP_LIKE` operator which we'll discuss with the next option.
+This also performs extremely well if you have a lot of schema or table include/exclude list options defined in your configuration over the other alternatives.
+And finally, because this choice performs database-level filtering, this reduces the network latency and only returns the necessary rows to the connector.
+
+`regex`::
+Specifies that the schema and table include/exclude filters are applied using the SQL operator `REGEXP_LIKE`.
+Since the include/exclude configuration options support comma-separated lists of regular expressions, this is can safely be used when providing such include/exclude value sets.
+While this option performs database-level filtering much like the in-clause choice, the use of regular expressions degrades in performance the more include/exclude options are specified in the connector configuration.
+Therefore, in order to maximize performance, its generally best when using regular expressions to write as few expressions that match the most tables or schemas as possible to reduce the number of predicates appended to the query.
+
+As of Debezium 2.3, the default is `none`, so you can gain additional performance by specifically configuring the `log.mining.query.filter.mode` to use `in` ir `regex` depending on the values provided in your include/exclude list configuration properties.
+
+[id=debugging]
+== Debugging
+
+As much as I would like to think Software Engineering is butterflies and flowers; it's far from the truth and managing an environment that runs software is no different.
+When problems occur, it's important to have the knowledge to self-diagnose and get back to a running state as quickly as possible.
+So we're going down the rabbit-hole and discuss a number of common errors that we've seen, how do you debug those errors, and what might be the potential fixes.
+
+None of the log files contains offset SCN, re-snapshot is required::
+I'm fairly certain that at some point most Oracle connector users have seen this error in the logs at some point, whether during PoC design or testing, but hopefully not production.
+The error message itself is relatively clear, but what is often not so much is "why did this happen". +
+ +
+For other databases, they write only committed changes to the transaction logs that is then consumed by Debezium.
+Unfortunately, Oracle does not do this and instead writes every single change to the transaction logs, even if the change is later rolled back due to a constraint violation or an explicit user or system rollback.
+This means that reading the changes from the Oracle redo logs isn't as simple as starting reading from position X until the end of the file and then read the next log.
+Instead, the connector must maintain what has commonly been referred to as a low and high watermark SCN, or if you're familiar with the connector's offsets these are represented as `scn` and `commit_scn`. +
+ +
+The low watermark or `scn` represents the safe resume point in the redo logs.
+Generally this points to the position in the logs where the oldest in-progress transaction started.
+The high watermark or `commit_scn` represents the position in the logs where we last emitted a transaction batch for a given redo thread.
+This means that the changes in between these two values are a mixture of uncommitted changes, committed changes, or rolled back changes. +
+ +
+When the connector starts, the low watermark or `scn` read from the offsets is compared to the oldest available archive log in Oracle.
+If the archive log begins with a system change number that comes after this `scn` value, this error will occur. +
+ +
+Long-running transactions directly impact the low watermark or `scn` position.
+If a transaction remains active for longer than your archive log retention policy and the connector is restarted due to a re-balance or failure, this error can occur.
+If you suspect long-running transactions are the cause, you can configure the `log.mining.transaction.retention.ms` property in order to discard a transaction that lives longer than the specified value.
+While this does cause data loss as that transaction's changes are discarded, it does allow the low watermark to safely advance forward at a reasonable pace even when long-running transactions occur.
+You should set the transaction retention period to a value less than your archive log retention period. +
+ +
+Another use case that can raise this error is if you are capturing changes from an Oracle database with a low volume of changes.
+In particular, if you are using an older version of Debezium where the LogMiner query applied database-level filters or you've configured the new query filter mode to apply database-level filters, it's possible that the connector may go extended periods of time without observing a single change event.
+Since offset data only synchronizes when the connector sends an event to Kafka, low volumes of changes in a large window of time can mean those Kafka offsets become stale and if a restart occurs, this error could happen.
+In this use case, configuring both the `heartbeat.internval.ms` and `heartbeat.action.query` connector properties is a great way to guarantee that there is some activity flowing to Kafka to keep those offsets from becoming stale.
+
+ORA-01555: snapshot too old::
+This specific error is most commonly observed during the connector's initial snapshot.
+The Oracle connector relies on what is called flashback queries during the initial snapshot phase. +
+ +
+A flashback query is a standard SELECT statement that uses a system change number in order to generate a result-set based on the state of the data at that given point in the database's lifetime.
+This can be useful for a variety of reasons, including being able to restore objects within the need for media recovery because Oracle is capable of retaining that previous state for a certain period of time.
+The data returned by these queries use the Automatic Undo Management (AUM) subsystem and rely on the undo data area where transactions are recorded and retained for a given period of time, configurable based on the database parameter `UNDO_RETENTION`. +
+ +
+If the SCN used for the flashback query becomes too old and the undo retention no longer maintains historical data for that system change number, Oracle will report an ORA-01555 error that the snapshot is now too old.
+When this happens during your initial snapshot, the snapshot will need to be retaken from the beginning and unless you reconfigure Oracle's undo retention period to allow for a longer retention time, rerunning the snapshot on the same data set will result in the same outcome. +
+ +
+So either a) have your DBA increase the `UNDO_RETENTION` database parameter temporarily or b) use a schema-only snapshot and then rely on incremental snapshots to generate the initial data set from your existing table data.
+
+Streaming changes takes several minutes to appear::
+Occasionally users will notice there is a latency when the connector first starts or at specific periods during the connector's lifetime.
+One of the best ways to identify what is going on is to coordinate with your DBA and to take a close look at your database's alert log, which records all the LogMiner and XStream interactions that Debezium performs with your database.
+But most often this latency is quite common for users who use the default log mining strategy. +
+ +
+The default mining strategy that we covered earlier performs a what is called a data dictionary build step and depending on your database, this can take some time to be written to your redo logs and then parsed by the LogMiner process.
+It's not uncommon for this to take 30 seconds up to several minutes to complete, and when using the default mining strategy, this process occurs on each log switch. +
+ +
+So we normally suggest that if you experience this latency frequency that you check the frequency of your log switches.
+If your database is performing excessive log switches within a small window that does not adhere to Oracle's guidelines, your DBA may need to tune the database accordingly.
+Reducing the frequency of log switches increases the time that Deebzium can reuse the same log file for mining and therefore reduces the need to build and parse the data dictionary. +
+ +
+If your table schema does not change often or won't change at all, you can chose to reconfigure the connector by specifying the `online_catalog` mining strategy as an alternative.
+This avoids the data dictionary write and parse phase performed by LogMiner and greatly increases the speed at which a mining session begins and streams changes both at the start-up of the connector and at each log switch interval.
+
+How do you know if an archive log can be deleted?::
+Often database administrators have a set interval they allow archive logs to be retained on the server before they're removed.
+This frequency varies and depends on a number of factors including the frequency the logs are created, their respective sizes, and the physical space available on the server.
+What is most important is that if Debezium requires a specific archive log that it remains available until such time it isn't needed. +
+ +
+The easiest way to determine what logs are needed is via JMX metrics, looking at the field `OffsetScn`.
+This field references the system change number where the connector will resume from in case of a restart, and so any archive or redo log that contains this system change number or comes after this change number must remain available. +
+ +
+In Debezium 2.4, we intend to add another field to JMX metrics that will provide the timestamp associated with this `OffsetScn`.
+The timestamp will be important because it will allow calculations to easily be performed directly based on the data on the filesystem as the SCN value is typically not part of the filename or file's metadata.
+
+Memory footprint, how do you manage it efficiently?::
+Due to the nature of how transaction data is written to the Oracle archive and redo logs, a buffer of the transaction state must be managed by the connector.
+Under generally normal operations, this buffer maintains short-lived data, the transaction starts, we buffer its relevant changes, and we observe the rollback or commit and handle that accordingly. +
+ +
+Because the connector buffers transactions, it's extremely important that you have some prior knowledge of your environment's transaction patterns.
+If this information can vary and its extremely hard to predict, you may want to consider not using the default Heap (memory) based buffer as this can easily lead to `OutOfMemory` exceptions under these circumstances when memory is configured too low. +
+ +
+Please refer to the documentation about https://debezium.io/documentation/reference/stable/connectors/oracle.html#oracle-event-buffering[Event Buffering].
+The Oracle connector offers two Infinspan based solutions that allow the connector store the buffer off-heap, reducing the connector's memory footprint and being capable of dealing with very large transactions seamlessly.
+
+We have composed a collection of https://debezium.io/documentation/reference/stable/connectors/oracle.html#oracle-frequently-asked-questions[Frequently Asked Questions] in the documentation.
+We generally do our best to keep the most commonly asked questions there as a reference.
+Please take a moment and read through those and if you suspect anything may be missing, please feel free to log a https://issues.redhat.com/projects/DBZ[Jira issue].
+
+[id=wrap-up]
+== Wrapping up
+
+I really hope this series on the Oracle connector has been helpful and informative.
+We've covered topics ranging from installation, configuration, deploying the connector, performance optimizations, and how to debug or evaluate specific common use cases we hear from the community.
+
+As I mentioned earlier, Oracle is unlike most other database platforms and requires a bit more care and precision to maximize it's potential.
+When evaluating the Oracle connector, it is important that you coordinate with an Oracle administrator professional to make sure that you're maximizing the connector's potential, particularly if performance is a critical metric in your evaluation.
+
+As always, if you have questions about anything related to the content in this post or about something you observe in your environment, the team will do their best to provide you with the answers you need either by using our https://groups.google.com/forum/#!forum/debezium[mailing list] or reaching out to us on our https://debezium.zulipchat.com/#narrow/stream/302529-users[chat].
