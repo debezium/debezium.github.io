@@ -1,0 +1,249 @@
+---
+layout: post
+title: "Debezium signaling and notifications - Part 2: Customisation"
+date: 2023-07-10
+tags: [ debezium, features, notifications, signaling, custom, channels ]
+featured: true
+author: anmohant
+---
+
+Welcome to this series of articles dedicated to signaling and notifications in Debezium! This post serves as the second installment in the series, where we will discuss how to customize the signal and notification channels in Debezium.
+
+Debezium 2.3 introduced new improvements in signaling and notification capabilities. You can set up new signals and notification channels in addition to the pre-defined signals and notification channels offered by Debezium. This feature enables users to customize the system to suit their unique needs and combine it with their existing infrastructure or third-party solutions.
+It enables effective monitoring and a proactive response to data changes by precisely capturing and communicating signal events and triggering notifications through preferred channels.
+
+The first article in this series, [Signaling and Notifications in Debezium](https://debezium.io/blog/2023/06/27/Debezium-signaling-and-notifications/), provides an overview of the signaling and notification features in Debezium. It also discusses the available channels & their use cases for various scenarios.
+
++++<!-- more -->+++
+
+== Custom Signal & Notification Channel
+
+In Debezium, it is possible to customize the signal and notification channels to fit specific requirements. For example, we can achieve a customization by creating an `HTTP` channel for both signals and notifications. This `HTTP` channel receives signals from an http endpoint, and notifications can be sent back to the endpoint upon the delivery of the signal.
+
+Let's explore an example that demonstrates how to create and utilize the `HTTP` signal and notification channels using the Debezium Postgres connector, a Mock Server, and [Postbin](https://www.toptal.com/developers/postbin/) which is used as the HTTP endpoint to receive the notifications.
+
+=== Setting up the `HTTP` Signal Channel:
+
+- Configure the Debezium Postgres connector to emit signals whenever a relevant database change occurs.
+- Set up a Mock Server as a receiver for these signals. The Mock Server acts as an intermediary, capturing the signals and forwarding them to the desired http endpoint.
+- Configure the Mock Server to forward the signals to an http endpoint using the appropriate HTTP method (e.g., POST).
+- Customize the `HTTP` channel settings to define the HTTP endpoint URL, authentication, headers, and any additional parameters as needed.
+
+=== Setting up the `HTTP` Notification Channel:
+
+- Once the signal is received by the Mock Server, it can trigger the posting of a notification to an http endpoint using Postbin or any other suitable http endpoint.
+- Customize the `HTTP` channel settings for notifications, create a bin in Postbin, and define the http endpoint URL, authentication, headers, and any additional parameters as needed.
+- Forward the notification to the Postbin bin using the appropriate HTTP method (e.g., POST). The notification payload can be customized as needed.
+
+The complete source code for this example in the blog post is provided in the Debezium examples repository under [http-signal-notification-channels](https://github.com/debezium/debezium-examples/tree/main/http-signaling-notification) directory.
+
+Create a java project to build the `HTTP` signal and notification channels. Run the following command to create a new java project using Maven:
+
+[source,shell]
+----
+mvn archetype:generate
+    -DgroupId=io.debezium.examples
+    -DartifactId=http-signaling-notification
+----
+
+Add the following dependency to the `pom.xml` file with the Debezium version (2.3 and later versions):
+
+[source,xml]
+----
+<dependency>
+    <groupId>io.debezium</groupId>
+    <artifactId>debezium-core</artifactId>
+    <version>${debezium.version}</version>
+</dependency>
+----
+
+To receive signals using a Mock Server, create a Docker Compose file that defines the Mock Server service. The configuration for the Mock Server service will be as follows:
+
+[source,yaml]
+----
+services:
+  mockServer:
+    image: mockserver/mockserver:latest
+    ports:
+      - 1080:1080
+    environment:
+      - MOCKSERVER_WATCH_INITIALIZATION_JSON=true
+      - MOCKSERVER_INITIALIZATION_JSON_PATH=/config/initializerJson.json
+    volumes:
+        - ./initializerJson.json:/config/initializerJson.json
+----
+
+The environment variables `MOCKSERVER_WATCH_INITIALIZATION_JSON` and `MOCKSERVER_INITIALIZATION_JSON_PATH` are set to enable the Mock Server to watch for changes in the initialization JSON file and specify its path. The `initializerJson.json` file, which contains the http request and response information for the signals, is mounted into the Mock Server container. The definition of the `initializerJson.json` file is as follows:
+
+[source,json]
+----
+[
+  {
+    "httpRequest" : {
+      "method" : "GET",
+      "path" : "/api/signal",
+      "queryStringParameters" : {
+        "code" : ["10969"]
+      }
+    },
+    "httpResponse" : {
+      "body": "{\"id\":\"924e3ff8-2245-43ca-ba77-2af9af02fa07\",\"type\":\"log\",\"data\":{\"message\": \"Signal message received from http endpoint.\"}}",
+      "statusCode": 200
+    }
+  }
+]
+----
+
+The `initializerJson.json` file defines a mock http request to the path `/api/signal` with the query string parameter `code=10969`. When this request is received by the Mock Server, it will respond with a JSON body containing an `id`, `type`, and `data`. The response has a status code of 200, indicating a successful response.
+
+Create the `HTTP` signal channel by extending the `SignalChannelReader` interface as shown below:
+
+[source,java]
+
+----
+public class HttpSignalChannel implements SignalChannelReader {
+
+        @Override
+    public String name() { // <1>
+        return "http";
+    }
+
+    @Override
+    public void init(CommonConnectorConfig connectorConfig) { // <2>
+        // custom configuration
+    }
+
+    @Override
+    public List<SignalRecord> read() { // <3>
+        // logic to read & process signal event from http endpoint
+
+    }
+
+    @Override
+    public void close() { // <4>
+    }
+}
+----
+
+<1> The `name()` method returns the name of the signal channel. To enable Debezium to use the channel, specify the name `http` in the connector’s `signal.enabled.channels` property.
+<2> The `init()` method can be used to initialize specific configuration, variables, or connections that the http channel requires.
+<3> The `read()` method reads signal from the http endpoint and returns a list of `SignalRecord` objects which will be processed by the Debezium connectors.
+<4> The `close()` method closes all allocated resources.
+
+Create the notification channel by extending the `NotificationChannel` interface as shown below:
+
+[source,java]
+
+----
+public class HttpNotificationChannel implements NotificationChannel {
+
+    @Override
+    public String name() { // <1>
+        return "http";
+    }
+
+    @Override
+    public void init(CommonConnectorConfig config) { // <2>
+        // custom configuration
+    }
+
+    @Override
+    public void send(Notification notification) { // <3>
+        // logic to send notification to a http endpoint postbin
+    }
+
+    @Override
+    public void close() { // <4>
+    }
+}
+----
+
+<1> The `name()` method returns the name of the notification channel. To enable Debezium to use the channel, specify `http` in the connector’s `notification.enabled.channels` property.
+<2> The `init()` method can be used to initialize specific configuration, variables, or connections that the channel requires.
+<3> The `send()` method sends the notification to the channel. The notification contains the `SignalRecord` object which is processed by the Debezium connectors.
+<4> The `close()` method closes all allocated resources.
+
+
+Declare the `HTTP` signal and notification channels in the `META-INF/services` directory under `io.debezium.pipeline.signal.SignalChannelReader` and
+`io.debezium.pipeline.notification.channels.NotificationChannel` files respectively.
+
+Compile and export the Java project as a JAR file. This can be done using Maven or your preferred build tool. Copy the JAR file to the directory that contains the JAR file for the Debezium connector you want to use. For example, if you want to use the custom signal and notification channels with the Debezium Postgres connector, copy the JAR file to the `/kafka/connect/debezium-connector-postgres` directory.
+
+This example provides a Docker Compose file with necessary services defined including the Mock Server, Zookeeper, Kafka Connect, and Postgres database.
+
+To start the services, run the following command:
+
+[source,shell]
+----
+export DEBEZIUM_VERSION=2.3
+docker-compose up -d
+----
+
+After ensuring that the services are up and running, and the Postgres database is ready to accept connections, the next step is to register the connector. This involves creating a connector configuration file. Let's create a file named `register-postgres.json` with the following properties:
+
+[source,json]
+----
+{
+  "name": "inventory-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "tasks.max": 1,
+    "database.hostname": "postgres",
+    "database.port": 5432,
+    "database.user": "postgres",
+    "database.password": "postgres",
+    "database.dbname" : "postgres",
+    "topic.prefix": "dbserver1",
+    "schema.include.list": "inventory",
+    "signal.enabled.channels": "http", // <1>
+    "notification.enabled.channels": "http" // <2>
+  }
+}
+----
+
+<1> The `signal.enabled.channels` property specifies the signal channel to be used by the connector. In this case, the connector uses the `http` signal channel.
+<2> The `notification.enabled.channels` property specifies the notification channel to be used by the connector. In this case, the connector uses the `http` notification channel.
+
+Now that we have the connector configuration file prepared, we can proceed to register the connector with Kafka Connect by executing the following command:
+
+[source,shell]
+----
+curl -i -X POST -H "Accept:application/json" \
+    -H  "Content-Type:application/json" http://localhost:8083/connectors/ \
+    -d @register-postgres.json
+----
+
+Once the connector is successfully registered, you can review the connector logs to observe the signal events. The logs provide insights into the processing and progress of the connector, including any signal-related information. You will encounter log messages similar to the following:
+
+[source,shell]
+----
+http-signaling-notification-connect-1     | 2023-07-07 15:09:48,205 INFO   Postgres|dbserver1|postgres-connector-task  Recorded signal event 'SignalRecord{id='924e3ff8-2245-43ca-ba77-2af9af02fa07', type='log', data='{"message":"Signal message received from http endpoint."}', additionalData={}}'    [io.debezium.examples.signal.HttpSignalChannel]
+----
+
+Additionally, you might notice log messages related to notification events being sent to the Postbin. For example:
+
+[source,shell]
+----
+http-signaling-notification-connect-1     | 2023-07-07 15:09:47,737 INFO   Postgres|dbserver1|snapshot  [HTTP NOTIFICATION SERVICE] Sending notification to http channel   [io.debezium.examples.notification.HttpNotificationChannel]
+http-signaling-notification-connect-1     | 2023-07-07 15:09:48,347 INFO   Postgres|dbserver1|snapshot  Bin created: {"binId":"1688742588469-1816775151528","now":1688742588470,"expires":1688744388470}   [io.debezium.examples.notification.HttpNotificationChannel]
+----
+
+It provides information about the notification event, such as the creation of a bin with a unique identifier (binId) and other relevant details. To retrieve the notification event from Postbin, fetch the `binId` from the log message and use it to request the corresponding notification event from Postbin. To view the notification event, you can access Postbin using the following URL: `https://www.toptal.com/developers/postbin/b/:binId`. Replace `:binId` in the URL with the actual binId obtained from the connector logs.
+
+The notification event sent to Postbin looks like the following:
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/http_notification_postbin.png" class="responsive-image" alt="Postbin Preview">
+</div>
+++++
+
+== Conclusion
+
+In this tutorial, we explored how to create custom signal and notification channels for Debezium connectors. We created a custom signal channel that send a signal event to the connector via a http endpoint. We also created a custom notification channel that sends a notification event to a third-party service when the signal event is processed. We used the Mock Server to simulate the third-party service and Postbin to view the notification event.
+
+Debezium's comprehensive signaling and notification system offers seamless integration with third-party solutions, allowing users to stay informed about the state and progress of Debezium connectors. The system's extensibility empowers users to customize both the signals and notification channels to fit their customized needs.
+
+Stay tuned for Part 3 of this series where we will explore about JMX signaling and notifications. In the meantime, you can check out the Debezium documentation for more information about signal and notification channels.
+
+If you have any questions or feedback, please feel free to reach out to us on the Debezium mailing list or the #community-general channel on the Zulip chat. We would love to hear from you!
