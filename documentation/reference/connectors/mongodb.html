@@ -398,6 +398,7 @@
 <li><a href="#setting-up-mongodb">Setting up MongoDB</a>
 <ul class="sectlevel2">
 <li><a href="#mongodb-in-the-cloud">MongoDB in the Cloud</a></li>
+<li><a href="#mongodb-optimal-oplog-config">Optimal Oplog Config</a></li>
 </ul>
 </li>
 <li><a href="#mongodb-deploying-a-connector">Deployment</a>
@@ -417,6 +418,7 @@
 <ul class="sectlevel2">
 <li><a href="#debezium-mongodb-connector-configuration-and-startup-errors">Configuration and startup errors</a></li>
 <li><a href="#mongodb-becomes-unavailable-while-debezium-is-running">MongoDB becomes unavailable</a></li>
+<li><a href="#connector-error-invalid-resume-token">Connector Unable to Start - InvalidResumeToken or ChangeStreamHistoryLost</a></li>
 <li><a href="#debezium-mongodb-kafka-connect-process-stops-gracefully">Kafka Connect process stops gracefully</a></li>
 <li><a href="#debezium-mongodb-kafka-connect-process-crashes">Kafka Connect process crashes</a></li>
 <li><a href="#debezium-mongodb-kafka-process-becomes-unavailable">Kafka becomes unavailable</a></li>
@@ -2505,6 +2507,57 @@ When change streams are used (the default) the user also must have cluster-wide 
 <div class="paragraph">
 <p>You can use the Debezium connector for MongoDB with <a href="https://www.mongodb.com/atlas/database">MongoDB Atlas</a>.
 Note that MongoDB Atlas only supports secure connections via SSL, i.e. the <a href="#mongodb-property-mongodb-ssl-enabled"><code>+mongodb.ssl.enabled</code></a> connector option <em>must</em> be set to <code>true</code>.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="mongodb-optimal-oplog-config"><a class="anchor" href="#mongodb-optimal-oplog-config"></a>Optimal Oplog Config</h3>
+<div class="paragraph">
+<p>The Debezium MongoDB connector reads <a href="https://www.mongodb.com/docs/manual/changeStreams/">change streams</a> to obtain oplog data for a replica set.
+Because the oplog is a fixed-sized, capped collection, if it exceeds its maximum configured size, it begins to overwrite its oldest entries.
+If the connector is stopped for any reason, when it restarts, it attempts to resume streaming from the last oplog stream position.
+However, if last stream position was removed from the oplog, depending on the value specified in the connector&#8217;s <a href="#mongodb-property-snapshot-mode"><code>snapshot.mode</code></a> property, the connector might fail to start, reporting an <a href="#connector-error-invalid-resume-token">invalid resume token error</a>.
+In the event of a failure, you must create a new connector to enable Debezium to continue capturing records from the database.
+For more information, see <a href="#debezium-mongodb-connector-is-stopped-for-a-long-interval">Connector fails after it is stopped for a long interval if snapshot.mode is set to initial</a>.</p>
+</div>
+<div class="paragraph">
+<p>To ensure that the oplog retains the offset values that Debezium requires to resume streaming, you can use either of the following approaches:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p><a href="https://www.mongodb.com/docs/manual/core/replica-set-oplog/">Increase the size of the oplog</a>.
+Based on your typical workloads, set the oplog size to a value that is greater than the peak number of oplog entries per hour.</p>
+</li>
+<li>
+<p><a href="https://www.mongodb.com/docs/manual/core/replica-set-oplog/#std-label-replica-set-minimum-oplog-size/">Increase the minimum number of hours that an oplog entry is retained</a> (MongoDB 4.4 and greater).
+This setting is time-based, such that entries in the last <em>n</em> hours are guaranteed to be available even if the oplog reaches its maximum configured size.
+Although this is generally the preferred option, for clusters with high workloads that are nearing capacity, specify the maximum oplog size.</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>To help prevent failures that are related to missing oplog entries, it&#8217;s important to track metrics that report replication behavior, and to optimize the oplog size to support Debezium.
+In particular, you should monitor the values of Oplog GB/Hour and Replication Oplog Window.
+If Debezium is offline for an interval that exceeds the value of the replication oplog window, and the primary oplog grows faster than Debezium can consume entries, a connector failure can result.</p>
+</div>
+<div class="paragraph">
+<p>For information about how to monitor these metrics, see <a href="https://www.mongodb.com/basics/how-to-monitor-mongodb-and-what-metrics-to-monitor#mongodb-replication-metrics">the MongoDB documentation</a>.</p>
+</div>
+<div class="paragraph">
+<p>It&#8217;s best to set the maximum oplog size to a value that is based on the anticipated hourly growth of the oplog (<a href="https://www.mongodb.com/basics/how-to-monitor-mongodb-and-what-metrics-to-monitor#oplog-gbhour">Oplog GB/Hour</a>), multiplied by the time that might be required to address a Debezium failure.</p>
+</div>
+<div class="paragraph">
+<p>That is,</p>
+</div>
+<div class="paragraph">
+<p><code><em>Oplog GB/Hour</em></code> X  <code><em>average reaction time to Debezium failure</em></code></p>
+</div>
+<div class="paragraph">
+<p>For example, if the oplog size limit is set to 1GB, and the oplog grows by 3GB per hour, oplog entries are cleared three times per hour.
+If Debezium were to fail during this time, its last oplog position is likely to be removed.</p>
+</div>
+<div class="paragraph">
+<p>If the oplog grows at the rate of 3GB/hour, and Debezium is offline for two hours, you would thus set the oplog size to 3GB/hour X 2 hours, or 6GB.</p>
 </div>
 </div>
 </div>
@@ -4676,6 +4729,37 @@ You can configure the maximum number of reconnection attempts.</p>
 </table>
 </div>
 <div class="sect2">
+<h3 id="connector-error-invalid-resume-token"><a class="anchor" href="#connector-error-invalid-resume-token"></a>Connector Unable to Start - InvalidResumeToken or ChangeStreamHistoryLost</h3>
+<div class="paragraph">
+<p>A connector that is stopped for a long period fails to start, and reports the following exception:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre>Command failed with error 286 (ChangeStreamHistoryLost): 'PlanExecutor error during aggregation :: caused by :: Resume of change stream was not possible, as the resume point may no longer be in the oplog</pre>
+</div>
+</div>
+<div class="paragraph">
+<p>The preceding exception indicates that the entry that corresponds to the connector&#8217;s resume token is no longer present in the oplog.
+Because the oplog no longer contains the last offset that the connector processed, the connector cannot resume streaming.</p>
+</div>
+<div class="paragraph">
+<p>You can use either of the following options to recover from the failure:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>Delete the failed connector, and create a new connector with the same configuration but with a different connector name.</p>
+</li>
+<li>
+<p>Pause the connector and then remove offsets, or change the offset topic.</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>To help prevent failures related to missing resume tokens, <a href="#mongodb-optimal-oplog-config">optimize configuration of the oplog</a>.</p>
+</div>
+</div>
+<div class="sect2">
 <h3 id="debezium-mongodb-kafka-connect-process-stops-gracefully"><a class="anchor" href="#debezium-mongodb-kafka-connect-process-stops-gracefully"></a>Kafka Connect process stops gracefully</h3>
 <div class="paragraph">
 <p>If Kafka Connect is being run in distributed mode, and a Kafka Connect process is stopped gracefully, then prior to shutdown of that processes Kafka Connect will migrate all of the process' connector tasks to another Kafka Connect process in that group, and the new connector tasks will pick up exactly where the prior tasks left off.
@@ -4759,7 +4843,7 @@ As a result, the secondary node that is elected as the new primary node might be
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2023 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/a798995c224b4b362a11f394c2c4da576c228319">a798995c</a></span>)
+            <div class="copyright">Copyright &copy; 2023 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/132ca4b022f2f26188283c2fcb2c89b2318c5605">132ca4b0</a></span>)
             
         </div>
     </footer>
