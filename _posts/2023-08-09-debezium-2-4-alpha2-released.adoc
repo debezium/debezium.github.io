@@ -1,0 +1,246 @@
+---
+layout: post
+title:  Debezium 2.4.0.Alpha2 Released
+date:   2023-08-09
+tags: [ releases, mongodb, mysql, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox, spanner ]
+author: ccranfor
+---
+
+Despite summer being well underway, Debezium contributors remain hard at work, and it's my pleasure to announce the next preview release of Debezium 2.4 series, *2.4.0.Alpha2*.
+
+This preview release includes a mix of improvements, bug fixes, and new features that are available for the Debezium community to test and offer feedback.
+Some highlights from this release include ad-hoc blocking snapshots, source-to-sink column name propagation, support for alternative MySQL drivers, and all Cassandra connectors with Debezium Server.
+Let's take a few moments and dive into these and others.
+
++++<!- more -->+++
+
+* xref:breaking-changes[Breaking changes]
+* xref:new-features[New features]
+* xref:other-changes[Other changes]
+* xref:whats-next[What's next]
+
+[id="breaking-changes"]
+== Breaking changes
+
+=== Debezium Server and Cassandra connectors
+
+For Cassandra connector users who may have been using Debezium Server or who may have wanted to use Debezium Server, we previously only shipped Cassandra 4 with the Debezium Server distribution.
+With Debezium 2.4, we now include all three Cassandra connector variants with the distribution, meaning that Cassandra 3 and DSE can now be used directly.
+
+However, for this to work, a new environment variable `EXTRA_CONNECTOR` was introduced to specify specifically which Cassandra connector variant should be used by Debezium Server.
+This means that if you were using Cassandra 4 with Debezium Server, you must include this environment variable when upgrading to have the same configuration continue to work as it did in prior versions.
+
+This new environment variable should be set to `dse`, `cassandra-3`, or `cassandra-4` depending on the Cassandra version you intend to use for your Debezium Server source connector.
+
+=== MySQL BIGINT precision changed
+
+The Debezium for MySQL connector was not properly setting the precision for `BIGINT` data types when configuring the connector with `bigint.unsigned.handling.mode` as `precise`.
+Unfortunately, this led to a situation where the schema for such fields did not include the correct precision value.
+
+Debezium 2.4 includes https://issues.redhat.com/browse/DBZ-6714[DBZ-6714], which provides a fix to address the incorrect precision for such fields.
+This can lead to schema incompatibilities when using schema registry, so you may need to adjust your compatibility settings or take other actions if you need to use strict compatibility rules.
+
+=== Oracle snapshot and query fetch sizes increased
+
+Debezium 2.4 introduces a change in the default values for the `snapshot.fetch.size` and the `query.fetch.size` Oracle connector configuration properties.
+Previously, these properties used a default of `2000`; however, thanks to a community contributor, it was identified that these values may likely be too low for production use.
+
+With this release, the Oracle connector will now use a default of `10000` for both properties, which should have a positive improvement on throughput for most users who were not explicitly setting these values.
+If you were previously using custom values for these settings in your connector configurations, then you will not see a change in your existing behavior.
+Only users who previously were not explicitly setting these values will notice that the new defaults will be used.
+
+[NOTE]
+====
+These configuration properties are meant to act as tuning knobs, as a specific configuration for one JDBC environment may not work as well in a different environment.
+While we believe this change will have no negative impact, if you do notice a drop in performance, you can add these properties to your connector configuration setting them to their previous defaults of `2000`.
+====
+
+=== Vitess incorrectly mapped `_bin` columns
+
+For collations that end with the `_bin` designator, Vitess maps these to a data type of `VARBINARY`.
+As a result, the Vitess connector was inferring that these columns should be emitted as binary data; however, for character-based columns that used such collations, this was incorrect.
+
+Debezium 2.4 will now properly emit character-based columns that are collated with a `_bin` designator as string-based data rather than binary data.
+This means that if you are using schema registry, you may observe somee schema incompatibilities and you may need to adjust your compatibility settings or take other actions to mitigate this change.
+
+[id="new-features"]
+== New Features
+
+=== Ad-hoc blocking snapshots
+
+Incremental snapshots were first introduced nearly two years ago in Debezium 1.6 and has remained quite popular in the community to deal with a variety of re-snapshot use cases.
+However, there are some use cases where the intertwined nature of read events with create, updates, and deletes may be less than ideal or even not supported by some consumer application.
+For those use cases, Debezium 2.4 introduces ad-hoc blocking snapshots.
+
+An ad-hoc blocking snapshot works in a similar way that ad-hoc incremental snapshots work; however, with one major difference.
+The snapshot is still triggered by sending a signal to Debezium; however when the signal is processed by the connector, the key difference is that streaming is put on hold while the snapshot process runs.
+This means you won't be receiving a series of read events interwoven with create, update, or delete events.
+This also means that we'll be processing the snapshot in a similar way to traditional snapshots, so the throughput should generally be higher than incremental snapshots.
+
+[IMPORTANT]
+====
+Be aware that ad-hoc blocking snapshots puts the reading of the transaction logs on hold while the snapshot is performed.
+This means the same requirements that a traditional snapshot has on transaction log availability also applies when using this type of ad-hoc snapshot mode.
+When streaming resumes, if a transaction log that is needed has since been removed, the connector will raise an error and stop.
+====
+
+The signal to initiate an ad-hoc blocking snapshot is very similar to its ad-hoc incremental snapshot counterpart.
+The following signal below shows the payload to snapshot a specific table with a condition, but this uses the new blocking snapshot rather than the incremental snapshot:
+
+[source,json]
+----
+{
+  "type": "execute-snapshot",
+  "data": {
+    "data-collections": ["public.my_table"],
+    "type": "INITIAL", <.>
+    "additional-condition": "last_update_date >= '2023-01-01'"
+  }
+}
+----
+<.> The use of `INITIAL` rather than `INCREMENTAL` differentiates the two ad-hoc snapshot modes.
+
+=== Source-to-sink column name propagation
+
+Normally column names map directly to field names and vice versa when consumed by sink connectors such as a JDBC connector.
+However, there are situations where the serialization technology, such as Avro, has very specific rules about field naming conventions.
+When a column's name in a database table conflicts with the serialization rule's naming conventions, Debezium will rename the field in the event so that it adheres to the serialization's rules.
+This often means that a field will be prepended with underscores or invalid characters replaced with underscores.
+
+This can create problems for certain types of sinks, such as a JDBC sink connector, because the sink cannot easily deduce the original column name for the destination table nor can it adequately map between the event's field name and a column name if they differ.
+This typically means users must use transformation chains on the sink side in order to reconstruct the event's fields with namings that represent the source.
+
+Debezium 2.4 introduces a way to minimize and potentially avoid that entirely by propagating the original column name as a field schema parameter, much in the same way that we do for data types, precision, scale, and length.
+The schema parameter `__debezium.source.column.name` now includes the original column name when column or data type propagation is enabled.
+
+[TIP]
+====
+The Debezium JDBC sink connector already works with column and data type propagation, allowing for the sink connector to more accurately deduce column types, length, precision, and scale.
+
+With this new feature, the JDBC sink connector will automatically use the column name from this argument when it is provided to guarantee that the destination table will be created with the same column names as the source, even when using Avro or similar.
+This means no transformations are needed when using the Debezium JDBC sink connector.
+====
+
+=== Alternative MySQL JDBC drivers
+
+In order to use IAM authentication on AWS, a special MySQL driver is required to provide that type of functionality.
+With Debezium 2.4, you can now provide a reference to this specific driver and the connector will use that driver instead of the default driver shipped with the connector.
+
+As an example, to connect using IAM authentication on AWS, the following configuration is needed:
+
+[source,text]
+----
+database.jdbc.driver=software.aws.rds.jdbc.mysql.Driver
+database.jdbc.protocol=jdbc:mysql:aws
+----
+
+The `database.jdbc.driver` specifies the driver that should be loaded by the connector and used to communicate with the MySQL database.
+The `database.jdbc.protocol` is a supplemental configuration property that may not be required in all contexts.
+It defaults to `jdbc:mysql` but since AWS requires `jdbc:mysql:aws`, this allows you to specify this derivative within the configuration.
+
+We've love to hear feedback and whether something like this might be useful for other scenarios.
+
+[id="other-changes"]
+== Other fixes
+
+In addition, there were quite a number of stability and bug fixes that made it into this release.
+These include the following:
+
+* Switch tracing to OpenTelemetry https://issues.redhat.com/browse/DBZ-2862[DBZ-2862]
+* Connector drop down causes a scroll bar https://issues.redhat.com/browse/DBZ-5421[DBZ-5421]
+* Provide outline for drawer component showing connector details https://issues.redhat.com/browse/DBZ-5831[DBZ-5831]
+* Modify scroll for the running connector component https://issues.redhat.com/browse/DBZ-5832[DBZ-5832]
+* Connector restart regression https://issues.redhat.com/browse/DBZ-6213[DBZ-6213]
+* Highlight information about how to configure the schema history topic to store data only for intended tables https://issues.redhat.com/browse/DBZ-6219[DBZ-6219]
+* Document Optimal MongoDB Oplog Config for Resiliency  https://issues.redhat.com/browse/DBZ-6455[DBZ-6455]
+* JDBC Schema History: When the table name is passed as dbName.tableName, the connector does not start https://issues.redhat.com/browse/DBZ-6484[DBZ-6484]
+* Update the Edit connector UI to incorporate the feedback received from team in demo https://issues.redhat.com/browse/DBZ-6514[DBZ-6514]
+* Support blocking ad-hoc snapshots https://issues.redhat.com/browse/DBZ-6566[DBZ-6566]
+* Add new parameters to RabbitMQ consumer https://issues.redhat.com/browse/DBZ-6581[DBZ-6581]
+* Document read preference changes in 2.4 https://issues.redhat.com/browse/DBZ-6591[DBZ-6591]
+* Oracle DDL parser does not properly detect end of statement when comments obfuscate the semicolon https://issues.redhat.com/browse/DBZ-6599[DBZ-6599]
+* Received an unexpected message type that does not have an 'after' Debezium block https://issues.redhat.com/browse/DBZ-6637[DBZ-6637]
+* When Debezium Mongodb connector encounter authentication or under privilege errors, the connection between debezium and mongodb keeps going up. https://issues.redhat.com/browse/DBZ-6643[DBZ-6643]
+* Log appropriate error when JDBC connector receive SchemaChange record  https://issues.redhat.com/browse/DBZ-6655[DBZ-6655]
+* Send tombstone events when partition queries are finished https://issues.redhat.com/browse/DBZ-6658[DBZ-6658]
+* Snapshot will not capture data when signal.data.collection is present without table.include.list https://issues.redhat.com/browse/DBZ-6669[DBZ-6669]
+* Retriable operations are retried infinitely since error handlers are not reused https://issues.redhat.com/browse/DBZ-6670[DBZ-6670]
+* Oracle DDL parser does not support column visibility on ALTER TABLE https://issues.redhat.com/browse/DBZ-6677[DBZ-6677]
+* Propagate source column name and allow sink to use it https://issues.redhat.com/browse/DBZ-6684[DBZ-6684]
+* Partition duplication after rebalances with single leader task https://issues.redhat.com/browse/DBZ-6685[DBZ-6685]
+* JDBC Sink Connector Fails on Loading Flat Data Containing Struct Type Fields from Kafka https://issues.redhat.com/browse/DBZ-6686[DBZ-6686]
+* SQLSyntaxErrorException using Debezium JDBC Sink connector https://issues.redhat.com/browse/DBZ-6687[DBZ-6687]
+* Should use topic.prefix rather than connector.server.name in MBean namings https://issues.redhat.com/browse/DBZ-6690[DBZ-6690]
+* CDC - Debezium x RabbitMQ - Debezium Server crashes when an UPDATE/DELETE on source database (PostgreSQL) https://issues.redhat.com/browse/DBZ-6691[DBZ-6691]
+* Missing operationTime field on ping command when executed against Atlas  https://issues.redhat.com/browse/DBZ-6700[DBZ-6700]
+* MongoDB SRV protocol not working in Debezium Server https://issues.redhat.com/browse/DBZ-6701[DBZ-6701]
+* Disable jdk-outreach-workflow.yml in forked personal repo https://issues.redhat.com/browse/DBZ-6702[DBZ-6702]
+* Custom properties step not working correctly in validation of the properties added by user https://issues.redhat.com/browse/DBZ-6711[DBZ-6711]
+* Add tzdata-java to UI installation Dockerfile https://issues.redhat.com/browse/DBZ-6713[DBZ-6713]
+* Refactor EmbeddedEngine::run method https://issues.redhat.com/browse/DBZ-6715[DBZ-6715]
+* Oracle fails to process a DROP USER https://issues.redhat.com/browse/DBZ-6716[DBZ-6716]
+* Support alternative JDBC drivers in MySQL connector https://issues.redhat.com/browse/DBZ-6727[DBZ-6727]
+* Oracle LogMiner mining distance calculation should be skipped when upper bounds is not within distance https://issues.redhat.com/browse/DBZ-6733[DBZ-6733]
+* Add STOPPED and RESTARTING connector states to testing library https://issues.redhat.com/browse/DBZ-6734[DBZ-6734]
+* MariaDB: Unparseable DDL statement (ALTER TABLE IF EXISTS) https://issues.redhat.com/browse/DBZ-6736[DBZ-6736]
+* Update Quarkus to 3.2.3.Final https://issues.redhat.com/browse/DBZ-6740[DBZ-6740]
+* Decouple Debezium Server and Extension Quarkus versions https://issues.redhat.com/browse/DBZ-6744[DBZ-6744]
+* SingleProcessor remove redundant filter logic https://issues.redhat.com/browse/DBZ-6745[DBZ-6745]
+* MySQL dialect does not properly recognize non-default value longblob types due to typo https://issues.redhat.com/browse/DBZ-6753[DBZ-6753]
+* Add a new parameter for selecting the db index when using Redis Storage https://issues.redhat.com/browse/DBZ-6759[DBZ-6759]
+* Postgres tests for toasted byte array and toasted date array fail with decoderbufs plugin https://issues.redhat.com/browse/DBZ-6767[DBZ-6767]
+* Table schemas should be updated for each shard individually https://issues.redhat.com/browse/DBZ-6775[DBZ-6775]
+* Notifications and signals leaks between MBean instances when using JMX channels https://issues.redhat.com/browse/DBZ-6777[DBZ-6777]
+* Oracle XML column types are not properly resolved when adding XMLTYPE column during streaming https://issues.redhat.com/browse/DBZ-6782[DBZ-6782]
+* Bump the MySQL binlog client version to 0.28.1 which includes significant GTID event performance improvements https://issues.redhat.com/browse/DBZ-6783[DBZ-6783]
+* Add new Redis Sink connector parameter description to the documentation https://issues.redhat.com/browse/DBZ-6784[DBZ-6784]
+* Upgrade Kafka to 3.5.1 https://issues.redhat.com/browse/DBZ-6785[DBZ-6785]
+
+Altogether, https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20AND%20fixVersion%20%3D%202.4.0.Alpha2%20ORDER%20BY%20component%20ASC[62 issues] were fixed for this release.
+A big thank you to all the contributors from the community who worked on this release:
+https://github.com/roldanbob[Bob Roldan],
+https://github.com/TyrantLucifer[Chao Tian],
+https://github.com/Naros[Chris Cranford],
+https://github.com/C0urante[Chris Egerton],
+https://github.com/vidourem[David Remy],
+https://github.com/faihofu[Fai Ho Fu],
+https://github.com/gurpiarbassi[Gurps Bassi],
+https://github.com/harveyyue[Harvey Yue],
+https://github.com/indraraj[Indra Shukla],
+https://github.com/jcechace[Jakub Cechacek],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/joschi[Jochen Schalanda],
+https://github.com/mfvitale[Mario Fiore Vitale],
+https://github.com/mfortunat[Massimo Fortunat],
+https://github.com/nancyxu123[Nancy Xu],
+https://github.com/benesch[Nikhil Benesch],
+https://github.com/paul-cheung[Paul Cheung],
+https://github.com/roldanbob[Robert Roldan],
+https://github.com/ironakj[Ronak Jain],
+https://github.com/ryanvanhuuksloot[Ryan van Huuksloot],
+https://github.com/eizners[Sergey Eizner],
+https://github.com/twthorn[Thomas Thornton],
+https://github.com/vjuranek[Vojtech Juranek],
+https://github.com/j2gg0s[Yanjie Wang],
+https://github.com/Ychopada[Yashashree Chopada],
+https://github.com/vidourem[david remy], and
+https://github.com/ibnubay[ibnubay]!
+
+[id="whats-next"]
+== What's next?
+
+The Debezium 2.4 series is already packed with lots of new features, and we're only scratching the surface.
+We have more in-store, including the new Oracle OpenLogReplicator adapter coming with Debezium 2.4 Alpha3 next week.
+After that, we'll begin to wind down the development and shift our focus in the beta and release candidate cycle, targeting the end of September for a Debezium 2.4 final release.
+
+Don't forget about the Debezium Community Event, which I shared with you on the https://groups.google.com/g/debezium[mailing list].
+If you have any ideas or suggestions, I'd love your feedback.
+We will be making an announcement in the next two weeks about the date/time and agenda.
+
+Additionally, if you're going to Current 2023 this year in San Jose, I'd love to meet up and discuss your experiences with Debezium.
+I'll be there doing a talk on event-driven design with Debezium and Apicurio with my good friends Hans-Peter Grahsl and Carles Arnal.
+If you're interested in more details, feel free to drop me a line in chat, on the mailing list or directly via email.
+
+As always, if you have any ideas or suggestions, you can also get in touch with us on the https://groups.google.com/g/debezium[mailing list] or our https://debezium.zulipchat.com/login/#narrow/stream/302529-users[chat].
+Until next time, don't be a stranger and stay cool out there!
+
