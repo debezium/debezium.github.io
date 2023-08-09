@@ -388,6 +388,7 @@
 <li><a href="#_no_maximum_lsn_recorded_in_the_database">No maximum LSN recorded in the database</a></li>
 <li><a href="#_limitations">Limitations</a></li>
 <li><a href="#sqlserver-topic-names">Topic names</a></li>
+<li><a href="#sqlserver-schema-history-topic">Schema history topic</a></li>
 <li><a href="#about-the-debezium-sqlserver-connector-schema-change-topic">Schema change topic</a></li>
 <li><a href="#_data_change_events">Data change events</a></li>
 <li><a href="#sqlserver-transaction-metadata">Transaction metadata</a></li>
@@ -501,38 +502,77 @@ That is, if the connector stops during a snapshot, the connector begins a new sn
 <h3 id="sqlserver-snapshots"><a class="anchor" href="#sqlserver-snapshots"></a>Snapshots</h3>
 <div class="paragraph">
 <p>SQL Server CDC is not designed to store a complete history of database changes.
-For the Debezium SQL Server connector to establish a baseline for the current state of the database,
-it uses a process called <em>snapshotting</em>.</p>
+For the Debezium SQL Server connector to establish a baseline for the current state of the database, it uses a process called <em>snapshotting</em>.
+The initial snapshot captures the structure and data of the tables in the database.</p>
 </div>
 <div class="paragraph">
-<p>You can configure how the connector creates snapshots.
-By default, the connector&#8217;s snapshot mode is set to <code>initial</code>.
-Based on this <code>initial</code> snapshot mode, the first time that the connector starts, it performs an initial <em>consistent snapshot</em> of the database.
-This initial snapshot captures the structure and data for any tables that match the criteria defined by the <code>include</code> and <code>exclude</code> properties that are configured for the connector (for example, <code>table.include.list</code>, <code>column.include.list</code>, <code>table.exclude.list</code>, and so forth).</p>
-</div>
-<div class="paragraph">
-<p>When the connector creates a snapshot, it completes the following tasks:</p>
+<p>The following workflow lists the steps that Debezium takes to create a snapshot.
+These steps describe the process for a snapshot when the <a href="#sqlserver-property-snapshot-mode"><code>snapshot.mode</code></a> configuration property is set to its default value, which is <code>initial</code>.
+You can customize the way that the connector creates snapshots by changing the value of the <code>snapshot.mode</code> property.
+If you configure a different snapshot mode, the connector completes the snapshot by using a modified version of this workflow.</p>
 </div>
 <div class="olist arabic">
+<div class="title">Default workflow that the Debezium SQL Server connector uses to perform an initial snapshot</div>
 <ol class="arabic">
 <li>
-<p>Determines the tables to be captured.</p>
+<p>Establish a connection to the database.</p>
 </li>
 <li>
-<p>Obtains a lock on the SQL Server tables for which CDC is enabled to prevent structural changes from occurring during creation of the snapshot.
-The level of the lock is determined by <code>snapshot.isolation.mode</code> configuration option.</p>
+<p>Determine the tables to be captured.
+By default, the connector captures all non-system tables.
+To have the connector capture a subset of tables or table elements, you can set a number of <code>include</code> and <code>exclude</code> properties to filter the data, for example, <a href="#sqlserver-property-table-include-list"><code>table.include.list</code></a> or <a href="#sqlserver-property-table-exclude-list"><code>table.exclude.list</code></a>.</p>
 </li>
 <li>
-<p>Reads the maximum log sequence number (LSN) position in the server&#8217;s transaction log.</p>
+<p>Obtain a lock on the SQL Server tables for which CDC is enabled to prevent structural changes from occurring during creation of the snapshot.
+The level of the lock is determined by the <a href="#sqlserver-property-snapshot-isolation-mode"><code>snapshot.isolation.mode</code></a> configuration property.</p>
 </li>
 <li>
-<p>Captures the structure of all relevant tables.</p>
+<p>Read the maximum log sequence number (LSN) position in the server&#8217;s transaction log.</p>
 </li>
 <li>
-<p>Releases the locks obtained in Step 2, if necessary. In most cases, locks are held for only a short period of time.</p>
+<p>Capture the structure of all non-system, or all tables that are designated for capture.
+The connector persists this information in its internal database schema history topic.
+The schema history provides information about the structure that is in effect when a change event occurs.<br></p>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>By default, the connector captures the schema of every table in the database that is in capture mode, including tables that are not configured for capture.
+If tables are not configured for capture, the initial snapshot captures only their structure; it does not capture any table data.
+For more information about why snapshots persist schema information for tables that you did not include in the initial snapshot, see <a href="#understanding-why-initial-snapshots-capture-the-schema-history-for-all-tables">Understanding why initial snapshots capture the schema for all tables</a>.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
 </li>
 <li>
-<p>Scans the SQL Server source tables and schemas to be captured based on the LSN position that was read in Step 3, generates a <code>READ</code> event for each row in the table, and writes the events to the Kafka topic for the table.</p>
+<p>Release the locks obtained in Step 3, if necessary.
+Other database clients can now write to any previously locked tables.</p>
+</li>
+<li>
+<p>At the LSN position read in Step 4, the connector scans the tables to be captured.
+During the scan, the connector completes the following tasks:</p>
+<div class="olist loweralpha">
+<ol class="loweralpha" type="a">
+<li>
+<p>Confirms that the table was created before the snapshot began.
+If the table was created after the snapshot began, the connector skips the table.
+After the snapshot is complete, and the connector transitions to streaming, it emits change events for any tables that were created after the snapshot began.</p>
+</li>
+<li>
+<p>Produces a <code>read</code> event for each row that is captured from a table.
+All <code>read</code> events contain the same LSN position, which is the LSN position that was obtained in step 4.</p>
+</li>
+<li>
+<p>Emits each <code>read</code> event to the Kafka topic for the table.</p>
+</li>
+</ol>
+</div>
 </li>
 <li>
 <p>Records the successful completion of the snapshot in the connector offsets.</p>
@@ -542,6 +582,349 @@ The level of the lock is determined by <code>snapshot.isolation.mode</code> conf
 <div class="paragraph">
 <p>The resulting initial snapshot captures the current state of each row in the tables that are enabled for CDC.
 From this baseline state, the connector captures subsequent changes as they occur.</p>
+</div>
+<div class="paragraph">
+<p>After the snapshot process begins, if the process is interrupted due to connector failure, rebalancing, or other reasons, the process restarts after the connector restarts.</p>
+</div>
+<div class="paragraph">
+<p>After the connector completes the initial snapshot, it continues streaming from the position that it read in Step 4 so that it does not miss any updates.</p>
+</div>
+<div class="paragraph">
+<p>If the connector stops again for any reason, after it restarts, it resumes streaming changes from where it previously left off.</p>
+</div>
+<div class="sect3">
+<h4 id="understanding-why-initial-snapshots-capture-the-schema-history-for-all-tables"><a class="anchor" href="#understanding-why-initial-snapshots-capture-the-schema-history-for-all-tables"></a>Understanding why initial snapshots capture the schema history for all tables</h4>
+<div class="paragraph">
+<p>The initial snapshot that a connector runs captures two types of information:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1">Table data</dt>
+<dd>
+<p>Information about <code>INSERT</code>, <code>UPDATE</code>, and <code>DELETE</code> operations in tables that are named in the connector&#8217;s <a href="#sqlserver-property-table-include-list"><code>table.include.list</code></a> property.</p>
+</dd>
+<dt class="hdlist1">Schema data</dt>
+<dd>
+<p>DDL statements that describe the structural changes that are applied to tables.
+Schema data is persisted to both the internal schema history topic, and to the connector&#8217;s schema change topic, if one is configured.</p>
+</dd>
+</dl>
+</div>
+<div class="paragraph">
+<p>After you run an initial snapshot, you might notice that the snapshot captures schema information for tables that are not designated for capture.
+By default, initial snapshots are designed to capture schema information for every table that is present in the database, not only from tables that are designated for capture.
+Connectors require that the table&#8217;s schema is present in the schema history topic before they can capture a table.
+By enabling the initial snapshot to capture schema data for tables that are not part of the original capture set, Debezium prepares the connector to readily capture event data from these tables should that later become necessary.
+If the initial snapshot does not capture a table&#8217;s schema, you must add the schema to the history topic before the connector can capture data from the table.</p>
+</div>
+<div class="paragraph">
+<p>In some cases, you might want to limit schema capture in the initial snapshot.
+This can be useful when you want to reduce the time required to complete a snapshot.
+Or when Debezium connects to the database instance through a user account that has access to multiple logical databases, but you want the connector to capture changes only from tables in a specific logic database.</p>
+</div>
+<div class="ulist">
+<div class="title">Additional information</div>
+<ul>
+<li>
+<p><a href="#sqlserver-capturing-data-from-tables-not-captured-by-the-initial-snapshot">Capturing data from tables not captured by the initial snapshot (no schema change)</a></p>
+</li>
+<li>
+<p><a href="#sqlserver-capturing-data-from-new-tables-with-schema-changes">Capturing data from tables not captured by the initial snapshot (schema change)</a></p>
+</li>
+<li>
+<p>Setting the <a href="#sqlserver-property-database-history-store-only-captured-tables-ddl"><code>schema.history.internal.store.only.captured.tables.ddl</code></a> property to specify the tables from which to capture schema information.</p>
+</li>
+<li>
+<p>Setting the <a href="#sqlserver-property-database-history-store-only-captured-databases-ddl"><code>schema.history.internal.store.only.captured.databases.ddl</code></a> property to specify the logical databases from which to capture schema changes.</p>
+</li>
+</ul>
+</div>
+</div>
+<div class="sect3">
+<h4 id="sqlserver-capturing-data-from-tables-not-captured-by-the-initial-snapshot"><a class="anchor" href="#sqlserver-capturing-data-from-tables-not-captured-by-the-initial-snapshot"></a>Capturing data from tables not captured by the initial snapshot (no schema change)</h4>
+<div class="paragraph">
+<p>In some cases, you might want the connector to capture data from a table whose schema was not captured by the initial snapshot.
+Depending on the connector configuration, the initial snapshot might capture the table schema only for specific tables in the database.
+If the table schema is not present in the history topic, the connector fails to capture the table, and reports a missing schema error.</p>
+</div>
+<div class="paragraph">
+<p>You might still be able to capture data from the table, but you must perform additional steps to add the table schema.</p>
+</div>
+<div class="ulist">
+<div class="title">Prerequisites</div>
+<ul>
+<li>
+<p>You want to capture data from a table with a schema that the connector did not capture during the initial snapshot.</p>
+</li>
+<li>
+<p>No schema changes were applied to the table between the LSNs of the earliest and latest change table entry that the connector reads.
+For information about capturing data from a new table that has undergone structural changes, see <a href="#db2-capturing-data-from-new-tables-with-schema-changes">[db2-capturing-data-from-new-tables-with-schema-changes]</a>.</p>
+</li>
+</ul>
+</div>
+<div class="olist arabic">
+<div class="title">Procedure</div>
+<ol class="arabic">
+<li>
+<p>Stop the connector.</p>
+</li>
+<li>
+<p>Remove the internal database schema history topic that is specified by the <a href="#sqlserver-property-database-history-kafka-topic"><code>schema.history.internal.kafka.topic property</code></a>.</p>
+</li>
+<li>
+<p>Clear the offsets in the configured Kafka Connect <a href="https://kafka.apache.org/documentation/#connectconfigs_offset.storage.topic"><code>offset.storage.topic</code></a>.
+For more information about how to remove offsets, see the <a href="https://debezium.io/documentation/faq/#how_to_remove_committed_offsets_for_a_connector">Debezium community FAQ</a>.</p>
+<div class="admonitionblock warning">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-warning" title="Warning"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>Removing offsets should be performed only by advanced users who have experience in manipulating internal Kafka Connect data.
+This operation is potentially destructive, and should be performed only as a last resort.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+</li>
+<li>
+<p>Apply the following changes to the connector configuration:</p>
+<div class="olist loweralpha">
+<ol class="loweralpha" type="a">
+<li>
+<p>(Optional) Set the value of <a href="#sqlserver-property-database-history-store-only-captured-tables-ddl"><code>schema.history.internal.captured.tables.ddl</code></a> to <code>false</code>.
+This setting causes the snapshot to capture the schema for all tables, and guarantees that, in the future, the connector can reconstruct the schema history for all tables.<br></p>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>Snapshots that capture the schema for all tables require more time to complete.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+</li>
+<li>
+<p>Add the tables that you want the connector to capture to <a href="#sqlserver-property-table-include-list"><code>table.include.list</code></a>.</p>
+</li>
+<li>
+<p>Set the <a href="#sqlserver-property-snapshot-mode"><code>snapshot.mode</code></a> to one of the following values:</p>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>initial</code></dt>
+<dd>
+<p>When you restart the connector, it takes a full snapshot of the database that captures the table data and table structures.<br>
+If you select this option, consider setting the value of the <a href="#sqlserver-property-database-history-store-only-captured-tables-ddl"><code>schema.history.internal.captured.tables.ddl</code></a> property to <code>false</code> to enable the connector to capture the schema of all tables.</p>
+</dd>
+<dt class="hdlist1"><code>schema_only</code></dt>
+<dd>
+<p>When you restart the connector, it takes a snapshot that captures only the table schema.
+Unlike a full data snapshot, this option does not capture any table data.
+Use this option if you want to restart the connector more quickly than with a full snapshot.</p>
+</dd>
+</dl>
+</div>
+</li>
+</ol>
+</div>
+</li>
+<li>
+<p>Restart the connector.
+The connector completes the type of snapshot specified by the <code>snapshot.mode</code>.</p>
+</li>
+<li>
+<p>(Optional) If the connector performed a <code>schema_only</code> snapshot, after the snapshot completes, initiate an <a href="#sqlserver-incremental-snapshots">incremental snapshot</a> to capture data from the tables that you added.
+The connector runs the snapshot while it continues to stream real-time changes from the tables.
+Running an incremental snapshot captures the following data changes:</p>
+<div class="ulist">
+<ul>
+<li>
+<p>For tables that the connector previously captured, the incremental snapsot captures changes that occur while the connector was down, that is, in the interval between the time that the connector was stopped, and the current restart.</p>
+</li>
+<li>
+<p>For newly added tables, the incremental snapshot captures all existing table rows.</p>
+</li>
+</ul>
+</div>
+</li>
+</ol>
+</div>
+</div>
+<div class="sect3">
+<h4 id="sqlserver-capturing-data-from-new-tables-with-schema-changes"><a class="anchor" href="#sqlserver-capturing-data-from-new-tables-with-schema-changes"></a>Capturing data from tables not captured by the initial snapshot (schema change)</h4>
+<div class="paragraph">
+<p>If a schema change is applied to a table, records that are committed before the schema change have different structures than those that were committed after the change.
+When Debezium captures data from a table, it reads the schema history to ensure that it applies the correct schema to each event.
+If the schema is not present in the schema history topic, the connector is unable to capture the table, and an error results.</p>
+</div>
+<div class="paragraph">
+<p>If you want to capture data from a table that was not captured by the initial snapshot, and the schema of the table was modified, you must add the schema to the history topic, if it is not already available.
+You can add the schema by running a new schema snapshot, or by running an initial snapshot for the table.</p>
+</div>
+<div class="ulist">
+<div class="title">Prerequisites</div>
+<ul>
+<li>
+<p>You want to capture data from a table with a schema that the connector did not capture during the initial snapshot.</p>
+</li>
+<li>
+<p>A schema change was applied to the table so that the records to be captured do not have a uniform structure.</p>
+</li>
+</ul>
+</div>
+<div class="dlist">
+<div class="title">Procedure</div>
+<dl>
+<dt class="hdlist1">Initial snapshot captured the schema for all tables (<code>store.only.captured.tables.ddl</code> was set to <code>false</code>)</dt>
+<dd>
+<div class="olist arabic">
+<ol class="arabic">
+<li>
+<p>Edit the <a href="#sqlserver-property-table-include-list"><code>table.include.list</code></a> property to specify the tables that you want to capture.</p>
+</li>
+<li>
+<p>Restart the connector.</p>
+</li>
+<li>
+<p>Initiate an <a href="#sqlserver-incremental-snapshots">incremental snapshot</a> if you want to capture existing data from the newly added tables.</p>
+</li>
+</ol>
+</div>
+</dd>
+<dt class="hdlist1">Initial snapshot did not capture the schema for all tables (<code>store.only.captured.tables.ddl</code> was set to <code>true</code>)</dt>
+<dd>
+<p>If the initial snapshot did not save the schema of the table that you want to capture, complete one of the following procedures:</p>
+<div class="dlist">
+<dl>
+<dt class="hdlist1">Procedure 1: Schema snapshot, followed by incremental snapshot</dt>
+<dd>
+<p>In this procedure, the connector first performs a schema snapshot.
+You can then initiate an incremental snapshot to enable the connector to synchronize data.</p>
+<div class="olist arabic">
+<ol class="arabic">
+<li>
+<p>Stop the connector.</p>
+</li>
+<li>
+<p>Remove the internal database schema history topic that is specified by the <a href="#sqlserver-property-database-history-kafka-topic"><code>schema.history.internal.kafka.topic property</code></a>.</p>
+</li>
+<li>
+<p>Clear the offsets in the configured Kafka Connect <a href="https://kafka.apache.org/documentation/#connectconfigs_offset.storage.topic"><code>offset.storage.topic</code></a>.
+For more information about how to remove offsets, see the <a href="https://debezium.io/documentation/faq/#how_to_remove_committed_offsets_for_a_connector">Debezium community FAQ</a>.</p>
+<div class="admonitionblock warning">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-warning" title="Warning"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>Removing offsets should be performed only by advanced users who have experience in manipulating internal Kafka Connect data.
+This operation is potentially destructive, and should be performed only as a last resort.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+</li>
+<li>
+<p>Set values for properties in the connector configuration as described in the following steps:</p>
+<div class="olist loweralpha">
+<ol class="loweralpha" type="a">
+<li>
+<p>Set the value of the <a href="#sqlserver-property-snapshot-mode"><code>snapshot.mode</code></a> property to <code>schema_only</code>.</p>
+</li>
+<li>
+<p>Edit the <a href="#sqlserver-property-table-include-list"><code>table.include.list</code></a> to add the tables that you want to capture.</p>
+</li>
+</ol>
+</div>
+</li>
+<li>
+<p>Restart the connector.</p>
+</li>
+<li>
+<p>Wait for Debezium to capture the schema of the new and existing tables.
+Data changes that occurred any tables after the connector stopped are not captured.</p>
+</li>
+<li>
+<p>To ensure that no data is lost, initiate an <a href="#sqlserver-incremental-snapshots">incremental snapshot</a>.</p>
+</li>
+</ol>
+</div>
+</dd>
+<dt class="hdlist1">Procedure 2: Initial snapshot, followed by optional incremental snapshot</dt>
+<dd>
+<p>In this procedure the connector performs a full initial snapshot of the database.
+As with any initial snapshot, in a database with many large tables, running an initial snapshot can be a time-consuming operation.
+After the snapshot completes, you can optionally trigger an incremental snapshot to capture any changes that occur while the connector is off-line.</p>
+<div class="olist arabic">
+<ol class="arabic">
+<li>
+<p>Stop the connector.</p>
+</li>
+<li>
+<p>Remove the internal database schema history topic that is specified by the <a href="#sqlserver-property-database-history-kafka-topic"><code>schema.history.internal.kafka.topic property</code></a>.</p>
+</li>
+<li>
+<p>Clear the offsets in the configured Kafka Connect <a href="https://kafka.apache.org/documentation/#connectconfigs_offset.storage.topic"><code>offset.storage.topic</code></a>.
+For more information about how to remove offsets, see the <a href="https://debezium.io/documentation/faq/#how_to_remove_committed_offsets_for_a_connector">Debezium community FAQ</a>.</p>
+<div class="admonitionblock warning">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-warning" title="Warning"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>Removing offsets should be performed only by advanced users who have experience in manipulating internal Kafka Connect data.
+This operation is potentially destructive, and should be performed only as a last resort.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+</li>
+<li>
+<p>Edit the <a href="#sqlserver-property-table-include-list"><code>table.include.list</code></a> to add the tables that you want to capture.</p>
+</li>
+<li>
+<p>Set values for properties in the connector configuration as described in the following steps:</p>
+<div class="olist loweralpha">
+<ol class="loweralpha" type="a">
+<li>
+<p>Set the value of the <a href="#sqlserver-property-snapshot-mode"><code>snapshot.mode</code></a> property to <code>initial</code>.</p>
+</li>
+<li>
+<p>(Optional) Set <a href="#sqlserver-property-database-history-store-only-captured-tables-ddl"><code>schema.history.internal.store.only.captured.tables.ddl</code></a> to <code>false</code>.</p>
+</li>
+</ol>
+</div>
+</li>
+<li>
+<p>Restart the connector.
+The connector takes a full database snapshot.
+After the snapshot completes, the connector transitions to streaming.</p>
+</li>
+<li>
+<p>(Optional) To capture any data that changed while the connector was off-line, initiate an <a href="#sqlserver-incremental-snapshots">incremental snapshot</a>.</p>
+</li>
+</ol>
+</div>
+</dd>
+</dl>
+</div>
+</dd>
+</dl>
+</div>
 </div>
 <div class="sect3">
 <h4 id="sqlserver-ad-hoc-snapshots"><a class="anchor" href="#sqlserver-ad-hoc-snapshots"></a>Ad hoc snapshots</h4>
@@ -553,7 +936,7 @@ Any future change event data that the connector captures comes in through the st
 <div class="paragraph">
 <p>However, in some situations the data that the connector obtained during the initial snapshot might become stale, lost, or incomplete.
 To provide a mechanism for recapturing table data, Debezium includes an option to perform ad hoc snapshots.
-The following changes in a database might be cause for performing an ad hoc snapshot:</p>
+You might want to perform an ad hoc snapshot after any of the following changes occur in your Debezium environment:</p>
 </div>
 <div class="ulist">
 <ul>
@@ -584,7 +967,22 @@ Also, the snapshot can capture a subset of the contents of the table(s) in the d
 </div>
 <div class="paragraph">
 <p>You specify the tables to capture by sending an <code>execute-snapshot</code> message to the signaling table.
-Set the type of the <code>execute-snapshot</code> signal to <code>incremental</code>, and provide the names of the tables to include in the snapshot, as described in the following table:</p>
+Set the type of the <code>execute-snapshot</code> signal to <code>incremental</code> or <code>blocking</code>, and provide the names of the tables to include in the snapshot, as described in the following table:</p>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>Unlike incremental snapshot type, a blocking snapshot  does not support the <code>data-collections</code>, <code>additional-condition</code>, or <code>surrogate-key' parameters.
+For details about the parameters supported for blocking snapshots, see the `snapshot.*</code> connectors properties.</p>
+</div>
+</td>
+</tr>
+</table>
 </div>
 <table class="tableblock frame-all grid-all stretch">
 <caption class="title">Table 1. Example of an ad hoc <code>execute-snapshot</code> signal record</caption>
@@ -605,8 +1003,7 @@ Set the type of the <code>execute-snapshot</code> signal to <code>incremental</c
 <td class="tableblock halign-left valign-top"><p class="tableblock"><code>type</code></p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock"><code>incremental</code></p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock">Specifies the type of snapshot that you want to run.<br>
-Setting the type is optional.
-Currently, you can request only <code>incremental</code> snapshots.</p></td>
+Currently, you can request <code>incremental</code> or <code>blocking</code> snapshots.</p></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><p class="tableblock"><code>data-collections</code></p></td>
@@ -628,15 +1025,24 @@ subset of the contents of the table(s).</p></td>
 </tbody>
 </table>
 <div class="paragraph">
-<div class="title">Triggering an ad hoc snapshot</div>
-<p>You initiate an ad hoc snapshot by adding an entry with the <code>execute-snapshot</code> signal type to the signaling table.
+<div class="title">Triggering an ad hoc incremental snapshot</div>
+<p>You initiate an ad hoc incremental snapshot by adding an entry with the <code>execute-snapshot</code> signal type to the signaling table.
 After the connector processes the message, it begins the snapshot operation.
 The snapshot process reads the first and last primary key values and uses those values as the start and end point for each table.
 Based on the number of entries in the table, and the configured chunk size, Debezium divides the table into chunks, and proceeds to snapshot each chunk, in succession, one at a time.</p>
 </div>
 <div class="paragraph">
-<p>Currently, the <code>execute-snapshot</code> action type triggers <a href="../configuration/signalling.html#debezium-signaling-incremental-snapshots" class="page">incremental snapshots</a> only.
-For more information, see <a href="#sqlserver-incremental-snapshots">Incremental snapshots</a>.</p>
+<p>For more information, see <a href="#sqlserver-incremental-snapshots">Incremental snapshots</a>.</p>
+</div>
+<div class="paragraph">
+<div class="title">Triggering an ad hoc blocking snapshot</div>
+<p>You initiate an ad hoc blocking snapshot by adding an entry with the <code>execute-snapshot</code> signal type to the signaling table.
+After the connector processes the message, it begins the snapshot operation.
+The connector temporarily stops streaming, and then initiates a snapshot of the specified table, following the same process that it uses during an initial snapshot.
+After the snapshot completes, the connector resumes streaming.</p>
+</div>
+<div class="paragraph">
+<p>For more information, see <a href="#sqlserver-blocking-snapshots">Blocking snapshots</a>.</p>
 </div>
 </div>
 <div class="sect3">
@@ -1250,6 +1656,42 @@ Value = `{"type":"stop-snapshot","data": {"data-collections": ["schema1.table1",
 </div>
 </div>
 </div>
+<div class="sect3">
+<h4 id="sqlserver-blocking-snapshots"><a class="anchor" href="#sqlserver-blocking-snapshots"></a>Blocking snapshots</h4>
+<div class="paragraph">
+<p>To provide more flexibility in managing snapshots, Debezium includes a supplementary ad hoc snapshot mechanism, known as a <em>blocking snapshot</em>.
+Blocking snapshots rely on the Debezium mechanism for <a href="../configuration/signalling.html#sending-signals-to-a-debezium-connector" class="page">sending signals to a Debezium connector</a>.</p>
+</div>
+<div class="paragraph">
+<p>A blocking snapshot behaves just like an <em>initial snapshot</em>, except that you can trigger it at run time.</p>
+</div>
+<div class="paragraph">
+<p>You might want to run a blocking snapshot rather than use the standard initial snapshot process in the following situations:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>You add a new table and you want to complete the snapshot while the connector is running.</p>
+</li>
+<li>
+<p>You add a large table, and you want the snapshot to complete in less time than is possible with an incremental snapshot.</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<div class="title">Blocking snapshot process</div>
+<p>When you run a blocking snapshot, Debezium stops streaming, and then initiates a snapshot of the specified table, following the same process that it uses during an initial snapshot.
+After the snapshot completes, the streaming is resumed.</p>
+</div>
+<div class="paragraph">
+<p>Use the <code>snapshot.*</code> properties in the connector configuration to control the behavior of the snapshot.</p>
+</div>
+<div class="paragraph">
+<div class="title">Possible duplicates</div>
+<p>A delay might exist between the time that you send the signal to trigger the snapshot, and the time when streaming stops and the snapshot starts.
+As a result of this delay, after the snapshot completes, the connector might emit some event records that duplicate records captured by the snapshot.</p>
+</div>
+</div>
 </div>
 <div class="sect2">
 <h3 id="_reading_the_change_data_tables"><a class="anchor" href="#_reading_the_change_data_tables"></a>Reading the change data tables</h3>
@@ -1390,9 +1832,44 @@ For more information about using the logical topic routing SMT to customize topi
 </div>
 </div>
 <div class="sect2">
+<h3 id="sqlserver-schema-history-topic"><a class="anchor" href="#sqlserver-schema-history-topic"></a>Schema history topic</h3>
+<div class="paragraph">
+<p>When a database client queries a database, the client uses the database’s current schema.
+However, the database schema can be changed at any time, which means that the connector must be able to identify what the schema was at the time each insert, update, or delete operation was recorded.
+Also, a connector cannot necessarily apply the current schema to every event.
+If an event is relatively old, it&#8217;s possible that it was recorded before the current schema was applied.</p>
+</div>
+<div class="paragraph">
+<p>To ensure correct processing of change events that occur after a schema change, the Debezium SQL Server connector stores a snapshot of the new schema based on the structure in the SQL Server change tables, which mirror the structure of their associated data tables.
+The connector stores the table schema information, together with the LSN of operations the result in schema changes, in the database schema history Kafka topic.
+The connector uses the stored schema representation to produce change events that correctly mirror the structure of tables at the time of each insert, update, or delete operation.</p>
+</div>
+<div class="paragraph">
+<p>When the connector restarts after either a crash or a graceful stop, it resumes reading entries in the SQL Server CDC tables from the last position that it read.
+Based on the schema information that the connector reads from the database schema history topic, the connector applies the table structures that existed at the position where the connector restarts.</p>
+</div>
+<div class="paragraph">
+<p>If you update the schema of a Db2 table that is in capture mode, it&#8217;s important that you also update the schema of the corresponding change table.
+You must be a SQL Server database administrator with elevated privileges to update database schema.
+For more information about updating SQL Server database schema in Debezium environmenbts, see <a href="#sqlserver-schema-evolution">Database schema evolution</a>.</p>
+</div>
+<div class="paragraph">
+<p>The database schema history topic is for internal connector use only.
+Optionally, the connector can also <a href="#about-the-debezium-sqlserver-connector-schema-change-topic">emit schema change events to a different topic that is intended for consumer applications</a>.</p>
+</div>
+<div class="ulist">
+<div class="title">Additional resources</div>
+<ul>
+<li>
+<p><a href="#sqlserver-topic-names">Default names for topics</a> that receive Debezium event records.</p>
+</li>
+</ul>
+</div>
+</div>
+<div class="sect2">
 <h3 id="about-the-debezium-sqlserver-connector-schema-change-topic"><a class="anchor" href="#about-the-debezium-sqlserver-connector-schema-change-topic"></a>Schema change topic</h3>
 <div class="paragraph">
-<p>For each table for which CDC is enabled, the Debezium SQL Server connector stores a history of the schema change events that are applied to captured tables in the database.
+<p>For each table for which CDC is enabled, the Debezium SQL Server connector stores a history of the schema change events that are applied to tables in the database.
 The connector writes schema change events to a Kafka topic named <code><em>&lt;topicPrefix&gt;</em></code>, where <code><em>topicPrefix</em></code> is the logical server name that is specified in the <a href="#sqlserver-property-topic-prefix"><code>topic.prefix</code></a> configuration property.</p>
 </div>
 <div class="paragraph">
@@ -1524,7 +2001,7 @@ The message contains a logical representation of the table schema.</p>
   },
   "payload": {
     "source": {
-      "version": "2.4.0.Alpha1",
+      "version": "2.4.0.Alpha2",
       "connector": "sqlserver",
       "name": "server1",
       "ts_ms": 0,
@@ -2126,7 +2603,7 @@ For more information, see <a href="#sqlserver-topic-names">topic names</a>.</p>
       "email": "john.doe@example.org"
     },
     "source": { <i class="conum" data-value="8"></i><b>(8)</b>
-      "version": "2.4.0.Alpha1",
+      "version": "2.4.0.Alpha2",
       "connector": "sqlserver",
       "name": "server1",
       "ts_ms": 1559729468470,
@@ -2300,7 +2777,7 @@ By comparing the value for <code>payload.source.ts_ms</code> with the value for 
       "email": "noreply@example.org"
     },
     "source": { <i class="conum" data-value="3"></i><b>(3)</b>
-      "version": "2.4.0.Alpha1",
+      "version": "2.4.0.Alpha2",
       "connector": "sqlserver",
       "name": "server1",
       "ts_ms": 1559729995937,
@@ -2443,7 +2920,7 @@ By comparing the value for <code>payload.source.ts_ms</code> with the value for 
     },
     "after": null, <i class="conum" data-value="2"></i><b>(2)</b>
     "source": { <i class="conum" data-value="3"></i><b>(3)</b>
-      "version": "2.4.0.Alpha1",
+      "version": "2.4.0.Alpha2",
       "connector": "sqlserver",
       "name": "server1",
       "ts_ms": 1559730445243,
@@ -3770,7 +4247,7 @@ If the <code>continuous</code> parameter is set to <code>1</code>, the job pause
 <div class="title">Procedure</div>
 <ol class="arabic">
 <li>
-<p>Download the Debezium <a href="https://repo1.maven.org/maven2/io/debezium/debezium-connector-sqlserver/2.4.0.Alpha1/debezium-connector-sqlserver-2.4.0.Alpha1-plugin.tar.gz">SQL Server connector plug-in archive</a></p>
+<p>Download the Debezium <a href="https://repo1.maven.org/maven2/io/debezium/debezium-connector-sqlserver/2.4.0.Alpha2/debezium-connector-sqlserver-2.4.0.Alpha2-plugin.tar.gz">SQL Server connector plug-in archive</a></p>
 </li>
 <li>
 <p>Extract the files into your Kafka Connect environment.</p>
@@ -5009,7 +5486,7 @@ By default, the following channels are available:</p>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>Allow schema changes during an incremental snapshot. When enabled the connector will detect schema change during an incremental snapshot and re-select a current chunk to avoid locking DDLs.<br>
 <br>
-Note that changes to a primary key are not supported and can cause incorrect results if performed during an incremental snapshot. Another limitation is that if a schema change affects only columns' default values, then the change won&#8217;t be detected until the DDL is processed from the binlog stream. This doesn&#8217;t affect the snapshot events' values, but the schema of snapshot events may have outdated defaults.</p>
+Note that changes to a primary key are not supported and can cause incorrect results if performed during an incremental snapshot. Another limitation is that if a schema change affects only columns' default values, then the change won&#8217;t be detected until the DDL is processed from the transaction log stream. This doesn&#8217;t affect the snapshot events' values, but the schema of snapshot events may have outdated defaults.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -5141,6 +5618,17 @@ This feature is incubating.</p>
 <p>The custom metric tags will accept key-value pairs to customize the MBean object name which should be appended the end of regular name, each key would represent a tag for the MBean object name, and the corresponding value would be the value of that tag the key is. For example: <code>k1=v1,k2=v2</code>.</p>
 </div></div></td>
 </tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="sqlserver-property-errors-max-retires"></a><a href="#sqlserver-property-errors-max-retires"><code>errors.max.retries</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>-1</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The maximum number of retries on retriable errors (e.g. connection errors) before failing (-1 = no limit, 0 = disabled, &gt; 0 = num of retries).</p>
+</div></div></td>
+</tr>
 </tbody>
 </table>
 </div>
@@ -5254,13 +5742,24 @@ Skipping should be used only with care as it can lead to data loss or mangling w
 <p><code>false</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>A Boolean value that specifies whether the connector should record all DDL statements from specified schema or database<br></p>
+<p>A Boolean value that specifies whether the connector records schema structures from all tables in a schema or database, or only from tables that are designated for capture.<br>
+Specify one of the following values:</p>
 </div>
-<div class="paragraph">
-<p><code>true</code> records only those DDL statements that are relevant to tables whose changes are being captured by Debezium. Set to <code>true</code> with care because missing data might become necessary if you change which tables have their changes captured.<br></p>
-</div>
-<div class="paragraph">
-<p>The safe default is <code>false</code>.</p>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>false</code> (default)</dt>
+<dd>
+<p>During a database snapshot, the connector records the schema data for all non-system tables in the database, including tables that are not designated for capture.
+It&#8217;s best to retain the default setting.
+If you later decide to capture changes from tables that you did not originally designate for capture, the connector can easily begin to capture data from those tables, because their schema structure is already stored in the schema history topic.
+Debezium requires the schema history of a table so that it can identify the structure that was present at the time that a change event occurred.</p>
+</dd>
+<dt class="hdlist1"><code>true</code></dt>
+<dd>
+<p>During a database snapshot, the connector records the table schemas only for the tables from which Debezium captures change events.
+If you change the default value, and you later configure the connector to capture data from other tables in the database, the connector lacks the schema information that it requires to capture change events from the tables.<br></p>
+</dd>
+</dl>
 </div></div></td>
 </tr>
 <tr>
@@ -5271,10 +5770,20 @@ Skipping should be used only with care as it can lead to data loss or mangling w
 <p><code>false</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>A Boolean value that specifies whether the connector should record all DDL statements<br></p>
+<p>A Boolean value that specifies whether the connector records schema structures from all logical databases in the database instance.<br>
+Specify one of the following values:</p>
 </div>
-<div class="paragraph">
-<p><code>true</code> records only those DDL statements that are relevant to database/schema&#8217;s tables whose changes are being captured by Debezium. <code>false</code> will store all incoming DDL statements.<br></p>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>true</code></dt>
+<dd>
+<p>The connector records schema structures only for tables in the logical database and schema from which Debezium captures change events.</p>
+</dd>
+<dt class="hdlist1"><code>false</code></dt>
+<dd>
+<p>The connector records schema structures for all logical databases.<br></p>
+</dd>
+</dl>
 </div>
 <div class="admonitionblock note">
 <table>
@@ -5738,7 +6247,7 @@ The connector provides the following metrics:</p>
 <div class="sect2">
 <h3 id="sqlserver-snapshot-metrics"><a class="anchor" href="#sqlserver-snapshot-metrics"></a>Snapshot metrics</h3>
 <div class="paragraph">
-<p>The <strong>MBean</strong> is <code>debezium.sql_server:type=connector-metrics,server=<em>&lt;sqlserver.server.name&gt;</em>,task=<em>&lt;task.id&gt;</em>,context=snapshot</code>.</p>
+<p>The <strong>MBean</strong> is <code>debezium.sql_server:type=connector-metrics,server=<em>&lt;topic.prefix&gt;</em>,task=<em>&lt;task.id&gt;</em>,context=snapshot</code>.</p>
 </div>
 <div class="paragraph">
 <p>Snapshot metrics are not exposed unless a snapshot operation is active, or if a snapshot has occurred since the last connector start.</p>
@@ -6040,7 +6549,7 @@ Updates every 10,000 rows scanned and upon completing a table.</p>
 <div class="sect2">
 <h3 id="sqlserver-streaming-metrics"><a class="anchor" href="#sqlserver-streaming-metrics"></a>Streaming metrics</h3>
 <div class="paragraph">
-<p>The <strong>MBean</strong> is <code>debezium.sql_server:type=connector-metrics,server=<em>&lt;sqlserver.server.name&gt;</em>,task=<em>&lt;task.id&gt;</em>,context=streaming</code>.</p>
+<p>The <strong>MBean</strong> is <code>debezium.sql_server:type=connector-metrics,server=<em>&lt;topic.prefix&gt;</em>,task=<em>&lt;task.id&gt;</em>,context=streaming</code>.</p>
 </div>
 <div class="paragraph">
 <p>The following table lists the streaming metrics that are available.</p>
@@ -6253,7 +6762,7 @@ The values will incoporate any differences between the clocks on the machines wh
 <div class="sect2">
 <h3 id="sqlserver-schema-history-metrics"><a class="anchor" href="#sqlserver-schema-history-metrics"></a>Schema history metrics</h3>
 <div class="paragraph">
-<p>The <strong>MBean</strong> is <code>debezium.sql_server:type=connector-metrics,context=schema-history,server=<em>&lt;sqlserver.server.name&gt;</em></code>.</p>
+<p>The <strong>MBean</strong> is <code>debezium.sql_server:type=connector-metrics,context=schema-history,server=<em>&lt;topic.prefix&gt;</em></code>.</p>
 </div>
 <div class="paragraph">
 <p>The following table lists the schema history metrics that are available.</p>
@@ -6373,7 +6882,7 @@ The values will incoporate any differences between the clocks on the machines wh
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2023 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/ac56c6e7a3f7678c0ee9dfca35046f38b4ca36b9">ac56c6e7</a></span>)
+            <div class="copyright">Copyright &copy; 2023 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/937b874f66b20bc94f0737797f26dafc095fb868">937b874f</a></span>)
             
         </div>
     </footer>

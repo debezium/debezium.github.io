@@ -371,6 +371,7 @@
 <ul class="sectlevel2">
 <li><a href="#oracle-snapshots">Snapshots</a></li>
 <li><a href="#oracle-topic-names">Topic names</a></li>
+<li><a href="#oracle-schema-history-topic">Schema history topic</a></li>
 <li><a href="#oracle-schema-change-topic">Schema change topic</a></li>
 <li><a href="#oracle-transaction-metadata">Transaction Metadata</a></li>
 <li><a href="#oracle-logminer-query-modes">Query Modes</a></li>
@@ -397,7 +398,7 @@
 <li><a href="#oracle-boolean-types">Boolean types</a></li>
 <li><a href="#oracle-temporal-types">Temporal types</a></li>
 <li><a href="#oracle-rowid-types">ROWID types</a></li>
-<li><a href="#oracle-xml-types">XML type</a></li>
+<li><a href="#oracle-xml-types">XML types</a></li>
 <li><a href="#oracle-user-defined-types">User-defined types</a></li>
 <li><a href="#oracle-supplied-types">Oracle-supplied types</a></li>
 <li><a href="#oracle-default-values">Default Values</a></li>
@@ -483,37 +484,104 @@ As a result, the Debezium Oracle connector cannot retrieve the entire history of
 To enable the connector to establish a baseline for the current state of the database, the first time that the connector starts, it performs an initial <em>consistent snapshot</em> of the database.</p>
 </div>
 <div class="paragraph">
-<p>You can customize the way that the connector creates snapshots by setting the value of the <a href="#oracle-property-snapshot-mode"><code>snapshot.mode</code></a> connector configuration property.
-By default, the connector&#8217;s snapshot mode is set to <code>initial</code>.</p>
+<p>The following workflow lists the steps that Debezium takes to create a snapshot.
+These steps describe the process for a snapshot when the <a href="#oracle-property-snapshot-mode"><code>snapshot.mode</code></a>  configuration property is set to its default value, which is <code>initial</code>.
+You can customize the way that the connector creates snapshots by changig the value of the <code>snapshot.mode</code> property.
+If you configure a different snapshot mode, the connector completes the snapshot by using a modified version of this workflow.</p>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>If the time needed to complete the initial snapshot exceeds the <code>UNDO_RETENTION</code> time that is set for the database (fifteen minutes, by default), an ORA-01555 exception can occur.
+For more information about the error, and about the steps that you can take to recover from it, see the <a href="#what-causes-ora-01555-and-how-to-handle-it"">Frequently asked questions</a>.</p>
+</div>
+</td>
+</tr>
+</table>
 </div>
 <div id="default-workflow-for-performing-an-initial-snapshot" class="paragraph">
-<div class="title">Default connector workflow for creating an initial snapshot</div>
+<div class="title">Default workflow that the Oracle connector uses to perform an initial snapshot</div>
 <p>When the snapshot mode is set to the default, the connector completes the following tasks to create a snapshot:</p>
 </div>
 <div class="olist arabic">
 <ol class="arabic">
 <li>
-<p>Determines the tables to be captured.</p>
+<p>Establish a connection to the database.</p>
 </li>
 <li>
-<p>Obtains a <code>ROW SHARE MODE</code> lock on each of the captured tables to prevent structural changes from occurring during creation of the snapshot. Debezium holds the locks for only a short time.</p>
+<p>Determine the tables to be captured.
+By default, the connector captures all tables except those with <a href="#schemas-that-the-debezium-oracle-connector-excludes-when-capturing-change-events">schemas that exclude them from capture</a>.
+After the snapshot completes, the connector continues to stream data for the specified tables.
+If you want the connector to capture data only from specific tables you can direct the connector to capture the data for only a subset of tables or table elements by setting properties such as <a href="#oracle-property-table-include-list"><code>table.include.list</code></a> or <a href="#oracle-property-table-exclude-list"><code>table.exclude.list</code></a>.</p>
 </li>
 <li>
-<p>Reads the current system change number (SCN) position from the server&#8217;s redo log.</p>
+<p>Obtain a <code>ROW SHARE MODE</code> lock on each of the captured tables to prevent structural changes from occurring during creation of the snapshot.
+Debezium holds the locks for only a short time.</p>
 </li>
 <li>
-<p>Captures the structure of all relevant tables.</p>
+<p>Read the current system change number (SCN) position from the server&#8217;s redo log.</p>
 </li>
 <li>
-<p>Releases the locks obtained in Step 2.</p>
+<p>Capture the structure of all database tables, or all tables that are designated for capture.
+The connector persists schema information in its internal database schema history topic.
+The schema history provides information about the structure that is in effect when a change event occurs.<br></p>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>By default, the connector captures the schema of every table in the database that is in capture mode, including tables that are not configured for capture.
+If tables are not configured for capture, the initial snapshot captures only their structure; it does not capture any table data.
+For more information about why snapshots persist schema information for tables that you did not include in the initial snapshot, see <a href="#understanding-why-initial-snapshots-capture-the-schema-history-for-all-tables">Understanding why initial snapshots capture the schema for all tables</a>.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
 </li>
 <li>
-<p>Scans all of the relevant database tables and schemas as valid at the SCN position that was read in Step 3 (<code>SELECT * FROM &#8230;&#8203; AS OF SCN 123</code>), generates a <code>READ</code> event for each row, and then writes the event records to the table-specific Kafka topic.</p>
+<p>Release the locks obtained in Step 3.
+Other database clients can now write to any previously locked tables.</p>
 </li>
 <li>
-<p>Records the successful completion of the snapshot in the connector offsets.</p>
+<p>At the SCN position that was read in Step 4, the connector scans the tables that are designated for capture (<code>SELECT * FROM &#8230;&#8203; AS OF SCN 123</code>).
+During the scan, the connector completes the following tasks:</p>
+<div class="olist loweralpha">
+<ol class="loweralpha" type="a">
+<li>
+<p>Confirms that the table was created before the snapshot began.
+If the table was created after the snapshot began, the connector skips the table.
+After the snapshot is complete, and the connector transitions to streaming, it emits change events for any tables that were created after the snapshot began.</p>
+</li>
+<li>
+<p>Produces a <code>read</code> event for each row that is captured from a table.
+All <code>read</code> events contain the same SCN position, which is the SCN position that was obtained in step 4.</p>
+</li>
+<li>
+<p>Emits each <code>read</code> event to the Kafka topic for the source table.</p>
+</li>
+<li>
+<p>Releases data table locks, if applicable.</p>
 </li>
 </ol>
+</div>
+</li>
+<li>
+<p>Record the successful completion of the snapshot in the connector offsets.</p>
+</li>
+</ol>
+</div>
+<div class="paragraph">
+<p>The resulting initial snapshot captures the current state of each row in the captured tables.
+From this baseline state, the connector captures subsequent changes as they occur.</p>
 </div>
 <div class="paragraph">
 <p>After the snapshot process begins, if the process is interrupted due to connector failure, rebalancing, or other reasons, the process restarts after the connector restarts.
@@ -585,6 +653,283 @@ WARNING: Do not use this mode to perform a snapshot if schema changes were commi
 <p>For more information, see <a href="#oracle-property-snapshot-mode"><code>snapshot.mode</code></a> in the table of connector configuration properties.</p>
 </div>
 <div class="sect3">
+<h4 id="understanding-why-initial-snapshots-capture-the-schema-history-for-all-tables"><a class="anchor" href="#understanding-why-initial-snapshots-capture-the-schema-history-for-all-tables"></a>Understanding why initial snapshots capture the schema history for all tables</h4>
+<div class="paragraph">
+<p>The initial snapshot that a connector runs captures two types of information:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1">Table data</dt>
+<dd>
+<p>Information about <code>INSERT</code>, <code>UPDATE</code>, and <code>DELETE</code> operations in tables that are named in the connector&#8217;s <a href="#oracle-property-table-include-list"><code>table.include.list</code></a> property.</p>
+</dd>
+<dt class="hdlist1">Schema data</dt>
+<dd>
+<p>DDL statements that describe the structural changes that are applied to tables.
+Schema data is persisted to both the internal schema history topic, and to the connector&#8217;s schema change topic, if one is configured.</p>
+</dd>
+</dl>
+</div>
+<div class="paragraph">
+<p>After you run an initial snapshot, you might notice that the snapshot captures schema information for tables that are not designated for capture.
+By default, initial snapshots are designed to capture schema information for every table that is present in the database, not only from tables that are designated for capture.
+Connectors require that the table&#8217;s schema is present in the schema history topic before they can capture a table.
+By enabling the initial snapshot to capture schema data for tables that are not part of the original capture set, Debezium prepares the connector to readily capture event data from these tables should that later become necessary.
+If the initial snapshot does not capture a table&#8217;s schema, you must add the schema to the history topic before the connector can capture data from the table.</p>
+</div>
+<div class="paragraph">
+<p>In some cases, you might want to limit schema capture in the initial snapshot.
+This can be useful when you want to reduce the time required to complete a snapshot.
+Or when Debezium connects to the database instance through a user account that has access to multiple logical databases, but you want the connector to capture changes only from tables in a specific logic database.</p>
+</div>
+<div class="ulist">
+<div class="title">Additional information</div>
+<ul>
+<li>
+<p><a href="#oracle-capturing-data-from-tables-not-captured-by-the-initial-snapshot">Capturing data from tables not captured by the initial snapshot (no schema change)</a></p>
+</li>
+<li>
+<p><a href="#oracle-capturing-data-from-new-tables-with-schema-changes">Capturing data from tables not captured by the initial snapshot (schema change)</a></p>
+</li>
+<li>
+<p>Setting the <a href="#oracle-property-database-history-store-only-captured-tables-ddl"><code>schema.history.internal.store.only.captured.tables.ddl</code></a> property to specify the tables from which to capture schema information.</p>
+</li>
+<li>
+<p>Setting the <a href="#oracle-property-database-history-store-only-captured-databases-ddl"><code>schema.history.internal.store.only.captured.databases.ddl</code></a> property to specify the logical databases from which to capture schema changes.</p>
+</li>
+</ul>
+</div>
+</div>
+<div class="sect3">
+<h4 id="oracle-capturing-data-from-tables-not-captured-by-the-initial-snapshot-no-schema-change"><a class="anchor" href="#oracle-capturing-data-from-tables-not-captured-by-the-initial-snapshot-no-schema-change"></a>Capturing data from tables not captured by the initial snapshot (no schema change)</h4>
+<div class="paragraph">
+<p>In some cases, you might want the connector to capture data from a table whose schema was not captured by the initial snapshot.
+Depending on the connector configuration, the initial snapshot might capture the table schema only for specific tables in the database.
+If the table schema is not present in the history topic, the connector fails to capture the table, and reports a missing schema error.</p>
+</div>
+<div class="paragraph">
+<p>You might still be able to capture data from the table, but you must perform additional steps to add the table schema.</p>
+</div>
+<div class="ulist">
+<div class="title">Prerequisites</div>
+<ul>
+<li>
+<p>You want to capture data from a table with a schema that the connector did not capture during the initial snapshot.</p>
+</li>
+<li>
+<p>All entries for the table in the transaction log use the same schema.
+For information about capturing data from a new table that has undergone structural changes, see <a href="#oracle-capturing-data-from-new-tables-with-schema-changes">Capturing data from tables not captured by the initial snapshot (schema change)</a>.</p>
+</li>
+</ul>
+</div>
+<div class="olist arabic">
+<div class="title">Procedure</div>
+<ol class="arabic">
+<li>
+<p>Stop the connector.</p>
+</li>
+<li>
+<p>Remove the internal database schema history topic that is specified by the <a href="#oracle-property-database-history-kafka-topic"><code>schema.history.internal.kafka.topic property</code></a>.</p>
+</li>
+<li>
+<p>In the connector configuration:</p>
+<div class="olist loweralpha">
+<ol class="loweralpha" type="a">
+<li>
+<p>Set the <a href="#oracle-property-snapshot-mode"><code>snapshot.mode</code></a> to <code>schema_only_recovery</code>.</p>
+</li>
+<li>
+<p>Set the value of <a href="#oracle-property-database-history-store-only-captured-tables-ddl"><code>schema.history.internal.store.only.captured.tables.ddl</code></a> to <code>false</code>.</p>
+</li>
+<li>
+<p>Add the tables that you want the connector to capture to <code>table.include.list</code>.
+This guarantees that in the future, the connector can reconstruct the schema history for all tables.</p>
+</li>
+</ol>
+</div>
+</li>
+<li>
+<p>Restart the connector.
+The snapshot recovery process rebuilds the schema history based on the current structure of the tables.</p>
+</li>
+<li>
+<p>(Optional) After the snapshot completes, initiate an <a href="#oracle-incremental-snapshots">incremental snapshot</a> to capture existing data for newly added tables along with changes to other tables that occurred while that connector was off-line.</p>
+</li>
+<li>
+<p>(Optional) Reset the <code>snapshot.mode</code> back to <code>schema_only</code> to prevent the connector from initiating recovery after a future restart.</p>
+</li>
+</ol>
+</div>
+</div>
+<div class="sect3">
+<h4 id="oracle-capturing-data-from-new-tables-with-schema-changes"><a class="anchor" href="#oracle-capturing-data-from-new-tables-with-schema-changes"></a>Capturing data from tables not captured by the initial snapshot (schema change)</h4>
+<div class="paragraph">
+<p>If a schema change is applied to a table, records that are committed before the schema change have different structures than those that were committed after the change.
+When Debezium captures data from a table, it reads the schema history to ensure that it applies the correct schema to each event.
+If the schema is not present in the schema history topic, the connector is unable to capture the table, and an error results.</p>
+</div>
+<div class="paragraph">
+<p>If you want to capture data from a table that was not captured by the initial snapshot, and the schema of the table was modified, you must add the schema to the history topic, if it is not already available.
+You can add the schema by running a new schema snapshot, or by running an initial snapshot for the table.</p>
+</div>
+<div class="ulist">
+<div class="title">Prerequisites</div>
+<ul>
+<li>
+<p>You want to capture data from a table with a schema that the connector did not capture during the initial snapshot.</p>
+</li>
+<li>
+<p>A schema change was applied to the table so that the records to be captured do not have a uniform structure.</p>
+</li>
+</ul>
+</div>
+<div class="dlist">
+<div class="title">Procedure</div>
+<dl>
+<dt class="hdlist1">Initial snapshot captured the schema for all tables (<code>store.only.captured.tables.ddl</code> was set to <code>false</code>)</dt>
+<dd>
+<div class="olist arabic">
+<ol class="arabic">
+<li>
+<p>Edit the <a href="#oracle-property-table-include-list"><code>table.include.list</code></a> property to specify the tables that you want to capture.</p>
+</li>
+<li>
+<p>Restart the connector.</p>
+</li>
+<li>
+<p>Initiate an <a href="#oracle-incremental-snapshots">incremental snapshot</a> if you want to capture existing data from the newly added tables.</p>
+</li>
+</ol>
+</div>
+</dd>
+<dt class="hdlist1">Initial snapshot did not capture the schema for all tables (<code>store.only.captured.tables.ddl</code> was set to <code>true</code>)</dt>
+<dd>
+<p>If the initial snapshot did not save the schema of the table that you want to capture, complete one of the following procedures:</p>
+<div class="dlist">
+<dl>
+<dt class="hdlist1">Procedure 1: Schema snapshot, followed by incremental snapshot</dt>
+<dd>
+<p>In this procedure, the connector first performs a schema snapshot.
+You can then initiate an incremental snapshot to enable the connector to synchronize data.</p>
+<div class="olist arabic">
+<ol class="arabic">
+<li>
+<p>Stop the connector.</p>
+</li>
+<li>
+<p>Remove the internal database schema history topic that is specified by the <a href="#oracle-property-database-history-kafka-topic"><code>schema.history.internal.kafka.topic property</code></a>.</p>
+</li>
+<li>
+<p>Clear the offsets in the configured Kafka Connect <a href="https://kafka.apache.org/documentation/#connectconfigs_offset.storage.topic"><code>offset.storage.topic</code></a>.
+For more information about how to remove offsets, see the <a href="https://debezium.io/documentation/faq/#how_to_remove_committed_offsets_for_a_connector">Debezium community FAQ</a>.</p>
+<div class="admonitionblock warning">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-warning" title="Warning"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>Removing offsets should be performed only by advanced users who have experience in manipulating internal Kafka Connect data.
+This operation is potentially destructive, and should be performed only as a last resort.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+</li>
+<li>
+<p>Set values for properties in the connector configuration as described in the following steps:</p>
+<div class="olist loweralpha">
+<ol class="loweralpha" type="a">
+<li>
+<p>Set the value of the <a href="#oracle-property-snapshot-mode"><code>snapshot.mode</code></a> property to <code>schema_only</code>.</p>
+</li>
+<li>
+<p>Edit the <a href="#oracle-property-table-include-list"><code>table.include.list</code></a> to add the tables that you want to capture.</p>
+</li>
+</ol>
+</div>
+</li>
+<li>
+<p>Restart the connector.</p>
+</li>
+<li>
+<p>Wait for Debezium to capture the schema of the new and existing tables.
+Data changes that occurred any tables after the connector stopped are not captured.</p>
+</li>
+<li>
+<p>To ensure that no data is lost, initiate an <a href="#oracle-incremental-snapshots">incremental snapshot</a>.</p>
+</li>
+</ol>
+</div>
+</dd>
+<dt class="hdlist1">Procedure 2: Initial snapshot, followed by optional incremental snapshot</dt>
+<dd>
+<p>In this procedure the connector performs a full initial snapshot of the database.
+As with any initial snapshot, in a database with many large tables, running an initial snapshot can be a time-consuming operation.
+After the snapshot completes, you can optionally trigger an incremental snapshot to capture any changes that occur while the connector is off-line.</p>
+<div class="olist arabic">
+<ol class="arabic">
+<li>
+<p>Stop the connector.</p>
+</li>
+<li>
+<p>Remove the internal database schema history topic that is specified by the <a href="#oracle-property-database-history-kafka-topic"><code>schema.history.internal.kafka.topic property</code></a>.</p>
+</li>
+<li>
+<p>Clear the offsets in the configured Kafka Connect <a href="https://kafka.apache.org/documentation/#connectconfigs_offset.storage.topic"><code>offset.storage.topic</code></a>.
+For more information about how to remove offsets, see the <a href="https://debezium.io/documentation/faq/#how_to_remove_committed_offsets_for_a_connector">Debezium community FAQ</a>.</p>
+<div class="admonitionblock warning">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-warning" title="Warning"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>Removing offsets should be performed only by advanced users who have experience in manipulating internal Kafka Connect data.
+This operation is potentially destructive, and should be performed only as a last resort.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+</li>
+<li>
+<p>Edit the <a href="#oracle-property-table-include-list"><code>table.include.list</code></a> to add the tables that you want to capture.</p>
+</li>
+<li>
+<p>Set values for properties in the connector configuration as described in the following steps:</p>
+<div class="olist loweralpha">
+<ol class="loweralpha" type="a">
+<li>
+<p>Set the value of the <a href="#oracle-property-snapshot-mode"><code>snapshot.mode</code></a> property to <code>initial</code>.</p>
+</li>
+<li>
+<p>(Optional) Set <a href="#oracle-property-database-history-store-only-captured-tables-ddl"><code>schema.history.internal.store.only.captured.tables.ddl</code></a> to <code>false</code>.</p>
+</li>
+</ol>
+</div>
+</li>
+<li>
+<p>Restart the connector.
+The connector takes a full database snapshot.
+After the snapshot completes, the connector transitions to streaming.</p>
+</li>
+<li>
+<p>(Optional) To capture any data that changed while the connector was off-line, initiate an <a href="#oracle-incremental-snapshots">incremental snapshot</a>.</p>
+</li>
+</ol>
+</div>
+</dd>
+</dl>
+</div>
+</dd>
+</dl>
+</div>
+</div>
+<div class="sect3">
 <h4 id="oracle-ad-hoc-snapshots"><a class="anchor" href="#oracle-ad-hoc-snapshots"></a>Ad hoc snapshots</h4>
 <div class="paragraph">
 <p>By default, a connector runs an initial snapshot operation only after it starts for the first time.
@@ -594,7 +939,7 @@ Any future change event data that the connector captures comes in through the st
 <div class="paragraph">
 <p>However, in some situations the data that the connector obtained during the initial snapshot might become stale, lost, or incomplete.
 To provide a mechanism for recapturing table data, Debezium includes an option to perform ad hoc snapshots.
-The following changes in a database might be cause for performing an ad hoc snapshot:</p>
+You might want to perform an ad hoc snapshot after any of the following changes occur in your Debezium environment:</p>
 </div>
 <div class="ulist">
 <ul>
@@ -625,7 +970,22 @@ Also, the snapshot can capture a subset of the contents of the table(s) in the d
 </div>
 <div class="paragraph">
 <p>You specify the tables to capture by sending an <code>execute-snapshot</code> message to the signaling table.
-Set the type of the <code>execute-snapshot</code> signal to <code>incremental</code>, and provide the names of the tables to include in the snapshot, as described in the following table:</p>
+Set the type of the <code>execute-snapshot</code> signal to <code>incremental</code> or <code>blocking</code>, and provide the names of the tables to include in the snapshot, as described in the following table:</p>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>Unlike incremental snapshot type, a blocking snapshot  does not support the <code>data-collections</code>, <code>additional-condition</code>, or <code>surrogate-key' parameters.
+For details about the parameters supported for blocking snapshots, see the `snapshot.*</code> connectors properties.</p>
+</div>
+</td>
+</tr>
+</table>
 </div>
 <table class="tableblock frame-all grid-all stretch">
 <caption class="title">Table 2. Example of an ad hoc <code>execute-snapshot</code> signal record</caption>
@@ -646,8 +1006,7 @@ Set the type of the <code>execute-snapshot</code> signal to <code>incremental</c
 <td class="tableblock halign-left valign-top"><p class="tableblock"><code>type</code></p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock"><code>incremental</code></p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock">Specifies the type of snapshot that you want to run.<br>
-Setting the type is optional.
-Currently, you can request only <code>incremental</code> snapshots.</p></td>
+Currently, you can request <code>incremental</code> or <code>blocking</code> snapshots.</p></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><p class="tableblock"><code>data-collections</code></p></td>
@@ -669,15 +1028,24 @@ subset of the contents of the table(s).</p></td>
 </tbody>
 </table>
 <div class="paragraph">
-<div class="title">Triggering an ad hoc snapshot</div>
-<p>You initiate an ad hoc snapshot by adding an entry with the <code>execute-snapshot</code> signal type to the signaling table.
+<div class="title">Triggering an ad hoc incremental snapshot</div>
+<p>You initiate an ad hoc incremental snapshot by adding an entry with the <code>execute-snapshot</code> signal type to the signaling table.
 After the connector processes the message, it begins the snapshot operation.
 The snapshot process reads the first and last primary key values and uses those values as the start and end point for each table.
 Based on the number of entries in the table, and the configured chunk size, Debezium divides the table into chunks, and proceeds to snapshot each chunk, in succession, one at a time.</p>
 </div>
 <div class="paragraph">
-<p>Currently, the <code>execute-snapshot</code> action type triggers <a href="../configuration/signalling.html#debezium-signaling-incremental-snapshots" class="page">incremental snapshots</a> only.
-For more information, see <a href="#oracle-incremental-snapshots">Incremental snapshots</a>.</p>
+<p>For more information, see <a href="#oracle-incremental-snapshots">Incremental snapshots</a>.</p>
+</div>
+<div class="paragraph">
+<div class="title">Triggering an ad hoc blocking snapshot</div>
+<p>You initiate an ad hoc blocking snapshot by adding an entry with the <code>execute-snapshot</code> signal type to the signaling table.
+After the connector processes the message, it begins the snapshot operation.
+The connector temporarily stops streaming, and then initiates a snapshot of the specified table, following the same process that it uses during an initial snapshot.
+After the snapshot completes, the connector resumes streaming.</p>
+</div>
+<div class="paragraph">
+<p>For more information, see <a href="#oracle-blocking-snapshots">Blocking snapshots</a>.</p>
 </div>
 </div>
 <div class="sect3">
@@ -1291,6 +1659,42 @@ Value = `{"type":"stop-snapshot","data": {"data-collections": ["schema1.table1",
 </div>
 </div>
 </div>
+<div class="sect3">
+<h4 id="oracle-blocking-snapshots"><a class="anchor" href="#oracle-blocking-snapshots"></a>Blocking snapshots</h4>
+<div class="paragraph">
+<p>To provide more flexibility in managing snapshots, Debezium includes a supplementary ad hoc snapshot mechanism, known as a <em>blocking snapshot</em>.
+Blocking snapshots rely on the Debezium mechanism for <a href="../configuration/signalling.html#sending-signals-to-a-debezium-connector" class="page">sending signals to a Debezium connector</a>.</p>
+</div>
+<div class="paragraph">
+<p>A blocking snapshot behaves just like an <em>initial snapshot</em>, except that you can trigger it at run time.</p>
+</div>
+<div class="paragraph">
+<p>You might want to run a blocking snapshot rather than use the standard initial snapshot process in the following situations:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>You add a new table and you want to complete the snapshot while the connector is running.</p>
+</li>
+<li>
+<p>You add a large table, and you want the snapshot to complete in less time than is possible with an incremental snapshot.</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<div class="title">Blocking snapshot process</div>
+<p>When you run a blocking snapshot, Debezium stops streaming, and then initiates a snapshot of the specified table, following the same process that it uses during an initial snapshot.
+After the snapshot completes, the streaming is resumed.</p>
+</div>
+<div class="paragraph">
+<p>Use the <code>snapshot.*</code> properties in the connector configuration to control the behavior of the snapshot.</p>
+</div>
+<div class="paragraph">
+<div class="title">Possible duplicates</div>
+<p>A delay might exist between the time that you send the signal to trigger the snapshot, and the time when streaming stops and the snapshot starts.
+As a result of this delay, after the snapshot completes, the connector might emit some event records that duplicate records captured by the snapshot.</p>
+</div>
+</div>
 </div>
 <div class="sect2">
 <h3 id="oracle-topic-names"><a class="anchor" href="#oracle-topic-names"></a>Topic names</h3>
@@ -1341,13 +1745,58 @@ For more information about using the logical topic routing SMT to customize topi
 </div>
 </div>
 <div class="sect2">
+<h3 id="oracle-schema-history-topic"><a class="anchor" href="#oracle-schema-history-topic"></a>Schema history topic</h3>
+<div class="paragraph">
+<p>When a database client queries a database, the client uses the database’s current schema.
+However, the database schema can be changed at any time, which means that the connector must be able to identify what the schema was at the time each insert, update, or delete operation was recorded.
+Also, a connector cannot necessarily apply the current schema to every event.
+If an event is relatively old, it&#8217;s possible that it was recorded before the current schema was applied.</p>
+</div>
+<div class="paragraph">
+<p>To ensure correct processing of events that occur after a schema change, Oracle includes in the redo log not only the row-level changes that affect the data, but also the DDL statements that are applied to the database.
+As the connector encounters these DDL statements in the redo log, it parses them and updates an in-memory representation of each table’s schema.
+The connector uses this schema representation to identify the structure of the tables at the time of each insert, update, or delete operation and to produce the appropriate change event.
+In a separate database schema history Kafka topic, the connector records all DDL statements along with the position in the redo log where each DDL statement appeared.</p>
+</div>
+<div class="paragraph">
+<p>When the connector restarts after either a crash or a graceful stop, it starts reading the redo log from a specific position, that is, from a specific point in time.
+The connector rebuilds the table structures that existed at this point in time by reading the database schema history Kafka topic and parsing all DDL statements up to the point in the redo log where the connector is starting.</p>
+</div>
+<div class="paragraph">
+<p>This database schema history topic is internal for internal connector use only.
+Optionally, the connector can also <a href="#oracle-schema-change-topic">emit schema change events to a different topic that is intended for consumer applications</a>.</p>
+</div>
+<div class="ulist">
+<div class="title">Additional resources</div>
+<ul>
+<li>
+<p><a href="#oracle-topic-names">Default names for topics</a> that receive Debezium event records.</p>
+</li>
+</ul>
+</div>
+</div>
+<div class="sect2">
 <h3 id="oracle-schema-change-topic"><a class="anchor" href="#oracle-schema-change-topic"></a>Schema change topic</h3>
 <div class="paragraph">
-<p>You can configure a Debezium Oracle connector to produce schema change events that describe structural changes that are applied to captured tables in the database.
+<p>You can configure a Debezium Oracle connector to produce schema change events that describe structural changes that are applied to tables in the database.
 The connector writes schema change events to a Kafka topic named <code><em>&lt;serverName&gt;</em></code>, where <code><em>topicName</em></code> is the namespace that is specified in the <a href="#oracle-property-topic-prefix"><code>topic.prefix</code></a> configuration property.</p>
 </div>
 <div class="paragraph">
-<p>Debezium emits a new message to this topic whenever it streams data from a new table.</p>
+<p>Debezium emits a new message to the schema change topic whenever it streams data from a new table, or when the structure of the table is altered.</p>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>Following a change in table structure, you must follow (the <a href="#surrogate-schema-evolution">schema evolution procedure</a>).</p>
+</div>
+</td>
+</tr>
+</table>
 </div>
 <div class="paragraph">
 <p>Messages that the connector sends to the schema change topic contain a payload, and, optionally, also contain the schema of the change event message.</p>
@@ -1511,23 +1960,6 @@ For the database schema history topic to function correctly, it must maintain a 
 </table>
 </div>
 <div class="paragraph">
-<p>Debezium emits a new message to this topic whenever it streams data from a new table, or when the structure of the table is altered.</p>
-</div>
-<div class="admonitionblock note">
-<table>
-<tr>
-<td class="icon">
-<i class="fa icon-note" title="Note"></i>
-</td>
-<td class="content">
-<div class="paragraph">
-<p>Following a change in table structure, you must follow (the <a href="#surrogate-schema-evolution">schema evolution procedure</a>).</p>
-</div>
-</td>
-</tr>
-</table>
-</div>
-<div class="paragraph">
 <div class="title">Example: Message emitted to the Oracle connector schema change topic</div>
 <p>The following example shows a typical schema change message in JSON format.
 The message contains a logical representation of the table schema.</p>
@@ -1540,7 +1972,7 @@ The message contains a logical representation of the table schema.</p>
   },
   "payload": {
     "source": {
-      "version": "2.4.0.Alpha1",
+      "version": "2.4.0.Alpha2",
       "connector": "oracle",
       "name": "server1",
       "ts_ms": 1588252618953,
@@ -2502,7 +2934,7 @@ This field is only present when using the LogMiner connection adapter.</p>
             "EMAIL": "annek@noanswer.org"
         },
         "source": {
-            "version": "2.4.0.Alpha1",
+            "version": "2.4.0.Alpha2",
             "name": "server1",
             "ts_ms": 1520085154000,
             "txId": "6.28.807",
@@ -2595,7 +3027,7 @@ You can use the <a href="../configuration/avro.html#avro-serialization" class="p
             "EMAIL": "anne@example.com"
         },
         "source": {
-            "version": "2.4.0.Alpha1",
+            "version": "2.4.0.Alpha2",
             "name": "server1",
             "ts_ms": 1520085811000,
             "txId": "6.9.809",
@@ -2690,7 +3122,7 @@ The <code>schema</code> portion of the <em>delete</em> event is identical to the
         },
         "after": null,
         "source": {
-            "version": "2.4.0.Alpha1",
+            "version": "2.4.0.Alpha2",
             "name": "server1",
             "ts_ms": 1520085153000,
             "txId": "6.28.807",
@@ -2759,7 +3191,7 @@ The message key is <code>null</code> in this case, the message value looks like 
         "before": null,
         "after": null,
         "source": { <i class="conum" data-value="1"></i><b>(1)</b>
-            "version": "2.4.0.Alpha1",
+            "version": "2.4.0.Alpha2",
             "connector": "oracle",
             "name": "oracle_server",
             "ts_ms": 1638974535000,
@@ -2915,7 +3347,7 @@ Please file a <a href="https://issues.redhat.com/browse/DBZ">JIRA issue</a> for 
 </colgroup>
 <thead>
 <tr>
-<th class="tableblock halign-left valign-top">Oracle Data Type</th>
+<th class="tableblock halign-left valign-top">Oracle data type</th>
 <th class="tableblock halign-left valign-top">Literal type (schema type)</th>
 <th class="tableblock halign-left valign-top">Semantic type (schema name) and Notes</th>
 </tr>
@@ -3008,7 +3440,7 @@ Please let us know if you encounter any problems while using these data types.</
 </colgroup>
 <thead>
 <tr>
-<th class="tableblock halign-left valign-top">Oracle Data Type</th>
+<th class="tableblock halign-left valign-top">Oracle data type</th>
 <th class="tableblock halign-left valign-top">Literal type (schema type)</th>
 <th class="tableblock halign-left valign-top">Semantic type (schema name) and Notes</th>
 </tr>
@@ -3033,7 +3465,23 @@ Please let us know if you encounter any problems while using these data types.</
 <p><code>BYTES</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Either the raw bytes (the default), a base64-encoded String, or a base64-url-safe-encoded String, or a hex-encoded String, based on the <a href="#oracle-property-binary-handling-mode"><code>binary.handling.mode</code></a> connector configuration property setting.</p>
+<p>Depending on the setting of the <a href="#oracle-property-binary-handling-mode"><code>binary.handling.mode</code></a> property in the connector configuration, the connector maps LOB values of this type to one of the following semantic types:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>Raw bytes (the default)</p>
+</li>
+<li>
+<p>A base64-encoded string</p>
+</li>
+<li>
+<p>A base64-url-safe-encoded string</p>
+</li>
+<li>
+<p>A hex-encoded string</p>
+</li>
+</ul>
 </div></div></td>
 </tr>
 <tr>
@@ -3088,7 +3536,23 @@ Please let us know if you encounter any problems while using these data types.</
 <p>n/a</p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Either the raw bytes (the default), a base64-encoded String, or a base64-url-safe-encoded String, or a hex-encoded String, based on the <a href="#oracle-property-binary-handling-mode"><code>binary.handling.mode</code></a> connector configuration property setting.</p>
+<p>Depending on the setting of the <a href="#oracle-property-binary-handling-mode"><code>binary.handling.mode</code></a> property in the connector configuration, the connector maps LOB values of this type to one of the following semantic types:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>Raw bytes (the default)</p>
+</li>
+<li>
+<p>A base64-encoded string</p>
+</li>
+<li>
+<p>A base64-url-safe-encoded string</p>
+</li>
+<li>
+<p>A hex-encoded string</p>
+</li>
+</ul>
 </div></div></td>
 </tr>
 </tbody>
@@ -3145,7 +3609,7 @@ For more information, see the <em>Semantic type and Notes</em> column in the fol
 </colgroup>
 <thead>
 <tr>
-<th class="tableblock halign-left valign-top">Oracle Data Type</th>
+<th class="tableblock halign-left valign-top">Oracle data type</th>
 <th class="tableblock halign-left valign-top">Literal type (schema type)</th>
 <th class="tableblock halign-left valign-top">Semantic type (schema name) and Notes</th>
 </tr>
@@ -3684,7 +4148,7 @@ A string representation of a timestamp in UTC.</p>
 </colgroup>
 <thead>
 <tr>
-<th class="tableblock halign-left valign-top">Oracle Data Type</th>
+<th class="tableblock halign-left valign-top">Oracle data type</th>
 <th class="tableblock halign-left valign-top">Literal type (schema type)</th>
 <th class="tableblock halign-left valign-top">Semantic type (schema name) and Notes</th>
 </tr>
@@ -3716,7 +4180,7 @@ A string representation of a timestamp in UTC.</p>
 </table>
 </div>
 <div class="sect2">
-<h3 id="oracle-xml-types"><a class="anchor" href="#oracle-xml-types"></a>XML type</h3>
+<h3 id="oracle-xml-types"><a class="anchor" href="#oracle-xml-types"></a>XML types</h3>
 <div class="admonitionblock note">
 <table>
 <tr>
@@ -3725,7 +4189,8 @@ A string representation of a timestamp in UTC.</p>
 </td>
 <td class="content">
 <div class="paragraph">
-<p>Support for <code>XMLTYPE</code> is currently in incubating state, that is, the exact semantics, configuration options and so forth might change in future revisions, based on feedback we receive.
+<p>Support for <code>XMLTYPE</code> is currently in an incubating state.
+Depending on the feedback that we receive, the exact semantics, configuration options, and so forth might change in future revisions.
 Please let us know if you encounter any problems while using these data types.</p>
 </div>
 </td>
@@ -3744,7 +4209,7 @@ Please let us know if you encounter any problems while using these data types.</
 </colgroup>
 <thead>
 <tr>
-<th class="tableblock halign-left valign-top">Oracle Data Type</th>
+<th class="tableblock halign-left valign-top">Oracle data type</th>
 <th class="tableblock halign-left valign-top">Literal type (schema type)</th>
 <th class="tableblock halign-left valign-top">Semantic type (schema name) and Notes</th>
 </tr>
@@ -4229,7 +4694,7 @@ If you use a logical standby, to help ensure that Debezium does not miss any cha
 <div class="title">Procedure</div>
 <ol class="arabic">
 <li>
-<p>Download the Debezium <a href="https://repo1.maven.org/maven2/io/debezium/debezium-connector-oracle/2.4.0.Alpha1/debezium-connector-oracle-2.4.0.Alpha1-plugin.tar.gz">Oracle connector plug-in archive</a>.</p>
+<p>Download the Debezium <a href="https://repo1.maven.org/maven2/io/debezium/debezium-connector-oracle/2.4.0.Alpha2/debezium-connector-oracle-2.4.0.Alpha2-plugin.tar.gz">Oracle connector plug-in archive</a>.</p>
 </li>
 <li>
 <p>Extract the files into your Kafka Connect environment.</p>
@@ -5499,7 +5964,7 @@ Use this property to prevent snapshot interruptions when you start multiple conn
 <p><a id="oracle-property-snapshot-fetch-size"></a><a href="#oracle-property-snapshot-fetch-size"><code>snapshot.fetch.size</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>2000</code></p>
+<p><code>10000</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>Specifies the maximum number of rows that should be read in one go from each table while taking a snapshot.
@@ -5511,7 +5976,7 @@ The connector reads table contents in multiple batches of the specified size.</p
 <p><a id="oracle-property-query-fetch-size"></a><a href="#oracle-property-query-fetch-size"><code>query.fetch.size</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>2000</code></p>
+<p><code>10000</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>Specifies the number of rows that will be fetched for each database round-trip of a given query.
@@ -6182,6 +6647,17 @@ This feature is incubating.</p>
 <p>The custom metric tags will accept key-value pairs to customize the MBean object name which should be appended the end of regular name, each key would represent a tag for the MBean object name, and the corresponding value would be the value of that tag the key is. For example: <code>k1=v1,k2=v2</code>.</p>
 </div></div></td>
 </tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="oracle-property-errors-max-retires"></a><a href="#oracle-property-errors-max-retires"><code>errors.max.retries</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>-1</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The maximum number of retries on retriable errors (e.g. connection errors) before failing (-1 = no limit, 0 = disabled, &gt; 0 = num of retries).</p>
+</div></div></td>
+</tr>
 </tbody>
 </table>
 <div class="sect3">
@@ -6294,13 +6770,24 @@ Skipping should be used only with care as it can lead to data loss or mangling w
 <p><code>false</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>A Boolean value that specifies whether the connector should record all DDL statements from specified schema or database<br></p>
+<p>A Boolean value that specifies whether the connector records schema structures from all tables in a schema or database, or only from tables that are designated for capture.<br>
+Specify one of the following values:</p>
 </div>
-<div class="paragraph">
-<p><code>true</code> records only those DDL statements that are relevant to tables whose changes are being captured by Debezium. Set to <code>true</code> with care because missing data might become necessary if you change which tables have their changes captured.<br></p>
-</div>
-<div class="paragraph">
-<p>The safe default is <code>false</code>.</p>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>false</code> (default)</dt>
+<dd>
+<p>During a database snapshot, the connector records the schema data for all non-system tables in the database, including tables that are not designated for capture.
+It&#8217;s best to retain the default setting.
+If you later decide to capture changes from tables that you did not originally designate for capture, the connector can easily begin to capture data from those tables, because their schema structure is already stored in the schema history topic.
+Debezium requires the schema history of a table so that it can identify the structure that was present at the time that a change event occurred.</p>
+</dd>
+<dt class="hdlist1"><code>true</code></dt>
+<dd>
+<p>During a database snapshot, the connector records the table schemas only for the tables from which Debezium captures change events.
+If you change the default value, and you later configure the connector to capture data from other tables in the database, the connector lacks the schema information that it requires to capture change events from the tables.<br></p>
+</dd>
+</dl>
 </div></div></td>
 </tr>
 <tr>
@@ -6311,10 +6798,20 @@ Skipping should be used only with care as it can lead to data loss or mangling w
 <p><code>false</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>A Boolean value that specifies whether the connector should record all DDL statements<br></p>
+<p>A Boolean value that specifies whether the connector records schema structures from all logical databases in the database instance.<br>
+Specify one of the following values:</p>
 </div>
-<div class="paragraph">
-<p><code>true</code> records only those DDL statements that are relevant to database/schema&#8217;s tables whose changes are being captured by Debezium. <code>false</code> will store all incoming DDL statements.<br></p>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>true</code></dt>
+<dd>
+<p>The connector records schema structures only for tables in the logical database and schema from which Debezium captures change events.</p>
+</dd>
+<dt class="hdlist1"><code>false</code></dt>
+<dd>
+<p>The connector records schema structures for all logical databases.<br></p>
+</dd>
+</dl>
 </div>
 <div class="admonitionblock note">
 <table>
@@ -6508,7 +7005,7 @@ For example, the connector passes properties such as <code>driver.foobar=false</
 <div class="sect2">
 <h3 id="oracle-snapshot-metrics"><a class="anchor" href="#oracle-snapshot-metrics"></a>Snapshot Metrics</h3>
 <div id="oracle-monitoring-snapshots" class="paragraph">
-<p>The <strong>MBean</strong> is <code>debezium.oracle:type=connector-metrics,context=snapshot,server=<em>&lt;oracle.server.name&gt;</em></code>.</p>
+<p>The <strong>MBean</strong> is <code>debezium.oracle:type=connector-metrics,context=snapshot,server=<em>&lt;topic.prefix&gt;</em></code>.</p>
 </div>
 <div class="paragraph">
 <p>Snapshot metrics are not exposed unless a snapshot operation is active, or if a snapshot has occurred since the last connector start.</p>
@@ -6810,7 +7307,7 @@ Updates every 10,000 rows scanned and upon completing a table.</p>
 <div class="sect2">
 <h3 id="oracle-streaming-metrics"><a class="anchor" href="#oracle-streaming-metrics"></a>Streaming Metrics</h3>
 <div id="oracle-monitoring-streaming" class="paragraph">
-<p>The <strong>MBean</strong> is <code>debezium.oracle:type=connector-metrics,context=streaming,server=<em>&lt;oracle.server.name&gt;</em></code>.</p>
+<p>The <strong>MBean</strong> is <code>debezium.oracle:type=connector-metrics,context=streaming,server=<em>&lt;topic.prefix&gt;</em></code>.</p>
 </div>
 <div class="paragraph">
 <p>The following table lists the streaming metrics that are available.</p>
@@ -7631,7 +8128,7 @@ This should always be <code>0</code>; however when allowing unparsable DDL to be
 <div class="sect2">
 <h3 id="oracle-schema-history-metrics"><a class="anchor" href="#oracle-schema-history-metrics"></a>Schema History Metrics</h3>
 <div id="oracle-monitoring-schema-history" class="paragraph">
-<p>The <strong>MBean</strong> is <code>debezium.oracle:type=connector-metrics,context=schema-history,server=<em>&lt;oracle.server.name&gt;</em></code>.</p>
+<p>The <strong>MBean</strong> is <code>debezium.oracle:type=connector-metrics,context=schema-history,server=<em>&lt;topic.prefix&gt;</em></code>.</p>
 </div>
 <div class="paragraph">
 <p>The following table lists the schema history metrics that are available.</p>
@@ -8417,6 +8914,10 @@ For example, such timeouts can occur when a LogMiner session that processes larg
 As a result, the AWS Gateway Load Balancer does not timeout when JDBC calls to the LogMiner API take more than 350 seconds to complete, enabling the connector to continue to read changes from the database&#8217;s transaction logs.</p>
 </div>
 </dd>
+</dl>
+</div>
+<div id="what-causes-ora-0155-and-how-to-handle-it" class="dlist">
+<dl>
 <dt class="hdlist1"><strong>What&#8217;s the cause for ORA-01555 and how to handle it?</strong></dt>
 <dd>
 <p>The Debezium Oracle connector uses flashback queries when the initial snapshot phase executes.
@@ -8509,7 +9010,7 @@ When the following JVM argument is provided, the Oracle connector will start suc
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2023 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/ac56c6e7a3f7678c0ee9dfca35046f38b4ca36b9">ac56c6e7</a></span>)
+            <div class="copyright">Copyright &copy; 2023 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/937b874f66b20bc94f0737797f26dafc095fb868">937b874f</a></span>)
             
         </div>
     </footer>
