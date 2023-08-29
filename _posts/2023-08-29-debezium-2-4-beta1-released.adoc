@@ -1,0 +1,205 @@
+---
+layout: post
+title:  Debezium 2.4.0.Beta1 Released
+date:   2023-08-29
+tags: [ releases, mongodb, mysql, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox, spanner ]
+author: ccranfor
+---
+
+While development remains steadfast as we continue forward on Debezium 2.4, I am thrilled to announce the immediate availability of Debezium *2.4.0.Beta1*.
+
+While this release focuses on stability and bug fixes, there are several new noteworthy features including TimescaleDB support, JMX notifications using JSON payloads, multiple improvements to the Oracle connector's metrics and embedded Infinispan buffer implementation, SQL Server heartbeats, Vitess shardless strategy, JDBC sink with SQL Server identity-based inserts, and much more.
+Let's dive into each of thees new features and others in more detail.
+
++++<!-- more -->+++
+
+== TimescaleDB support
+
+TimescaleDB is an open-source time series-based database that is based on PostgreSQL.
+This means that a great deal of functionality to support TimescaleDB directly comes from the existing PostgreSQL connector; however there are certain aspects of TimescaleDB such as chunks, hypertables, and agregates that are not.
+
+Therefore, if you want to get started with Debezium 2.4 and TimescaleDB, the integration requires a combination of both the PostgreSQL connector combined with a new `TimescaleDb` single message transformation (SMT).
+The combination of these two provide the ability to stream changes from a TimescaleDB environment with appropriate table names based on chunks, hypertables, and aggregates.
+
+The `TimescaleDb` transformation is available as `io.debezium.connector.postgresql.transforms.timescaledb` and is responsible for adjusting the final topic names when working with chunks, hypertables, and aggregates.
+Additionally, this transformation adds metadata headers to the change event so you know the original chunk name, chunk table, the hypertable schema and table names accordingly.
+
+== JMX notifications with JSON user data
+
+Debezium 2.4 changes how JMX notifications provide user data.
+In previous versions, the notification used a `toString()` style implementation, which while it worked, it doesn't provide any good forward or backward compatibility semantics unlike other more structured formats such as JSON.
+
+Moving forward, JMX notification's user data will  be provided as JSON, making it easier and more reliable to parse and to support extensibility in the future with less concerns about backward compatibility.
+We hope this makes this feature easier to use moving forward and welcome any additional feedback.
+
+== Oracle connector SCN-based metrics
+
+Oracle tracks a variety of system change number, often called SCN, values in its JMX metrics including `OffsetScn`, `CurrentScn`, `OldestScn`, and `CommittedScn`.
+These SCN values are numeric and can often exceed the upper bounds of a `Long` data type, and so Debezium has traditionally exposed these values as `String` s.
+
+Unfortunately, tooling such as Grafana and Prometheus do not work with `String` -based values, and it has been raised on several occasions that the community would like to be able to view these values from metrics gathering frameworks.
+With Debezium 2.4, there is a small behavior change with the these JMX metrics as they are no longer exposed as `String` values but instead are now exposed as `BigInteger` values.
+
+This change in behavior allows tooling such as Grafana and Prometheus to now scrape these values from the JMX beans automatically for reporting and observability stacks.
+
+[NOTE]
+====
+If you were previously gathering these values for other purposes, be aware they're no longer string-based and should be interpreted as `BigInteger` numerical values moving forward.
+====
+
+== Oracle connector max transaction age metric
+
+The Oracle connector provides a myriad of metrics for LogMiner, including the `OldestScn` metric representing the oldest system change number in the connector's transaction buffer.
+This SCN can be useful to know how far back a transaction may still be buffered relative to the current system change number, `CurrentScn`.
+However, system change numbers are simply that, numerical values that require the use of a database function call to know when the change occurred.
+
+Starting with Debezium 2.4, the connector will now also track the age of the oldest system change number by providing a new metric called `OldestScnAgeInMilliseconds`.
+This metric is calculated by taking the timestamp of the `OffsetScn` and calculating the difference between that time and the query time of the metric, giving a rough age in milliseconds of the oldest transaction in the buffer that has yet to be committed or rolled back.
+
+If there are other metrics you may be interested in to help, please reach out and let us know.
+
+== Oracle embedded Infinispan configuration changes
+
+The Oracle connector supports three different buffering techniques, one is based on JVM heap while the other two are based on off-heap storage using Infinispan.
+When working with Infinispan, you can choose to use a remote cluster, where the caches are stored and managed across a remote connection, or using an embedded cluster, where the cluster is managed locally by the connector itself.
+
+When working with a remote Infinispan cluster, there is some cluster configuration that is made as a part of the Infinispan installation itself, this is often referred to as the global or cluster configuration.
+However when working with an embedded Infinispan cluster, Debezium simply used the default configuration for an embedded cluster, which may not always provide all the necessary behaviors for each environment.
+
+Debezium 2.4 introduces a new configuration property, `log.mining.buffer.infinispan.cache.global`.
+This property allows specifying the XML configuration for the Infinispan "global" or "cluster" configuration.
+
+.An example configuration
+[source,xml]
+----
+<infinispan>
+  <threads>
+    <blocking-bounded-queue-thread-pool
+        max-threads="10"
+        name="myexec"
+        keepalive-time="10000"
+        queue-length="5000" />
+  </threads>
+</infinispan>
+----
+
+With Debezium 2.4, if you are using the Infinispan-embedded buffer, you can now safely configure the overall embedded global configuration for Infinispan, which can allow you to tune and improve the overall performance when using the embedded Infinispan engine.
+
+== SQL Sever heartbeat improvements
+
+It's not an uncommon situation for a database to go for a period of time without there being any relevant changes, whether that is due to inactivity or changes that do occur being of no interest to the connector based on configuration.
+In these cases, it's critical that offset metadata managed by the connector remains synchronized with the offset backing store during these periods so that a restart of the connector works as expected.
+
+With Debezium 2.4, if a SQL Server change capture loop does not find any changes or the changes that did occur are not of any relevance to the connector, the connector will continue to emit heartbeat events when enabled.
+This should improve the reliability of the offsets stored in the offset backing store across a variety of use cases.
+
+== Vitess shardless naming strategy
+
+Debezium 2.4.0.Alpha2 introduced a mechanism to handle schema changes per shard by using the shard name as the catalog when identifying the relational identifier for a table.
+When using the `DefaultTopicNamingStrategy`, this had the side effect that the shard would be included within the topic name, which may not be desirable.
+
+Debezium 2.4.0.Beta1 introduces a new strategy that enables the old behavior called `TableTopicNamingStrategy`.
+
+The following table shows the output differences for topic names based on the different strategies:
+
+|===
+|Strategy |Topic Output
+
+|`DefaultTopicNamingStrategy`
+|`<topic.prefix>.<shard>.<table-name>`
+
+|`TableTopicNamingStrategy`
+|`<topic.prefix>.<table-name>`
+
+|===
+
+In order to configure the table topic naming strategy, include the following configuration for the connector:
+
+[source,properties]
+----
+topic.naming.strategy=io.debezium.connector.vitess.TableTopicNamingStrategy
+----
+
+== JDBC sink SQL Server identity inserts
+
+Each database handles the insertion of values into an identity-based column differently.
+With SQL Server, this requires the explicit enablement of `IDENTITY_INSERT` prior to the insert and the disabling of this feature afterward.
+With Debezium 2.4, the Debezium JDBC sink connector provides support for this in the target database.
+
+In order to take advantage of identity-based inserts, the JDBC sink connector must be configured with a new dialect-based property called `dialect.sqlserver.identity.inserts`, which can be set to `true` or `false`.
+By default, this feature is set to `false` and must be enabled if you wish to insert into identity-based columns.
+
+When enabled, all _insert_ and _upsert_ operations will be wrapped as follows:
+
+[source,sql]
+----
+SET IDENTITY_INSERT <table-name> ON;
+<the insert or upsert statement>
+SET IDENTITY_INSERT <table-name> OFF;
+----
+
+== Other fixes & improvements
+
+There are several bugfixes and stability changes in this release, some noteworthy are:
+
+* Debezium heartbeat.action.query does not start before writing to WAL https://issues.redhat.com/browse/DBZ-6635[DBZ-6635]
+* Schema name changed with Custom topic naming strategy https://issues.redhat.com/browse/DBZ-6641[DBZ-6641]
+* Wrong behavior of quote.identifiers in JdbcSinkConnector https://issues.redhat.com/browse/DBZ-6682[DBZ-6682]
+* Toasted UUID array is not properly processed https://issues.redhat.com/browse/DBZ-6720[DBZ-6720]
+* Debezium crashes on parsing MySQL DDL statement (specific JOIN) https://issues.redhat.com/browse/DBZ-6724[DBZ-6724]
+* Blocking snapshot must take snapshot configurations from signal https://issues.redhat.com/browse/DBZ-6731[DBZ-6731]
+* When using pgoutput in postgres connector, (+/-)Infinity is not supported in decimal values https://issues.redhat.com/browse/DBZ-6758[DBZ-6758]
+* Outbox transformation can cause connector to crash https://issues.redhat.com/browse/DBZ-6760[DBZ-6760]
+* MongoDB New Document State Extraction: nonexistent field for add.headers https://issues.redhat.com/browse/DBZ-6774[DBZ-6774]
+* Mongodb connector tests are massively failing when executed on 7.0-rc version https://issues.redhat.com/browse/DBZ-6779[DBZ-6779]
+* Dbz crashes on parsing MySQL DDL statement (SELECT 1.;) https://issues.redhat.com/browse/DBZ-6780[DBZ-6780]
+* Mysql connector tests are failing when executed without any profile https://issues.redhat.com/browse/DBZ-6791[DBZ-6791]
+* Dbz crashed on parsing MySQL DDL statement (SELECT 1 + @sum:=1 AS ss;) https://issues.redhat.com/browse/DBZ-6794[DBZ-6794]
+* MySQL DDL parser - REPEAT function not accepted https://issues.redhat.com/browse/DBZ-6803[DBZ-6803]
+* Fix bug with getSnapshottingTask https://issues.redhat.com/browse/DBZ-6820[DBZ-6820]
+* Dbz crashes on DDL statement (non-Latin chars in variables) https://issues.redhat.com/browse/DBZ-6821[DBZ-6821]
+* Not trim the default value for the BIGINT and SMALLINT types when parsing MySQL DDL https://issues.redhat.com/browse/DBZ-6824[DBZ-6824]
+* PostgresConnectorIT#shouldAddNewFieldToSourceInfo fails randomly https://issues.redhat.com/browse/DBZ-6839[DBZ-6839]
+* Wrong filtered comments https://issues.redhat.com/browse/DBZ-6840[DBZ-6840]
+* Intermittent test failure: BaseSourceTaskTest.verifyTaskRestartsSuccessfully https://issues.redhat.com/browse/DBZ-6841[DBZ-6841]
+* When using `skip.messages.without.change=true` a WARN log message is reported for each record https://issues.redhat.com/browse/DBZ-6843[DBZ-6843]
+
+Altogether, a total of https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20AND%20fixVersion%20%3D%202.4.0.Beta1%20ORDER%20BY%20component%20ASC[39 issues] were fixed for this release.
+https://github.com/andreas-ibm[Andreas Martens],
+https://github.com/adasari[Anil Dasari],
+https://github.com/ani-sha[Anisha Mohanty],
+https://github.com/roldanbob[Bob Roldan],
+https://github.com/chrisbeard[Chris Beard],
+https://github.com/Naros[Chris Cranford],
+Matan Cohen,
+https://github.com/Fraznist[Emre Akgün],
+https://github.com/ericpangiawan[Eric Pangiawan],
+https://github.com/ruanhang1993[Hang Ruan],
+https://github.com/harveyyue[Harvey Yue],
+https://github.com/jeremy-l-ford[Jeremy Ford],
+https://github.com/novotnyJiri[Jiri Novotny],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/Naros[M. Gökhan Akgül],
+https://github.com/mfvitale[Mario Fiore Vitale],
+https://github.com/nancyxu123[Nancy Xu],
+https://github.com/obabec[Ondrej Babec],
+https://github.com/rajdangwal[Rajendra Dangwal],
+https://github.com/ShuranZhang[Shuran Zhang],
+https://github.com/rolevinks[Stein Rolevink],
+https://github.com/sunxiaojian[Sun Xiao Jian],
+https://github.com/twthorn[Thomas Thornton],
+https://github.com/vjuranek[Vojtech Juranek],
+https://github.com/wuzhenhua01[Wu Zhenhua],
+https://github.com/sunxiaojian[Xiaojian Sun]
+
+== Outlook &amp; What's Next?
+
+As we enter the beta-phase of Debezium 2.4, the next several weeks will primarily focus on bugfixes and stability as we continue to march forward to a final release at the end of September.
+We are also close on the last minute changes for the OpenLogReplicator ingestion method for Oracle and once complete, expect a Beta2 shortly afterward.
+Furthermore, there will be a Debezium 2.3.3.Final maintenance release early next week and likely at least one more 2.3 release as we make the transition to Debezium 2.4 as the new stable release later this coming month.
+
+In addition, the Debezium Community Event's agenda and date will be published later this week, so keep an eye out for that news.
+And finally, we'll be presenting at Kafka Summit 2023 (aka Current 2023) later this upcoming month.
+If you're planning to attend and would like to ask the experts, be sure to get in touch with me or anyone on the team and we can plan to meet up and discuss anything related to Debezium and CDC.
+
+As always, if you have any ideas or suggestions, you can also get in touch with us on the https://groups.google.com/g/debezium[mailing list] or our https://debezium.zulipchat.com/login/#narrow/stream/302529-users[chat].
