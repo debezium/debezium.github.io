@@ -442,9 +442,22 @@
 </ul>
 </li>
 <li><a href="#surrogate-schema-evolution">Surrogate schema evolution</a></li>
+<li><a href="#oracle-openlogreplicator-support">OpenLogReplicator support</a>
+<ul class="sectlevel2">
+<li><a href="#_how_openlogreplicator_works">How OpenLogReplicator works</a></li>
+<li><a href="#_preparing_the_database_2">Preparing the database</a></li>
+<li><a href="#_creating_connector_users">Creating connector users</a></li>
+<li><a href="#selecting-the-adapter">Configuring the OpenLogReplicator adapter</a></li>
+<li><a href="#building-openlogreplicator">Building OpenLogReplicator</a></li>
+<li><a href="#obtaining-oracle-jdbc-driver-openlogreplicator">Obtaining the Oracle JDBC driver for OpenLogReplicator</a></li>
+<li><a href="#oracle-openlogreplicator-configuration">OpenLogReplicator configuration</a></li>
+<li><a href="#oracle-openlogreplicator-connector-properties">OpenLogReplicator connector properties</a></li>
+<li><a href="#oracle-openlogreplicator-known-issues">Known issues</a></li>
+</ul>
+</li>
 <li><a href="#oracle-xstreams-support">XStreams support</a>
 <ul class="sectlevel2">
-<li><a href="#_preparing_the_database_2">Preparing the Database</a></li>
+<li><a href="#_preparing_the_database_3">Preparing the Database</a></li>
 <li><a href="#_creating_xstream_users_for_the_connector">Creating XStream users for the connector</a></li>
 <li><a href="#_create_an_xstream_outbound_server">Create an XStream Outbound Server</a></li>
 <li><a href="#selecting-the-adapter">Configuring the XStream adapter</a></li>
@@ -471,8 +484,7 @@ You can configure the connector to emit change events for specific subsets of sc
 </div>
 <div class="paragraph">
 <p>Debezium ingests change events from Oracle by using the native LogMiner database package
- or the <a href="https://docs.oracle.com/database/121/XSTRM/xstrm_intro.htm#XSTRM72647">XStream API</a>.
-While the connector might work with a variety of Oracle versions and editions, only Oracle EE 12 and 19 have been tested.</p>
+, the <a href="https://docs.oracle.com/database/121/XSTRM/xstrm_intro.htm#XSTRM72647">XStream API</a>, or <a href="https://www.bersler.com/openlogreplicator/">OpenLogReplicator</a>.</p>
 </div>
 </div>
 </div>
@@ -5336,9 +5348,23 @@ The connector is also unable to recover its database schema history topic.</p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>The adapter implementation that the connector uses when it streams database changes.
-You can set the following values:
-<code>logminer</code>(default):: The connector uses the native Oracle LogMiner API.
-<code>xstream</code>:: The connector uses the Oracle XStreams API.</p>
+You can set the following values:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>logminer</code> (default)</dt>
+<dd>
+<p>The connector uses the native Oracle LogMiner API.</p>
+</dd>
+<dt class="hdlist1"><code>olr</code></dt>
+<dd>
+<p>The connector uses OpenLogReplicator.</p>
+</dd>
+<dt class="hdlist1"><code>xstream</code></dt>
+<dd>
+<p>The connector uses the Oracle XStreams API.</p>
+</dd>
+</dl>
 </div></div></td>
 </tr>
 <tr>
@@ -8634,6 +8660,451 @@ After the connector&#8217;s commit SCN advances beyond the DDL change, to preven
 </div>
 </div>
 <div class="sect1">
+<h2 id="oracle-openlogreplicator-support"><a class="anchor" href="#oracle-openlogreplicator-support"></a>OpenLogReplicator support</h2>
+<div class="sectionbody">
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>The OpenLogReplicator ingestion adapter is currently in incubating state, i.e. exact semantics, configuration options etc. may change in future revisions, based on the feedback we receive.
+There are also several <a href="#oracle-openlogreplicator-known-issues">known issues</a> with the current implementation.
+Please let us know if you encounter any other problems beyond those known.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="paragraph">
+<p>The Debezium Oracle connector by default ingests changes using native Oracle LogMiner.
+However, the connector can be toggled to use OpenLogReplicator, an open-source and free third-party application that reads Oracle changes directly from the redo and archive logs with low impact on the database.
+To configure the connector to use OpenLogReplicator, you must apply specific database and connector configurations that differ from those that you use with LogMiner.</p>
+</div>
+<div class="ulist">
+<div class="title">Prerequisites</div>
+<ul>
+<li>
+<p>Download and compile OpenLogReplicator for your database environment.</p>
+</li>
+<li>
+<p>OpenLogReplicator must be installed with direct access to the archive and redo log files. This does not necessarily require installation on the physical database server if the archive and redo logs can be accessed via some shared filesystem.</p>
+</li>
+</ul>
+</div>
+<div class="sect2">
+<h3 id="_how_openlogreplicator_works"><a class="anchor" href="#_how_openlogreplicator_works"></a>How OpenLogReplicator works</h3>
+<div class="paragraph">
+<p>OpenLogReplicator takes on the role of Oracle LogMiner and Oracle XStream when the Debezium Oracle connector streams changes.
+It is responsible for the capturing of changes in the redo and archive logs as they occur and batching those changes into logical transactions.
+Debezium Oracle connector is a consumer of OpenLogReplicator by connecting to the network endpoint provided by OpenLogReplicator and ingesting the transactions as they&#8217;re batched.</p>
+</div>
+<div class="paragraph">
+<p>After the OpenLogReplicator adapter ingests changes, the Debezium Oracle connector transforms the events into <a href="#oracle-events">data change events</a> just like any other adapter.</p>
+</div>
+<div class="paragraph">
+<p>From a network topology perspective, the Debezium Oracle connector relies on network connections to both the Oracle database and to the OpenLogReplicator.
+Similarly, OpenLogReplicator requires a network connection to the Oracle database, as well as direct access to the raw redo and archive logs.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_preparing_the_database_2"><a class="anchor" href="#_preparing_the_database_2"></a>Preparing the database</h3>
+<div class="paragraph">
+<p>The Oracle database must be configured to generate specific files, called archive logs.
+An archive log is a saved copy of a full online redo log.
+The database must be placed in <code>ARCHIVELOG</code> mode before it can archive redo log files.
+To place the database in <code>ARCHIVELOG</code> mode, you must set specific configuration properties to specify the destination for saving the archive log files.</p>
+</div>
+<div class="paragraph">
+<p>The following example shows a command for placing a database into archive log mode:</p>
+</div>
+<div class="exampleblock">
+<div class="title">Example 1. Configuration needed for OpenLogReplicator</div>
+<div class="content">
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-none hljs">ORACLE_SID=ORCLCDB dbz_oracle sqlplus /nolog
+
+CONNECT sys/top_secret AS SYSDBA
+alter system set db_recovery_file_dest_size = 5G;
+alter system set db_recovery_file_dest = '/opt/oracle/oradata/recovery_area' scope=spfile;
+shutdown immediate
+startup mount
+alter database archivelog;
+alter database open;
+-- Should show "Database log mode: Archive Mode"
+archive log list
+
+exit;</code></pre>
+</div>
+</div>
+</div>
+</div>
+<div class="paragraph">
+<p>For Debezium to generate change events that show the <code>before</code> and <code>after</code> states of a table row, supplemental logging must be active on the database.
+Supplemental logging adds column data to the redo logs to identify the rows that are affected when a table is modified.</p>
+</div>
+<div class="paragraph">
+<p>You can use different methods to configure supplemental logging.
+To support Debezium, you must enable at least minimal database-level supplemental logging.
+Minimal supplemental logging writes the least amount of information needed to be able to create change events.
+The following example shows a command that you might use to enable minimal supplemental logging.</p>
+</div>
+<div class="exampleblock">
+<div class="title">Example 2. Configure database-level supplemental logging</div>
+<div class="content">
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">ALTER DATABASE ADD SUPPLEMENTAL LOG DATA</code></pre>
+</div>
+</div>
+</div>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>Debezium for Oracle can work with a higher degree of supplemental logging at the database level, if that is already configured for other purposes.
+But if you do not require higher fidelity logging to support other applications, you can reduce database-level logging to the minimum level.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="paragraph">
+<p>For each captured table, you must explicitly configure a higher fidelity supplemental logging, called <code>(ALL) COLUMNS</code>.
+The <code>(ALL) COLUMNS</code> logging level guarantees that Oracle captures the state of a column regardless of whether the column changed when a redo entry is written to the redo log.
+Enabling the higher logging level enables Debezium for Oracle to generate change events that provide the accurate <em>before</em> and <em>after</em> states for a row.</p>
+</div>
+<div class="paragraph">
+<p>The following example shows a command for enabling supplemental logging for each captured table.</p>
+</div>
+<div class="exampleblock">
+<div class="title">Example 3. Configure captured table supplemental logging</div>
+<div class="content">
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">ALTER TABLE inventory.customers ADD SUPPLEMENTAL LOG DATA (ALL) COLUMNS</code></pre>
+</div>
+</div>
+</div>
+</div>
+<div class="admonitionblock important">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-important" title="Important"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>Whenever new tables are added to the Debezium Oracle&#8217;s connector configuration, you must configure supplemental logging for each table.
+If a table that is configured for capture is not correctly configured for supplemental logging, after the connector begins streaming, it returns a warning message.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_creating_connector_users"><a class="anchor" href="#_creating_connector_users"></a>Creating connector users</h3>
+<div class="paragraph">
+<p>The Debezium Oracle connector requires a user account to be set up with specific permissions so that the connector can capture change events.
+This user account will be used by both Debezium and OpenLogReplicator.
+The following example shows a possible user account configuration for deploying Debezium with OpenLogReplicator in a multi-tenant Oracle environment.</p>
+</div>
+<div id="oracle-create-users-openlogreplicator" class="exampleblock">
+<div class="title">Example 4. Creating OpenLogReplicator user</div>
+<div class="content">
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-none hljs"># Create Log Miner Tablespace and User
+sqlplus sys/top_secret@//localhost:1521/ORCLCDB as sysdba &lt;&lt;- EOF
+  CREATE TABLESPACE LOGMINER_TBS DATAFILE '/opt/oracle/oradata/ORCLCDB/logminer_tbs.dbf' SIZE 25M REUSE AUTOEXTEND ON MAXSIZE UNLIMITED;
+  exit;
+EOF
+
+sqlplus sys/top_secret@//localhost:1521/ORCLPDB1 as sysdba &lt;&lt;- EOF
+  CREATE TABLESPACE LOGMINER_TBS DATAFILE '/opt/oracle/oradata/ORCLCDB/ORCLPDB1/logminer_tbs.dbf' SIZE 25M REUSE AUTOEXTEND ON MAXSIZE UNLIMITED;
+  exit;
+EOF
+
+sqlplus sys/top_secret@//localhost:1521/ORCLCDB as sysdba &lt;&lt;- EOF
+  CREATE USER c##dbzuser IDENTIFIED BY dbz DEFAULT TABLESPACE LOGMINER_TBS QUOTA UNLIMITED ON LOGMINER_TBS CONTAINER=ALL;
+
+  -- Debezium specific permissions
+  GRANT CREATE SESSION TO c##dbzuser CONTAINER=ALL;
+  GRANT SET CONTAINER TO c##dbzuser CONTAINER=ALL;
+  GRANT SELECT ON V_\$DATABASE TO c##dbzuser CONTAINER=ALL;
+  GRANT SELECT ANY DICTIONARY TO c##dbzuser CONTAINER=ALL;
+  GRANT LOCK ANY TABLE TO c##dbzuser CONTAINER=ALL;
+  -- These can be reduced from ANY TABLE to your captured tables depending on your security model
+  GRANT SELECT ANY TABLE TO c##dbzuser CONTAINER=ALL;
+  GRANT FLASHBACK ANY TABLE TO c##dbzuser CONTAINER=ALL;
+
+  -- OpenLogReplicator specific permissions
+  ALTER SESSION SET CONTAINER = ORCLPDB1;
+  GRANT SELECT, FLASHBACK ON SYS.CCOL$ TO c##dbzuser;
+  GRANT SELECT, FLASHBACK ON SYS.CDEF$ TO c##dbzuser;
+  GRANT SELECT, FLASHBACK ON SYS.COL$ TO c##dbzuser;
+  GRANT SELECT, FLASHBACK ON SYS.DEFERRED_STG$ TO c##dbzuser;
+  GRANT SELECT, FLASHBACK ON SYS.ECOL$ TO c##dbzuser;
+  GRANT SELECT, FLASHBACK ON SYS.LOB$ TO c##dbzuser;
+  GRANT SELECT, FLASHBACK ON SYS.LOBCOMPPART$ TO c##dbzuser;
+  GRANT SELECT, FLASHBACK ON SYS.LOBFRAG$ TO c##dbzuser;
+  GRANT SELECT, FLASHBACK ON SYS.OBJ$ TO c##dbzuser;
+  GRANT SELECT, FLASHBACK ON SYS.TAB$ TO c##dbzuser;
+  GRANT SELECT, FLASHBACK ON SYS.TABCOMPART$ TO c##dbzuser;
+  GRANT SELECT, FLASHBACK ON SYS.TABPART$ TO c##dbzuser;
+  GRANT SELECT, FLASHBACK ON SYS.TABSUBPART$ TO c##dbzuser;
+  GRANT SELECT, FLASHBACK ON SYS.TS$ TO c##dbzuser;
+  GRANT SELECT, FLASHBACK ON SYS.USER$ TO c##dbzuser;
+
+  exit;
+EOF</code></pre>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="selecting-the-adapter"><a class="anchor" href="#selecting-the-adapter"></a>Configuring the OpenLogReplicator adapter</h3>
+<div class="paragraph">
+<p>By default, Debezium uses Oracle LogMiner to ingest change events from Oracle.
+You can modify the default settings to configure the connector to use the OpenLogReplicator adapter in place of LogMiner.</p>
+</div>
+<div class="paragraph">
+<p>In the example that follows, the following properties are added to the connector configuration to enable the connector to use the OpenLogReplicator adapter:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p><code>database.connection.adapter</code></p>
+</li>
+<li>
+<p><code>openlogreplicator.source</code></p>
+</li>
+<li>
+<p><code>openlogreplicator.host</code></p>
+</li>
+<li>
+<p><code>openlogreplicator.port</code></p>
+</li>
+</ul>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
+    "name": "inventory-connector",
+    "config": {
+        "connector.class" : "io.debezium.connector.oracle.OracleConnector",
+        "tasks.max" : "1",
+        "topic.prefix" : "server1",
+        "database.hostname" : "&lt;oracle ip&gt;",
+        "database.port" : "1521",
+        "database.user" : "c##dbzuser",
+        "database.password" : "dbz",
+        "database.dbname" : "ORCLCDB",
+        "database.pdb.name" : "ORCLPDB1",
+        "schema.history.internal.kafka.bootstrap.servers" : "kafka:9092",
+        "schema.history.internal.kafka.topic": "schema-changes.inventory",
+        "database.connection.adapter": "olr",
+        "openlogreplicator.source": "ORACLE",
+        "openlogreplicator.host": "&lt;ip address or hostname of OpenLogReplicator&gt;",
+        "openlogreplicator.port": "&lt;port OpenLogReplicator is listening on&gt;"
+    }
+}</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="building-openlogreplicator"><a class="anchor" href="#building-openlogreplicator"></a>Building OpenLogReplicator</h3>
+<div class="paragraph">
+<p>OpenLogReplicator does not distribute binaries, so you must build the third-party tool from code.
+OpenLogReplicator is written in C++; however, the author provides a container image to build the source for a variety of operating systems, including RHEL, Fedora, CentOS, Debian, and others.
+For information about how to build the tool using a container, see the This <a href="https://github.com/bersler/OpenLogReplicator-docker">OpenLogReplicator GitHub repository</a>.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="obtaining-oracle-jdbc-driver-openlogreplicator"><a class="anchor" href="#obtaining-oracle-jdbc-driver-openlogreplicator"></a>Obtaining the Oracle JDBC driver for OpenLogReplicator</h3>
+<div class="paragraph">
+<p>When you use the Debezium Oracle connector with the OpenLogReplicator, you must  obtain the Oracle JDBC driver to connect to Oracle databases.
+For more information, see <a href="#obtaining-the-oracle-jdbc-driver">Obtaining the Oracle JDBC driver</a>.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="oracle-openlogreplicator-configuration"><a class="anchor" href="#oracle-openlogreplicator-configuration"></a>OpenLogReplicator configuration</h3>
+<div class="paragraph">
+<p>OpenLogReplicator is a third-party standalone process that is responsible for reading the Oracle redo and archive logs.
+Unlike other Debezium Oracle adapters, this means that there are two configurable components that must be configured independently of one another.</p>
+</div>
+<div class="paragraph">
+<p>You configure OpenLogReplicator by using a JSON file called <code>scripts/OpenLogReplicator.json</code>.
+For more information about the required format of this file, see the <a href="https://github.com/bersler/OpenLogReplicator/blob/master/documentation/reference-manual/reference-manual.adoc#openlogreplicator-json-file-format">OpenLogReplicator documentation</a>.</p>
+</div>
+<div class="exampleblock">
+<div class="title">Example 5. OpenLogReplicator configuration</div>
+<div class="content">
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
+  "version": "1.2.1",
+  "source": [{
+    "alias": "SOURCE",
+    "name": "ORACLE", <i class="conum" data-value="1"></i><b>(1)</b>
+    "reader": {
+      "type": "online",
+      "path-mapping": ["/opt/olr/recovery_area", "/opt/olr/recovery_area/ORCLCDB/archivelog"], <i class="conum" data-value="2"></i><b>(2)</b>
+      "user": "c##dbzuser", <i class="conum" data-value="3"></i><b>(3)</b>
+      "password": "dbz", <i class="conum" data-value="4"></i><b>(4)</b>
+      "server": "//&lt;ip&gt;:&lt;port&gt;/ORCLPDB1" <i class="conum" data-value="5"></i><b>(5)</b>
+    },
+    "format": { <i class="conum" data-value="6"></i><b>(6)</b>
+      "type": "json",
+      "column": 2,
+      "db": 3,
+      "interval-dts": 9,
+      "interval-ytm": 4,
+      "message": 2,
+      "rid": 1,
+      "schema": 7,
+      "scn-all": 1,
+      "timestamp-all": 1
+    }
+  }],
+  "target": [{
+    "alias": "DEBEZIUM",
+    "source": "SOURCE",
+    "writer": {
+      "type": "network", <i class="conum" data-value="7"></i><b>(7)</b>
+      "uri": "&lt;host&gt;:&lt;port&gt;" <i class="conum" data-value="8"></i><b>(8)</b>
+    }
+  }]
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<table>
+<tr>
+<td><i class="conum" data-value="1"></i><b>1</b></td>
+<td>This should match the <code>openlogreplicator.source</code> connector configuration.</td>
+</tr>
+<tr>
+<td><i class="conum" data-value="2"></i><b>2</b></td>
+<td>List of file path pairs <code>[before1,after1,befor2,after2,&#8230;&#8203;]</code> where if a log file path matches one of the <code>beforeX</code> prefixes, the prefix is replaced with the <code>afterX</code> path.  This is useful when OpenLogReplicator is running on a different host than the source database and the path to the redo and archive logs different between the database and the OpenLogReplicator process.</td>
+</tr>
+<tr>
+<td><i class="conum" data-value="3"></i><b>3</b></td>
+<td>This should match the <code>database.user</code> connector property.</td>
+</tr>
+<tr>
+<td><i class="conum" data-value="4"></i><b>4</b></td>
+<td>This should match the <code>database.password</code> connector property.</td>
+</tr>
+<tr>
+<td><i class="conum" data-value="5"></i><b>5</b></td>
+<td>This should point to the database host, port, and Oracle SID.</td>
+</tr>
+<tr>
+<td><i class="conum" data-value="6"></i><b>6</b></td>
+<td>This specifies the payload format ingested by Debezium Oracle connector. Use these values as specified, as these are the only format options that we require beyond the defaults.</td>
+</tr>
+<tr>
+<td><i class="conum" data-value="7"></i><b>7</b></td>
+<td>This must specify <code>network</code>, as Debezium Oracle connector communicates with OpenLogReplicator via a network connection.</td>
+</tr>
+<tr>
+<td><i class="conum" data-value="8"></i><b>8</b></td>
+<td>This specifies the bind host and port that OpenLogReplicator listens for connections on.  This should be accessible by Debezium Oracle connector.</td>
+</tr>
+</table>
+</div>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="oracle-openlogreplicator-connector-properties"><a class="anchor" href="#oracle-openlogreplicator-connector-properties"></a>OpenLogReplicator connector properties</h3>
+<div class="paragraph">
+<p>The following configuration properties are required when using OpenLogReplicator.</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 30%;">
+<col style="width: 25%;">
+<col style="width: 45%;">
+</colgroup>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Property</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Default</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Description</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="oracle-property-openlogreplicator-source"></a><a href="#oracle-property-openlogreplicator-source"><code>openlogreplicator.source</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The logical name of the configured <code>source.name</code> element in the OpenLogReplicator JSON configuration.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="oracle-property-openlogreplicator-host"></a><a href="#oracle-property-openlogreplicator-host"><code>openlogreplicator.host</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The host name or IP address of the OpenLogReplicator network service.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="oracle-property-openlogreplicator-port"></a><a href="#oracle-property-openlogreplicator-port"><code>openlogreplicator.port</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The port number that is used by the OpenLogReplicator network service.</p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="sect2">
+<h3 id="oracle-openlogreplicator-known-issues"><a class="anchor" href="#oracle-openlogreplicator-known-issues"></a>Known issues</h3>
+<div class="paragraph">
+<p>The following describe known problems with the OpenLogReplicator ingestion adapter.</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><strong>Connector restarts may miss or re-send old events</strong></dt>
+<dd>
+<p>The current checkpoint confirmation logic does not correctly account for situations where transactions may interweave.
+As a result, connector restarts can cause already sent events to be re-delivered or in-progress transactions that interweave with other transactions that commit after a connector restarts to be omitted from the event stream.
+Unfortunately this is due to how OpenLogReplicator confirms redo blocks and they&#8217;re actively working on a fix we hope to integrate in a future build.</p>
+</dd>
+</dl>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
 <h2 id="oracle-xstreams-support"><a class="anchor" href="#oracle-xstreams-support"></a>XStreams support</h2>
 <div class="sectionbody">
 <div class="paragraph">
@@ -8651,7 +9122,7 @@ Installing GoldenGate is not required.</p>
 </ul>
 </div>
 <div class="sect2">
-<h3 id="_preparing_the_database_2"><a class="anchor" href="#_preparing_the_database_2"></a>Preparing the Database</h3>
+<h3 id="_preparing_the_database_3"><a class="anchor" href="#_preparing_the_database_3"></a>Preparing the Database</h3>
 <div class="listingblock">
 <div class="title">Configuration needed for Oracle XStream</div>
 <div class="content">
@@ -9182,7 +9653,7 @@ When the following JVM argument is provided, the Oracle connector will start suc
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2023 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/9aadc384149c8429064918407964758f292daac8">9aadc384</a></span>)
+            <div class="copyright">Copyright &copy; 2023 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/5e243e2480f1bd2525c7de27672f98fe7649d01b">5e243e24</a></span>)
             
         </div>
     </footer>
