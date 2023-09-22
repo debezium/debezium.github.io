@@ -1,0 +1,226 @@
+---
+layout: post
+title:  "Debezium signaling and notifications - Part 3: JMX channel"
+date:   2023-09-27 11:11:11 +0100
+tags: [ debezium, features, notifications, signaling, integration ]
+featured: true
+author: mfvitale
+---
+Welcome to the third installment of our series on Debezium Signaling and Notifications.
+In this article, we continue our exploration of Debezium signaling and notifications. In this part, we will delve into how to enable and manage these features using the JMX channel.
+
+We will also explore how to send signal and get notification through REST api leveraging on Jolokia.
+
++++<!-- more -->+++
+
+== Enabling Signaling via JMX
+Signaling in Debezium is all about influencing its behavior in real-time. Here's how you can enable signaling with JMX:
+
+To activate the JMX signaling channel, navigate to your Debezium connector configuration. Add "jmx" to the signal.enabled.channels property, which signifies enabling the JMX signaling channel, providing you with the capability to send signals that influence Debezium's operations.
+
+Now, let's delve into the process of sending signals using the JMX signaling channel:
+
+Connect to JMX Server: Utilize your preferred JMX client, like JConsole or JDK Mission Control, to establish a connection with the JMX MBean server where Debezium is operating.
+
+Locate the Signal MBean: Hunt for the MBean with the name debezium.<connector-type>:type=management,context=signals,server=<server>. This MBean exposes `signal` operations that accept three parameters:
+
+* p0: The id of the signal.
+
+* p1: The type of the signal, for example, execute-snapshot.
+
+* p2: A JSON data field that contains additional information about the specified signal type.
+
+=== Send incremental snapshot signal through JMX channel
+
+For this example, we will use debezium docker images with PostgreSQL database.
+
+You can start up all the required components using the following docker compose file
+
+[source, yaml]
+----
+version: '2'
+services:
+  zookeeper:
+    image: quay.io/debezium/zookeeper:2.4
+    ports:
+      - 2181:2181
+      - 2888:2888
+      - 3888:3888
+  kafka:
+    image: quay.io/debezium/kafka:2.4
+    ports:
+      - 9092:9092
+    links:
+      - zookeeper
+    environment:
+      - ZOOKEEPER_CONNECT=zookeeper:2181
+  postgres:
+    image: quay.io/debezium/example-postgres:2.4
+    ports:
+      - 5432:5432
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+  connect:
+    image: quay.io/debezium/connect:2.4
+    ports:
+      - 8083:8083
+      - 9012:9012 #<1>
+    links:
+      - kafka
+      - postgres
+    environment:
+      - BOOTSTRAP_SERVERS=kafka:9092
+      - GROUP_ID=1
+      - CONFIG_STORAGE_TOPIC=my_connect_configs
+      - OFFSET_STORAGE_TOPIC=my_connect_offsets
+      - STATUS_STORAGE_TOPIC=my_connect_statuses
+      - JMXPORT=9012 #<2>
+      - JMXHOST=0.0.0.0 #<3>
+----
+<1> This will expose the port 9012 used to connect to JMX Server
+<2> Enables JMX and specifies the port number that will be used for JMX. The value is used to specify the JVM parameter **-Dcom.sun.management.jmxremote.port=$JMX_PORT**.
+<3> The IP address or resolvable host name of the Docker host, which JMX uses to construct a URL sent to the JMX client. A value of localhost or 127.0.0.1 will not work. Typically, 0.0.0.0 can be used. The value is used to specify the JVM parameter **-Djava.rmi.server.hostname=$JMXHOST**
+
+Save the file as `debezium.yaml` and then run:
+[source, bash]
+----
+docker compose -f ./deploy/docker-compose-postgres.yaml up -d
+----
+[source, bash]
+----
+[+] Running 5/5
+ ✔ Network deploy_default        Created                                                                                                                                                                                           0.1s
+ ✔ Container deploy-zookeeper-1  Started                                                                                                                                                                                           0.1s
+ ✔ Container deploy-postgres-1   Started                                                                                                                                                                                           0.1s
+ ✔ Container deploy-kafka-1      Started                                                                                                                                                                                           0.1s
+ ✔ Container deploy-connect-1    Started
+----
+
+[source, bash]
+----
+docker ps
+----
+[source, bash]
+----
+CONTAINER ID   IMAGE                            COMMAND                  CREATED         STATUS         PORTS                                                                              NAMES
+f1d49fb79dba   quay.io/debezium/connect:2.4                "/docker-entrypoint.…"   3 seconds ago   Up 2 seconds   0.0.0.0:8083->8083/tcp, 0.0.0.0:8778->8778/tcp, 0.0.0.0:9012->9012/tcp, 9092/tcp   deploy-connect-1
+e164b2651fbf   quay.io/debezium/kafka:2.4       "/docker-entrypoint.…"   3 seconds ago   Up 2 seconds   0.0.0.0:9092->9092/tcp                                                             deploy-kafka-1
+e61116f22f9d   quay.io/debezium/example-postgres:2.4    "docker-entrypoint.s…"   4 seconds ago   Up 2 seconds   0.0.0.0:5432->5432/tcp                                                             deploy-postgres-1
+ccb502882928   quay.io/debezium/zookeeper:2.4   "/docker-entrypoint.…"   4 seconds ago   Up 2 seconds   0.0.0.0:2181->2181/tcp, 0.0.0.0:2888->2888/tcp, 0.0.0.0:3888->3888/tcp             deploy-zookeeper-1
+----
+
+At this point all components are up and running, so we can register our connector configuration
+
+[source, json]
+----
+{
+  "name": "inventory-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "tasks.max": "1",
+    "database.hostname": "postgres",
+    "database.port": "5432",
+    "database.user": "postgres",
+    "database.password": "postgres",
+    "database.server.id": "184054",
+    "database.dbname": "postgres",
+    "topic.prefix": "dbserver1",
+    "snapshot.mode": "NEVER",
+    "schema.history.internal.kafka.bootstrap.servers": "kafka:9092",
+    "schema.history.internal.kafka.topic": "schema-changes.inventory",
+    "signal.enabled.channels": "source,jmx", <1>
+    "signal.data.collection": "inventory.debezium_signal", <2>
+    "notification.enabled.channels": "log,sink,jmx",
+    "notification.sink.topic.name": "io.debezium.notification"
+  }
+}
+----
+<1> This configuration enables **source** and **jmx** channel. Even if we will use JMX to send the signal, since we want to execute an incremental snapshot, the **source** signal is still required because Debezium needs to use signal table to watermark the db log for events decoupling.
+<2> Set the table used for the signaling
+
+For now, don't worry about the **notifications.*** properties.
+
+Save this configuration into a file named **postgres-jmx.json** and then you can register it.
+
+To register the connector we can use the Kafka Connect API
+
+[source, bash]
+----
+curl -i -X POST -H "Accept:application/json" -H "Content-Type:application/json" localhost:8083/connectors/ -d '{"name":"inventory-connector","config":{"connector.class":"io.debezium.connector.postgresql.PostgresConnector","tasks.max":"1","database.hostname":"postgres","database.port":"5432","database.user":"postgres","database.password":"postgres","database.server.id":"184054","database.dbname":"postgres","topic.prefix":"dbserver1","snapshot.mode":"NEVER","schema.history.internal.kafka.bootstrap.servers":"kafka:9092","schema.history.internal.kafka.topic":"schema-changes.inventory","signal.enabled.channels":"source,jmx","signal.data.collection":"inventory.debezium_signal","notification.enabled.channels":"log,sink,jmx","notification.sink.topic.name":"io.debezium.notification"}}'
+----
+
+or I would suggest to use **https://github.com/kcctl/kcctl[kcctl]** tool to interact with Kafka Connect.
+
+First of all you need to create a configuration context to connect with Kafka Connect
+[source, bash]
+----
+kcctl config set-context local --cluster http://localhost:8083
+----
+
+then you can register the connector running the following command
+
+[source, bash]
+----
+kcctl apply -f postgres-jmx.json
+----
+
+you can now get the logs of connect container
+
+[source, bash]
+----
+docker logs f1d49fb79dba <1>
+----
+<1> This is the id of the connect container that we got before running the **docker** ps command
+
+and check that the connector is started streaming events
+[source, text]
+----
+INFO   Postgres|dbserver1|streaming  Starting streaming   [io.debezium.pipeline.ChangeEventSourceCoordinator]
+----
+
+1. connect to database and create the signal table
+2. execute signal
+3. check kafka topic
+
+[source,bash]
+----
+java -jar jmxterm-1.0.4-uber.jar <1>
+
+open localhost:9012 <2>
+
+beans -d debezium.postgres <3>
+
+run -b debezium.postgres:context=signals,server=dbserver1,type=management signal 12345 execute-snapshot {"data-collections":["inventory.orders"],"type":"INCREMENTAL"} <4>
+----
+<1> Run the jmxterm client
+<2> Open a connection to JMX Server
+<3> Search for bean under **debezium.postgres** domain
+<4> Execute the **signal** operation to execute an incremental snapshot of the **inventory.orders** table.
+
+== Enabling and Accessing Notifications via JMX
+Notifications in Debezium play a pivotal role in keeping you informed about crucial events and changes in your data pipeline. Here's how to enable and access notifications through JMX:
+
+To enable Debezium notifications, specify a list of notification channels in the notification.enabled.channels configuration property. Debezium offers channels like sink, log, and jmx for notifications. If you opt for the sink channel, ensure to configure notification.sink.topic.name to define the destination topic for notifications.
+
+Accessing notifications through JMX:
+
+Configure JMX MBean Server: Ensure that the JMX MBean Server is set up to expose the notification bean.
+
+Update Connector Configuration: Integrate "jmx" into the notification.enabled.channels property in the connector configuration.
+
+Connect to JMX: Establish a connection with the MBean Server using your JMX client.
+
+Notifications in Debezium are accessible through the Notifications attribute of a specific bean. These notifications are invaluable for staying updated on events such as the commencement of an incremental snapshot.
+
+== Leveraging Jolokia for REST-based Signaling and Notifications
+Jolokia is a powerful tool that allows you to interact with Debezium via REST and utilize the JMX channel for signaling and notifications. With Jolokia, you can send signals and receive notifications seamlessly.
+
+Sending Signals via Jolokia
+To send signals via Jolokia, you can use HTTP POST requests to a Jolokia endpoint with the desired signal and parameters. This enables you to control Debezium remotely through RESTful interactions.
+
+Receiving Notifications via Jolokia
+Jolokia also allows you to fetch notifications from Debezium using HTTP GET requests. You can subscribe to notifications and receive real-time updates about events in your data pipeline.
+
+== Conclusion
+In this third installment of our series on Debezium Signaling and Notifications, we've learned how to enable and manage both signaling and notifications using JMX and Jolokia. Signaling empowers you to dynamically control Debezium's behavior, while notifications keep you informed about critical events. By harnessing these capabilities along with Jolokia, you can effectively manage, monitor, and interact with your data streaming workflows, ensuring that you stay in control of your data pipeline at all times.
