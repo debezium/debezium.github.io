@@ -1,35 +1,35 @@
 ---
 layout: post
 title:  Online machine learning with the data streams from the database
-date:   2023-09-15 10:20:00 -0100
+date:   2023-09-22 00:00:00 -0000
 tags: [ machine-learning, flink, spark, online-learning, examples, apache-kafka ]
 featured: true
 author: vjuranek
 ---
 
 In https://debezium.io/blog/2023/05/02/tensorflow-mnist-classification/[the previous blog post], we have shown how to leverage Debezium to train neural-network model with the existing data from the database and use this pre-trained model to classify images newly stored into the database.
-In this blog post we will move it one step further - we will use Debezium to create multiple data streams from the database and use one of the streams for continuous learning and improving of our model and the second one for making predictions on the data.
-This approach, when the model is constantly improved or adjusted to recent data samples is known as https://en.wikipedia.org/wiki/Online_machine_learning[online machine learning].
-Online learning is not suitable for every use case and implementing an online variant of a given type of algorithm may be challenging or even not possible.
-However, in situations where online learning is possible, it becomes a very powerful tool not only as it allows to react to the changes in the data in real time, but also allows to avoid the need to re-train and re-deploy new models, thus saving the hardware and operational costs.
+In this blog post, we will move it one step further - we will use Debezium to create multiple data streams from the database and use one of the streams for continuous learning and to improve our model, and the second one for making predictions on the data.
+When the model is constantly improved or adjusted to recent data samples, this approach is known as https://en.wikipedia.org/wiki/Online_machine_learning[online machine learning].
+Online learning is only suitable for some use cases, and implementing an online variant of a given algorithm may be challenging or even impossible.
+However, in situations where online learning is possible, it becomes a very powerful tool as it allows one to react to the changes in the data in real-time and avoids the need to re-train and re-deploy new models, thus saving the hardware and operational costs.
 As the streams of data become more and more common, e.g. with the advent of IoT, we can expect online learning to become more and more popular.
-In use-cases where it's possible to use it, it's usually a perfect fit for analyzing streaming data.
+It's usually a perfect fit for analyzing streaming data in use cases where it's possible.
 
 +++<!-- more -->+++
 
-As mentioned in the previous blog, our goal here is not to build the best possible model for a given use-case, but to investigate how we can build a complete pipeline from inserting the data into the database, through delivering it to  the model and using it for model training and predictions.
-To keep things simple, we will use another well known data sample, which is often used in ML tutorials.
+As mentioned in the previous blog, our goal here is not to build the best possible model for a given use case but to investigate how we can build a complete pipeline from inserting the data into the database through delivering it to the model and using it for model training and predictions.
+To keep things simple, we will use another well-known data sample often used in ML tutorials.
 We will explore how to classify various species of the Iris flower using an online variant of https://en.wikipedia.org/wiki/K-means_clustering[k-mean clustering algorithm].
-For processing the data streams we use https://flink.apache.org/[Apache Flink] and https://spark.apache.org/[Apache Spark].
-Both these frameworks are very popular data processing frameworks and both include a machine learning library, which, besides others, contains implementation of online k-means algorithms.
-Thus, we can focus on building a complete pipeline for delivering the data from the database into a given model and processing it in real time and don't have to deal with implementation details of the algorithm itself.
+We use https://flink.apache.org/[Apache Flink] and https://spark.apache.org/[Apache Spark] to process the data streams.
+Both these frameworks are very popular data processing frameworks and include a machine learning library, which, besides others, implements online k-means algorithms.
+Thus, we can focus on building a complete pipeline for delivering the data from the database into a given model, processing it in real time, and not having to deal with the algorithm's implementation details.
 
-All the code mentioned later in this blog post is available as a Debezium example in https://TBD[Debezium example repository], with all other useful stuff, like Docker composes and step-by-step instructions in the README file.
+All the code mentioned later in this blog post is available as a Debezium example in https://github.com/debezium/debezium-examples/tree/main/machine-learning[Debezium example repository], with all other useful stuff, like Docker composes and step-by-step instructions in the README file.
 
 == Data set preparation
 
 We will use https://en.wikipedia.org/wiki/Iris_flower_data_set[Iris flower data set].
-Our goal is to determine the Iris species based on a couple of measurements of the Iris flower, namely its sepal length, sepal width, petal length and petal width.
+Our goal is to determine the Iris species based on a couple of measurements of the Iris flower: its sepal length, sepal width, petal length, and petal width.
 
 ++++
 <div class="imageblock centered-image">
@@ -43,29 +43,29 @@ Our goal is to determine the Iris species based on a couple of measurements of t
 
 The data set can be downloaded from various sources.
 We can take advantage of the fact that it's available already pre-processed in e.g. https://scikit-learn.org[scikit-learn] toolkit and use it from there.
-Each sample row contains a data point (sepal length, sepal width, petal length and petal width) and a label.
-Label is number 0, 1 or 2, where 0 stands for Iris setosa, 1 stands for Iris versicolor and 2 for Iris virginica.
-The data set itself is pretty small - it contains only 150 data points.
+Each sample row contains a data point (sepal length, sepal width, petal length, and petal width) and a label.
+Label is number 0, 1, or 2, where 0 stands for Iris setosa, 1 stands for Iris versicolor, and 2 for Iris virginica.
+The data set is small - containing only 150 data points.
 
-As we will load the data into the database, we will first prepare SQL files, which we will later pass to the database.
-We would need to divide the original data sample into three sub-samples - two for training and one testing.
-The first training data sample will be used for initial training.
-This data sample is intentionally very small to get not very good predictions when we test the model for the first time, so that we can see how the prediction of the model will increase in real time when we feed it with more data.
+As we load the data into the database, we will first prepare SQL files, which we will later pass to the database.
+We need to divide the original data sample into three sub-samples - two for training and one for testing.
+The initial training will use the first training data sample.
+This data sample is intentionally small to not generate good predictions when we test the model for the first time so that we can see how the model's prediction will increase in real-time when we feed it with more data.
 
-You can use the following Python script from the accompanied demo repository for generating all three SQL files.
+You can use the following Python script from the accompanying demo repository for generating all three SQL files.
 
 ```
 $ ./iris2sql.py
 ```
 
-The files are located in `postgres` directory of this demo.
+The `postgres` directory contains the files used for this demo.
 `train1.sql` will be loaded automatically into the Postgres database upon its start.
-`test.sql` and `train2.sql` will be loaded manually into the database later on.
+`test.sql` and `train2.sql` will be loaded manually into the database later.
 
 == Classification with Apache Flink
 
-First let's take a look at how to do online Iris flower classification and learning in Apache Flink.
-High level schema of the whole pipeline is depicted on the figure below.
+First, let's look at how to do online Iris flower classification and learning in Apache Flink.
+The following figure depicts the high-level schema for the entire pipeline.
 
 ++++
 <div class="imageblock centered-image">
@@ -73,9 +73,9 @@ High level schema of the whole pipeline is depicted on the figure below.
 </div>
 ++++
 
-We would use Postgres as our source database.
-Debezium is deployed as a Kafka Connect source connector, tracks the changes in the database and from newly inserted data creates the streams of data which are sent to Kafka.
-These streams are sent by Kafka to Apache Flink, which employs the streaming k-means algorithm for model fitting as well as for the data classification.
+We will use Postgres as our source database.
+Debezium, deployed as a Kafka Connect source connector, tracks the changes in the database and creates the streams of data sent to Kafka from newly inserted data.
+Kafka sends these streams to Apache Flink, which employs the streaming k-means algorithm for model fitting and data classification.
 The predictions of the model for test data streams are produced as another stream and sent back to Kafka.
 
 [NOTE]
@@ -85,19 +85,19 @@ Ververika's implementation of CDC source connectors embeds the Debezium directly
 See Flink CDC connectors https://ververica.github.io/flink-cdc-connectors/[documentation] for more details.
 ====
 
-Our database  would contain two tables.
-In the first table we will store our training data, while our test data will be stored into the second table.
-Therefore there are two streams of data, each corresponding to one table - one data stream for learning and one with data points which need to be classified.
-In real applications you can use only one table or, on the contrary, many more tables.
+Our database contains two tables.
+The first stores our training data, while the second stores the test data.
+Therefore, there are two data streams, each corresponding to one table - one data stream for learning and one with data points that need to be classified.
+In real applications, you can use only one table or, on the contrary, many more tables.
 You can even deploy more Debezium connectors and thus combine data from several databases.
 
 === Using Debezium and Kafka as a source data stream
 
-Apache Flink has a very good integration with Kafka.
+Apache Flink has excellent integration with Kafka.
 We can pass the Debezium records as e.g. JSON records.
-For creating Flink tables it even has support for Debezium record format, but for streams we need to extract part of the Debezium message which contains the newly stored row of the table.
-However, this is very easy as Debezium provides SMT, https://debezium.io/documentation/reference/nightly/transformations/event-flattening.html[extract new record state SMT], which does exactly this.
-So the complete Debezium configuration can look like this:
+For creating Flink tables, it even has support for Debezium's record format, but for streams, we need to extract part of the Debezium message, which contains the newly stored row of the table.
+However, this is very easy as Debezium provides SMT, https://debezium.io/documentation/reference/nightly/transformations/event-flattening.html[extract new record state SMT], which does precisely this.
+The complete Debezium configuration can look like this:
 
 [source,json]
 ----
@@ -121,9 +121,9 @@ So the complete Debezium configuration can look like this:
 }
 ----
 
-This will capture all the tables in the `public` schema whose name begins with `iris_` prefix.
-Corresponding Kafka topics will be `flink.public.iris_train` and `flink.public.iris_test` for training and testing data, respectively.
-Incoming stream of data is represented by Flink's `DataStreamSource` class.
+The configuration captures all tables in the `public` schema with tables that begin with the `iris_` prefix.
+Since we are storing training and test data in two tables, two Kafka topics named `flink.public.iris_train` and `flink.public.iris_test` are created, respectively.
+Flink's `DataStreamSource` represents the incoming stream of data.
 As we encode the records as a JSON, it will be a stream of JSON `ObjectNode` objects.
 Constructing the source stream is very straightforward:
 
@@ -140,12 +140,12 @@ KafkaSource<ObjectNode> train = KafkaSource.<ObjectNode>builder()
 DataStreamSource<ObjectNode> trainStream = env.fromSource(train, WatermarkStrategy.noWatermarks(), "Debezium train");
 ----
 
-Most of the Flinks operations are done on the `Table` abstraction objects.
-Also ML models accept only tables as an input and predictions are produced as tables as well.
-Therefore we need to first convert our input stream into a `Table` object.
-We will start with transforming our input data stream into a stream of table rows.
-We need to define a map function which would return a `Row` object with a vector containing one data point.
-As k-means algorithm belongs to https://en.wikipedia.org/wiki/Unsupervised_learning[unsupervised learning] algorithms, i.e. the model doesn't need corresponding "right answers" for the data points, we can skip the `label` field from the vector:
+Flink operates primarily on the `Table` abstraction object.
+Also, ML models accept only tables as input, and predictions are produced as tables too.
+Therefore, we must first convert our input stream into a `Table` object.
+We will start by transforming our input data stream into a stream of table rows.
+We need to define a map function that would return a `Row` object with a vector containing one data point.
+As the k-means algorithm belongs to https://en.wikipedia.org/wiki/Unsupervised_learning[unsupervised learning] algorithms, i.e. the model doesn't need corresponding "right answers" for the data points, we can skip the `label` field from the vector:
 
 [source,java]
 ----
@@ -163,8 +163,8 @@ private static class RecordMapper implements MapFunction<ObjectNode, Row> {
 }
 ----
 
-Various parts of the internal Flink pipeline can run on different worker nodes and therefore we also need to provide type information about the table.
-With that, we are ready to create table object:
+Various parts of the internal Flink pipeline can run on different worker nodes, and therefore, we also need to provide type information about the table.
+With that, we are ready to create the table object:
 
 [source,java]
 ----
@@ -179,8 +179,8 @@ Table trainTable = tEnv.fromDataStream(inputStream).as("features");
 
 === Building Flink stream k-means
 
-Once we have a `Table` object, we are ready to pass it to our model.
-So let's create one and pass out train stream to it for continuous model training:
+Once we have a `Table` object, we can pass it to our model.
+So let's create one and pass a train stream to it for continuous model training:
 
 [source,java]
 ----
@@ -192,12 +192,12 @@ OnlineKMeans onlineKMeans = new OnlineKMeans()
 OnlineKMeansModel model = onlineKMeans.fit(trainTable);
 ----
 
-To make the things more simple and straightforward, we set directly the number of desired clusters to 3 instead of finding the optimal number of cluster by digging into the data (using e.g. https://en.wikipedia.org/wiki/Elbow_method_(clustering)[elbow method]).
+To make things more straightforward, we directly set the number of desired clusters to 3 instead of finding the optimal number of clusters by digging into the data (using e.g. https://en.wikipedia.org/wiki/Elbow_method_(clustering)[elbow method]).
 We also set some initial values for the centers of the clusters instead of using random numbers (Flink provides a convenient method for it - `KMeansModelData.generateRandomModelData()` if you want to try with random centers).
 
 To obtain the predictions for our test data, we again need to convert our test stream into a table.
 The model transforms the table with test data into a table with predictions.
-Predictions table can be converted back to a stream and stored e.g. back in the Kafka:
+Finally, convert the prediction into a stream and persisted, e.g. in a Kafka topic:
 
 [source,java]
 ----
@@ -209,27 +209,27 @@ DataStream<Row> resultStream = tEnv.toChangelogStream(outputTable);
 resultStream.map(new ResultMapper()).sinkTo(kafkaSink);
 ----
 
-Now we are ready to build our application and almost ready to submit it into the Flink for execution.
-To be completely ready to submit our application to Flink, we need to create the required Kafka topic first.
-Topics can be empty, but Flink requires them to exist.
-As we include a small set of data into the training table of the Postgres when the database starts, Debezium will create a corresponding topic once the Debezium Postgres connector is registered in Kafka Connect.
-However, as the table with test data doesn't exists yet, we need to create the topic in Kafka manually:
+Now, we are ready to build our application and almost ready to submit it to Flink for execution.
+Before we do, we need to create the required Kafka topics first.
+While the topics can be empty, Flink requires that they at least exist.
+As we include a small set of data in the Postgres training table when the database starts, Debezium will create a corresponding topic when registering the Debezium Postgres connector in Kafka Connect.
+Since the test data table does not yet exist, we need to create the topic in Kafka manually:
 
 [source,bash]
 ----
 $ docker compose -f docker-compose-flink.yaml exec kafka /kafka/bin/kafka-topics.sh --create --bootstrap-server kafka:9092 --replication-factor 1 --partitions 1  --topic flink.public.iris_test
 ----
 
-Now, we are really ready to submit our application to Flink.
-For the complete code, please see corresponding source code in Debezium https://github.com/debezium/debezium-examples[example repository]
+Now, we are ready to submit our application to Flink.
+For the complete code, please see the corresponding source code in Debezium https://github.com/debezium/debezium-examples[example repository]
 
 [NOTE]
 ====
-If you don't use Docker compose provided as part of the source code for this demo, please mind to include https://nightlies.apache.org/flink/flink-ml-docs-master/[Flink ML library] into Flink `lib` folder, as the ML library in not part of default Flink distribution.
+If you don't use Docker compose provided as part of the source code for this demo, please include https://nightlies.apache.org/flink/flink-ml-docs-master/[Flink ML library] in the Flink `lib` folder, as the ML library is not part of default Flink distribution.
 ====
 
-Flink provides a nice UI, which is available on http://localhost:8081/.
-There you can check, besides other thinks, the status of your jobs and also e.g. job execution plan in a nice graphical representation:
+Flink provides a friendly UI, which is available on http://localhost:8081/.
+There, you can check, besides other things, the status of your jobs and also, e.g. job execution plan in an excellent graphical representation:
 
 ++++
 <div class="imageblock centered-image">
@@ -239,7 +239,7 @@ There you can check, besides other thinks, the status of your jobs and also e.g.
 
 === Evaluating the model
 
-From the user point of view, all the interaction with our model would happen either by inserting new records into the database or reading Kafka topic with predictions.
+From the user's point of view, all the interactions with our model occur by inserting new records into the database or reading Kafka topics with predictions.
 As we already created a very small initial training data sample in the database when it started, we can directly check our model predictions by inserting our test data sample into the database:
 
 [source,bash]
@@ -247,8 +247,9 @@ As we already created a very small initial training data sample in the database 
 $ psql -h localhost -U postgres -f postgres/iris_test.sql
 ----
 
-This will result in an immediate data stream of test data into Kafka, passing them into our model and sending the prediction back to Kafka’s `iris_predictions` topic.
-As the initial model was trained on a very small set of data, predictions are pretty bad and we have actually only 2 clusters so far:
+The insert results in an immediate data stream of test data in Kafka, passing it into the model and sending the prediction back to the `iris_predictions` Kafka topic.
+The predictions are not accurate when training the model on a very small data set with just two clusters.
+The following shows our initial predictions:
 
 [source]
 ----
@@ -265,7 +266,7 @@ As the initial model was trained on a very small set of data, predictions are pr
 [5.8, 2.7, 3.9, 1.2] is classified as 2
 ----
 
-In our case the correct answer should be:
+In our case, the correct answer should be:
 
 [source]
 ----
@@ -282,11 +283,10 @@ In our case the correct answer should be:
 [5.8, 2.7, 3.9, 1.2] is 1
 ----
 
-so we have only 5 data points of 11 correctly classified.
-This is not very good, but this is expected, as our initial training sample was very small.
+When comparing the result, we only have 5 of 11 data points correctly classified due to the initial sample training data size.
 On the other hand, as we didn't start with completely random clusters, our predictions are also not completely wrong.
 
-Let's see how the things change when we supply more training data into the model:
+Let's see how things change when we supply more training data into the model:
 
 [source,bash]
 ----
@@ -300,7 +300,8 @@ To see the updated predictions, we insert the same test data sample again into t
 $ psql -h localhost -U postgres -f postgres/iris_test.sql
 ----
 
-Now we get
+The following predictions are much better since we have all three categories present.
+We have also correctly classified 7 out of the 11 data points.
 
 [source]
 ----
@@ -317,8 +318,6 @@ Now we get
 [5.8, 2.7, 3.9, 1.2] is classified as 1
 ----
 
-which is much better as now we have all three categories present and have correctly classified 7 out of 11 data points.
-
 As the whole data sample is pretty small, for further model training we can re-use our second train data sample:
 
 [source,bash]
@@ -327,7 +326,7 @@ $ psql -h localhost -U postgres -f postgres/iris_train2.sql
 $ psql -h localhost -U postgres -f postgres/iris_test.sql
 ----
 
-resulting into
+This results in the following prediction.
 
 [source]
 ----
@@ -344,30 +343,28 @@ resulting into
 [5.8, 2.7, 3.9, 1.2] is classified as 1
 ----
 
-So we end up with 9 data points correctly classified out of 11 data points.
-This is still not an excellent result, but as mentioned at the beginning, we don't aim for the best results.
-The main motivation here is to show the whole pipeline and demonstrate that the model improves the predictions immediately once the new data points are stored in the database, without the need to re-train and re-deploy the model.
+We now find we have 9 out of 11 data points correctly classified.
+While this is still not an excellent result, we expect only partially accurate results as this is simply a prediction.
+The primary motivation here is to show the whole pipeline and demonstrate that the model improves the predictions without re-training and re-deploying the model when adding new data.
 
 == Classification with Apache Spark
 
-Apache Spark is, from the user point of view, very similar to Flink in many regards and thus also implementation would be quite similar.
-Not to make this blog post too long, this chapter would be a little bit more brief.
+From the user's point of view, Apache Spark is very similar to Flink, and the implementation would be quite similar.
+This chapter is briefer to make this blog post more digestible.
 
 
-Spark has two streaming models.
-Older https://spark.apache.org/docs/latest/streaming-programming-guide.html[DStreams], which is now in legacy state, and more recent https://spark.apache.org/docs/latest/structured-streaming-programming-guide.html[structured streaming], which is recommended to use.
-However, as the streaming k-means algorithm contained in Spark ML library works only with the DStreams, for the sake of simplicity DStreams are used in this example.
-Better approach would be to use structured streaming and implement the streaming k-means ourselves.
-This is however outside the scope and main goal of this blog post.
+Spark has two streaming models: the older https://spark.apache.org/docs/latest/streaming-programming-guide.html[DStreams], which is now in legacy state, and the more recent and recommended https://spark.apache.org/docs/latest/structured-streaming-programming-guide.html[structured streaming].
+However, as the streaming k-means algorithm contained in the Spark ML library works only with the DStreams, for simplicity, DStreams are used in this example.
+A better approach would be to use structured streaming and implement the streaming k-means ourselves.
+This is, however, outside this blog post's scope and main goal.
 
 
 Spark supports streaming from Kafka using DStreams.
-However, writing DStreams back to Kafka is not supported.
-It can be done, but it's not very straightforward.
+However, writing DStreams back to Kafka is not supported, although it is possible but isn't straightforward.
 
 [NOTE]
 ====
-Structured streaming supports both directions, reading as well as writing to Kafka, in a very easy way.
+Structured streaming supports both directions, reading and writing to Kafka, very easily.
 ====
 
 Again, for the sake of simplicity, we skip the final part and will write the predictions only to the console instead of writing them back to Kafka.
@@ -381,7 +378,7 @@ The big picture of our pipelines thus looks like this:
 
 === Defining the data streams
 
-Similarly to Flink, creating Spark streams from Kafka streams is straightforward and most of the parameters are self-explanatory:
+Similarly to Flink, creating Spark streams from Kafka streams is straightforward, and most of the parameters are self-explanatory:
 
 [source, java]
 ----
@@ -403,7 +400,7 @@ JavaDStream<LabeledPoint> train = trainStream.map(ConsumerRecord::value)
         .map(LabeledPoint::parse);
 ----
 
-On the last line we transform Kafka stream to a stream of labeled points, which Spark ML library uses for working with its ML models.
+On the last line, we transform the Kafka stream to a labeled point stream, which the Spark ML library uses for working with its ML models.
 Labeled points are expected as the strings formatted as data point labels separated by the comma from space-separated data point values.
 So the map function looks like this:
 
@@ -421,13 +418,14 @@ private static String toLabeledPointString(String json) throws ParseException {
 }
 ----
 
-Still applies that k-means is an unsupervised algorithm and doesn't use the data point labels.
-However, it's convenient to pass them to `LabeledPoint` class as later on we can show them together with model predictions.
+It still applies that k-means is an unsupervised algorithm and doesn't use the data point labels.
+However, it's convenient to pass them to `LabeledPoint` class as later on, we can show them together with model predictions.
 
 We chain one more map function to parse the string and create a labeled data point from it.
 In this case, it's a built-in function of Spark `LabeledPoint`.
 
-Contrary to Flink, Spark doesn't require Kafka topics to exist in advance, so when deploying the model, we don't have to create the topics and can let Debezium to create them once the table with the test data is created and populated with the data.
+Contrary to Flink, Spark doesn't require Kafka topics to exist in advance, so when deploying the model, we don't have to create the topics.
+We can let Debezium create them once the table with the test data is created and populated with the data.
 
 === Defining and evaluating the model
 
@@ -441,8 +439,8 @@ StreamingKMeans model = new StreamingKMeans()
 model.trainOn(train.map(lp -> lp.getFeatures()));
 ----
 
-Also in this case we directly set the number of clusters to 3 and provide the same initial central points of the clusters.
-You can also see that we really pass only the data point for the training, not the labels.
+Also, in this case, we directly set the number of clusters to 3 and provide the same initial central points to the clusters.
+We also only pass the data points for training, not the labels.
 
 As mentioned above, we can use the labels to show them together with the predictions:
 
@@ -452,9 +450,9 @@ JavaPairDStream<Double, Vector> predict = test.mapToPair(lp -> new Tuple2<>(lp.l
 model.predictOnValues(predict).print(11);
 ----
 
-On the resulting stream with the predictions we print 11 elements of the stream to the console, as this is the size of our test sample.
-Similar to Flink, the results after initial training on a very small data sample are bad.
-The first number in the tuple is data point label, while the second one is the corresponding prediction done by our model:
+We print 11 stream elements to the console on the resulting stream with the predictions, as this is the size of our test sample.
+Like Flink, the results after initial training on a very small data sample could be better.
+The first number in the tuple is the data point label, while the second one is the corresponding prediction done by our model:
 
 [source]
 ----
@@ -488,7 +486,7 @@ spark_1      | (0.0,0)
 spark_1      | (1.0,0)
 ----
 
-and if we pass the second training data sample once again for training, our model makes correct predictions for whole test sample:
+If we pass the second training data sample once again for the training, our model makes correct predictions for the whole test sample:
 
 [source]
 ---
@@ -508,23 +506,24 @@ spark_1      | (1.0,1)
 [WARNING]
 ====
 The prediction is a number of the cluster which k-means algorithm created and has no relation to labels in our data sample.
-This means that e.g. `(0.0,1)` doesn't have to be a wrong prediction.
+That means that e.g. `(0.0,1)` doesn't have to be a wrong prediction.
 It can happen that a data point with label 0 was assigned to the correct cluster, however, Spark internally marked it as a cluster number 1.
 This needs to be kept in mind when evaluating the model.
 ====
 
-So, similar to Flink, we get better results as we pass more training data, without the need to re-train and re-deploy the model.
-In this case, we get even better results than from the Flink model.
+So, similar to Flink, we get better results as we pass more training data without the need to re-train and re-deploy the model.
+In this case, we get even better results than Flink's model.
 
 == Conclusions
 
-In this blog post we continued with the exploration how Debezium can help to make data ingestion into various ML frameworks seamless.
-We have shown how to pass the data from the database to Apache Flink and Apache Spark in the real time as a stream of the data.
-In both cases the integration is easy to set up and works very well.
-We demonstrated it in an example which allows us to use an online learning algorithm, namely online k-means algorithm, to highlight the power of data streaming.
-Online machine learning allows not only to do the predictions on the stream of the data in the real time, but also allows to improve or adjust the model immediately as the new training data arrives.
-Model adjustment doesn't require any model re-training on a separate compute cluster and re-deploying a new model, which makes ML-ops much more easy and cost effective.
+In this blog post, we continued exploring how Debezium can help make data ingestion into various ML frameworks seamless.
+We have shown how to pass the data from the database to Apache Flink and Apache Spark in real time as a stream of the data.
+The integration is easy to set up in both cases and works well.
+We demonstrated it in an example that allows us to use an online learning algorithm, namely the online k-means algorithm, to highlight the power of data streaming.
+Online machine learning allows us to make real-time predictions on the data stream and improve or adjust the model immediately as the new training data arrives.
+Model adjustment doesn't require any model re-training on a separate compute cluster and re-deploying a new model, making ML-ops more straightforward and cost-effective.
 
 As usual, we would appreciate any feedback on this blog post.
-We would also appreciate any new ideas on how Debezium, or in general, change data capture, can be helpful in this area as well as your tips, what would be helpful for you to investigate, being it either integration with another ML framework, integration with e.g. ML feature store or anything else.
+Do you have any ideas on how Debezium or change data capture can be helpful in this area?
+What would be helpful to investigate, whether integration with another ML framework, integration with a specific ML feature store, etc.?
 In case you have any input any this regard, don't hesitate to reach out to us on the http://debezium.zulipchat.com/[Zulip chat], https://groups.google.com/forum/#!forum/debezium[mailing list] or you can transform your ideas directly into http://issues.redhat.com/projects/DBZ/issues[Jira feature requests].
