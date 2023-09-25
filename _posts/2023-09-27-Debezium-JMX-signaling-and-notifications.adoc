@@ -7,22 +7,25 @@ featured: true
 author: mfvitale
 ---
 Welcome to the third installment of our series on Debezium Signaling and Notifications.
-In this article, we continue our exploration of Debezium signaling and notifications. In this part, we will delve into how to enable and manage these features using the JMX channel.
+In this article, we continue our exploration of Debezium signaling and notifications. In particular, we will delve into how to enable and manage these features using the JMX channel.
 
 We will also explore how to send signal and get notification through REST api leveraging on Jolokia.
 
 +++<!-- more -->+++
 
 == Enabling Signaling via JMX
-Signaling in Debezium is all about influencing its behavior in real-time. Here's how you can enable signaling with JMX:
+Signaling in Debezium is all about triggering actions to execute operation during normal execution. As discussed in previous article, Debezium offers different out-of-the-box signal channels.
+In this article we will focus on JMX channel.
 
-To activate the JMX signaling channel, navigate to your Debezium connector configuration. Add "jmx" to the signal.enabled.channels property, which signifies enabling the JMX signaling channel, providing you with the capability to send signals that influence Debezium's operations.
+JMX stands for Java Management Extensions, it is a Java technology used for managing and monitoring Java applications. It provides a standardized way to monitor application performance, configure settings, and interact with running Java applications using various management tools and clients. JMX is particularly useful for managing and monitoring complex, distributed, and enterprise-level Java applications.
 
-Now, let's delve into the process of sending signals using the JMX signaling channel:
+To start using JMX channel we need to:
 
-Connect to JMX Server: Utilize your preferred JMX client, like JConsole or JDK Mission Control, to establish a connection with the JMX MBean server where Debezium is operating.
+* Enable JMX server on Kafka Connect service
+* Add `jmx` to `signal.enabled.channels` connector configuration property
+* Use a JMX client to connect to JMX server to send signal.
 
-Locate the Signal MBean: Hunt for the MBean with the name debezium.<connector-type>:type=management,context=signals,server=<server>. This MBean exposes `signal` operations that accept three parameters:
+Debezium expose the signal MBean named `debezium.<connector-type>:type=management,context=signals,server=<server>`, it exposes `signal` operations that accept three parameters:
 
 * p0: The id of the signal.
 
@@ -30,11 +33,13 @@ Locate the Signal MBean: Hunt for the MBean with the name debezium.<connector-ty
 
 * p2: A JSON data field that contains additional information about the specified signal type.
 
+But let's put our hands on and let's se how to send an incremental snapshot using JMX channel.
+
 === Send incremental snapshot signal through JMX channel
 
 For this example, we will use debezium docker images with PostgreSQL database.
 
-You can start up all the required components using the following docker compose file
+We can start up all the required services using the following docker compose file
 
 [source, yaml]
 ----
@@ -82,11 +87,13 @@ services:
 <2> Enables JMX and specifies the port number that will be used for JMX. The value is used to specify the JVM parameter **-Dcom.sun.management.jmxremote.port=$JMX_PORT**.
 <3> The IP address or resolvable host name of the Docker host, which JMX uses to construct a URL sent to the JMX client. A value of localhost or 127.0.0.1 will not work. Typically, 0.0.0.0 can be used. The value is used to specify the JVM parameter **-Djava.rmi.server.hostname=$JMXHOST**
 
-Save the file as `debezium.yaml` and then run:
+After saving the file as `debezium.yaml`, we can start all services with:
 [source, bash]
 ----
-docker compose -f ./deploy/docker-compose-postgres.yaml up -d
+docker compose -f debezium.yaml up -d
 ----
+
+the output will be something like this
 [source, bash]
 ----
 [+] Running 5/5
@@ -97,10 +104,13 @@ docker compose -f ./deploy/docker-compose-postgres.yaml up -d
  ✔ Container deploy-connect-1    Started
 ----
 
+Now we can check that all services are up and running executing the command
 [source, bash]
 ----
 docker ps
 ----
+
+the output should be something similar to this
 [source, bash]
 ----
 CONTAINER ID   IMAGE                            COMMAND                  CREATED         STATUS         PORTS                                                                              NAMES
@@ -110,7 +120,7 @@ e61116f22f9d   quay.io/debezium/example-postgres:2.4    "docker-entrypoint.s…"
 ccb502882928   quay.io/debezium/zookeeper:2.4   "/docker-entrypoint.…"   4 seconds ago   Up 2 seconds   0.0.0.0:2181->2181/tcp, 0.0.0.0:2888->2888/tcp, 0.0.0.0:3888->3888/tcp             deploy-zookeeper-1
 ----
 
-At this point all components are up and running, so we can register our connector configuration
+At this point all services are up and running, so we can register the connector through the following configuration
 
 [source, json]
 ----
@@ -139,49 +149,107 @@ At this point all components are up and running, so we can register our connecto
 <1> This configuration enables **source** and **jmx** channel. Even if we will use JMX to send the signal, since we want to execute an incremental snapshot, the **source** signal is still required because Debezium needs to use signal table to watermark the db log for events decoupling.
 <2> Set the table used for the signaling
 
-For now, don't worry about the **notifications.*** properties.
+[NOTE]
+For now, don't worry about the **notifications.*** properties. We will delve into them later
 
-Save this configuration into a file named **postgres-jmx.json** and then you can register it.
+After saving this configuration into a file named **postgres-jmx.json**, we can register it.
 
-To register the connector we can use the Kafka Connect API
+To register the connector we can use `curl` to call the Kafka Connect API
 
 [source, bash]
 ----
 curl -i -X POST -H "Accept:application/json" -H "Content-Type:application/json" localhost:8083/connectors/ -d '{"name":"inventory-connector","config":{"connector.class":"io.debezium.connector.postgresql.PostgresConnector","tasks.max":"1","database.hostname":"postgres","database.port":"5432","database.user":"postgres","database.password":"postgres","database.server.id":"184054","database.dbname":"postgres","topic.prefix":"dbserver1","snapshot.mode":"NEVER","schema.history.internal.kafka.bootstrap.servers":"kafka:9092","schema.history.internal.kafka.topic":"schema-changes.inventory","signal.enabled.channels":"source,jmx","signal.data.collection":"inventory.debezium_signal","notification.enabled.channels":"log,sink,jmx","notification.sink.topic.name":"io.debezium.notification"}}'
 ----
 
-or I would suggest to use **https://github.com/kcctl/kcctl[kcctl]** tool to interact with Kafka Connect.
+or I would suggest to use **https://github.com/kcctl/kcctl[kcctl]** tool to interact with Kafka Connect. It is a modern and intuitive command line client for Kafka Connect.
 
-First of all you need to create a configuration context to connect with Kafka Connect
+First of all we need to create a configuration context to connect with Kafka Connect
+
 [source, bash]
 ----
 kcctl config set-context local --cluster http://localhost:8083
 ----
 
-then you can register the connector running the following command
+then we can register the connector running the following command
 
 [source, bash]
 ----
 kcctl apply -f postgres-jmx.json
 ----
 
-you can now get the logs of connect container
+we can now get the logs of connect container
 
 [source, bash]
 ----
 docker logs f1d49fb79dba <1>
 ----
-<1> This is the id of the connect container that we got before running the **docker** ps command
+<1> This is the id of the connect container that we got before, running the **docker** ps command
 
 and check that the connector is started streaming events
+
 [source, text]
 ----
 INFO   Postgres|dbserver1|streaming  Starting streaming   [io.debezium.pipeline.ChangeEventSourceCoordinator]
 ----
 
-1. connect to database and create the signal table
-2. execute signal
-3. check kafka topic
+=== Prepare database for incremental snapshot
+Since incremental snapshot still requires to have the `signal.data.collection` we need to create the signal table on our postgres database.
+
+[NOTE]
+The data collection is not required if you are using MySql with GTIds and `read.only` set to true.
+
+To create the signal table we need to connect to our postgres instance. We can use the `psql` client inside the postgres container.
+
+[source, bash]
+----
+docker exec -it e61116f22f9d bash <1>
+----
+<1> This is the id of the postgres container that we got before, running the **docker** ps command
+
+Once inside the container we can connect to postgres instance with
+
+[source, bash]
+----
+psql -h localhost -d postgres -U postgres
+----
+
+[NOTE]
+password is *postgres*
+
+then we can check that there are already some tables inside the *inventory* schema
+
+[source, bash]
+----
+\dt inventory.*
+----
+
+the command should return something similar to
+
+[source, bash]
+----
+                List of relations
+  Schema   |       Name       | Type  |  Owner
+-----------+------------------+-------+----------
+ inventory | customers        | table | postgres
+ inventory | geom             | table | postgres
+ inventory | orders           | table | postgres
+ inventory | products         | table | postgres
+ inventory | products_on_hand | table | postgres
+ inventory | spatial_ref_sys  | table | postgres
+(6 rows)
+
+----
+
+We need to create the signal table with the following command:
+
+[source, bash]
+----
+CREATE TABLE inventory.debezium_signal (id VARCHAR(42) PRIMARY KEY, type VARCHAR(32) NOT NULL, data VARCHAR(2048) NULL);
+----
+
+=== Send incremental snapshot signal
+
+To send the signal through JMX channel we need to connect to JMX server. We use the https://github.com/jiaqi/jmxterm[jmxterm] client so, after downloading it, we can run it
 
 [source,bash]
 ----
@@ -197,6 +265,899 @@ run -b debezium.postgres:context=signals,server=dbserver1,type=management signal
 <2> Open a connection to JMX Server
 <3> Search for bean under **debezium.postgres** domain
 <4> Execute the **signal** operation to execute an incremental snapshot of the **inventory.orders** table.
+
+=== Check data
+After that we want to check that all data from *orders* table has been correctly captured in its corresponding Kafka topic.
+
+We can enter the Kafka container with the following command:
+
+[source, bash]
+----
+docker exec -it e164b2651fbf bash <1>
+----
+<1> This is the id of the kafka container that we got before, running the **docker** ps command
+
+Once inside the container we can get all messages in the *dbserver1.inventory.orders* topic with the following command
+[source, bash]
+----
+kafka-console-consumer.sh --bootstrap-server kafka:9092 --topic dbserver1.inventory.orders --from-beginning
+----
+
+the output should be something like this
+
+[source, json]
+----
+{
+  "schema": {
+    "type": "struct",
+    "fields": [
+      {
+        "type": "struct",
+        "fields": [
+          {
+            "type": "int32",
+            "optional": false,
+            "default": 0,
+            "field": "id"
+          },
+          {
+            "type": "int32",
+            "optional": false,
+            "name": "io.debezium.time.Date",
+            "version": 1,
+            "field": "order_date"
+          },
+          {
+            "type": "int32",
+            "optional": false,
+            "field": "purchaser"
+          },
+          {
+            "type": "int32",
+            "optional": false,
+            "field": "quantity"
+          },
+          {
+            "type": "int32",
+            "optional": false,
+            "field": "product_id"
+          }
+        ],
+        "optional": true,
+        "name": "dbserver1.inventory.orders.Value",
+        "field": "before"
+      },
+      {
+        "type": "struct",
+        "fields": [
+          {
+            "type": "int32",
+            "optional": false,
+            "default": 0,
+            "field": "id"
+          },
+          {
+            "type": "int32",
+            "optional": false,
+            "name": "io.debezium.time.Date",
+            "version": 1,
+            "field": "order_date"
+          },
+          {
+            "type": "int32",
+            "optional": false,
+            "field": "purchaser"
+          },
+          {
+            "type": "int32",
+            "optional": false,
+            "field": "quantity"
+          },
+          {
+            "type": "int32",
+            "optional": false,
+            "field": "product_id"
+          }
+        ],
+        "optional": true,
+        "name": "dbserver1.inventory.orders.Value",
+        "field": "after"
+      },
+      {
+        "type": "struct",
+        "fields": [
+          {
+            "type": "string",
+            "optional": false,
+            "field": "version"
+          },
+          {
+            "type": "string",
+            "optional": false,
+            "field": "connector"
+          },
+          {
+            "type": "string",
+            "optional": false,
+            "field": "name"
+          },
+          {
+            "type": "int64",
+            "optional": false,
+            "field": "ts_ms"
+          },
+          {
+            "type": "string",
+            "optional": true,
+            "name": "io.debezium.data.Enum",
+            "version": 1,
+            "parameters": {
+              "allowed": "true,last,false,incremental"
+            },
+            "default": "false",
+            "field": "snapshot"
+          },
+          {
+            "type": "string",
+            "optional": false,
+            "field": "db"
+          },
+          {
+            "type": "string",
+            "optional": true,
+            "field": "sequence"
+          },
+          {
+            "type": "string",
+            "optional": false,
+            "field": "schema"
+          },
+          {
+            "type": "string",
+            "optional": false,
+            "field": "table"
+          },
+          {
+            "type": "int64",
+            "optional": true,
+            "field": "txId"
+          },
+          {
+            "type": "int64",
+            "optional": true,
+            "field": "lsn"
+          },
+          {
+            "type": "int64",
+            "optional": true,
+            "field": "xmin"
+          }
+        ],
+        "optional": false,
+        "name": "io.debezium.connector.postgresql.Source",
+        "field": "source"
+      },
+      {
+        "type": "string",
+        "optional": false,
+        "field": "op"
+      },
+      {
+        "type": "int64",
+        "optional": true,
+        "field": "ts_ms"
+      },
+      {
+        "type": "struct",
+        "fields": [
+          {
+            "type": "string",
+            "optional": false,
+            "field": "id"
+          },
+          {
+            "type": "int64",
+            "optional": false,
+            "field": "total_order"
+          },
+          {
+            "type": "int64",
+            "optional": false,
+            "field": "data_collection_order"
+          }
+        ],
+        "optional": true,
+        "name": "event.block",
+        "version": 1,
+        "field": "transaction"
+      }
+    ],
+    "optional": false,
+    "name": "dbserver1.inventory.orders.Envelope",
+    "version": 1
+  },
+  "payload": {
+    "before": null,
+    "after": {
+      "id": 10001,
+      "order_date": 16816,
+      "purchaser": 1001,
+      "quantity": 1,
+      "product_id": 102
+    },
+    "source": {
+      "version": "2.4.0-SNAPSHOT",
+      "connector": "postgresql",
+      "name": "dbserver1",
+      "ts_ms": 1695631605203,
+      "snapshot": "incremental",
+      "db": "postgres",
+      "sequence": "[\"34837776\",\"34837776\"]",
+      "schema": "inventory",
+      "table": "orders",
+      "txId": null,
+      "lsn": null,
+      "xmin": null
+    },
+    "op": "r",
+    "ts_ms": 1695631605204,
+    "transaction": null
+  }
+}
+{
+  "schema": {
+    "type": "struct",
+    "fields": [
+      {
+        "type": "struct",
+        "fields": [
+          {
+            "type": "int32",
+            "optional": false,
+            "default": 0,
+            "field": "id"
+          },
+          {
+            "type": "int32",
+            "optional": false,
+            "name": "io.debezium.time.Date",
+            "version": 1,
+            "field": "order_date"
+          },
+          {
+            "type": "int32",
+            "optional": false,
+            "field": "purchaser"
+          },
+          {
+            "type": "int32",
+            "optional": false,
+            "field": "quantity"
+          },
+          {
+            "type": "int32",
+            "optional": false,
+            "field": "product_id"
+          }
+        ],
+        "optional": true,
+        "name": "dbserver1.inventory.orders.Value",
+        "field": "before"
+      },
+      {
+        "type": "struct",
+        "fields": [
+          {
+            "type": "int32",
+            "optional": false,
+            "default": 0,
+            "field": "id"
+          },
+          {
+            "type": "int32",
+            "optional": false,
+            "name": "io.debezium.time.Date",
+            "version": 1,
+            "field": "order_date"
+          },
+          {
+            "type": "int32",
+            "optional": false,
+            "field": "purchaser"
+          },
+          {
+            "type": "int32",
+            "optional": false,
+            "field": "quantity"
+          },
+          {
+            "type": "int32",
+            "optional": false,
+            "field": "product_id"
+          }
+        ],
+        "optional": true,
+        "name": "dbserver1.inventory.orders.Value",
+        "field": "after"
+      },
+      {
+        "type": "struct",
+        "fields": [
+          {
+            "type": "string",
+            "optional": false,
+            "field": "version"
+          },
+          {
+            "type": "string",
+            "optional": false,
+            "field": "connector"
+          },
+          {
+            "type": "string",
+            "optional": false,
+            "field": "name"
+          },
+          {
+            "type": "int64",
+            "optional": false,
+            "field": "ts_ms"
+          },
+          {
+            "type": "string",
+            "optional": true,
+            "name": "io.debezium.data.Enum",
+            "version": 1,
+            "parameters": {
+              "allowed": "true,last,false,incremental"
+            },
+            "default": "false",
+            "field": "snapshot"
+          },
+          {
+            "type": "string",
+            "optional": false,
+            "field": "db"
+          },
+          {
+            "type": "string",
+            "optional": true,
+            "field": "sequence"
+          },
+          {
+            "type": "string",
+            "optional": false,
+            "field": "schema"
+          },
+          {
+            "type": "string",
+            "optional": false,
+            "field": "table"
+          },
+          {
+            "type": "int64",
+            "optional": true,
+            "field": "txId"
+          },
+          {
+            "type": "int64",
+            "optional": true,
+            "field": "lsn"
+          },
+          {
+            "type": "int64",
+            "optional": true,
+            "field": "xmin"
+          }
+        ],
+        "optional": false,
+        "name": "io.debezium.connector.postgresql.Source",
+        "field": "source"
+      },
+      {
+        "type": "string",
+        "optional": false,
+        "field": "op"
+      },
+      {
+        "type": "int64",
+        "optional": true,
+        "field": "ts_ms"
+      },
+      {
+        "type": "struct",
+        "fields": [
+          {
+            "type": "string",
+            "optional": false,
+            "field": "id"
+          },
+          {
+            "type": "int64",
+            "optional": false,
+            "field": "total_order"
+          },
+          {
+            "type": "int64",
+            "optional": false,
+            "field": "data_collection_order"
+          }
+        ],
+        "optional": true,
+        "name": "event.block",
+        "version": 1,
+        "field": "transaction"
+      }
+    ],
+    "optional": false,
+    "name": "dbserver1.inventory.orders.Envelope",
+    "version": 1
+  },
+  "payload": {
+    "before": null,
+    "after": {
+      "id": 10002,
+      "order_date": 16817,
+      "purchaser": 1002,
+      "quantity": 2,
+      "product_id": 105
+    },
+    "source": {
+      "version": "2.4.0-SNAPSHOT",
+      "connector": "postgresql",
+      "name": "dbserver1",
+      "ts_ms": 1695631605204,
+      "snapshot": "incremental",
+      "db": "postgres",
+      "sequence": "[\"34837776\",\"34837776\"]",
+      "schema": "inventory",
+      "table": "orders",
+      "txId": null,
+      "lsn": null,
+      "xmin": null
+    },
+    "op": "r",
+    "ts_ms": 1695631605204,
+    "transaction": null
+  }
+}
+{
+  "schema": {
+    "type": "struct",
+    "fields": [
+      {
+        "type": "struct",
+        "fields": [
+          {
+            "type": "int32",
+            "optional": false,
+            "default": 0,
+            "field": "id"
+          },
+          {
+            "type": "int32",
+            "optional": false,
+            "name": "io.debezium.time.Date",
+            "version": 1,
+            "field": "order_date"
+          },
+          {
+            "type": "int32",
+            "optional": false,
+            "field": "purchaser"
+          },
+          {
+            "type": "int32",
+            "optional": false,
+            "field": "quantity"
+          },
+          {
+            "type": "int32",
+            "optional": false,
+            "field": "product_id"
+          }
+        ],
+        "optional": true,
+        "name": "dbserver1.inventory.orders.Value",
+        "field": "before"
+      },
+      {
+        "type": "struct",
+        "fields": [
+          {
+            "type": "int32",
+            "optional": false,
+            "default": 0,
+            "field": "id"
+          },
+          {
+            "type": "int32",
+            "optional": false,
+            "name": "io.debezium.time.Date",
+            "version": 1,
+            "field": "order_date"
+          },
+          {
+            "type": "int32",
+            "optional": false,
+            "field": "purchaser"
+          },
+          {
+            "type": "int32",
+            "optional": false,
+            "field": "quantity"
+          },
+          {
+            "type": "int32",
+            "optional": false,
+            "field": "product_id"
+          }
+        ],
+        "optional": true,
+        "name": "dbserver1.inventory.orders.Value",
+        "field": "after"
+      },
+      {
+        "type": "struct",
+        "fields": [
+          {
+            "type": "string",
+            "optional": false,
+            "field": "version"
+          },
+          {
+            "type": "string",
+            "optional": false,
+            "field": "connector"
+          },
+          {
+            "type": "string",
+            "optional": false,
+            "field": "name"
+          },
+          {
+            "type": "int64",
+            "optional": false,
+            "field": "ts_ms"
+          },
+          {
+            "type": "string",
+            "optional": true,
+            "name": "io.debezium.data.Enum",
+            "version": 1,
+            "parameters": {
+              "allowed": "true,last,false,incremental"
+            },
+            "default": "false",
+            "field": "snapshot"
+          },
+          {
+            "type": "string",
+            "optional": false,
+            "field": "db"
+          },
+          {
+            "type": "string",
+            "optional": true,
+            "field": "sequence"
+          },
+          {
+            "type": "string",
+            "optional": false,
+            "field": "schema"
+          },
+          {
+            "type": "string",
+            "optional": false,
+            "field": "table"
+          },
+          {
+            "type": "int64",
+            "optional": true,
+            "field": "txId"
+          },
+          {
+            "type": "int64",
+            "optional": true,
+            "field": "lsn"
+          },
+          {
+            "type": "int64",
+            "optional": true,
+            "field": "xmin"
+          }
+        ],
+        "optional": false,
+        "name": "io.debezium.connector.postgresql.Source",
+        "field": "source"
+      },
+      {
+        "type": "string",
+        "optional": false,
+        "field": "op"
+      },
+      {
+        "type": "int64",
+        "optional": true,
+        "field": "ts_ms"
+      },
+      {
+        "type": "struct",
+        "fields": [
+          {
+            "type": "string",
+            "optional": false,
+            "field": "id"
+          },
+          {
+            "type": "int64",
+            "optional": false,
+            "field": "total_order"
+          },
+          {
+            "type": "int64",
+            "optional": false,
+            "field": "data_collection_order"
+          }
+        ],
+        "optional": true,
+        "name": "event.block",
+        "version": 1,
+        "field": "transaction"
+      }
+    ],
+    "optional": false,
+    "name": "dbserver1.inventory.orders.Envelope",
+    "version": 1
+  },
+  "payload": {
+    "before": null,
+    "after": {
+      "id": 10003,
+      "order_date": 16850,
+      "purchaser": 1002,
+      "quantity": 2,
+      "product_id": 106
+    },
+    "source": {
+      "version": "2.4.0-SNAPSHOT",
+      "connector": "postgresql",
+      "name": "dbserver1",
+      "ts_ms": 1695631605204,
+      "snapshot": "incremental",
+      "db": "postgres",
+      "sequence": "[\"34837776\",\"34837776\"]",
+      "schema": "inventory",
+      "table": "orders",
+      "txId": null,
+      "lsn": null,
+      "xmin": null
+    },
+    "op": "r",
+    "ts_ms": 1695631605204,
+    "transaction": null
+  }
+}
+{
+  "schema": {
+    "type": "struct",
+    "fields": [
+      {
+        "type": "struct",
+        "fields": [
+          {
+            "type": "int32",
+            "optional": false,
+            "default": 0,
+            "field": "id"
+          },
+          {
+            "type": "int32",
+            "optional": false,
+            "name": "io.debezium.time.Date",
+            "version": 1,
+            "field": "order_date"
+          },
+          {
+            "type": "int32",
+            "optional": false,
+            "field": "purchaser"
+          },
+          {
+            "type": "int32",
+            "optional": false,
+            "field": "quantity"
+          },
+          {
+            "type": "int32",
+            "optional": false,
+            "field": "product_id"
+          }
+        ],
+        "optional": true,
+        "name": "dbserver1.inventory.orders.Value",
+        "field": "before"
+      },
+      {
+        "type": "struct",
+        "fields": [
+          {
+            "type": "int32",
+            "optional": false,
+            "default": 0,
+            "field": "id"
+          },
+          {
+            "type": "int32",
+            "optional": false,
+            "name": "io.debezium.time.Date",
+            "version": 1,
+            "field": "order_date"
+          },
+          {
+            "type": "int32",
+            "optional": false,
+            "field": "purchaser"
+          },
+          {
+            "type": "int32",
+            "optional": false,
+            "field": "quantity"
+          },
+          {
+            "type": "int32",
+            "optional": false,
+            "field": "product_id"
+          }
+        ],
+        "optional": true,
+        "name": "dbserver1.inventory.orders.Value",
+        "field": "after"
+      },
+      {
+        "type": "struct",
+        "fields": [
+          {
+            "type": "string",
+            "optional": false,
+            "field": "version"
+          },
+          {
+            "type": "string",
+            "optional": false,
+            "field": "connector"
+          },
+          {
+            "type": "string",
+            "optional": false,
+            "field": "name"
+          },
+          {
+            "type": "int64",
+            "optional": false,
+            "field": "ts_ms"
+          },
+          {
+            "type": "string",
+            "optional": true,
+            "name": "io.debezium.data.Enum",
+            "version": 1,
+            "parameters": {
+              "allowed": "true,last,false,incremental"
+            },
+            "default": "false",
+            "field": "snapshot"
+          },
+          {
+            "type": "string",
+            "optional": false,
+            "field": "db"
+          },
+          {
+            "type": "string",
+            "optional": true,
+            "field": "sequence"
+          },
+          {
+            "type": "string",
+            "optional": false,
+            "field": "schema"
+          },
+          {
+            "type": "string",
+            "optional": false,
+            "field": "table"
+          },
+          {
+            "type": "int64",
+            "optional": true,
+            "field": "txId"
+          },
+          {
+            "type": "int64",
+            "optional": true,
+            "field": "lsn"
+          },
+          {
+            "type": "int64",
+            "optional": true,
+            "field": "xmin"
+          }
+        ],
+        "optional": false,
+        "name": "io.debezium.connector.postgresql.Source",
+        "field": "source"
+      },
+      {
+        "type": "string",
+        "optional": false,
+        "field": "op"
+      },
+      {
+        "type": "int64",
+        "optional": true,
+        "field": "ts_ms"
+      },
+      {
+        "type": "struct",
+        "fields": [
+          {
+            "type": "string",
+            "optional": false,
+            "field": "id"
+          },
+          {
+            "type": "int64",
+            "optional": false,
+            "field": "total_order"
+          },
+          {
+            "type": "int64",
+            "optional": false,
+            "field": "data_collection_order"
+          }
+        ],
+        "optional": true,
+        "name": "event.block",
+        "version": 1,
+        "field": "transaction"
+      }
+    ],
+    "optional": false,
+    "name": "dbserver1.inventory.orders.Envelope",
+    "version": 1
+  },
+  "payload": {
+    "before": null,
+    "after": {
+      "id": 10004,
+      "order_date": 16852,
+      "purchaser": 1003,
+      "quantity": 1,
+      "product_id": 107
+    },
+    "source": {
+      "version": "2.4.0-SNAPSHOT",
+      "connector": "postgresql",
+      "name": "dbserver1",
+      "ts_ms": 1695631605204,
+      "snapshot": "incremental",
+      "db": "postgres",
+      "sequence": "[\"34837776\",\"34837776\"]",
+      "schema": "inventory",
+      "table": "orders",
+      "txId": null,
+      "lsn": null,
+      "xmin": null
+    },
+    "op": "r",
+    "ts_ms": 1695631605204,
+    "transaction": null
+  }
+}
+----
+
+That's all! We have sent an incremental snapshot signal using JMX channel.
 
 == Enabling and Accessing Notifications via JMX
 Notifications in Debezium play a pivotal role in keeping you informed about crucial events and changes in your data pipeline. Here's how to enable and access notifications through JMX:
