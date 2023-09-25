@@ -1,7 +1,7 @@
 ---
 layout: post
 title:  "Debezium signaling and notifications - Part 3: JMX channel"
-date:   2023-09-27 11:11:11 +0100
+date:   2023-09-25 11:11:11 +0100
 tags: [ debezium, features, notifications, signaling, integration ]
 featured: true
 author: mfvitale
@@ -13,13 +13,16 @@ We will also explore how to send signal and get notification through REST api le
 
 +++<!-- more -->+++
 
-== Enabling Signaling via JMX
-Signaling in Debezium is all about triggering actions to execute operation during normal execution. As discussed in previous article, Debezium offers different out-of-the-box signal channels.
-In this article we will focus on JMX channel.
+== Interact with Debezium via JMX
 
 JMX stands for Java Management Extensions, it is a Java technology used for managing and monitoring Java applications. It provides a standardized way to monitor application performance, configure settings, and interact with running Java applications using various management tools and clients. JMX is particularly useful for managing and monitoring complex, distributed, and enterprise-level Java applications.
 
-To start using JMX channel we need to:
+=== Enable signaling  via JMX channel
+
+Signaling in Debezium is all about triggering actions to execute operation during normal execution. As discussed in previous articles, Debezium offers different out-of-the-box signal channels.
+In this article we will focus on JMX channel.
+
+To start using JMX signal channel we need to:
 
 * Enable JMX server on Kafka Connect service
 * Add `jmx` to `signal.enabled.channels` connector configuration property
@@ -33,7 +36,36 @@ Debezium expose the signal MBean named `debezium.<connector-type>:type=managemen
 
 * p2: A JSON data field that contains additional information about the specified signal type.
 
-But let's put our hands on and let's se how to send an incremental snapshot using JMX channel.
+=== Enable notifications via JMX channel
+
+Notifications play a pivotal role in keeping you informed about what happens in Debezium. Accessing notification via JMX channel permits you to easily monitor Debezium, for example the progress of an incremental snapshot.
+
+To start using JMX notification channel we need to:
+
+* Enable JMX server on Kafka Connect service
+* Add `jmx` to `notification.enabled.channels` connector configuration property
+* Use a JMX client to connect to JMX server to access to notifications.
+
+Debezium expose the notification MBean named `debezium.<connector-type>:type=management,context=notifications,server=<server>`, it provides `Notification` bean that is a list of JMX `CompositeData` type with following attributes:
+
+|===
+|Property |Description
+
+|id
+|A unique identifier that is assigned to the notification. For incremental snapshot notifications, the `id` is the same sent with the `execute-snapshot` signal.
+
+|aggregate_type
+|The data type of the aggregate root to which a notification is related.
+In domain-driven design, exported events should always refer to an aggregate.
+
+|type
+|Provides status information about the event specified in the `aggregate_type` field.
+
+|additional_data
+|A Map<String,String> with detailed information about the notification.
+|===
+
+But let's put our hands on and let's se how to send an incremental snapshot and receive notification about its progress through JMX channel.
 
 === Send incremental snapshot signal through JMX channel
 
@@ -71,6 +103,7 @@ services:
     ports:
       - 8083:8083
       - 9012:9012 #<1>
+      - 8778:8778
     links:
       - kafka
       - postgres
@@ -82,6 +115,7 @@ services:
       - STATUS_STORAGE_TOPIC=my_connect_statuses
       - JMXPORT=9012 #<2>
       - JMXHOST=0.0.0.0 #<3>
+      - ENABLE_JOLOKIA=true
 ----
 <1> This will expose the port 9012 used to connect to JMX Server
 <2> Enables JMX and specifies the port number that will be used for JMX. The value is used to specify the JVM parameter **-Dcom.sun.management.jmxremote.port=$JMX_PORT**.
@@ -141,8 +175,7 @@ At this point all services are up and running, so we can register the connector 
     "schema.history.internal.kafka.topic": "schema-changes.inventory",
     "signal.enabled.channels": "source,jmx", <1>
     "signal.data.collection": "inventory.debezium_signal", <2>
-    "notification.enabled.channels": "log,sink,jmx",
-    "notification.sink.topic.name": "io.debezium.notification"
+    "notification.enabled.channels": "jmx"
   }
 }
 ----
@@ -150,7 +183,7 @@ At this point all services are up and running, so we can register the connector 
 <2> Set the table used for the signaling
 
 [NOTE]
-For now, don't worry about the **notifications.*** properties. We will delve into them later
+For now, don't worry about the **notification.enabled.channels** property. We will delve into it later
 
 After saving this configuration into a file named **postgres-jmx.json**, we can register it.
 
@@ -1159,29 +1192,366 @@ the output should be something like this
 
 That's all! We have sent an incremental snapshot signal using JMX channel.
 
-== Enabling and Accessing Notifications via JMX
-Notifications in Debezium play a pivotal role in keeping you informed about crucial events and changes in your data pipeline. Here's how to enable and access notifications through JMX:
+=== Monitor incremental snapshot progress through JMX channel
 
-To enable Debezium notifications, specify a list of notification channels in the notification.enabled.channels configuration property. Debezium offers channels like sink, log, and jmx for notifications. If you opt for the sink channel, ensure to configure notification.sink.topic.name to define the destination topic for notifications.
+Since we have executed an incremental snapshot we can now read the notifications produced by Debezium via JMX channel.
 
-Accessing notifications through JMX:
+We used the following configuration to register our connector
 
-Configure JMX MBean Server: Ensure that the JMX MBean Server is set up to expose the notification bean.
+[source, json]
+----
+{
+  "name": "inventory-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "tasks.max": "1",
+    "database.hostname": "postgres",
+    "database.port": "5432",
+    "database.user": "postgres",
+    "database.password": "postgres",
+    "database.server.id": "184054",
+    "database.dbname": "postgres",
+    "topic.prefix": "dbserver1",
+    "snapshot.mode": "NEVER",
+    "schema.history.internal.kafka.bootstrap.servers": "kafka:9092",
+    "schema.history.internal.kafka.topic": "schema-changes.inventory",
+    "signal.enabled.channels": "source,jmx",
+    "signal.data.collection": "inventory.debezium_signal",
+    "notification.enabled.channels": "jmx" <1>
+  }
+}
+----
+<1> This configuration enables **jmx** notification channel.
 
-Update Connector Configuration: Integrate "jmx" into the notification.enabled.channels property in the connector configuration.
+To access the notifications we need to connect again to JMX server. So as we did for the signal we will use `jmxterm`
 
-Connect to JMX: Establish a connection with the MBean Server using your JMX client.
+[source,bash]
+----
+java -jar jmxterm-1.0.4-uber.jar <1>
 
-Notifications in Debezium are accessible through the Notifications attribute of a specific bean. These notifications are invaluable for staying updated on events such as the commencement of an incremental snapshot.
+open localhost:9012 <2>
+
+beans -d debezium.postgres <3>
+
+get -b debezium.postgres:context=notifications,server=dbserver1,type=management Notifications <4>
+----
+<1> Run the jmxterm client
+<2> Open a connection to JMX Server
+<3> Search for bean under **debezium.postgres** domain
+<4> Get notifications.
+
+you should expect the following output
+
+[source, text]
+----
+#mbean = debezium.postgres:context=notifications,server=dbserver1,type=management:
+Notifications = [ {
+  additionalData = {
+    ( connector_name ) = {
+      key = connector_name;
+      value = dbserver1;
+     };
+   };
+  aggregateType = Initial Snapshot;
+  id = b20bec8d-f21f-4d74-bb75-cdd7f4c7d933;
+  type = SKIPPED;
+ }, <1>
+{
+  additionalData = {
+    ( connector_name ) = {
+      key = connector_name;
+      value = dbserver1;
+     };
+    ( data_collections ) = {
+      key = data_collections;
+      value = inventory.orders;
+     };
+   };
+  aggregateType = Incremental Snapshot;
+  id = 12345;
+  type = STARTED;
+ }, <2>
+{
+  additionalData = {
+    ( current_collection_in_progress ) = {
+      key = current_collection_in_progress;
+      value = inventory.orders;
+     };
+    ( connector_name ) = {
+      key = connector_name;
+      value = dbserver1;
+     };
+    ( maximum_key ) = {
+      key = maximum_key;
+      value = 10004;
+     };
+    ( last_processed_key ) = {
+      key = last_processed_key;
+      value = 10004;
+     };
+    ( data_collections ) = {
+      key = data_collections;
+      value = inventory.orders;
+     };
+   };
+  aggregateType = Incremental Snapshot;
+  id = 12345;
+  type = IN_PROGRESS;
+ }, <3>
+{
+  additionalData = {
+    ( scanned_collection ) = {
+      key = scanned_collection;
+      value = inventory.orders;
+     };
+    ( connector_name ) = {
+      key = connector_name;
+      value = dbserver1;
+     };
+    ( total_rows_scanned ) = {
+      key = total_rows_scanned;
+      value = 4;
+     };
+    ( status ) = {
+      key = status;
+      value = SUCCEEDED;
+     };
+    ( data_collections ) = {
+      key = data_collections;
+      value = inventory.orders;
+     };
+   };
+  aggregateType = Incremental Snapshot;
+  id = 12345;
+  type = TABLE_SCAN_COMPLETED;
+ }, <4>
+{
+  additionalData = {
+    ( connector_name ) = {
+      key = connector_name;
+      value = dbserver1;
+     };
+   };
+  aggregateType = Incremental Snapshot;
+  id = 12345;
+  type = COMPLETED;
+ } <5>
+];
+----
+<1> This is a notification from initial snapshot that as the status `SKIPPED` since our connector is configured with `"snapshot.mode": "NEVER"`
+<2> This is the notification about the incremental snapshot start
+<3> This notification tells that the snapshot of table `inventory.orders` is in progress and provide some useful information about the last processed key and the max key. In this particular example we have only one `in progress` notification but depending on your table size and `snapshot.fetch.size` you can get more.
+<4> This notification tells that the snapshot for a specific table has completed and provides also information about the total row processed.
+<5> This is the last notification that we have for this example and tells that the entire incremental snapshot progress has completed.
+
+[NOTE]
+JMX offers also the possibility to produce its own notification, Debezium will also produce these notifications.
+You can, depending on your jmx client, subscribe to these notification, so you can immediately receive it without the need to poll the *Notification* bean.
+
 
 == Leveraging Jolokia for REST-based Signaling and Notifications
-Jolokia is a powerful tool that allows you to interact with Debezium via REST and utilize the JMX channel for signaling and notifications. With Jolokia, you can send signals and receive notifications seamlessly.
+Jolokia is a powerful tool that allows you to interact with a JMX server and expose it via REST.
+Using it we can interact with Debezium via REST leveraging the signaling and notifications JMX beans.
+In this way, you can send signals and receive notifications seamlessly and with more familiar REST api.
 
-Sending Signals via Jolokia
-To send signals via Jolokia, you can use HTTP POST requests to a Jolokia endpoint with the desired signal and parameters. This enables you to control Debezium remotely through RESTful interactions.
+To enable Jolokia we need to enable its agent on our Kafka Connect container.
 
-Receiving Notifications via Jolokia
-Jolokia also allows you to fetch notifications from Debezium using HTTP GET requests. You can subscribe to notifications and receive real-time updates about events in your data pipeline.
+This is the docker compose file used in our example
+[source, yaml]
+----
+version: '2'
+services:
+  zookeeper:
+    image: quay.io/debezium/zookeeper:2.4
+    ports:
+      - 2181:2181
+      - 2888:2888
+      - 3888:3888
+  kafka:
+    image: quay.io/debezium/kafka:2.4
+    ports:
+      - 9092:9092
+    links:
+      - zookeeper
+    environment:
+      - ZOOKEEPER_CONNECT=zookeeper:2181
+  postgres:
+    image: quay.io/debezium/example-postgres:2.4
+    ports:
+      - 5432:5432
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+  connect:
+    image: quay.io/debezium/connect:2.4
+    ports:
+      - 8083:8083
+      - 9012:9012
+      - 8778:8778 #<1>
+    links:
+      - kafka
+      - postgres
+    environment:
+      - BOOTSTRAP_SERVERS=kafka:9092
+      - GROUP_ID=1
+      - CONFIG_STORAGE_TOPIC=my_connect_configs
+      - OFFSET_STORAGE_TOPIC=my_connect_offsets
+      - STATUS_STORAGE_TOPIC=my_connect_statuses
+      - JMXPORT=9012
+      - JMXHOST=0.0.0.0
+      - ENABLE_JOLOKIA=true #<2>
+----
+<1> Will expose the port used by Jolokia agent
+<2> This will enable the Jolokia agent already shipped in our test images. If you want to enable the agent on your installation please check the https://jolokia.org/reference/html/[official documentation]
+
+=== Sending Signals via Jolokia
+To send signals via Jolokia, we can send an HTTP POST request to the Jolokia endpoint with the desired signal and parameters.
+
+To continue with our incremental snapshot example, to trigger it you can run the following command
+
+[source, bash]
+----
+curl -X POST 'http://localhost:8778/jolokia/exec' -d '{"type":"EXEC","mbean":"debezium.postgres:context=signals,server=dbserver1,type=management","operation":"signal","arguments":["12345","execute-snapshot","{\"data-collections\": [\"inventory.products\"], \"type\": \"INCREMENTAL\"}"]}' | jq
+----
+
+this should be the output
+[source, json]
+----
+{
+  "request": {
+    "mbean": "debezium.postgres:context=signals,server=dbserver1,type=management",
+    "arguments": [
+      "12345",
+      "execute-snapshot",
+      "{\"data-collections\": [\"inventory.products\"], \"type\": \"INCREMENTAL\"}"
+    ],
+    "type": "exec",
+    "operation": "signal"
+  },
+  "value": null,
+  "timestamp": 1695651387,
+  "status": 200
+}
+----
+
+== Receiving Notifications via Jolokia
+Jolokia also allows you to fetch notifications from Debezium using HTTP GET requests.
+
+[source, bash]
+----
+curl -X GET 'http://localhost:8778/jolokia/read/debezium.postgres:context=notifications,server=dbserver1,type=management/Notifications' | jq
+----
+
+this should be the output
+[source, json]
+----
+{
+  "request": {
+    "mbean": "debezium.postgres:context=notifications,server=dbserver1,type=management",
+    "attribute": "Notifications",
+    "type": "read"
+  },
+  "value": [
+    {
+      "additionalData": {
+        "connector_name": "dbserver1"
+      },
+      "id": "b20bec8d-f21f-4d74-bb75-cdd7f4c7d933",
+      "type": "SKIPPED",
+      "aggregateType": "Initial Snapshot"
+    },
+    {
+      "additionalData": {
+        "connector_name": "dbserver1",
+        "data_collections": "inventory.orders"
+      },
+      "id": "12345",
+      "type": "STARTED",
+      "aggregateType": "Incremental Snapshot"
+    },
+    {
+      "additionalData": {
+        "last_processed_key": "10004",
+        "current_collection_in_progress": "inventory.orders",
+        "connector_name": "dbserver1",
+        "maximum_key": "10004",
+        "data_collections": "inventory.orders"
+      },
+      "id": "12345",
+      "type": "IN_PROGRESS",
+      "aggregateType": "Incremental Snapshot"
+    },
+    {
+      "additionalData": {
+        "scanned_collection": "inventory.orders",
+        "connector_name": "dbserver1",
+        "total_rows_scanned": "4",
+        "status": "SUCCEEDED",
+        "data_collections": "inventory.orders"
+      },
+      "id": "12345",
+      "type": "TABLE_SCAN_COMPLETED",
+      "aggregateType": "Incremental Snapshot"
+    },
+    {
+      "additionalData": {
+        "connector_name": "dbserver1"
+      },
+      "id": "12345",
+      "type": "COMPLETED",
+      "aggregateType": "Incremental Snapshot"
+    },
+    {
+      "additionalData": {
+        "connector_name": "dbserver1",
+        "data_collections": "inventory.products"
+      },
+      "id": "12345",
+      "type": "STARTED",
+      "aggregateType": "Incremental Snapshot"
+    },
+    {
+      "additionalData": {
+        "last_processed_key": "109",
+        "current_collection_in_progress": "inventory.products",
+        "connector_name": "dbserver1",
+        "maximum_key": "109",
+        "data_collections": "inventory.products"
+      },
+      "id": "12345",
+      "type": "IN_PROGRESS",
+      "aggregateType": "Incremental Snapshot"
+    },
+    {
+      "additionalData": {
+        "scanned_collection": "inventory.products",
+        "connector_name": "dbserver1",
+        "total_rows_scanned": "9",
+        "status": "SUCCEEDED",
+        "data_collections": "inventory.products"
+      },
+      "id": "12345",
+      "type": "TABLE_SCAN_COMPLETED",
+      "aggregateType": "Incremental Snapshot"
+    },
+    {
+      "additionalData": {
+        "connector_name": "dbserver1"
+      },
+      "id": "12345",
+      "type": "COMPLETED",
+      "aggregateType": "Incremental Snapshot"
+    }
+  ],
+  "timestamp": 1695652278,
+  "status": 200
+}
+
+----
+
+You can see that now we have also the notification about `inventory.products` table incremental snapshot that we have sent through REST api
 
 == Conclusion
-In this third installment of our series on Debezium Signaling and Notifications, we've learned how to enable and manage both signaling and notifications using JMX and Jolokia. Signaling empowers you to dynamically control Debezium's behavior, while notifications keep you informed about critical events. By harnessing these capabilities along with Jolokia, you can effectively manage, monitor, and interact with your data streaming workflows, ensuring that you stay in control of your data pipeline at all times.
+In this third installment of our series on Debezium Signaling and Notifications, we've learned how to enable and manage both signaling and notifications using JMX and Jolokia.
+Signaling empowers you to dynamically control Debezium's behavior, while notifications keep you informed about critical events. By harnessing these capabilities along with Jolokia,
+you can effectively manage, monitor, and interact with your data streaming workflows, ensuring that you stay in control of Debezium at all times.
