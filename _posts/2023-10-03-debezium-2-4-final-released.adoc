@@ -1,0 +1,587 @@
+---
+layout: post
+title:  Debezium 2.4.0.Final Released
+date:   2023-10-03
+tags: [ releases, mongodb, mysql, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox, spanner ]
+author: ccranfor
+---
+
+As the summer months wind down and we enter autumn with cooler temperatures, the team has diligently prepared the next major milestone of Debezium.
+It's my pleasure to announce the immediate release of the next minor version, Debezium *2.4.0.Final*.
+
+As the team begins the journey toward the next development iteration, let's take a moment and review all the new features, changes, and improvements that are included in Debezium 2.4, which includes https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20and%20fixVersion%20%20in%20(2.4.0.Alpha1%2C%202.4.0.Alpha2%2C%202.4.0.Beta1%2C%202.4.0.Beta2%2C%202.4.0.CR1%2C%202.4.0.Final)[231 issues] resolved by 68 unique contributors.
+
++++<!-- more -->+++
+
+== Breaking changes
+
+While we try to avoid any potential breaking changes between minor releases, such changes are sometimes inevitable.
+The upgrade to Debezium 2.4 includes a total of 10 unique breaking changes:
+
+MySQL::
+
+* The precision for `BIGINT` data types was not appropriately set when configuring the connector with `bigint.unsigned.handling.mode` as `precise`.
+If you use a schema registry with the above configuration settings, this release can lead to schema incompatibilities and may require registry adjustments (https://issues.redhat.com/browse/DBZ-6714[DBZ-6714]).
+
+MongoDB::
+
+* The configuration properties `mongodb.hosts` and `mongodb.members.autodiscover` have been removed.
+Connector configurations should be updated with https://debezium.io/documentation/reference/2.4/connectors/mongodb.html#mongodb-property-mongodb-connection-string[connection strings] instead (https://issues.redhat.com/browse/DBZ-6892[DBZ-6892]).
+
+* Connections were established, preferring the secondary, which made it impossible for users to use the primary.
+The connector will now use the https://debezium.io/documentation/reference/2.4/connectors/mongodb.html#mongodb-property-mongodb-connection-string[connection string] to influence where to connect (https://issues.redhat.com/browse/DBZ-6521[DBZ-6521]).
+
+Oracle::
+
+* The default value for `snapshot.fetch.size` and `query.fetch.size` configuration properties were changed from `2000` to `10000` as a way to improve the performance of the connector's default configuration (https://issues.redhat.com/browse/DBZ-6729[DBZ-6729]).
+
+* System change number (SCN) JMX metrics were exposed as `String` based data types and are now `BigInteger` data types, enabling exportability to observability stacks (https://issues.redhat.com/browse/DBZ-6798[DBZ-6798]).
+
+Vitess::
+
+* The change event structure has been altered, the `source` information block now includes a new field that identifies the shard the event originated from (https://issues.redhat.com/browse/DBZ-6617[DBZ-6617]).
+
+* Collations that ended with `_bin` were inferred as `VARBINARY` data types, emitting these as binary data; however, for character-based columns this was incorrect.
+If you are using these collation types and schema registry, this can lead to schema incompatibilities and may require some registry adjustments (https://issues.redhat.com/browse/DBZ-6748[DBZ-6748]).
+
+* Schema changes were previously applied across all shards rather than treating each shard independently.
+If you are using the `DefaultTopicNamingStrategy` or a derivative, you should switch to `TableTopicNamingStrategy` to preserve the same topic naming used previously. (https://issues.redhat.com/browse/DBZ-6775[DBZ-6775])
+
+* Only a subset of errors were being retried by default.
+This behavior has changed and now all errors are retried by default and only a subset of pre-defined error conditions are not (https://issues.redhat.com/browse/DBZ-6944[DBZ-6944]).
+
+Debezium Server::
+
+* Debezium Server now includes all variants of the Cassandra connector with the addition of a new environment variable `EXTRA_CONNECTOR` to control which specific Cassandra connector to use.
+This variable can be set to `dse`, `cassandra-3`, or `cassandra-4` (https://issues.redhat.com/browse/DBZ-6638[DBZ-6638]).
+
+== Improvements and changes
+
+In this section, we're going to take a tour of all the new features and improvements in Debezium 2.4.
+
+=== Core
+
+==== Ad-hoc Blocking Snapshots
+
+Incremental snapshots were first introduced nearly two years ago in Debezium 1.6 and has remained quite popular in the community to deal with a variety of re-snapshot use cases.
+However, there are some use cases where the intertwined nature of read events with create, updates, and deletes may be less than ideal or even not supported by some consumer applications.
+For those use cases, Debezium 2.4 introduces ad-hoc blocking snapshots.
+
+An ad-hoc blocking snapshot works in a similar way that ad-hoc incremental snapshots work; however, with one major difference.
+The snapshot is still triggered by sending a signal to Debezium; however when the signal is processed by the connector, the key difference is that streaming is put on hold while the snapshot process runs.
+This means you won't be receiving a series of read events interwoven with create, update, or delete events.
+This also means that we'll be processing the snapshot in a similar way to traditional snapshots, so the throughput should generally be higher than incremental snapshots.
+
+[IMPORTANT]
+====
+Be aware that ad-hoc blocking snapshots puts the reading of the transaction logs on hold while the snapshot is performed.
+This means the same requirements that a traditional snapshot has on transaction log availability also applies when using this type of ad-hoc snapshot mode.
+When streaming resumes, if a transaction log that is needed has since been removed, the connector will raise an error and stop.
+====
+
+The signal to initiate an ad-hoc blocking snapshot is very similar to its ad-hoc incremental snapshot counterpart.
+The following signal below shows the payload to snapshot a specific table with a condition, but this uses the new blocking snapshot rather than the incremental snapshot:
+
+[source,json]
+----
+{
+  "type": "execute-snapshot",
+  "data": {
+    "data-collections": ["public.my_table"],
+    "type": "BLOCKING", <.>
+    "additional-condition": "last_update_date >= '2023-01-01'"
+  }
+}
+----
+<.> The use of `BLOCKING` rather than `INCREMENTAL` differentiates the two ad-hoc snapshot modes.
+
+==== Error Handling
+
+Some Debezium connectors previously used a connector property, `errors.max.retries`.
+This property controlled how often a Debezium connector failure exception would be explicitly wrapped in a `RetriableException` but the connector threw the raw exception up to the runtime.
+While this may sound similar to Kafka Connect's `errors.retry.timeout`, this effectively gave users a common way to deal with retries across multiple Debezium runtimes, including Kafka Connect, Debezium Server, and Debezium Embedded.
+
+==== Initial snapshot notifications
+
+Debezium's new notification subsystem provides an easy way to integrate third-party tools and applications with Debezium to gain insight into the ongoing change data capture process, above and beyond the traditional JMX approach.
+In 2.4, the notification subsystem now includes the ability to notify you about the status of the ongoing initial snapshot (https://issues.redhat.com/browse?DBZ-6416[DBZ-6416]).
+
+Initial snapshot notifications are emitted with an `aggregatetType` of `Initial Snapshot` and contain a `type` field that exposes the current status of the snapshot.
+The possible values include: `STARTED`, `ABORTED`, `PAUSED`, `RESUMED`, `IN_PROGRESS`, `TABLE_SCAN_COMPLETED`, and `COMPLETED`.
+
+==== JMX notifications with JSON user data
+
+Debezium 2.4 changes how JMX notifications provide user data.
+In previous versions, the notification used a `toString()` style implementation, which while it worked, it doesn't provide any good forward or backward compatibility semantics unlike other more structured formats such as JSON.
+
+Moving forward, JMX notification's user data will  be provided as JSON, making it easier and more reliable to parse and to support extensibility in the future with less concerns about backward compatibility.
+We hope this makes this feature easier to use moving forward and welcome any additional feedback.
+
+==== Notifications
+
+All notification events will now include a timestamp (https://issues.redhat.com/browse/DBZ-6793[DBZ-6793]).
+
+==== Source-to-sink column name propagation
+
+Normally column names map directly to field names and vice versa when consumed by sink connectors such as a JDBC connector.
+However, there are situations where the serialization technology, such as Avro, has very specific rules about field naming conventions.
+When a column's name in a database table conflicts with the serialization rule's naming conventions, Debezium will rename the field in the event so that it adheres to the serialization's rules.
+This often means that a field will be prepended with underscores or invalid characters replaced with underscores.
+
+This can create problems for certain types of sinks, such as a JDBC sink connector, because the sink cannot easily deduce the original column name for the destination table nor can it adequately map between the event's field name and a column name if they differ.
+This typically means users must use transformation chains on the sink side in order to reconstruct the event's fields with namings that represent the source.
+
+Debezium 2.4 introduces a way to minimize and potentially avoid that entirely by propagating the original column name as a field schema parameter, much in the same way that we do for data types, precision, scale, and length.
+The schema parameter `__debezium.source.column.name` now includes the original column name when column or data type propagation is enabled.
+
+[TIP]
+====
+The Debezium JDBC sink connector already works with column and data type propagation, allowing for the sink connector to more accurately deduce column types, length, precision, and scale.
+
+With this new feature, the JDBC sink connector will automatically use the column name from this argument when it is provided to guarantee that the destination table will be created with the same column names as the source, even when using Avro or similar.
+This means no transformations are needed when using the Debezium JDBC sink connector.
+====
+
+==== Timezone transformation
+
+A common request we have often heard from the community has been to emit temporal columns using other time zones besides UTC.
+Debezium has supported this by using a `CustomConverter` to change the way temporal columns are emitted by default to writing your own single message transformation; however, these approaches may not be for everyone.
+
+Debezium 2.4 now ships with a brand-new time zone transformation that enables you to control, to a granular level, which temporal columns in an emitted event will be converted from UTC into whatever desired time zone your pipeline requires.
+To get started with this new transformation, add the following basic configuration to your connector:
+
+[source,json]
+----
+{
+  "transforms": "tz",
+  "transforms.tz.type": "io.debezium.transforms.TimezoneConverter",
+  "transforms.tz.converted.timezone": "America/New_York"
+}
+----
+
+By specifying the above configuration, all temporal columns that are emitted in UTC will be converted from UTC to the America/New_York time zone.
+But you are not limited to just changing the timezone for all temporal fields, you can also target specific fields using the `include.fields` property as shown below:
+
+[source,json]
+----
+{
+  "transforms": "tz",
+  "transforms.tz.type": "io.debezium.transforms.TimezoneConverter",
+  "transforms.tz.converted.timezone": "America/New_York",
+  "transforms.tz.include.fields": "source:customers:created_at,customers:updated_at"
+}
+----
+
+In the above example, the first entry will convert the `created_at` field where the _source table name_ is `customers` whereas the latter will convert the `updated_at` field where the _topic name_ is `customers`.
+Additionally, you can also exclude fields from the conversion using `exclude.fields` to apply the conversion to all but a subset:
+
+[source,json]
+----
+{
+  "transforms": "tz",
+  "transforms.tz.type": "io.debezium.transforms.TimezoneConverter",
+  "transforms.tz.converted.timezone": "America/New_York",
+  "transforms.tz.exclude.fields": "source:customers:updated_at"
+}
+----
+
+In the above example, all temporal fields will be converted to the America/New_York time zone except where the _source table name_ is `customers` and the field is `updated_at`.
+
+You can find more information about this new transformation in the https://debezium.io/documentation/reference/2.4/transformations/timezone-converter.html[documentation] and we would love to hear your feedback.
+
+=== MongoDB
+
+==== Cluster-wide privileges
+
+Cluster-wide privileges are no longer necessary when watching a single database or collection (https://issues.redhat.com/browse/DBZ-6182[DBZ-6182]).
+
+==== Configurable order of aggregation pipeline
+
+Debezium 2.4 now provides a way to control the aggregation order of the change streams pipeline.
+This can be critical when specific documents are being aggregated that could lead to pipeline problems such as large documents.
+
+By default, the connector applies the MongoDB internal pipeline filters and then any user-constructed filters; however this could lead to situations where large documents make it into the pipeline and MongoDB could throw an error if the document exceeds the internal 16Mb limit.
+In such use cases, the connector can now be configured to apply the user stages to the pipeline first defined by `cursor.pipeline` to filter out such use cases to avoid the pipeline from failing due to the 16Mb limit.
+
+To accomplish this, simply apply the following configuration to the connector:
+[source,json]
+----
+{
+  "cursor.pipeline.order": "user_first",
+  "cursor.pipeline": "<custom-pipeline-filters>"
+}
+----
+
+For more details, please see the https://debezium.io/documentation/reference/2.4/connectors/mongodb.html#mongodb-property-cursor-pipeline[documentation].
+
+==== Custom authentication
+
+In specific environments such as AWS, you need to use AWS IAM role-based authentication to connect to the MongoDB cluster; however, this requires setting the property u sing `AWS_CREDENTIAL_PROVIDER`.
+This provider is responsible for creating a session and providing the credentials.
+
+To integrate more seamlessly in such environments, a new configuration property, `mongodb.authentication.class` has been added that allows you to define the credential provider class directly in the connector configuration.
+If you need to use such a provider configuration, you can now add the following to the connector configuration:
+
+[source,json]
+----
+{
+  "mongodb.authentication.class": "<fully-qualified-class-name-to-use>",
+  "mongodb.user": "username",
+  "mongodb.password": "password"
+}
+----
+
+In addition, if the authentication needs to use another database besides `admin`, the connector configuration can also include the `mongodb.authsource` property to control what authentication database should be used.
+
+For more information, please see the https://debezium.io/documentation/reference/2.4/connectors/mongodb.html#mongodb-property-mongodb-authentication-class[documentation].
+
+==== Filter match mode
+
+A new configuration property, `filtering.match.mode` has been added for MongoDB to allow specifying how the filtering should be handled.
+This property can be specified with values of either `regex` or `literal` (https://issues.redhat.com/browse/DBZ-6973[DBZ-6973]).
+
+==== MongoDB 7
+
+MongoDB 7.0 was released just last month and Debezium 2.4 ships with MongoDB 7 support.
+
+If you are looking to upgrade to MongoDB 7 for your environment, you can easily do so as Debezium 2.4+ is fully compatible with the newer version.
+If you encounter any problems, please let us know.
+
+==== Parallel incremental snapshots
+
+Since the introduction of incremental snapshots back in Debezium 1.x, the process to incremental snapshot existing data while concurrently capturing changes from a database transaction has been a single-threaded activity.
+It's not uncommon when adding new features to focus on the basics and build upon that foundation, which is precisely what has happened with MongoDB.
+
+In Debezium 2.4, we are taking the first steps to add parallel support to incremental snapshots with the MongoDB connector by reading multiple chunks in parallel.
+This should allow faster throughput at the cost of memory while the chunks are being collected, sorted, and deduplication occurs against the transaction log capture data set.
+Thanks to https://github.com/xidui[Yue Wang] for starting this effort in https://issues.redhat.com/browse/DBZ-6518[DBZ-6518], it's most definitely something we are looking to explore for the relational connectors in an upcoming Debezium release.
+
+==== Read preferences
+
+Read preference taken from connection string (https://issues.redhat.com/browse/DBZ-6468[DBZ-6468], https://issues.redhat.com/browse/DBZ-6578[DBZ-6578]).
+
+==== Authentication changes
+
+Support authentication with TC MongoDB deployments (https://issues.redhat.com/browse/DBZ-6596[DBZ-6596]).
+
+=== MySQL
+
+==== Alternative driver support
+
+In order to use IAM authentication on AWS, a special MySQL driver is required to provide that type of functionality.
+With Debezium 2.4, you can now provide a reference to this specific driver and the connector will use that driver instead of the default driver shipped with the connector.
+
+As an example, to connect using IAM authentication on AWS, the following configuration is needed:
+
+[source,text]
+----
+database.jdbc.driver=software.aws.rds.jdbc.mysql.Driver
+database.jdbc.protocol=jdbc:mysql:aws
+----
+
+The `database.jdbc.driver` specifies the driver that should be loaded by the connector and used to communicate with the MySQL database.
+The `database.jdbc.protocol` is a supplemental configuration property that may not be required in all contexts.
+It defaults to `jdbc:mysql` but since AWS requires `jdbc:mysql:aws`, this allows you to specify this derivative within the configuration.
+
+We've love to hear feedback and whether something like this might be useful for other scenarios.
+
+==== Parallel snapshot schema events
+
+Thanks to a contribution provided by Harvey Yue (https://issues.redhat.com/browse/DBZ-6472[DBZ-6472]), the MySQL connector will use parallelization to generate schema events during its snapshot phase.
+This should improve the overall performance when capturing the schema for many tables in your database.
+We plan to investigate how this can be extended to other relational connectors.
+
+=== PostgreSQL
+
+==== PostgreSQL 16
+
+PostgreSQL announced the immediate release for PostgreSQL 16 just over a week ago, and we're pleased to announce that Debezium 2.4 will support that release.
+
+[NOTE]
+====
+PostgreSQL 16 introduces logical replication from standby servers; however, this feature has not yet been tested by Debezium and will be a feature introduced in a later build of Debezium.
+For now, logical replication remains only supported via the primary.
+====
+
+==== TimescaleDB support
+
+TimescaleDB is an open-source time series-based database that is based on PostgreSQL.
+This means that a great deal of functionality to support TimescaleDB directly comes from the existing PostgreSQL connector; however there are certain aspects of TimescaleDB such as chunks, hypertables, and agregates that are not.
+
+Therefore, if you want to get started with Debezium 2.4 and TimescaleDB, the integration requires a combination of both the PostgreSQL connector combined with a new `TimescaleDb` single message transformation (SMT).
+The combination of these two provide the ability to stream changes from a TimescaleDB environment with appropriate table names based on chunks, hypertables, and aggregates.
+
+The `TimescaleDb` transformation is available as `io.debezium.connector.postgresql.transforms.timescaledb` and is responsible for adjusting the final topic names when working with chunks, hypertables, and aggregates.
+Additionally, this transformation adds metadata headers to the change event so you know the original chunk name, chunk table, the hypertable schema and table names accordingly.
+
+=== Oracle
+
+==== Embedded Infinispan global configuration support
+
+The Oracle connector supports three different buffering techniques, one is based on JVM heap while the other two are based on off-heap storage using Infinispan.
+When working with Infinispan, you can choose to use a remote cluster, where the caches are stored and managed across a remote connection, or using an embedded cluster, where the cluster is managed locally by the connector itself.
+
+When working with a remote Infinispan cluster, there is some cluster configuration that is made as a part of the Infinispan installation itself, this is often referred to as the global or cluster configuration.
+However when working with an embedded Infinispan cluster, Debezium simply used the default configuration for an embedded cluster, which may not always provide all the necessary behaviors for each environment.
+
+Debezium 2.4 introduces a new configuration property, `log.mining.buffer.infinispan.cache.global`.
+This property allows specifying the XML configuration for the Infinispan "global" or "cluster" configuration.
+
+.An example configuration
+[source,xml]
+----
+<infinispan>
+  <threads>
+    <blocking-bounded-queue-thread-pool
+        max-threads="10"
+        name="myexec"
+        keepalive-time="10000"
+        queue-length="5000" />
+  </threads>
+</infinispan>
+----
+
+With Debezium 2.4, if you are using the Infinispan-embedded buffer, you can now safely configure the overall embedded global configuration for Infinispan, which can allow you to tune and improve the overall performance when using the embedded Infinispan engine.
+
+==== Max transaction age metric
+
+The Oracle connector provides a myriad of metrics for LogMiner, including the `OldestScn` metric representing the oldest system change number in the connector's transaction buffer.
+This SCN can be useful to know how far back a transaction may still be buffered relative to the current system change number, `CurrentScn`.
+However, system change numbers are simply that, numerical values that require the use of a database function call to know when the change occurred.
+
+Starting with Debezium 2.4, the connector will now also track the age of the oldest system change number by providing a new metric called `OldestScnAgeInMilliseconds`.
+This metric is calculated by taking the timestamp of the `OffsetScn` and calculating the difference between that time and the query time of the metric, giving a rough age in milliseconds of the oldest transaction in the buffer that has yet to be committed or rolled back.
+
+If there are other metrics you may be interested in to help, please reach out and let us know.
+
+==== OpenLogReplicator ingestion method
+
+The Debezium for Oracle connector has traditionally shipped with two adapters, one for Oracle XStream and another to integrate directly with Oracle LogMiner.
+While each adapter has its own benefits and is quite mature with features and support for a wide array of data types and use cases, we wanted to explore a completely different way of capturing changes.
+
+Debezium 2.4.0.Beta2 introduces a new, experimental Oracle ingestion adapter based on https://github.com/bersler/OpenLogReplicator[OpenLogReplicator].
+The adapter integrates directly with the OpenLogReplicator process in order to create change events in a similar way that the XStream implementation acts as a client to Oracle GoldenGate.
+
+OpenLogReplicator is a standalone process that must either run on the Oracle database server or can run independently of the database server but requires direct communication with the database via TCP/IP and have direct read access to the Oracle redo and archive log files.
+OpenLogReplicator also does not ship with any pre-built binaries, so the code must either be built directly from source or deployed in a https://github.com/bersler/OpenLogReplicator-docker[container image] that can access the database and its files remotely via file shares.
+
+Once OpenLogReplicator is installed, set up requires the following steps:
+
+* Configure the OpenLogReplicator's configuration, `OpenLogReplicator.json`.
+* Configure the Oracle connector to use the OpenLogReplicator adapter.
+
+At this time, the Debezium for Oracle connector expects the OpenLogReplicator configuration to use very specific settings so that the data is transferred to the connector using the right serialization.
+The https://debezium.io/documentation/reference/2.4/connectors/oracle.html#oracle-openlogreplicator-configuration[example configuration] shows the critical configuration parameters that must be set for Debezium to ingest the data properly.
+
+When OpenLogReplicator is configured, you should see OpenLogReplicator start with the following:
+[source]
+----
+OpenLogReplicator v1.2.1 (C) 2018-2023 by Adam Leszczynski (aleszczynski@bersler.com), see LICENSE file for licensing information, arch: x86_64, system: Linux, release: 6.4.11-200.fc38.x86_64, build: Debug, modules: OCI Probobuf
+adding source: ORACLE <1>
+adding target: DBZ-NETWORK <2>
+writer is starting with Network:0.0.0.0:9000 <3>
+----
+<1> The source alias configured in `OpenLogReplicator.json`
+<2> The target alias configured in `OpenLogReplicator.json`
+<3> The host and port the OpenLogReplicator is listening on.
+
+Lastly to configure the connector, set the following connector configuration options:
+
+[source,json]
+----
+{
+  "database.connection.adapter": "olr",
+  "openlogreplicator.source": "<source-alias>", // <1>
+  "openlogreplicator.host": "<host>", // <2>
+  "openlogreplicator.port": "<port>" // <3>
+----
+<1> The source alias defined in the `OpenLogReplicator.json` configuration that is to be used.
+<2> The host that is running the OpenLogReplicator.
+<3> The port the OpenLogReplicator is listening on.
+
+When the connector starts and begins to stream, it will connect to the OpenLogReplicator process' network endpoint, negotiate the connection with the serialization process, and then will begin to receive redo log entries.
+
+We will have another blog post that goes over OpenLogReplicator in more detail in the coming weeks leading up to the final release, but in the meantime feel free to experiment with the new ingestion method as we would love to hear your feedback.
+
+[NOTE]
+====
+As this ingestion method is experimental, there are a few known limitations, please review the connector https://debezium.io/documentation/reference/2.4/connectors/oracle.html#oracle-openlogreplicator-known-issues[documentation] for details.
+====
+
+==== XML and RAW data types
+
+Debezium 2.4 supports several new Oracle data types, which include `XML_TYPE` and `RAW` (https://issues.redhat.com/browse/DBZ-3605[DBZ-3605]).
+Two new Oracle dependencies were necessary to support XML: `xdb` and `xmlparserv2`.
+These dependencies are not redistributable, so they're not included in the connector plugin archive by default, much like the connector's driver.
+You must obtain these directly from Maven Central or oracle, just like the driver dependency.
+
+In addition, XML works similarly to `CLOB` and `BLOB` data types; therefore, the connector must be configured with `lob.enabled` set to `true` to ingest XML changes.
+We'd love to hear your feedback on this new feature as it's been requested for quite some time.
+
+=== SQL Server
+
+==== Heartbeat improvements
+
+It's not an uncommon situation for a database to go for a period of time without there being any relevant changes, whether that is due to inactivity or changes that do occur being of no interest to the connector based on configuration.
+In these cases, it's critical that offset metadata managed by the connector remains synchronized with the offset backing store during these periods so that a restart of the connector works as expected.
+
+With Debezium 2.4, if a SQL Server change capture loop does not find any changes or the changes that did occur are not of any relevance to the connector, the connector will continue to emit heartbeat events when enabled.
+This should improve the reliability of the offsets stored in the offset backing store across a variety of use cases.
+
+=== JDBC
+
+==== Improved table naming strategy
+
+Nicholas Fwang added the ability to reference values from the change event's `source` information block as a part of the connector's configuration property `table.name.format`.
+If you want to reference such fields, simply use `${source.<field-name>}` in the configuration, and the field's value will be used (https://issues.redhat.com/browse/DBZ-6595[DBZ-6595]).
+
+==== Header-based primary keys
+
+Roman Kudryashov contributed the ability to resolve a row's primary key from a header defined on the change event.
+To use this new feature, specify the connector configuration property `primary.key.mode` as `record_header`.
+If the header value is a primitive type, you will need to define a `primary.key.fields` configuration similar to how you would if the event's record key was a primitive.
+If the header value is a `struct` type, all fields of the structure will be used by default, but specifying the `primary.key.fields` property allows you to choose a subset of fields from the header as the key (https://issues.redhat.com/browse/DBZ-6602[DBZ-6602]).
+
+==== SQL Server identity inserts
+
+Each database handles the insertion of values into an identity-based column differently.
+With SQL Server, this requires the explicit enablement of `IDENTITY_INSERT` prior to the insert and the disabling of this feature afterward.
+With Debezium 2.4, the Debezium JDBC sink connector provides support for this in the target database.
+
+In order to take advantage of identity-based inserts, the JDBC sink connector must be configured with a new dialect-based property called `dialect.sqlserver.identity.inserts`, which can be set to `true` or `false`.
+By default, this feature is set to `false` and must be enabled if you wish to insert into identity-based columns.
+
+When enabled, all _insert_ and _upsert_ operations will be wrapped as follows:
+
+[source,sql]
+----
+SET IDENTITY_INSERT <table-name> ON;
+<the insert or upsert statement>
+SET IDENTITY_INSERT <table-name> OFF;
+----
+
+=== Spanner
+
+==== Await initialization task timeout
+
+It was possible due to certain conditions that a Spanner connector may not advance from the `START_INITIAL_SYNC` state during initialization.
+After investigation by Nancy Xu, a new configuration option was introduced to supply a configurable timeout.
+This can be done by setting `connector.spanner.task.await.initialization.timeout` to the desired number of milliseconds.
+
+==== GKE workload identity support
+
+Google Kubernetes Engine (GKE) supports identity workloads, allowing you to use a more secure authentication mechanism than the traditional JSON-based keys.
+In Debezium 2.4, when no JSON key is explicitly set, the Spanner connector will now automatically default to GKE workload identity authentication.
+Thanks to https://github.com/laughingman7743[laughingman7743] for this effort as a part of https://issues.redhat.com/browse/DBZ-6885[DBZ-6885].
+
+=== UI
+
+==== Connector Metrics
+
+The Debezium UI project allows you to easily deploy any Debezium connector onto Kafka Connect using a web-based interface.
+This release has improved the interface by including several connector metrics on the main connector listing view.
+We'd love your feedback on this change and welcome any suggestions on other metrics you may find useful (https://issues.redhat.com/browse/DBZ-5321[DBZ-5321]).
+
+=== Examples
+
+==== Offset editor example
+
+Users often express the need to manipulate connector offsets for various reasons.
+This can often be very difficult for those who may not be familiar with Kafka's CLI tools or Java if you use Debezium Server.
+Thanks to a contribution (https://issues.redhat.com/browse/DBZ-6338[DBZ-6338]) by Nathan Smit, you can now use an editor to manipulate the offsets from the command line or a web-based interface.
+
+Head to our https://github.com/debezium/debezium-examples/tree/main/offset-editor[examples repository] and follow the `README.md` to get started.
+
+== Other changes
+
+Altogether, https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20AND%20fixVersion%20%3D%202.4.0.Final%20ORDER%20BY%20component%20ASC[15 issues] were fixed in this release and a total of https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20and%20fixVersion%20%20in%20(2.4.0.Alpha1%2C%202.4.0.Alpha2%2C%202.4.0.Beta1%2C%202.4.0.Beta2%2C%202.4.0.CR1%2C%202.4.0.Final)[231 issues] across all the Debezium 2.4 releases.
+
+* Debezium Outbox not working with CloudEventsConverter https://issues.redhat.com/browse/DBZ-3642[DBZ-3642]
+* Incremental snapshot data-collections are not deduplicated https://issues.redhat.com/browse/DBZ-6787[DBZ-6787]
+* MongoDB connector no longer requires cluster-wide privileges https://issues.redhat.com/browse/DBZ-6888[DBZ-6888]
+* Timezone Transformation can't work https://issues.redhat.com/browse/DBZ-6940[DBZ-6940]
+* MySQL Kafka Signalling documentation is incorrect https://issues.redhat.com/browse/DBZ-6941[DBZ-6941]
+* Infinite loop when using OR condition in additional-condition https://issues.redhat.com/browse/DBZ-6956[DBZ-6956]
+* Filter out specified DDL events logic is reverted https://issues.redhat.com/browse/DBZ-6966[DBZ-6966]
+* DDL parser does not support NOCOPY keyword https://issues.redhat.com/browse/DBZ-6971[DBZ-6971]
+* Decrease time spent in handling rebalance events https://issues.redhat.com/browse/DBZ-6974[DBZ-6974]
+* ParsingException (MySQL/MariaDB): User specification with whitespace https://issues.redhat.com/browse/DBZ-6978[DBZ-6978]
+* RecordsStreamProducerIT#shouldReceiveChangesForInfinityNumericWithInfinity fails on Postgres < 14 https://issues.redhat.com/browse/DBZ-6986[DBZ-6986]
+* PostgresConnectorIT#shouldAddNewFieldToSourceInfo may fail as the schema may not exists https://issues.redhat.com/browse/DBZ-6987[DBZ-6987]
+
+A big thank you to all the contributors from the community who worked on Debezium 2.4:
+https://github.com/Vincenzo%20Santoynastaso[Vincenzo Santoynastaso],
+https://github.com/adamstrickland[Adam Strickland],
+https://github.com/aozmen121[Alisa Houskova],
+https://github.com/AnatolyPopov[Anatolii Popov],
+https://github.com/andreas-ibm[Andreas Martens],
+https://github.com/BigGillyStyle[Andy Pickler],
+https://github.com/adasari[Anil Dasari],
+https://github.com/akanimesh7[Animesh Kumar],
+https://github.com/ani-sha[Anisha Mohanty],
+https://github.com/maxant[Ant Kutschera],
+https://github.com/Artgyk[Artur Gukasian],
+https://github.com/bdbene[Balint Bene],
+https://github.com/roldanbob[Bob Roldan],
+https://github.com/brenoavm[Breno Moreira],
+https://github.com/TyrantLucifer[Chao Tian],
+https://github.com/chrisbeard[Chris Beard],
+https://github.com/Naros[Chris Cranford],
+https://github.com/C0urante[Chris Egerton],
+https://github.com/Matan[Cohen],
+https://github.com/vidourem[David Remy],
+https://github.com/Fraznist[Emre Akgün],
+https://github.com/ericpangiawan[Eric Pangiawan],
+https://github.com/faihofu[Fai Ho Fu],
+https://github.com/gurpiarbassi[Gurps Bassi],
+https://github.com/ruanhang1993[Hang Ruan],
+https://github.com/harveyyue[Harvey Yue],
+https://github.com/blcksrx[Hossein Torabi],
+https://github.com/indraraj[Indra Shukla],
+https://github.com/nicholas-fwang[Inki Hwang],
+https://github.com/jcechace[Jakub Cechacek],
+https://github.com/jeremy-l-ford[Jeremy Ford],
+https://github.com/novotnyJiri[Jiri Novotny],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/joschi[Jochen Schalanda],
+https://github.com/pricelessjunk[Kaustuv chakrabarti],
+https://github.com/Naros[M. Gökhan Akgül],
+https://github.com/mfvitale[Mario Fiore Vitale],
+https://github.com/MartinMedek[Martin Medek],
+https://github.com/mfortunat[Massimo Fortunat],
+https://github.com/nancyxu123[Nancy Xu],
+https://github.com/benesch[Nikhil Benesch],
+https://github.com/nirolevy[Nir Levy],
+https://github.com/obabec[Ondrej Babec],
+https://github.com/paul-cheung[Paul Cheung],
+https://github.com/rajdangwal[Rajendra Dangwal],
+https://github.com/rk3rn3r[René Kerner],
+https://github.com/roldanbob[Robert Roldan],
+https://github.com/rkudryashov[Roman Kudryashov],
+https://github.com/ironakj[Ronak Jain],
+https://github.com/ryanvanhuuksloot[Ryan van Huuksloot],
+https://github.com/jaegwonseo[Seo Jae-kwon],
+https://github.com/eizners[Sergey Eizner],
+https://github.com/ShuranZhang[Shuran Zhang],
+https://github.com/smiklosovic[Stefan Miklosovic],
+https://github.com/rolevinks[Stein Rolevink],
+https://github.com/sunxiaojian[Sun Xiao Jian],
+https://github.com/twthorn[Thomas Thornton],
+https://github.com/laughingman7743[Tomoyuki Nakamura],
+https://github.com/vjuranek[Vojtěch Juránek],
+https://github.com/wuzhenhua01[Wu Zhenhua],
+https://github.com/sunxiaojian[Xiaojian Sun],
+https://github.com/j2gg0s[Yanjie Wang],
+https://github.com/Ychopada[Yashashree Chopada],
+https://github.com/Yue[Zheng Wang],
+https://github.com/vidourem[david remy],
+https://github.com/ibnubay[ibnubay], and
+https://github.com/tisonkun[tison]!
+
+== Outlook &amp; What's next?
+
+Debezium 2.4 was a feature packed milestone for the team, so after a few drinks and celebration, the plan is to turn our focus toward what is ahead for the 2.5 release in mid-December.
+We already had our first Debezium Community meeting, discussed our link:/docs/roadmap[road map], and we're more than eager to get started.
+
+If you have any ideas or suggestions for what you'd like to see included in Debezium 2.5, please provide that feedback on our https://groups.google.com/forum/#!forum/debezium[mailing list] or in our https://debezium.zulipchat.com/login/#narrow/stream/302529-users[Zulip chat].
+
