@@ -1,0 +1,433 @@
+---
+layout: post
+title:  "Debezium Operator Takes off to the Clouds"
+date:   2023-10-19 00:00:00 -0000
+tags: [ debezium, features, kubernetes, operator, debezium-server ]
+featured: true
+author: jcechace
+---
+
+With Debezium 2.3 we introduced a preview of brand new Debezium Operator with the aim to provide seamless deployment of Debezium Server to Kubernetes (k8s) clusters. The Debezium 2.4.0.Final release brings the next step towards the full support of this component. With this release we are happy to announce that Debezium Operator is now available in the OperatorHub https://operatorhub.io/operator/debezium-operator[catalog] for Kubernetes as well as in the community operator catalog embedded in the OpenShift and OKD distributions. For now the operator still remains in the incubation phase, however, the full support of this component is approaching fast. 
+
++++<!-- more -->+++
+
+== The Goal 
+
+In this article we will demonstrate how to stream changes from a PostgreSQL database into Apache Kafka using Debezium Server deployed in Kubernetes cluster. We will also demonstrate some of the capabilities of our new k8s integration. For convenience all code snippets and kubernetes manifests used in the tutorial are also available in our https://github.com/debezium/debezium-examples/tree/main/operator/tutorial-postgresql-kafka[GitHub repository for examples].
+
+== Preparing the Envinronment
+
+Before we get to deploying the operator and, consequently, Debezium Server itself, first we need an environment to deploy into. In this section we will showcase how to provision a local Kubernetes cluster with a running PostgreSQL database and the Apache Kafka broker. Note that it is not required for the database and/or the Kafka broker to run inside Kubernetes, we just chose to do so for the purpose of this demonstration.
+
+=== Running a Local Kubernetes Cluster
+You can skip this part if you already have a running Kubernetes cluster available, however, make sure you possess cluster-admin permissions as these are required for the operator installation. If not, then read on.
+
+There are multiple tools available to run a local k8s cluster, such as https://minikube.sigs.k8s.io/docs/[Minikube], https://kind.sigs.k8s.io/[Kind], or https://docs.docker.com/desktop/kubernetes/[Docker Desktop]. In this article we will be using Kind to create a local single node cluster.
+
+
+**Prerequisities**
+
+1. https://kubernetes.io/docs/tasks/tools/#kubectl[Install] `kubectl` distribution for your platform.
+2. https://kind.sigs.k8s.io/docs/user/quick-start/#installation[Install] `Kind` distribution for your platform. 
+
+Once you have both `kubectl` and `kind` installed, create a local Kubernetes cluster by executing the following:
+
+[source, bash]
+----
+kind create cluster --name debezium
+----
+
+We can now configure the cluster context for `kubectl` and check the status of our new k8s environment by running the following command:
+
+[source, bash]
+----
+$ kubectl cluster-info --context kind-debezium
+
+Kubernetes control plane is running at https://127.0.0.1:64815
+CoreDNS is running at https://127.0.0.1:64815/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+----
+
+As the last step of our cluster deployment, we will create a new namespace for the required infrastructure:
+
+[source, bash]
+----
+kubectl create namespace debezium
+----
+
+=== Deploying the Infrastructure
+In this section we will prepare the required infrastructure -- the PostgreSQL database as well as an instance of the Kafka broker. 
+
+==== PostgreSQL Database 
+Let's start with deploying the PostgreSQL database by executing the command bellow. 
+
+[CAUTION]
+For simplicity we are using an ephemeral volume mounts which means that any modification done to our database instance will not persist when the pod is recreated. 
+
+[source, bash]
+----
+kubectl create -f https://raw.githubusercontent.com/debezium/debezium-examples/main/operator/tutorial-postgresql-kafka/infra/001_postgresql.yml -n debezium
+----
+
+The yaml file fed to `kubectl` contains several kubernetes manifests:
+
+.001_postgresql.yml
+[source, yaml]
+----
+apiVersion: v1 <1>
+kind: Secret
+metadata:
+  name: postgresql-credentials
+type: opaque
+data:
+  POSTGRES_DB: ZGViZXppdW0=
+  POSTGRES_USER: ZGViZXppdW0=
+  POSTGRES_PASSWORD: ZGViZXppdW0=
+---
+kind: Deployment <2>
+apiVersion: apps/v1
+metadata:
+  name: postgresql
+  labels:
+    app: postgresql
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgresql
+      deployment: postgresql
+  template:
+    metadata:
+      labels:
+        app: postgresql
+        deployment: postgresql
+    spec:
+      containers:
+        - resources: {}
+          name: postgresql
+          envFrom:
+            - secretRef:
+                name: postgresql-credentials
+          ports:
+            - containerPort: 5432
+              protocol: TCP
+          imagePullPolicy: IfNotPresent
+          livenessProbe:
+            initialDelaySeconds: 30
+            tcpSocket:
+              port: 5432
+            timeoutSeconds: 1
+          readinessProbe:
+            exec:
+              command:
+                - "/bin/sh"
+                - "-i"
+                - "-c"
+                - "PGPASSWORD=${POSTGRES_PASSWORD} /usr/bin/psql -w -U ${POSTGRES_USER} -d ${POSTGRES_DB} -c 'SELECT 1'"
+            initialDelaySeconds: 5
+            timeoutSeconds: 1
+          terminationMessagePolicy: File
+          terminationMessagePath: /dev/termination-log
+          image: quay.io/debezium/example-postgres:latest
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 30
+      dnsPolicy: ClusterFirst
+  strategy:
+    type: Recreate
+---
+apiVersion: v1 <3>
+kind: Service
+metadata:
+  name: postgresql
+spec:
+  selector:
+    app: postgresql
+    deployment: postgresql
+  ports:
+    - name: db
+      port: 5432
+      targetPort: 5432
+----
+<1> Secret providing database credentials.
+<2> Database Deployment.
+<3> Database Service.
+
+The secret is not only attached as environment variables to the database pod, but it will be also used later to reference these credentials in the connector configuration. 
+
+You can check that your PostgreSQL database was deployed correctly by running:
+
+[source, bash]
+----
+$ kubectl get deployments -n debezium
+
+NAME                        READY   UP-TO-DATE   AVAILABLE
+postgresql                  1/1     1            1
+----
+
+==== Kafka Broker
+To deploy the Kafka broker instance we will take an advantage of the https://strimzi.io/[Strimzi Operator]. 
+
+First we will deploy the Strimzi operator itself by running the command bellow. Please note the `namespace` parameter in the URL -- it's important as it ensures that Kubernetes objects required by Strimzi are created in the correct namespace.
+
+[source, bash]
+----
+kubectl create -f https://strimzi.io/install/latest?namespace=debezium 
+----
+
+After some time you can check that your Strimzi operator is running with:
+
+[source, bash]
+----
+$ kubectl get deployments -n debezium
+
+NAME                        READY   UP-TO-DATE   AVAILABLE
+strimzi-cluster-operator    1/1     1            1   
+----
+
+With the Strimzi operator installed we can deploy an instance of the Kafka broker.
+
+[source, bash]
+----
+kubectl create -f https://raw.githubusercontent.com/debezium/debezium-examples/main/operator/tutorial-postgresql-kafka/infra/002_kafka-ephemeral.yml -n debezium
+----
+
+This command deploys a minimal working configuration of the Kafka broker as described in the used yaml file.
+
+.002_kafka-ephemeral.yml
+[source, yaml]
+----
+apiVersion: kafka.strimzi.io/v1beta2
+kind: Kafka
+metadata:
+  name: dbz-kafka
+spec:
+  kafka:
+    version: 3.4.0
+    replicas: 1
+    listeners:
+      - name: plain
+        port: 9092
+        type: internal
+        tls: false
+      - name: tls
+        port: 9093
+        type: internal
+        tls: true
+    config:
+      offsets.topic.replication.factor: 1
+      transaction.state.log.replication.factor: 1
+      transaction.state.log.min.isr: 1
+      default.replication.factor: 1
+      min.insync.replicas: 1
+      inter.broker.protocol.version: "3.4"
+    storage:
+      type: ephemeral
+  zookeeper:
+    replicas: 1
+    storage:
+      type: ephemeral
+  entityOperator:
+    topicOperator: {}
+    userOperator: {}
+----
+
+[CAUTION]
+Once again this configuration uses an ephemeral storage and only a single replica of the Kafka broker -- a configuration not suitable for production.
+
+
+To check your Kafka deployment execute the following:
+
+[source, bash]
+----
+$ kubectl get pods -n debezium
+
+NAME                                         READY   STATUS    RESTARTS   
+dbz-kafka-entity-operator-844ffdcd54-cdq92   3/3     Running   0   
+dbz-kafka-kafka-0                            1/1     Running   0 
+dbz-kafka-zookeeper-0                        1/1     Running   0 
+----
+
+Deploying Debezium Operator
+---
+With the kubernetes environment and the required infrastructure at our disposal we can now move onto the main star of the tutorial -- brand new Debezium Operator. There are currently two ways to deploy the operator to your Kubernetes cluster. You can either apply a set of kubernetes manifests to your cluster (similarly to what we did with the database and the Strimzi operator), or directly from the https://operatorhub.io/[OperatorHub] operator catalog.
+
+
+=== Deploying Debezium Operator from Operator Catalog
+In this section we will use the https://olm.operatorframework.io/[Operator Lifecycle Manager] to create a subscription to the operator available in the https://operatorhub.io/[OperatorHub catalog]. As we mentioned previously, Debezium is one of the https://operatorhub.io/operator/debezium-operator[available operators].
+
+Among other things, using OLM also allows you to configure the scope of namespaces watched by the operator from a single namespace to the entire cluster. However, https://olm.operatorframework.io/docs/advanced-tasks/operator-scoping-with-operatorgroups/[this configuration] is out of the scope (pun intended!) for this tutorial. The process bellow will install the operator into the `operators` namespace -- which is by default intended for cluster-wide operators.
+
+First we need to install OLM itself by running the following shell commands -- skip this if OLM is already installed in your cluster. 
+
+[Note]
+This is a one-time process and any production k8s cluster which provides access to operator catalogs would already have OLM installed.
+
+[source, bash]
+----
+curl -L https://github.com/operator-framework/operator-lifecycle-manager/releases/download/v0.25.0/install.sh -o install.sh
+chmod +x install.sh
+./install.sh v0.25.0
+----
+
+Once OLM is up and running in your cluster you can subscribe to Debezium Operator.
+
+[source, bash]
+----
+kubectl create -f https://raw.githubusercontent.com/debezium/debezium-examples/main/operator/tutorial-postgresql-kafka/infra/010_debezium-subscription.yml
+----
+
+Once again we will examine the contents of the `subscription.yml` file in order to get a better understanding of what we have just done. 
+
+[source, bash]
+----
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription  <1>
+metadata:
+  name: debezium-operator-subscription
+  namespace: operators <2>
+spec:
+  installPlanApproval: Automatic
+  name: debezium-operator <3>
+  source: operatorhubio-catalog <4>
+  sourceNamespace: olm <5>
+  startingCSV: debezium-operator.v2.4.0
+----
+<1> The `Subscription` object instructs OLM to install a operator from the operator catalog.
+<2> The target namespace for the operator installation.
+<3> The name of the installed operator.
+<4> The name of the operator catalog.
+<5> The namespace containing the operator catalog.
+
+You can learn more about installing operators through OLM subscription in the https://olm.operatorframework.io/docs/tasks/install-operator-with-olm/[OLM documentation].
+
+You should now have Debezium Operator ready to manage Debezium Server deployments across your entire Kubernetes cluster. You can check that the operator is indeed up and running with the following command:
+
+[source, bash]
+----
+$ kubectl get deployments -n operators
+
+NAME                        READY   UP-TO-DATE   AVAILABLE   
+debezium-operator           1/1     1            1          
+----
+
+[TIP]
+In the previous section we chose to deploy the Strimzi operator by directly applying a set of k8s manifests to our cluster. However, Strimzi is also one of the operators available in the OperatorHub catalog and as such could be also installed via OLM. 
+
+=== Using Raw Kubernetes Manifests to Deploy Debezium Operator
+This options allows deployment of Debezium Operator into any Kubernetes cluster without the need for OLM. 
+
+[IMPORTANT]
+Debezium Operator deployed this way will be limited to managing the Debezium Server instances **only in the same namespace as the operator**. 
+
+To deploy Debezium Operator we need to execute the following commands:
+
+[source, bash]
+----
+kubectl create -f https://raw.githubusercontent.com/debezium/debezium-operator/2.4/k8/debeziumservers.debezium.io-v1.yml
+kubectl create -f https://raw.githubusercontent.com/debezium/debezium-operator/2.4/k8/kubernetes.yml -n debezium
+----
+
+The first command installs the https://kubernetes.io/docs/concepts/extend-kubernetes/api-extension/custom-resources/#customresourcedefinitions[Custom Resource Definitions] for the resources required by Debezium Operator, while the second execution of `kubectl` deploys the operator itself. 
+
+With the operator deployed you can now move to deploying the Debezium Server instance to start streaming changes from your database. 
+
+
+== Deploying Debezium Server to the K8s Cluster
+
+With Debezium Operator deployed one way or the other, we can now deploy Debezium Server itself!
+
+[source, bash]
+----
+kubectl create -f https://raw.githubusercontent.com/debezium/debezium-examples/main/operator/tutorial-postgresql-kafka/infra/011_debezium-server-ephemeral.yml -n debezium
+----
+
+Once again, let's look closely at the kubernetes manifest we just deployed.
+
+
+.011_debezium-server-ephemeral.yml
+[source, yaml]
+----
+apiVersion: debezium.io/v1alpha1
+kind: DebeziumServer <1>
+metadata:
+  name: my-debezium <2>
+spec:
+  image: quay.io/debezium/server:2.4.0.Final <3>
+  quarkus: <4>
+    config:
+      log.console.json: false
+      kubernetes-config.enabled: true
+      kubernetes-config.secrets: postgresql-credentials
+  sink: <5>
+    type: kafka
+    config:
+      producer.bootstrap.servers: dbz-kafka-kafka-bootstrap:9092
+      producer.key.serializer: org.apache.kafka.common.serialization.StringSerializer
+      producer.value.serializer: org.apache.kafka.common.serialization.StringSerializer
+  source: <6>
+    class: io.debezium.connector.postgresql.PostgresConnector
+    config:
+      offset.storage.file.filename: /debezium/data/offsets.dat
+      database.history: io.debezium.relational.history.FileDatabaseHistory
+      database.hostname: postgresql
+      database.port: 5432
+      database.user: ${POSTGRES_USER}
+      database.password: ${POSTGRES_PASSWORD}
+      database.dbname: ${POSTGRES_DB}
+      topic.prefix: inventory
+      schema.include.list: inventory
+----
+<1> The resource type monitored by Debezium Operator.
+<2> The name of the deployed Debezium Server instance.
+<3> An optional property specifying the container image.
+<4> The Quarkus configuration used by Debezium Server.
+<5> The Kafka sink configuration.
+<6> The PostgreSQL source connector configuration.
+
+The `spec` part of the manifest will likely look familiar to anybody with previous Debezium Server experience as it is a more structured variant of the Debezium Server property configuration. In our case the `image` property is particularly redundant as it uses the default image for the installed operator version. 
+
+The quarkus part of the `spec` provides Debezium Server with access to the previously deployed `postgresql-credentials` secret containing the credentials to our database. You can see the `POSTGRES_USER` and other variables referenced later on in the configuration. 
+ 
+
+
+A bit more detailed description of the `DebeziumServer` custom resource can be found at https://github.com/debezium/debezium-operator/tree/2.4#debeziumserverspec-reference[GitHub]. 
+
+=== Under the Hood
+Debezium Operator will take care of creating everything required to run Debezium Server inside Kubernetes.
+
+- A service account used to run Debezium Server.
+- Roles and role bindings allowing the read of config maps and secrets in the namespace where Debezium Server is being deployed.
+- A config map containing the raw configuration for Debezium Server.
+- The deployment itself.
+
+
+=== Verifying the Deployment
+You can check that the deployed Debezium Server instance in running with the following command:
+
+[source, bash]
+----
+$ kubectl get deployments -n debezium
+
+NAME                        READY   UP-TO-DATE   AVAILABLE 
+my-debezium                 1/1     1            1 
+----
+
+With Debezium Server running we can verify that it consumed all initial data from the database with the following command.
+
+[source, bash]
+----
+kubectl exec dbz-kafka-kafka-0 -n debezium -- /opt/kafka/bin/kafka-console-consumer.sh \
+    --bootstrap-server localhost:9092 \
+    --from-beginning \
+    --property print.key=true \
+    --topic inventory.inventory.orders
+----
+
+
+== The Future and Our Request
+
+This is it for now. Before the operator gets full support, we intend to provide a more detailed documentation as well as the ability to further configure the deployment with various things, such as custom pull secrets in order to support customized Debezium Server images stored in secured registries. 
+
+There are further plans to improve the structure of the `DebeziumServer` resources, provide the ability to declaratively assemble tailored distribution of Debezium Server, and maybe even improve our integration with knative eventing. We are also planning improvements of the embedded engine and, consequently, Debezium Server which will one day allow us to take advantage of horizontal scaling capabilities of Kubernetes. 
+
+=== You can Help us!
+We would like to ask you, our wonderful Debezium community, to test the operator and let us know what you like, what you dislike, and what features you miss. This way we will be able to shape this component according to your needs, and together we will bring Debezium closer to providing cloud native CDC capabilities.
