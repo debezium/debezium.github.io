@@ -377,6 +377,12 @@
 <ul class="sectlevel1">
 <li><a href="#_example_event_format">Example event format</a></li>
 <li><a href="#_example_configuration">Example configuration</a></li>
+<li><a href="#configuration-of-sources-of-metadata-and-some-cloudevents-fields">Configuration of sources of metadata and some CloudEvents fields</a>
+<ul class="sectlevel2">
+<li><a href="#_obtaining_record_metadata">Obtaining record metadata</a></li>
+<li><a href="#_obtaining_id_and_type_of_a_cloudevent">Obtaining <code>id</code> and <code>type</code> of a CloudEvent</a></li>
+</ul>
+</li>
 <li><a href="#cloud-events-converter-configuration-options">Configuration options</a></li>
 </ul>
 </div>
@@ -617,6 +623,117 @@ For example, you might specify <code>StringConverter</code>, <code>LongConverter
 </div>
 </div>
 <div class="sect1">
+<h2 id="configuration-of-sources-of-metadata-and-some-cloudevents-fields"><a class="anchor" href="#configuration-of-sources-of-metadata-and-some-cloudevents-fields"></a>Configuration of sources of metadata and some CloudEvents fields</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>By default, the <code>metadata.location</code> property consists of three parts, as seen in the following example:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">"value,id:generate,type:generate"</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>The first part specifies the source for retrieving a record&#8217;s metadata; the permitted values are <code>value</code> and <code>header</code>.
+The next parts specify how to obtain the <code>id</code> and <code>type</code> fields of a CloudEvent; the permitted values are <code>generate</code> and <code>header</code>.</p>
+</div>
+<div class="sect2">
+<h3 id="_obtaining_record_metadata"><a class="anchor" href="#_obtaining_record_metadata"></a>Obtaining record metadata</h3>
+<div class="paragraph">
+<p>To construct a CloudEvent, the converter requires source, operation, and transaction metadata.
+Generally, the converter can retrieve the metadata from a record&#8217;s value.
+But in some cases, before the converter receives a record, the record might be processed in such a way that metadata is not present in its value, for example, after the record is processed by the Outbox Event Router SMT.
+To preserve the required metadata, you can use the following approach to pass the metadata in the record headers.</p>
+</div>
+<div class="olist arabic">
+<div class="title">Procedure</div>
+<ol class="arabic">
+<li>
+<p>Implement a mechanism for recording the metadata in the record&#8217;s headers before the record reaches the converter, for example, by using the <code>HeaderFrom</code> SMT.</p>
+</li>
+<li>
+<p>Set the value of the converter&#8217;s <code>metadata.location</code> property to <code>header</code>.</p>
+</li>
+</ol>
+</div>
+<div class="paragraph">
+<p>The following example shows the configuration for a connector that uses the Outbox Event Router SMT, and the <code>HeaderFrom</code> SMT:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">...
+"tombstones.on.delete": false,
+"transforms": "addMetadataHeaders,outbox",
+"transforms.addMetadataHeaders.type": "org.apache.kafka.connect.transforms.HeaderFrom$Value",
+"transforms.addMetadataHeaders.fields": "source,op,transaction",
+"transforms.addMetadataHeaders.headers": "source,op,transaction",
+"transforms.addMetadataHeaders.operation": "copy",
+"transforms.addMetadataHeaders.predicate": "isHeartbeat",
+"transforms.addMetadataHeaders.negate": true,
+"transforms.outbox.type": "io.debezium.transforms.outbox.EventRouter",
+"transforms.outbox.table.fields.additional.placement": "type:header",
+"predicates": "isHeartbeat",
+"predicates.isHeartbeat.type": "org.apache.kafka.connect.transforms.predicates.TopicNameMatches",
+"predicates.isHeartbeat.pattern": "__debezium-heartbeat.*",
+"value.converter": "io.debezium.converters.CloudEventsConverter",
+"value.converter.metadata.location": "header",
+"header.converter": "org.apache.kafka.connect.json.JsonConverter",
+"header.converter.schemas.enable": true
+...</code></pre>
+</div>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+To use the <code>HeaderFrom</code> transformation, it might be necessary to filter tombstone and heartbeat messages.
+</td>
+</tr>
+</table>
+</div>
+<div class="paragraph">
+<p>The <code>header</code> value of the <code>metadata.location</code> property is a global setting.
+As a result, even if you omit parts of a property&#8217;s value, such as  the <code>id</code> and <code>type</code> sources, the converter generates <code>header</code> values for the omitted parts.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_obtaining_id_and_type_of_a_cloudevent"><a class="anchor" href="#_obtaining_id_and_type_of_a_cloudevent"></a>Obtaining <code>id</code> and <code>type</code> of a CloudEvent</h3>
+<div class="paragraph">
+<p>By default, the CloudEvents converter automatically generates values for <code>id</code> and <code>type</code> fields of a CloudEvent.
+You can customize the way that the converter populates these fields by changing the defaults and specifying the fields' values in the appropriate headers.
+For example:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">"value.converter.metadata.location": "value,id:header,type:header"</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>With the preceding configuration in effect, you could configure upstream functions to add <code>id</code> and <code>type</code> headers with the values that you want to pass to the CloudEvents converter.</p>
+</div>
+<div class="paragraph">
+<p>If you want to provide values only for <code>id</code> header, use:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">"value.converter.metadata.location": "value,id:header,type:generate"</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>To provide metadata, <code>id</code>, and <code>type</code> in headers, use the short syntax:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">"value.converter.metadata.location": "header"</code></pre>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
 <h2 id="cloud-events-converter-configuration-options"><a class="anchor" href="#cloud-events-converter-configuration-options"></a>Configuration options</h2>
 <div class="sectionbody">
 <div class="paragraph">
@@ -698,6 +815,39 @@ The value can be <code>json</code> or <code>avro</code>.</p>
 <p>Specifies how schema names should be adjusted for compatibility with the message converter used by the connector. The value can be <code>none</code> or <code>avro</code>.</p>
 </div></div></td>
 </tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="cloud-events-converter-extension-attributes-enable"></a><a href="#cloud-events-converter-extension-attributes-enable"><code>extension.attributes.enable</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>true</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies whether the converter includes extension attributes when it generates a cloud event.
+The value can be <code>true</code> or <code>false</code>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="cloud-events-converter-metadata-location"></a><a href="#cloud-events-converter-metadata-location"><code>metadata.location</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>value,id:generate,type:generate</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>A comma-separated list that specifies the sources from which the converter retrieves metadata (source, operation, transaction), along with the names of the CloudEvent <code>id</code>, and <code>type</code> fields.
+The first element in the list is a global setting that specifies the source of the metadata.
+The source of metadata can be <code>value</code> or <code>header</code>.
+This first element is followed by a set of pairs that specify the name of a CloudEvent field (<code>id</code> or <code>type</code>), and the source for obtaining the field&#8217;s value: <code>generate</code> or <code>header</code>.
+Separate the values in each pair with a colon, for example:</p>
+</div>
+<div class="paragraph">
+<p><code>value,id:header,type:generate</code></p>
+</div>
+<div class="paragraph">
+<p>For configuration examples, see <a href="#configuration-of-sources-of-metadata-and-some-cloudevents-fields">Configuration of sources of metadata and some CloudEvents fields</a>.</p>
+</div></div></td>
+</tr>
 </tbody>
 </table>
 </div>
@@ -710,7 +860,7 @@ The value can be <code>json</code> or <code>avro</code>.</p>
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2023 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/b13a8d1bb15d879649babf051e6a727195f5064a">b13a8d1b</a></span>)
+            <div class="copyright">Copyright &copy; 2023 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/b3764d14d540e39892f88d1f0ead1357a71aa507">b3764d14</a></span>)
             
         </div>
     </footer>
