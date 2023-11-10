@@ -1,0 +1,185 @@
+---
+layout: post
+title:  Debezium 2.5.0.Alpha2 Released
+date:   2023-11-10
+tags: [ releases, mongodb, mysql, mariadb, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox, spanner, informix ]
+author: ccranfor
+---
+
+While it has only been two short weeks since our first preview release for the Debezium 2.5 release stream, I am happy to announce the immediate availability of the next preview release, Debezium *2.5.0.Alpha2*.
+
+This release includes a variety of improvements, batch support for the JDBC Sink connector, seamless support for MongoDB documents that exceed the 16MB barrier, MySQL 8.2 compatibility, and signal improvements for SQL Server.
+Additionally, this release includes a variety of bug fixes and several breaking changes.
+
+Let's take a closer look at these changes and improvements that are included in Debezium 2.5.0.Alpha2;
+as always, you can find the complete list of changes for this release in the link:/releases/2.5/release-notes[release notes].
+Please remember to take special note to any breaking changes that could affect your upgrade path.
+
++++<!-- more -->+++
+
+=== Breaking changes
+
+While we strive to avoid breaking changes, sometimes those changes are inevitable to evolve in the right direction.
+This release includes a variety of breaking changes.
+
+==== MongoDB default connection mode changed
+
+The upgrade to Debezium 2.5 brings a change to MongoDB's default implementation.
+In previous builds, the default connection mode was `replica_set`; however with Debezim 2.5 this is now `sharded`. (https://issues.redhat.com/browse/DBZ-7108)[DBZ-7108])
+
+Overall, this change is part of larger effort to remove the `replica_set` mode entirely.
+Please be sure to review your connector configurations for all MongoDB connectors when upgrading.
+
+[IMPORTANT]
+====
+This breaking change invalidates existing connector offsets and a new snapshot will be triggered by default when upgrading.
+If a snapshot is not needed or wanted, you will need to adjust your connector configuration's `snapshot.mode` accordingly.
+====
+
+==== Debezium Embedded Engine Deprecated APIs removed
+
+Part of the team's focus in Debezium 2.5 was to improve the Debezium Embedded Engine's experience.
+With that goal in mind, we took this preview release as an opportunity to clean-up the embedded engine's API.
+
+If your usage of the Debezium Embedded Engine utilized any of the previously deprecated APIs on `EmbeddedEngine`, you will find those methods have since been removed. (https://issues.redhat.com/browse/DBZ-7110[DBZ-7100])
+The recommended path forward is to make sure that you're using the `DebeziumEngine` interface provided by the `debezium-api` artifact.
+
+==== MySQL 5.7 support now best-effort
+
+The MySQL community announced that MySQL 5.7 would enter its End of Life cycle at the end of October 2023, or just last month.
+This means that the MySQL community has no plans to continue offering security or bug fix patches for that edition of MySQL.
+
+In accordance with this upstream community news, Debezium too is making adjustments, like other vendors, around this recent news.
+To that end, starting with Debezium 2.5, we will no longer be testing nor supporting MySQL 5.7 if full capacity, thus MySQL 5.7 enters what we call "best-effort" support. (https://issues.redhat.com/browse/DBZ-6874[DBZ-6874])
+
+==== CloudEvents - configuration option renamed
+
+If you are presently using the CloudEvents converter to emit events that conform to the CloudEvents format, it's important to note that the configuration option `metadata.location` was renamed to `metadata.source`.
+You will need to be sure to update your connector configurations to reflect this change with Debezium 2.5 and onward. (https://issues.redhat.com/browse/DBZ-7060[DBZ-7060])
+
+=== New features and improvements
+
+Debezium 2.5 also introduces quite a number of improvements, lets take a look at each of these individually.
+
+==== JDBC Sink Batch Support
+
+Debezium first introduced the JDBC sink connector in March 2023 as a part of Debezium 2.2.
+Over the last several months, this connector has seen numerous iterations to improve its stability, feature set, and capabilities.
+Debezium 2.5 builds atop of those efforts, introducing batch-writes. (https://issues.redhat.com/browse/DBZ-6317[DBZ-6317])
+
+In previous versions, the connector worked on each topic event separately; however, the new batch-write support mode will collect the events into buckets and write those changes to the target system using the fewest possible transaction boundaries as possible.
+This change increases the connector's throughput capabilities and makes the interactions with the target database far more efficient.
+
+==== Seamless MongoDB large document handling
+
+Debezium has introduced several changes around large document processing in recent releases; however, those changes primarily focused on handling that use case with MongoDB 4 and 5.
+While these improvements certainly help for those older versions, the MongoDB community has introduced a way in MongoDB 6 to seamlessly deal with this at the database pipeline level.
+
+Debezium 2.5's MongoDB connector now uses the `$changeStreamSplitLargeEvent` aggregation feature, introduced as part of MongoDB 6.0.9.
+This avoids the `BSONObjectTooLarge` exception when working with documents that would exceed the 16MB document size limit of MongoDB. (https://issues.redhat.com/browse/DBZ-6726[DBZ-6726])
+
+[NOTE]
+====
+Debezium is simply utilizing an underlying feature of the MongoDB database.
+As such, the database still has some limitations discussed in the https://www.mongodb.com/docs/v6.0/reference/operator/aggregation/changeStreamSplitLargeEvent/#behavior[MongoDB documentation] that could still lead to exceptions with large documents that don't adhere to MongoDB's split rules.
+====
+
+==== MySQL 8.2 support
+
+The MySQL community recently released a new innovation release, MySQL 8.2.0 at the end of October 2023.
+This new release has been tested with Debezium and we're happy to announce that we officially support this new innovation release. (https://issues.redhat.com/browse/DBZ-6873[DBZ-6873])
+
+==== SQL Server Notification Improvements
+
+Debezium for SQL Server works by reading the changes captured by the database in what are called capture instances.
+These instances can come and go based on a user's needs, and it can be difficult to know if Debezium has concluded its own capture process for a given capture instance.
+
+Debezium 2.5 remedies this problem by emitting a new notification aggregate called `Capture Instance`, allowing any observer to realize when a capture instance is no longer in use by Debezium.
+This new notification includes a variety of connector details including the connector's name along with the start, stop, and commit LSN values. (https://issues.redhat.com/browse/DBZ-7043[DBZ-7043])
+
+==== Redis Schema History Retries now Limited
+
+Debezium 2.5 introduces a new configuration option, `schema.history.internal.redis.max.attempts` designed to limit the number of retry attempts while connecting to a Redis database when it becomes unavailable, previously it simply retried forever.
+This new option defaults to `10` but is user configurable. (https://issues.redhat.com/browse/DBZ-7120[DBZ-7120])
+
+==== SQL Server Driver Updates
+
+SQL Serer 2019 introduced the ability to specify column-specific sensitivity classifications to provide better visibility and protections for sensitive data.
+Unfortunately, the current driver shipped with Debezium 2.4 and earlier does not support this feature.
+Debezium 2.5 introduces the latest 12.4.2 SQL Server driver so that users can now take advantage of this feature out of the box. (https://issues.redhat.com/browse/DBZ-7109[DBZ-7109])
+
+==== Debezium Server Kinesis Sink Improvements
+
+Debezium Server Kinesis users will be happy to note that there has been some reliability improvements with the sink adapter with Debezium 2.5.
+The Kinesis Sink will now automatically retry the delivery of a failed record up to a maximum of 5 attempts before the adapter triggers a failure.
+This should improve the sink adapter's delivery reliability and help situations where a batch of changes may overload the sink's endpoint. (https://issues.redhat.com/browse/DBZ-7032[DBZ-7032])
+
+[id="other-changes"]
+== Other fixes
+
+In addition, there were quite a number of stability and bug fixes that made it into this release.
+These include the following:
+
+* Oracle RAC throws ORA-00310: archive log sequence required https://issues.redhat.com/browse/DBZ-5350[DBZ-5350]
+* oracle missing CDC data https://issues.redhat.com/browse/DBZ-5656[DBZ-5656]
+* Missing oracle cdc records https://issues.redhat.com/browse/DBZ-5750[DBZ-5750]
+* Add (integration) tests for Oracle connector-specific Debezium Connect REST extension https://issues.redhat.com/browse/DBZ-6763[DBZ-6763]
+* Intermittent failure of MongoDbReplicaSetAuthTest https://issues.redhat.com/browse/DBZ-6875[DBZ-6875]
+* Connector frequently misses commit operations https://issues.redhat.com/browse/DBZ-6942[DBZ-6942]
+* Missing events from Oracle 19c https://issues.redhat.com/browse/DBZ-6963[DBZ-6963]
+* Mongodb tests in RHEL system testsuite are failing with DBZ 2.3.4 https://issues.redhat.com/browse/DBZ-6996[DBZ-6996]
+* Use DebeziumEngine instead of EmbeddedEngine in the testsuite https://issues.redhat.com/browse/DBZ-7007[DBZ-7007]
+* Debezium Embedded Infinispan Performs Slowly https://issues.redhat.com/browse/DBZ-7047[DBZ-7047]
+* Field exclusion does not work with events of removed fields https://issues.redhat.com/browse/DBZ-7058[DBZ-7058]
+* Update transformation property "delete.tombstone.handling.mode" to debezium doc https://issues.redhat.com/browse/DBZ-7062[DBZ-7062]
+* JDBC sink connector not working with CloudEvent https://issues.redhat.com/browse/DBZ-7065[DBZ-7065]
+* JDBC connection leak when error occurs during processing https://issues.redhat.com/browse/DBZ-7069[DBZ-7069]
+* Some server tests fail due to @com.google.inject.Inject annotation https://issues.redhat.com/browse/DBZ-7077[DBZ-7077]
+* Add MariaDB driver for testing and distribution https://issues.redhat.com/browse/DBZ-7085[DBZ-7085]
+* Allow DS JMX to use username-password authentication on k8 https://issues.redhat.com/browse/DBZ-7087[DBZ-7087]
+* HttpIT fails with "Unrecognized field subEvents"  https://issues.redhat.com/browse/DBZ-7092[DBZ-7092]
+* MySQL parser does not conform to arithmetical operation priorities https://issues.redhat.com/browse/DBZ-7095[DBZ-7095]
+* VitessConnectorIT.shouldTaskFailIfColumnNameInvalid fails https://issues.redhat.com/browse/DBZ-7104[DBZ-7104]
+* When RelationalBaseSourceConnector#validateConnection is called with invalid config [inside Connector#validate()] can lead to exceptions https://issues.redhat.com/browse/DBZ-7105[DBZ-7105]
+* Debezium crashes on parsing MySQL DDL statement (specific INSERT) https://issues.redhat.com/browse/DBZ-7119[DBZ-7119]
+
+Altogether, https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20AND%20fixVersion%20%3D%202.5.0.Alpha2%20ORDER%20BY%20component%20ASC[33 issues] were fixed for this release.
+A big thank you to all the contributors from the community who worked on this release:
+https://github.com/AnatolyPopov[Anatolii Popov],
+https://github.com/ani-sha[Anisha Mohanty],
+https://github.com/roldanbob[Bob Roldan],
+https://github.com/Naros[Chris Cranford],
+https://github.com/harveyyue[Harvey Yue],
+https://github.com/ilyasahsan123[Ilyas Ahsan],
+https://github.com/jcechace[Jakub Cechacek],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/mfvitale[Mario Fiore Vitale],
+https://github.com/obabec[Ondrej Babec],
+https://github.com/RafaelJCamara[Rafael Câmara],
+https://github.com/rk3rn3r[René Kerner],
+https://github.com/rkudryashov[Roman Kudryashov],
+https://github.com/ramanenka[Vadzim Ramanenka],
+https://github.com/vjuranek[Vojtech Juranek], and
+https://github.com/caicancai[蔡灿材]!
+
+[id="whats-next"]
+== What's next?
+
+As mentioned in our last release announcement, the cadence for Debezium 2.5 is condensed due to the upcoming holiday season.
+The next preview release for Debezium 2.5 will be our first and most likely only Beta release, later this month.
+We plan to conclude the Debezium 2.5 release series with a release candidate most likely the first week of December and a final release mid-way through December, just before the holiday break.
+
+The team is also working on a maintenance release of Debezium 2.4, due out late this week.
+This update to Debezium 2.4 will bring a host of bug fixes and stability improvements already in Debezium 2.5 to the 2.4 release stream.
+
+We are also moving forward on our review and process for MariaDB support.
+There will likely be some news on this in the coming weeks as we begin to find a path forward around this partiuclar advancement.
+The team is also continuing the work on the Debezium Engine improvements, and much more.
+You can find all the details for our continued plans for Debezium 2.5 on our link:/roadmap[roadmap].
+
+Lastly, there will be news later this week about the next Debezium community event.
+Please be on the look-out for this as we'd love to see as many of our community members drop by our virtual event in early December.
+it's a great way to meet the engineers who work on Debezium, the community contributors, and ask questions and gain insights into what is all part of Debezium 2.5 and the path forward to 2.6 and 2.7 for next year.
+
+As always, please be sure to get in touch with us on the https://groups.google.com/g/debezium[mailing list] or https://debezium.zulipchat.com/login/#narrow/stream/302529-users[Zulip chat] if you have questions or feedback.
+Until next time, stay warm out there!
