@@ -1,0 +1,136 @@
+---
+layout: post
+title:  "Streamlined Performance: Debezium JDBC connector batch support"
+date:   2023-12-06 11:11:11 +0100
+tags: [ debezium, features, jdbc, batch, performance ]
+featured: true
+author: mfvitale
+---
+In the realm of data streaming optimization, even subtle improvements can make a significant impact. This article focuses on one such refinement: the introduction of batch support in Debezium's JDBC connector.
+We'll guide you through the process of enabling batches and share the practical outcomes of our performance testing.
+
++++<!-- more -->+++
+
+== Configuring batches
+Since our previous releases were primarily focused on core functionalities, our latest release is dedicated to addressing the main pain point associated with the connector: performance.
+
+The goal was to improve throughput in terms of events processed per second (EPS).
+To achieve this, we revisited the connector to enable the processing of batches of events.
+
+You can now fine-tune the size of the batch using a new property: `batch.size`.
+
+The `batch.size` property defines the number of records to be *attempted* for batching into the destination table.
+However, it's crucial to note that the actual size of processed records is contingent upon the `consumer.max.poll.records` property of the Kafka Connect worker.
+
+It's important to be aware that if you set `consumer.max.poll.records` in the Connect worker properties to a value lower than `batch.size`, batch processing will be constrained by `consumer.max.poll.records`, and the intended `batch.size` may not be achieved.
+
+=== Configure consumer max poll records
+If you prefer not to configure the `consumer.max.poll.records` property globally on the Connect worker, you have the option to set the underlying consumer's `max.poll.records` for a specific connector using `consumer.override.max.poll.records` in the connector configuration.
+
+To enable per-connector configuration properties and override the default worker properties, add the following parameter to the worker properties file: `connector.client.config.override.policy` https://docs.confluent.io/platform/current/connect/references/allconfigs.html#override-the-worker-configuration[(see override-the-worker-configuration)].
+
+This property defines which configurations can be overridden by the connector. The default implementation is `All`, but other possible policies include `None` and `Principal`.
+
+When `connector.client.config.override.policy=All`, each connector belonging to the worker is permitted to override the worker configuration. You can now utilize the following override prefixes for sink connector configurations: `consumer.override.<sink-configuration-property>`.
+
+It's worth noting that even if you set max.poll.records (with the default value of 500), you may receive fewer records. This is due to other properties that can impact record fetching from the topic/partitions.
+
+
+*Name*: fetch.max.bytes +
+*Default*: 52428800 (52MB) +
+The maximum amount of data the server should return for a fetch request. Records are fetched in batches by the consumer, and if the first record batch in the first non-empty partition of the fetch is larger than this value, the record batch will still be returned to ensure that the consumer can make progress. As such, this is not a absolute maximum. The maximum record batch size accepted by the broker is defined via message.max.bytes (broker config) or max.message.bytes (topic config). Note that the consumer performs multiple fetches in parallel.
+
+*Name*: max.partition.fetch.bytes +
+*Default*: 1048576 (1MB) +
+The maximum amount of data per-partition the server will return. Records are fetched in batches by the consumer. If the first record batch in the first non-empty partition of the fetch is larger than this limit, the batch will still be returned to ensure that the consumer can make progress. The maximum record batch size accepted by the broker is defined via message.max.bytes (broker config) or max.message.bytes (topic config). See fetch.max.bytes for limiting the consumer request size.
+
+*Name*: message.max.bytes +
+*Default*: 1048588 (1MB) +
+The largest record batch size allowed by Kafka (after compression if compression is enabled). If this is increased and there are consumers older than 0.10.2, the consumers' fetch size must also be increased so that they can fetch record batches this large. In the latest message format version, records are always grouped into batches for efficiency. In previous message format versions, uncompressed records are not grouped into batches and this limit only applies to a single record in that case.This can be set per topic with the topic level max.message.bytes config.
+
+*Name*: max.message.bytes +
+*Default*: 1048588 (1MB) +
+The largest record batch size allowed by Kafka (after compression if compression is enabled). If this is increased and there are consumers older than 0.10.2, the consumers' fetch size must also be increased so that they can fetch record batches this large. In the latest message format version, records are always grouped into batches for efficiency. In previous message format versions, uncompressed records are not grouped into batches and this limit only applies to a single record in that case.
+
+So adjust these based on your expected payload size.
+
+== Results from performance testing
+The objective of the performance tests was to provide a sense of how batch support improved the EPS.
+Therefore, these numbers do not reflect any real scenario but rather showcase relative improvements compared to the old JDBC version.
+
+=== Configuration used for the tests
+All tests executed on a *ThinkPad T14s Gen 2i*
+
+*CPU*: Intel(R) Core(TM) i7-1185G7 @ 3.00GHz (8 cores) +
+*RAM*: 32GB +
+*Disk*: 512GB NVMe +
+
+All required components (Kafka, Connect, Zookeeper, etc.) inside docker containers.
+
+The table used for the test has the following structure:
+
+```sql
+CREATE TABLE `aviation` (
+  `id` int NOT NULL,
+  `aircraft` longtext,
+  `airline` longtext,
+  `passengers` int DEFAULT NULL,
+  `airport` longtext,
+  `flight` longtext,
+  `metar` longtext,
+  `flight_distance` double DEFAULT NULL
+)
+```
+
+=== Test plan
+We planned to execute these tests:
+
+* 100K events from single table
+** Baseline without batch for (Oracle, MySQL, PostgreSQL, SQLServer)
+** MySQL batch vs without batch
+* 100K events from three different table
+** MySQL batch vs without batch
+* 1M events from single table
+** MySQL batch with batch size: 500, 1000, 5000, 10000 vs without batch
+** MySQL batch with batch size: 500, 1000, 5000, 10000 with JSONConverter
+** MySQL batch with batch size: 500, 1000, 5000, 10000 with Avro
+** MySQL batch with batch size: 500, 1000, 5000, 10000 with Avro and no index on destination table
+
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2023-12-06-JDBC-sink-connector-batch-support/100k-batch-no-batch.png" class="responsive-image" alt="100K events from single table">
+</div>
+++++
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2023-12-06-JDBC-sink-connector-batch-support/100k-3-tables.png" class="responsive-image" alt="100K events from single table">
+</div>
+++++
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2023-12-06-JDBC-sink-connector-batch-support/1M-batch-no-batch.png" class="responsive-image" alt="100K events from single table">
+</div>
+++++
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2023-12-06-JDBC-sink-connector-batch-support/1M-different-batch-size-json.png" class="responsive-image" alt="100K events from single table">
+</div>
+++++
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2023-12-06-JDBC-sink-connector-batch-support/1M-different-batch-size-avro.png" class="responsive-image" alt="100K events from single table">
+</div>
+++++
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2023-12-06-JDBC-sink-connector-batch-support/1M-different-batch-size-avro-no-index.png" class="responsive-image" alt="100K events from single table">
+</div>
+++++
+
+== Conclusion
