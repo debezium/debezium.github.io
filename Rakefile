@@ -115,6 +115,7 @@ def clone_versions()
     FileUtils.cp_r "#{$refDir}/integrations", "#{$refDir}/nightly"
     FileUtils.cp_r "#{$refDir}/operations", "#{$refDir}/nightly"
     FileUtils.cp_r "#{$refDir}/transformations", "#{$refDir}/nightly"
+    FileUtils.cp_r "#{$refDir}/post-processors", "#{$refDir}/nightly"
   else
     puts "Unable to find reference dir"
   end 
