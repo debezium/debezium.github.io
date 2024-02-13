@@ -367,6 +367,7 @@
 <li><a href="#postgresql-ad-hoc-snapshots">Ad hoc snapshots</a></li>
 <li><a href="#postgresql-incremental-snapshots">Incremental snapshots</a></li>
 <li><a href="#postgresql-custom-snapshot">Custom snapshotter SPI</a></li>
+<li><a href="#postgresql-blocking-snapshots">Blocking snapshots</a></li>
 <li><a href="#postgresql-streaming-changes">Streaming changes</a></li>
 <li><a href="#postgresql-pgoutput">PostgreSQL 10+ logical decoding support (<code>pgoutput</code>)</a></li>
 <li><a href="#postgresql-topic-names">Topic names</a></li>
@@ -655,7 +656,9 @@ You can change this behavior by setting the <a href="#postgresql-property-snapsh
 <p><code>custom</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The <code>custom</code> snapshot mode lets you inject your own implementation of the <code>io.debezium.connector.postgresql.spi.Snapshotter</code> interface. Set the <code>snapshot.custom.class</code> configuration property to the class on the classpath of your Kafka Connect cluster or included in the JAR if using the <code>EmbeddedEngine</code>. For more details, see <a href="#postgresql-custom-snapshot">custom snapshotter SPI</a>.</p>
+<p>The <code>custom</code> snapshot mode lets you inject your own implementation of the <code>io.debezium.spi.snapshot.Snapshotter</code> interface.
+Set the <code>snapshot.mode.custom.name</code> configuration property to the name provided by the <code>name()</code> method of your implementation, as specified on the classpath of your Kafka Connect cluster, or included in the connector JAR file, if using the <code>EmbeddedEngine</code>.
+For more information, see <a href="#postgresql-custom-snapshot">custom snapshotter SPI</a>.</p>
 </div></div></td>
 </tr>
 </tbody>
@@ -916,8 +919,8 @@ If a schema change is performed <em>before</em> the incremental snapshot start b
 <p>After Debezium detects the change in the signaling table, it reads the signal, and runs the requested snapshot operation.</p>
 </div>
 <div class="paragraph">
-<p>The query that you submit specifies the tables to include in the snapshot, and, optionally, specifies the kind of snapshot operation.
-Currently, the only valid option for snapshots operations is the default value, <code>incremental</code>.</p>
+<p>The query that you submit specifies the tables to include in the snapshot, and, optionally, specifies the type of snapshot operation.
+Currently supports the <code>incremental</code> and <code>blocking</code> types.</p>
 </div>
 <div class="paragraph">
 <p>To specify the tables to include in the snapshot, provide a <code>data-collections</code> array that lists the tables or an array of regular expressions used to match tables, for example,<br></p>
@@ -1034,8 +1037,8 @@ The array lists regular expressions which match tables by their fully-qualified 
 <tr>
 <td class="tableblock halign-left valign-top"><p class="tableblock">5</p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock"><code>incremental</code></p></td>
-<td class="tableblock halign-left valign-top"><p class="tableblock">An optional <code>type</code> component of the <code>data</code> field of a signal that specifies the kind of snapshot operation to run.<br>
-Currently, the only valid option is the default value, <code>incremental</code>.<br>
+<td class="tableblock halign-left valign-top"><p class="tableblock">An optional <code>type</code> component of the <code>data</code> field of a signal that specifies the type of snapshot operation to run.<br>
+Currently supports the <code>incremental</code> and <code>blocking</code> types.<br>
 If you do not specify a value, the connector runs an incremental snapshot.</p></td>
 </tr>
 <tr>
@@ -1153,7 +1156,7 @@ For example, using the <code>products</code> table from the previous example, yo
 <td class="tableblock halign-left valign-top"><p class="tableblock">1</p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock"><code>snapshot</code></p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock">Specifies the type of snapshot operation to run.<br>
-Currently, the only valid option is the default value, <code>incremental</code>.<br>
+Currently, the only valid options are <code>blocking</code> and <code>incremental</code>.<br>
 Specifying a <code>type</code> value in the SQL query that you submit to the signaling table is optional.<br>
 If you do not specify a value, the connector runs an incremental snapshot.</p></td>
 </tr>
@@ -1200,7 +1203,7 @@ The value for snapshot events is <code>r</code>, signifying a <code>READ</code> 
 <td class="tableblock halign-left valign-top"><p class="tableblock"><code>incremental</code></p></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>The type of the snapshot to be executed.
-Currently Debezium supports only the <code>incremental</code> type. <br>
+Currently Debezium supports the <code>incremental</code> and <code>blocking</code> types.<br>
 See the next section for more details.</p>
 </div></div></td>
 </tr>
@@ -1398,7 +1401,7 @@ If this component of the <code>data</code> field is omitted, the signal stops th
 <tr>
 <td class="tableblock halign-left valign-top"><p class="tableblock">5</p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock"><code>incremental</code></p></td>
-<td class="tableblock halign-left valign-top"><p class="tableblock">A required component of the <code>data</code> field of a signal that specifies the kind of snapshot operation that is to be stopped.<br>
+<td class="tableblock halign-left valign-top"><p class="tableblock">A required component of the <code>data</code> field of a signal that specifies the type of snapshot operation that is to be stopped.<br>
 Currently, the only valid option is <code>incremental</code>.<br>
 If you do not specify a <code>type</code> value, the signal fails to stop the incremental snapshot.</p></td>
 </tr>
@@ -1467,55 +1470,133 @@ Value = `{"type":"stop-snapshot","data": {"data-collections": ["schema1.table1",
 <div class="sect2">
 <h3 id="postgresql-custom-snapshot"><a class="anchor" href="#postgresql-custom-snapshot"></a>Custom snapshotter SPI</h3>
 <div class="paragraph">
-<p>For more advanced uses, you can provide an implementation of the <code>io.debezium.connector.postgresql.spi.Snapshotter</code> interface. This interface allows control of most of the aspects of how the connector performs snapshots. This includes whether or not to take a snapshot, the options for opening the snapshot transaction, and whether to take locks.</p>
+<p>For more advanced uses, you can fine-tune control the snapshot by implementing one of the following interfaces:</p>
 </div>
-<div class="paragraph">
-<p>Following is the full API for the interface. All built-in snapshot modes implement this interface.</p>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>io.debezium.snapshot.spi.Snapshotter</code></dt>
+<dd>
+<p>Controls whether the connector takes a snapshot.</p>
+</dd>
+<dt class="hdlist1"><code>io.debezium.snapshot.spi.SnapshotQuery</code></dt>
+<dd>
+<p>Controls how data is queried during a snapshot.</p>
+</dd>
+<dt class="hdlist1"><code>io.debezium.snapshot.spi.SnapshotLock</code></dt>
+<dd>
+<p>Controls whether the connector locks tables when taking a snapshot.</p>
+</dd>
+</dl>
 </div>
 <div class="listingblock">
+<div class="title">io.debezium.snapshot.spi.Snapshotter interface. All built-in snapshot modes implement this interface.</div>
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-java hljs" data-lang="java">/**
- * This interface is used to determine details about the snapshot process:
+ * {@link Snapshotter} is used to determine the following details about the snapshot process:
+ * &lt;p&gt;
+ * - Whether a snapshot occurs. &lt;br&gt;
+ * - Whether streaming continues during the snapshot. &lt;br&gt;
+ * - Whether the snapshot includes schema (if supported). &lt;br&gt;
+ * - Whether to snapshot data or schema following an error.
+ * &lt;p&gt;
+ * Although Debezium provides many default snapshot modes,
+ * to provide more advanced functionality, such as partial snapshots,
+ * you can customize implementation of the interface.
+ * For more information, see the documentation.
+
  *
- * Namely:
- * - Should a snapshot occur at all
- * - Should streaming occur
- * - What queries should be used to snapshot
  *
- * While many default snapshot modes are provided with Debezium,
- * a custom implementation of this interface can be provided by the implementor, which
- * can provide more advanced functionality, such as partial snapshots.
- *
- * Implementations must return true for either {@link #shouldSnapshot()} or {@link #shouldStream()}
- * or true for both.
+ * @author Mario Fiore Vitale
  */
 @Incubating
-public interface Snapshotter {
-
-    void init(PostgresConnectorConfig config, OffsetState sourceInfo,
-              SlotState slotState);
+public interface Snapshotter extends Configurable {
 
     /**
-     * @return true if the snapshotter should take a snapshot
+     * @return the name of the snapshotter.
+     *
+     *
+     */
+    String name();
+
+    /**
+     * Validate the snapshotter compatibility with the current connector configuration.
+     * Throws a {@link DebeziumException} in case it is not compatible.
+     *
+     * @param offsetContextExists is {@code true} when the connector has an offset context (i.e. restarted)
+     * @param isSnapshotInProgress is {@code true} when the connector is started, but a snapshot is already in progress
+     */
+    void validate(boolean offsetContextExists, boolean isSnapshotInProgress);
+
+    /**
+     * @return {@code true} if the snapshotter should take a snapshot
      */
     boolean shouldSnapshot();
 
     /**
-     * @return true if the snapshotter should stream after taking a snapshot
+     * @return {@code true} if the snapshotter should take a snapshot
+     */
+    boolean shouldSnapshotSchema();
+
+    /**
+     * @return {@code true} if the snapshotter should stream after taking a snapshot
      */
     boolean shouldStream();
 
     /**
+     * @return {@code true} whether the schema can be recovered if database schema history is corrupted.
+     */
+    boolean shouldSnapshotOnSchemaError();
+
+    /**
+     * @return {@code true} whether the snapshot should be re-executed when there is a gap in data stream.
+     */
+    boolean shouldSnapshotOnDataError();
+
+    /**
      *
-     * @return true if streaming should resume from the start of the snapshot
-     * transaction, or false for when a connector resumes and takes a snapshot,
-     * streaming should resume from where streaming previously left off.
+     * @return {@code true} if streaming should resume from the start of the snapshot
+     * transaction, or {@code false} if following a restart, the connector
+     * should take a snapshot, and then resume streaming from the last offset.
      */
     default boolean shouldStreamEventsStartingFromSnapshot() {
         return true;
     }
+
     /**
-     * Generate a valid postgres query string for the specified table, or an empty {@link Optional}
+     * Lifecycle hook called after the snapshot phase is successful.
+     */
+    default void snapshotCompleted() {
+        // no operation
+    }
+
+    /**
+     * Lifecycle hook called after the snapshot phase is aborted.
+     */
+    default void snapshotAborted() {
+        // no operation
+    }
+}</code></pre>
+</div>
+</div>
+<div class="listingblock">
+<div class="title">io.debezium.snapshot.spi.SnapshotQuery interface. All built-in snapshot query modes implement this interface.</div>
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-java hljs" data-lang="java">/**
+ * {@link SnapshotQuery} is used to determine the query used during a data snapshot
+ *
+ * @author Mario Fiore Vitale
+ */
+public interface SnapshotQuery extends Configurable, Service {
+
+    /**
+     * @return the name of the snapshot lock.
+     *
+     *
+     */
+    String name();
+
+    /**
+     * Generate a valid query string for the specified table, or an empty {@link Optional}
      * to skip snapshotting this table (but that table will still be streamed from)
      *
      * @param tableId the table to generate a query for
@@ -1523,48 +1604,40 @@ public interface Snapshotter {
      *                              include/exclude filters
      * @return a valid query string, or none to skip snapshotting this table
      */
-    Optional&lt;String&gt; buildSnapshotQuery(TableId tableId, List&lt;String&gt; snapshotSelectColumns);
+    Optional&lt;String&gt; snapshotQuery(String tableId, List&lt;String&gt; snapshotSelectColumns);
+
+}</code></pre>
+</div>
+</div>
+<div class="listingblock">
+<div class="title">io.debezium.snapshot.spi.SnapshotLock interface. All built-in snapshot lock modes implement this interface.</div>
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-java hljs" data-lang="java">/**
+ * {@link SnapshotLock} is used to determine the table lock mode used during schema snapshot
+ *
+ * @author Mario Fiore Vitale
+ */
+public interface SnapshotLock extends Configurable, Service {
 
     /**
-     * Return a new string that set up the transaction for snapshotting
+     * @return the name of the snapshot lock.
      *
-     * @param newSlotInfo if a new slow was created for snapshotting, this contains information from
-     *                    the `create_replication_slot` command
+     *
      */
-    default String snapshotTransactionIsolationLevelStatement(SlotCreationResult newSlotInfo) {
-        // we're using the same isolation level that pg_backup uses
-        return "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE, READ ONLY, DEFERRABLE;";
-    }
+    String name();
 
     /**
      * Returns a SQL statement for locking the given tables during snapshotting, if required by the specific snapshotter
      * implementation.
      */
-    default Optional&lt;String&gt; snapshotTableLockingStatement(Duration lockTimeout, Set&lt;TableId&gt; tableIds) {
-        String lineSeparator = System.lineSeparator();
-        StringBuilder statements = new StringBuilder();
-        statements.append("SET lock_timeout = ").append(lockTimeout.toMillis()).append(";").append(lineSeparator);
-        // we're locking in ACCESS SHARE MODE to avoid concurrent schema changes while we're taking the snapshot
-        // this does not prevent writes to the table, but prevents changes to the table's schema....
-        // DBZ-298 Quoting name in case it has been quoted originally; it doesn't do harm if it hasn't been quoted
-        tableIds.forEach(tableId -&gt; statements.append("LOCK TABLE ")
-                .append(tableId.toDoubleQuotedString())
-                .append(" IN ACCESS SHARE MODE;")
-                .append(lineSeparator));
-        return Optional.of(statements.toString());
-    }
+    Optional&lt;String&gt; tableLockingStatement(Duration lockTimeout, Set&lt;String&gt; tableIds);
 
-    /**
-     * Lifecycle hook called once the snapshot phase is finished.
-     */
-    default void snapshotCompleted() {
-        // no operation
-    }
 }</code></pre>
 </div>
 </div>
-<div class="sect3">
-<h4 id="postgresql-blocking-snapshots"><a class="anchor" href="#postgresql-blocking-snapshots"></a>Blocking snapshots</h4>
+</div>
+<div class="sect2">
+<h3 id="postgresql-blocking-snapshots"><a class="anchor" href="#postgresql-blocking-snapshots"></a>Blocking snapshots</h3>
 <div class="paragraph">
 <p>To provide more flexibility in managing snapshots, Debezium includes a supplementary ad hoc snapshot mechanism, known as a <em>blocking snapshot</em>.
 Blocking snapshots rely on the Debezium mechanism for <a href="../configuration/signalling.html#sending-signals-to-a-debezium-connector" class="xref page">sending signals to a Debezium connector</a>.</p>
@@ -1626,7 +1699,6 @@ After the snapshot completes, the streaming is resumed.</p>
 <div class="title">Possible duplicates</div>
 <p>A delay might exist between the time that you send the signal to trigger the snapshot, and the time when streaming stops and the snapshot starts.
 As a result of this delay, after the snapshot completes, the connector might emit some event records that duplicate records captured by the snapshot.</p>
-</div>
 </div>
 </div>
 <div class="sect2">
@@ -2341,7 +2413,7 @@ It is possible to override the table&#8217;s primary key by setting the <a href=
             "email": "annek@noanswer.org"
         },
         "source": { <i class="conum" data-value="8"></i><b>(8)</b>
-            "version": "2.6.0.Alpha1",
+            "version": "2.6.0.Alpha2",
             "connector": "postgresql",
             "name": "PostgreSQL_server",
             "ts_ms": 1559033904863,
@@ -2540,7 +2612,7 @@ In the <code>source</code> object, <code>ts_ms</code> indicates the time that th
             "email": "annek@noanswer.org"
         },
         "source": { <i class="conum" data-value="3"></i><b>(3)</b>
-            "version": "2.6.0.Alpha1",
+            "version": "2.6.0.Alpha2",
             "connector": "postgresql",
             "name": "PostgreSQL_server",
             "ts_ms": 1559033904863,
@@ -2685,7 +2757,7 @@ as a primary key change. For a primary key change, in place of sending an <code>
         },
         "after": null, <i class="conum" data-value="2"></i><b>(2)</b>
         "source": { <i class="conum" data-value="3"></i><b>(3)</b>
-            "version": "2.6.0.Alpha1",
+            "version": "2.6.0.Alpha2",
             "connector": "postgresql",
             "name": "PostgreSQL_server",
             "ts_ms": 1559033904863,
@@ -2820,7 +2892,7 @@ The message key is <code>null</code> in this case, the message value looks like 
     "schema": { ... },
     "payload": {
         "source": { <i class="conum" data-value="1"></i><b>(1)</b>
-            "version": "2.6.0.Alpha1",
+            "version": "2.6.0.Alpha2",
             "connector": "postgresql",
             "name": "PostgreSQL_server",
             "ts_ms": 1559033904863,
@@ -2945,7 +3017,7 @@ The message value looks like this for transactional messages:</p>
     "schema": { ... },
     "payload": {
         "source": { <i class="conum" data-value="1"></i><b>(1)</b>
-            "version": "2.6.0.Alpha1",
+            "version": "2.6.0.Alpha2",
             "connector": "postgresql",
             "name": "PostgreSQL_server",
             "ts_ms": 1559033904863,
@@ -2977,7 +3049,7 @@ The message value looks like this for non-transactional messages:</p>
     "schema": { ... },
     "payload": {
         "source": { <i class="conum" data-value="1"></i><b>(1)</b>
-            "version": "2.6.0.Alpha1",
+            "version": "2.6.0.Alpha2",
             "connector": "postgresql",
             "name": "PostgreSQL_server",
             "ts_ms": 1559033904863,
@@ -4497,7 +4569,7 @@ shared_preload_libraries = 'decoderbufs' <i class="conum" data-value="1"></i><b>
 <table>
 <tr>
 <td><i class="conum" data-value="1"></i><b>1</b></td>
-<td>Instructs the server to load the <code>decoderbufs</code> logical decoding plug-ins at startup (the name of the plug-in is set in the <a href="https://github.com/debezium/postgres-decoderbufs/blob/v2.6.0.Alpha1/Makefile"><code>Protobuf</code></a> make file).</td>
+<td>Instructs the server to load the <code>decoderbufs</code> logical decoding plug-ins at startup (the name of the plug-in is set in the <a href="https://github.com/debezium/postgres-decoderbufs/blob/v2.6.0.Alpha2/Makefile"><code>Protobuf</code></a> make file).</td>
 </tr>
 </table>
 </div>
@@ -4982,7 +5054,7 @@ If necessary, you can confirm whether the connector read all changes from the re
 <div class="title">Procedure</div>
 <ol class="arabic">
 <li>
-<p>Download the Debezium <a href="https://repo1.maven.org/maven2/io/debezium/debezium-connector-postgres/2.6.0.Alpha1/debezium-connector-postgres-2.6.0.Alpha1-plugin.tar.gz">PostgreSQL connector plug-in archive</a>.</p>
+<p>Download the Debezium <a href="https://repo1.maven.org/maven2/io/debezium/debezium-connector-postgres/2.6.0.Alpha2/debezium-connector-postgres-2.6.0.Alpha2-plugin.tar.gz">PostgreSQL connector plug-in archive</a>.</p>
 </li>
 <li>
 <p>Extract the files into your Kafka Connect environment.</p>
@@ -6095,20 +6167,115 @@ For example,<br></p>
 <br>
 <code>exported</code> -  deprecated<br>
 <br>
-<code>custom</code> - The connector performs a snapshot according to the setting for the <code>snapshot.custom.class</code> property, which is a custom implementation of the <code>io.debezium.connector.postgresql.spi.Snapshotter</code> interface.<br>
+<code>custom</code> - The connector performs a snapshot according to the implementation specified by the <a href="#postgresql-property-snapshot-mode-custom-name"><code>snapshot.mode.custom.name</code></a> property, which defines a custom implementation of the <code>io.debezium.spi.snapshot.Snapshotter</code> interface.<br>
 <br>
 For more information, see the <a href="#postgresql-connector-snapshot-mode-options">table of <code>snapshot.mode</code> options</a>.</p>
 </div></div></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="postgresql-property-snapshot-custom-class"></a><a href="#postgresql-property-snapshot-custom-class"><code>snapshot.custom.class</code></a></p>
+<p><a id="postgresql-property-snapshot-mode-custom-name"></a><a href="#postgresql-property-snapshot-mode-custom-name"><code>snapshot.mode.custom.name</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>No default</p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>A full Java class name that is an implementation of the <code>io.debezium.connector.postgresql.spi.Snapshotter</code> interface. Required when the <code>snapshot.mode</code> property is set to <code>custom</code>. See <a href="#postgresql-custom-snapshot">custom snapshotter SPI</a>.</p>
+<p>When <code>snapshot.mode</code> is set as <code>custom</code>, use this setting to specify the name of the custom implementation provided in the <code>name()</code> method that is defined by the 'io.debezium.spi.snapshot.Snapshotter' interface.
+The provided implementation is called after a connector restart to determine whether to perform a snapshot.
+For more information, see <a href="#postgresql-custom-snapshot">custom snapshotter SPI</a>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="postgresql-property-snapshot-locking-mode"></a><a href="#postgresql-property-snapshot-locking-mode"><code>snapshot.locking.mode</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>none</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies how the connector holds locks on tables while performing a schema snapshot:<br>
+Set one of the following options:
+<br>
+<code>shared</code>:: The connector holds a table lock that prevents exclusive table access during the initial portion phase of the snapshot in which database schemas and other metadata are read.
+After the initial phase, the snapshot no longer requires table locks.
+<br>
+<code>none</code>:: The connector avoids locks entirely.<br></p>
+</div>
+<div class="paragraph">
+<p>+</p>
+</div>
+<div class="admonitionblock warning">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-warning" title="Warning"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>Do not use this mode if schema changes might occur during the snapshot.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>custom</code></dt>
+<dd>
+<p>The connector performs a snapshot according to the implementation specified by the <a href="#postgresql-property-snapshot-locking-mode-custom-name"><code>snapshot.locking.mode.custom.name</code></a> property, which is a custom implementation of the <code>io.debezium.spi.snapshot.SnapshotLock</code> interface.</p>
+</dd>
+</dl>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="postgresql-property-snapshot-locking-mode-custom-name"></a><a href="#postgresql-property-snapshot-locking-mode-custom-name"><code>snapshot.locking.mode.custom.name</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>When <code>snapshot.locking.mode</code> is set as <code>custom</code>, use this setting to specify the name of the custom implementation provided in the <code>name()</code> method that is defined by the 'io.debezium.spi.snapshot.SnapshotLock' interface.
+For more information, see <a href="#postgresql-custom-snapshot">custom snapshotter SPI</a>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="postgresql-property-snapshot-query-mode"></a><a href="#postgresql-property-snapshot-query-mode"><code>snapshot.query.mode</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>select_all</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies how the connector queries data while performing a snapshot.<br>
+Set one of the following options:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>select_all</code></dt>
+<dd>
+<p>The connector performs a <code>select all</code> query.</p>
+</dd>
+<dt class="hdlist1"><code>custom</code></dt>
+<dd>
+<p>The connector performs a snapshot query according to the implementation specified by the <a href="#postgresql-property-snapshot-snapshot-query-mode-custom-name"><code>snapshot.query.mode.custom.name</code></a> property, which defines a custom implementation of the <code>io.debezium.spi.snapshot.SnapshotQuery</code> interface.<br></p>
+</dd>
+</dl>
+</div>
+<div class="paragraph">
+<p>This setting enables you to manage snapshot content in a more flexible manner compared to using the <a href="#postgresql-property-snapshot-select-statement-overrides"><code>snapshot.select.statement.overrides</code></a> property.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="postgresql-property-snapshot-snapshot-query-mode-custom-name"></a><a href="#postgresql-property-snapshot-query-mode-custom-name"><code>snapshot.query.mode.custom.name</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>When <a href="#postgresql-property-snapshot-query-mode"><code>snapshot.query.mode</code></a> is set as <code>custom</code>, use this setting to specify the name of the custom implementation provided in the <code>name()</code> method that is defined by the 'io.debezium.spi.snapshot.SnapshotQuery' interface.
+For more information, see <a href="#postgresql-custom-snapshot">custom snapshotter SPI</a>.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -7528,7 +7695,7 @@ If the primary server goes down, a new primary must be promoted.</p>
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2024 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/17a112662824c05ab07b0334d39e3e67c478c8c5">17a11266</a></span>)
+            <div class="copyright">Copyright &copy; 2024 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/834eff4427a7d78bcb5209a07cad8a719204c92d">834eff44</a></span>)
             
         </div>
     </footer>
