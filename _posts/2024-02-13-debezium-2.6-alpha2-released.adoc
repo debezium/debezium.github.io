@@ -1,0 +1,266 @@
+---
+layout: post
+title:  Debezium 2.6.0.Alpha2 Released
+date:   2024-02-13
+tags: [ releases, mongodb, mysql, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox, spanner, jdbc ]
+author: ccranfor
+---
+
+As we've hit the mid-mark of the quarter, the team is pleased to announce the second installment of the Debezium 2.6 release stream, **Debezium 2.6.0.Alpha2**.
+This release is filled to the brim with new features, improvements, and bug fixes, so let's dive into these...
+
+
++++<!-- more -->+++
+
+== Breaking changes
+
+The team aims to avoid any potential breaking changes between minor releases; however, such changes are sometimes inevitable.
+
+Vitess::
+* The task configuration format used by previous versions of the connector could de-stabilize the Kafka Connect cluster.
+To resolve the problem, Debezium 2.6 introduces a new configuration format that is incompatible with the previous format (https://issues.redhat.com/browse/DBZ-7250[DBZ-7250]).
+When upgrading, you may experience a `NullPointerException` and the error indicating that the connector was unable to instantiate a task because it contains an invalid task configuration. +
+ +
+If you experience this problem, delete and re-create the connector, using the same name and configuration as before.
+The connector(s) will start and re-use the offsets last stored by using the same name, but will not re-use the old task configurations, avoiding the start-up failure.
+
+== Improvements and changes
+
+=== Java 17 now compile-time requirement
+
+Debezium 3.0 which will debut later this fall will once again shift the Java baseline requirement from Java 11 to 17 to use Debezium.
+In preparation for Debezium 3 later this year, we are making the shift to a compile-time baseline for Debezium 2.6 and 2.7 to require Java 17 (https://issues.redhat.com/browse/DBZ-7387[DBZ-7387]).
+
+If you are a Debezium user, and you consume Debezium connectors, this will require no action on your part.
+You can continue to use Java 11 for now without issue, understanding that Debezium 3 will require Java 17 later this year.
+
+If you are developing Debezium connectors, Java 17 is now baseline to compile the Debezium source.
+If you have been using Java 17, there should be no action taken on your part.
+If you previously were using Java 11, you will need to move to Java 17 in order to compile from source.
+
+If you are using the Debezium Quarkus Outbox Extension (not the Outbox SMT), as Quarkus 3.7+ is making the move to Java 17 as their baseline, the Debezium Quarkus Outbox Extension will now require Java 17 as a baseline for both runtime and compile time.
+
+We expect this transition to be mostly seamless for most users as this should have absolutely no impact on the runtime of Debezium's connectors nor Debezium Server at this time.
+
+=== Asynchronous Embedded Engine
+
+If you're hearing about the Embedded Engine for the first time, Debezium ships with three ways to run Debezium connectors.
+The most common is to deploy Debezium on Kafka Connect while the second most common is to use Debezium Server, a read-made runtime for Debezium connectors.
+However, there is a third option called the Embedded Engine, and it is what Debezium uses internally for its test suite, it's the foundation for Debezium Server, and it's meant to provide a way to embed Debezium connectors inside your own application.
+The embedded engine is used by a variety of external contributors and frameworks, most notably Apache Flink heavily relies on the embedded engine for their Debezium based CDC connectors.
+
+One of the biggest and major new features of Debezium 2.6 is the work on the asynchronous embedded engine that we are debuting in this alpha release.
+This new asynchronous version the foundation for which Debezium Server and the future of embedding Debezium is based.
+This change focuses on several key goals and initiatives:
+
+* Run multiple source tasks for a given connector, if the connector supports multiple tasks
+* Run time-consuming code (transformations or serialization) in dedicated threads
+* Allow additional performance by disabling event dispatch order
+* Provide future technology benefits of things such as virtual threads and delegating to external workers
+* Better integration with Debezium Operator for Kubernetes and Debezium UI
+* Seamlessly integrate with Quarkus for Debezium Server
+
+What this new asynchronous model does not include or focus on are the following:
+
+* Implement parallelization inside a connector's main capture loop.
+* Remove any dependency from Kafka Connect
+* Add support for multiple source connectors per Engine deployment
+* Add support for sink connectors
+
+[NOTE]
+====
+Even if a connector is single-threaded and does not support  multiple tasks, a connector deployment using the Embedded Engine or Debezium Server can take advantage of the new asynchronous model.
+A large portion of time during even dispatch is spent on transformation and serialization phases, so utilizing the new dedicated worker threads for such stages improves throughput.
+====
+
+For developers who want to get started with the new asynchronous embedded engine, a new package is now included in the `debezium-embedded` artifact called `io.debezium.embedded.async` and this package contains all the pertinent components to utilizing this new implementation.
+The asynchronous model can be constructed in a similar way to the serial version using the builder pattern, shown below.
+
+[source,java]
+----
+final DebeziumEngine engine = new AsyncEngine.AsyncEngineBuilder()
+    .using(properties)
+    .notifying(this::changeConsumerHandler)
+    .build();
+----
+
+We encourage everyone to take a look at the new Asynchronous Embedded Engine model, let us know your thoughts and if you spot any bugs or problems.
+We will be updating the documentation in coming releases to highlight all the benefits and changes, including examples.
+Until then, you can find all the details in the design document, https://github.com/vjuranek/debezium-design-documents/blob/DBZ-7073/DDD-7.md[DDD-7].
+
+=== Timestamp converter improvements
+
+Debezium released the new `TimezoneConverter` in Debezium 2.4, allowing users to target a specific time zone and to convert the outgoing payload time values to that targeted time zone.
+The original implementation was specifically restricted to allow conversion of values within the `before` or `after` parts of the payload; however, thanks to an improvement as a part of https://issues.redhat.com/browse/DBZ-7022[DBZ-7022], the converter can now be used to convert other time-based fields in the metadata, such as  `ts_ms` in the `source` information block.
+
+This change helps to improve lag metric calculations in situations where the JVM running the connector is using a time zone that differs from the database and the calculation of  the _envelope ts_ms_ - _source ts_ms_ results in a variance caused by the time zone.
+By using the `TimezoneConverter` to convert metadata fields, you can easily calculate the lag between those two fields without the time zone interfering.
+
+=== SQL Server query improvements
+
+The Debezium SQL Server utilizes a common SQL Server stored procedure called `fn_cdc_get_all_changes...` to fetch all the relevant captured changes for a given table.
+This query performs several unions and only ever returns data from one of the union sub-queries, which can be inefficient.
+
+Debezium 2.6 for SQL Server introduces a new configuration property `data.query.mode` that can be used to influence which specific method the connector will use to gather the details about table changes (https://issues.redhat.com/browse/DBZ-7273[DBZ-7273]).
+The default remains unchanged from older releases, using the value `function` to delegate to the above aforementioned stored procedure.
+A new option, called `direct`, can be used instead to build the query directly within the connector to gather the changes more efficiently.
+
+=== Scoped Key/Trust - store support with MongoDB
+
+Debezium supports secure connections; however, MongoDB requires that the key/trust -store configurations be supplied as JVM process arguments, which is less than ideal for environments like the cloud.
+As a first step toward aligning how secure connection configuration is specified across our connectors, Debezium 2.6 for MongoDB now supports specifying scoped key/trust -store configurations in the connector configuration (https://issues.redhat.com/browse/DBZ-7379[DBZ-7379]).
+
+The MongoDB connector now includes the following new configuration properties:
+
+`mongodb.ssl.keystore`::
+Specifies the path to the SSL keystore file.
+
+`mongodb.ssl.keystore.password`::
+Specifies the credentials to open and access the SSL keystore provided by _mongodb.ssl.keystore_.
+
+`mongodb.ssl.keystore.type`::
+Specifies the SSL keystore file type, defaults to `PKC512`.
+
+`mongodb.ssl.truststore`::
+Specifies the path to the SSL truststore file.
+
+`mongodb.ssl.truststore.password`::
+Specifies the credentials to open and access the SSL truststore provided by _mongodb.ssl.truststore_.
+
+`mongodb.ssl.truststore.type`::
+Specifies the SSL truststore file type, defaults to `PKC512`.
+
+=== Source transaction id changes
+
+All Debezium change events contain a special metadata block called the `source` information block.
+This part of the event payload is responsible for providing metadata about the change event, including the unique identifier of the change, the time the change happened, the database and table the change is in reference to, as well as transaction metadata about the transaction that the change participated in.
+
+In Debezium 2.6, the `transaction_id` field in the source information block will no longer be provided unless the field is populated with a value.
+This should present no issue for users as this field was only populated when the connector was configured with `provide.transaction.metadata` set to `true` (https://issues.redhat.com/browse/DBZ-7380[DBZ-7380]).
+
+If you have tooling that expects the existence of the source information block's `transaction_id` field although its optional, you will need to adjust that behavior as the field will no longer be present unless populated.
+
+=== Google PubSub Ordering Key Support
+
+The Debezium Server Google PubSub sink adapter has received a small update in Debezium 2.6.
+If you are streaming changes that have foreign key relationships, you may have wondered whether it was possible to specify an ordering key so that foreign key constraints could be maintained.
+
+Debezium 2.6 introduces a new configurable property for the Google PubSub sink adapter, `ordering.key`, which allows the sink adapter to use an externally provided ordering key from the connector configuration for the events rather than using the default behavior based on the event's key (https://issues.redhat.com/browse/DBZ-7435[DBZ-7435]).
+
+=== MongoDB UUID key support for Incremental snapshots
+
+As a small improvement to the Incremental Snapshot process for the Debezium for MongoDB connector, Debezium 2.6 adds support for the UUID data type, allowing this data type to be used within the Incremental Snapshot process like other data types (https://issues.redhat.com/browse/DBZ-7451[DBZ-7451]).
+
+=== MongoDB post-image changes
+
+The MongoDB connector's event payload can be configured to include the full document that was changed in an update.
+The connector previously made an opinionated choice about how the full document would be fetched as part of the change stream; however, this behavior was not consistent with our expectations in all use cases.
+
+Debezium 2.6 introduces a new configuration option, `capture.mode.full.update.type`, allowing the connector to explicitly control how the change stream's full document lookup should be handled (https://issues.redhat.com/browse/DBZ-7299[DBZ-7299]).
+The default value for this option is `lookup`, meaning that the database will make a separate look-up to fetch the full document.
+If you are working with MongoDB 6+, you can also elect to use `post_image` to rely on MongoDB change stream's post-image support.
+
+== Other changes
+
+Altogether, https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20AND%20fixVersion%20%3D%202.6.0.Alpha2%20ORDER%20BY%20component%20ASC[66 issues] were fixed in this release:
+
+* Add Number of records captured and processed as metrics for Debezium MongoDB Connector https://issues.redhat.com/browse/DBZ-6432[DBZ-6432]
+* Connector is getting stopped while processing bulk update(50k) records in debezium server 2.0.1.Final https://issues.redhat.com/browse/DBZ-6955[DBZ-6955]
+* Error when fail converting value with internal schema https://issues.redhat.com/browse/DBZ-7143[DBZ-7143]
+* Remove obsolete MySQL version from TF https://issues.redhat.com/browse/DBZ-7173[DBZ-7173]
+* Correctly handle METADATA records https://issues.redhat.com/browse/DBZ-7176[DBZ-7176]
+* Move Snapshotter interface to core module as SPI https://issues.redhat.com/browse/DBZ-7300[DBZ-7300]
+* Implement Snapshotter SPI MySQL/MariaDB https://issues.redhat.com/browse/DBZ-7301[DBZ-7301]
+* Update the Debezium UI repo with local development infra and readme file. https://issues.redhat.com/browse/DBZ-7353[DBZ-7353]
+* Debezium fails after table split operation https://issues.redhat.com/browse/DBZ-7360[DBZ-7360]
+* Update QOSDK to the latest version https://issues.redhat.com/browse/DBZ-7361[DBZ-7361]
+* Support DECFLOAT in Db2 connector https://issues.redhat.com/browse/DBZ-7362[DBZ-7362]
+* Create PubSub example for DS deployed via operator https://issues.redhat.com/browse/DBZ-7370[DBZ-7370]
+* Upstream artefact server image preparation job failing https://issues.redhat.com/browse/DBZ-7371[DBZ-7371]
+* Informix-Connector breaks on table with numerical default value https://issues.redhat.com/browse/DBZ-7372[DBZ-7372]
+* Tests in RHEL system testsuite fail to initialize Kafka containers https://issues.redhat.com/browse/DBZ-7373[DBZ-7373]
+* MSSQL wrong default values in db schema for varchar, nvarchar, char columns https://issues.redhat.com/browse/DBZ-7374[DBZ-7374]
+* Fix logging for schema only recovery mode in mysql connector https://issues.redhat.com/browse/DBZ-7376[DBZ-7376]
+* Replace additional rolebinding definition in kubernetes.yml with @RBACRule https://issues.redhat.com/browse/DBZ-7381[DBZ-7381]
+* Records from snapshot delivered out of order https://issues.redhat.com/browse/DBZ-7382[DBZ-7382]
+* Upgrade json-path to 2.9.0 https://issues.redhat.com/browse/DBZ-7383[DBZ-7383]
+* Fix mysql version in mysql-replication container images https://issues.redhat.com/browse/DBZ-7384[DBZ-7384]
+* Reduce size of docker image for Debezium 2.6 and up https://issues.redhat.com/browse/DBZ-7385[DBZ-7385]
+* Remove the use of Lombok in Debezium testsuite https://issues.redhat.com/browse/DBZ-7386[DBZ-7386]
+* Upgrade Outbox Extension to Quarkus 3.7.0 https://issues.redhat.com/browse/DBZ-7388[DBZ-7388]
+* Add dependancy update bot to the UI Repo https://issues.redhat.com/browse/DBZ-7392[DBZ-7392]
+* Duplicate Debezium SMT transform https://issues.redhat.com/browse/DBZ-7416[DBZ-7416]
+* Kinesis Sink Exception on PutRecord https://issues.redhat.com/browse/DBZ-7417[DBZ-7417]
+* ParsingException (MariaDB Only): alterSpec drop foreign key with 'tablename.' prefix https://issues.redhat.com/browse/DBZ-7420[DBZ-7420]
+* Poor performance with incremental snapshot with long list of tables https://issues.redhat.com/browse/DBZ-7421[DBZ-7421]
+* Fix the unit test cases https://issues.redhat.com/browse/DBZ-7423[DBZ-7423]
+* Oracle Snapshot mistakenly uses LogMiner Offset Loader by default https://issues.redhat.com/browse/DBZ-7425[DBZ-7425]
+* Reselect columns should source key values from after Struct when not using event-key sources https://issues.redhat.com/browse/DBZ-7429[DBZ-7429]
+* Allow the C3P0ConnectionProvider to be customized via configuration https://issues.redhat.com/browse/DBZ-7431[DBZ-7431]
+* Stopwatch throw NPE when toString is called without having statistics https://issues.redhat.com/browse/DBZ-7436[DBZ-7436]
+* ReselectColumnsPostProcessor filter not use exclude predicate https://issues.redhat.com/browse/DBZ-7437[DBZ-7437]
+* Adopt Oracle 23 to Testing Farm https://issues.redhat.com/browse/DBZ-7439[DBZ-7439]
+* Adhoc snapshots are not triggered via File channel signal when submitted before the start of the application https://issues.redhat.com/browse/DBZ-7441[DBZ-7441]
+* Upgrade protobuf to 3.25.2 https://issues.redhat.com/browse/DBZ-7442[DBZ-7442]
+* Correct debezium.sink.pubsub.flowcontrol.* variable names in Debezium Server docs site https://issues.redhat.com/browse/DBZ-7443[DBZ-7443]
+* LogMiner batch size does not increase automatically https://issues.redhat.com/browse/DBZ-7445[DBZ-7445]
+* Reduce string creation during SQL_REDO column read https://issues.redhat.com/browse/DBZ-7446[DBZ-7446]
+* Evaluate container image size for Debezium UI served by nginx https://issues.redhat.com/browse/DBZ-7447[DBZ-7447]
+* Upgrade Quarkus for Debezium Server to 3.2.9.Final https://issues.redhat.com/browse/DBZ-7449[DBZ-7449]
+* Fix TimescaleDbDatabaseTest to run into test container https://issues.redhat.com/browse/DBZ-7452[DBZ-7452]
+* Consolidate version management  https://issues.redhat.com/browse/DBZ-7455[DBZ-7455]
+* Oracle connector does not ignore reselection for excluded clob/blob columns https://issues.redhat.com/browse/DBZ-7456[DBZ-7456]
+* Upgrade example-mongo image version to 6.0 https://issues.redhat.com/browse/DBZ-7457[DBZ-7457]
+* The expected value pattern for table.include.list does not align with the documentation https://issues.redhat.com/browse/DBZ-7460[DBZ-7460]
+* SQL Server queries with special characters fail after applying DBZ-7273 https://issues.redhat.com/browse/DBZ-7463[DBZ-7463]
+* Signals actions are not loaded for SQLServer https://issues.redhat.com/browse/DBZ-7467[DBZ-7467]
+* MySQL connector cannot parse table with WITH SYSTEM VERSIONING PARTITION BY SYSTEM_TIME https://issues.redhat.com/browse/DBZ-7468[DBZ-7468]
+* Test Db2ReselectColumnsProcessorIT randomly fails https://issues.redhat.com/browse/DBZ-7471[DBZ-7471]
+* Postgres images require clang-11 https://issues.redhat.com/browse/DBZ-7475[DBZ-7475]
+* Make readiness and liveness proble timouts configurable https://issues.redhat.com/browse/DBZ-7476[DBZ-7476]
+* Snapshotter SPI wrongly loaded on Debezium Server https://issues.redhat.com/browse/DBZ-7481[DBZ-7481]
+
+A big thank you to all the contributors from the community who worked on this release:
+https://github.com/jchipmunk[Andrey Pustovetov],
+https://github.com/akanimesh7[Animesh Kumar],
+https://github.com/ani-sha[Anisha Mohanty],
+https://github.com/shybovycha[Artem Shubovych],
+https://github.com/ArthurLERAY[ArthurLR],
+https://github.com/roldanbob[Bob Roldan],
+https://github.com/brenoavm[Breno Moreira],
+https://github.com/Naros[Chris Cranford],
+https://github.com/CliffordCheefoon[Clifford Cheefoon],
+https://github.com/ilyasahsan123[Ilyas Ahsan],
+https://github.com/indraraj[Indra Shukla],
+https://github.com/nicholas-fwang[Inki Hwang],
+https://github.com/jcechace[Jakub Cechacek],
+https://github.com/iankko[Jan.Lieskovsky],
+https://github.com/novotnyJiri[Jiri Novotny],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/JordanP[Jordan Pittier],
+https://github.com/nrkljo[Lars M. Johansson],
+https://github.com/mfvitale[Mario Fiore Vitale],
+https://github.com/MartinMedek[Martin Medek],
+https://github.com/obabec[Ondrej Babec],
+https://github.com/rk3rn3r[René Kerner],
+https://github.com/roldanbob[Robert Roldan],
+https://github.com/eizners[Sergey Eizner],
+https://github.com/Fr0z3Nn[Sergey Ivanov],
+https://github.com/twthorn[Thomas Thornton],
+https://github.com/koneru9999[V K],
+https://github.com/ramanenka[Vadzim Ramanenka],
+https://github.com/vjuranek[Vojtech Juranek], and
+https://github.com/leoloel[leoloel]!
+
+== Outlook &amp; What's next?
+
+We've reached the mid-way point for the quarter's development cycle for 2.6 and the team is beginning our transition to the latter half where our focus is more on stability, regressions, and bug fixes.
+There are still a number of new features and improvements on the horizon, so you can expect those in the coming two weeks when our first beta preview release will be published for Debezium 2.6.
+
+As always, if you have any questions or interested in what the roadmap holds for not only 2.6 but also the road to the new Debezium 3.0 later this fall, we encourage you to take a look at our link:/docs/roadmap[road map].
+If you have any suggestions or ideas, please feel free to get in touch with us on our https://groups.google.com/forum/#!forum/debezium[mailing list] or in our https://debezium.zulipchat.com/login/#narrow/stream/302529-users[Zulip chat].
+
+Until next time...
+
+
+
