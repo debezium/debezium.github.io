@@ -366,7 +366,7 @@
 <li><a href="#postgresql-snapshots">Snapshots</a></li>
 <li><a href="#postgresql-ad-hoc-snapshots">Ad hoc snapshots</a></li>
 <li><a href="#postgresql-incremental-snapshots">Incremental snapshots</a></li>
-<li><a href="#postgresql-custom-snapshot">Custom snapshotter SPI</a></li>
+<li><a href="#connector-custom-snapshot">Custom snapshotter SPI</a></li>
 <li><a href="#postgresql-blocking-snapshots">Blocking snapshots</a></li>
 <li><a href="#postgresql-streaming-changes">Streaming changes</a></li>
 <li><a href="#postgresql-pgoutput">PostgreSQL 10+ logical decoding support (<code>pgoutput</code>)</a></li>
@@ -621,14 +621,6 @@ You can change this behavior by setting the <a href="#postgresql-property-snapsh
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>never</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The connector never performs snapshots. When a connector is configured this way, its behavior when it starts is as follows. If there is a previously stored LSN in the Kafka offsets topic, the connector continues streaming changes from that position. If no LSN has been stored, the connector starts streaming changes from the point in time when the PostgreSQL logical replication slot was created on the server. The <code>never</code> snapshot mode is useful only when you know all data of interest is still reflected in the WAL.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>initial</code> (default)</p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -645,10 +637,42 @@ You can change this behavior by setting the <a href="#postgresql-property-snapsh
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>exported</code></p>
+<p><code>no_data</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Deprecated, all modes are lockless.</p>
+<p>The connector never performs snapshots.
+When a connector is configured this way, after it starts, it behaves as follows:</p>
+</div>
+<div class="paragraph">
+<p>If there is a previously stored LSN in the Kafka offsets topic, the connector continues streaming changes from that position.
+If no LSN is stored, the connector starts streaming changes from the point at which the PostgreSQL logical replication slot was created on the server.
+Use this snapshot mode only when you know that all data of interest is still reflected in the WAL.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code class="line-through">never</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Deprecated, see <code>no_data</code></p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>when_needed</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>After the connector starts, it performs a snapshot only if it detects one of the following circumstances:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>It cannot detect any topic offsets.</p>
+</li>
+<li>
+<p>A previously recorded offset specifies a log position that is not available on the server.</p>
+</li>
+</ul>
 </div></div></td>
 </tr>
 <tr>
@@ -657,8 +681,10 @@ You can change this behavior by setting the <a href="#postgresql-property-snapsh
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>The <code>custom</code> snapshot mode lets you inject your own implementation of the <code>io.debezium.spi.snapshot.Snapshotter</code> interface.
-Set the <code>snapshot.mode.custom.name</code> configuration property to the name provided by the <code>name()</code> method of your implementation, as specified on the classpath of your Kafka Connect cluster, or included in the connector JAR file, if using the <code>EmbeddedEngine</code>.
-For more information, see <a href="#postgresql-custom-snapshot">custom snapshotter SPI</a>.</p>
+Set the <code>snapshot.mode.custom.name</code> configuration property to the name provided by the <code>name()</code> method of your implementation.
+The name is specified on the classpath of your Kafka Connect cluster.
+If you use the <code>EmbeddedEngine</code>, the name is included in the connector JAR file.
+For more information, see <a href="#connector-custom-snapshot">custom snapshotter SPI</a>.</p>
 </div></div></td>
 </tr>
 </tbody>
@@ -1470,9 +1496,9 @@ Value = `{"type":"stop-snapshot","data": {"data-collections": ["schema1.table1",
 </div>
 </div>
 <div class="sect2">
-<h3 id="postgresql-custom-snapshot"><a class="anchor" href="#postgresql-custom-snapshot"></a>Custom snapshotter SPI</h3>
+<h3 id="connector-custom-snapshot"><a class="anchor" href="#connector-custom-snapshot"></a>Custom snapshotter SPI</h3>
 <div class="paragraph">
-<p>For more advanced uses, you can fine-tune control the snapshot by implementing one of the following interfaces:</p>
+<p>For more advanced uses, you can fine-tune control of the snapshot by implementing one of the following interfaces:</p>
 </div>
 <div class="dlist">
 <dl>
@@ -1505,10 +1531,9 @@ Value = `{"type":"stop-snapshot","data": {"data-collections": ["schema1.table1",
  * to provide more advanced functionality, such as partial snapshots,
  * you can customize implementation of the interface.
  * For more information, see the documentation.
-
  *
  *
- * @author Mario Fiore Vitale
+ *
  */
 @Incubating
 public interface Snapshotter extends Configurable {
@@ -1521,23 +1546,20 @@ public interface Snapshotter extends Configurable {
     String name();
 
     /**
-     * Validate the snapshotter compatibility with the current connector configuration.
-     * Throws a {@link DebeziumException} in case it is not compatible.
+     * @param offsetExists is {@code true} when the connector has an offset context (i.e. restarted)
+     * @param snapshotInProgress is {@code true} when the connector is started, but a snapshot is already in progress
      *
-     * @param offsetContextExists is {@code true} when the connector has an offset context (i.e. restarted)
-     * @param isSnapshotInProgress is {@code true} when the connector is started, but a snapshot is already in progress
+     * @return {@code true} if the snapshotter should take a data snapshot
      */
-    void validate(boolean offsetContextExists, boolean isSnapshotInProgress);
+    boolean shouldSnapshotData(boolean offsetExists, boolean snapshotInProgress);
 
     /**
-     * @return {@code true} if the snapshotter should take a snapshot
+     * @param offsetExists is {@code true} when the connector has an offset context (i.e. restarted)
+     * @param snapshotInProgress is {@code true} when the connector is started, but a snapshot is already in progress
+     *
+     * @return {@code true} if the snapshotter should take a schema snapshot
      */
-    boolean shouldSnapshot();
-
-    /**
-     * @return {@code true} if the snapshotter should take a snapshot
-     */
-    boolean shouldSnapshotSchema();
+    boolean shouldSnapshotSchema(boolean offsetExists, boolean snapshotInProgress);
 
     /**
      * @return {@code true} if the snapshotter should stream after taking a snapshot
@@ -1557,8 +1579,8 @@ public interface Snapshotter extends Configurable {
     /**
      *
      * @return {@code true} if streaming should resume from the start of the snapshot
-     * transaction, or {@code false} if following a restart, the connector
-     * should take a snapshot, and then resume streaming from the last offset.
+     * transaction, or {@code false} for when a connector resumes and takes a snapshot,
+     * streaming should resume from where streaming previously left off.
      */
     default boolean shouldStreamEventsStartingFromSnapshot() {
         return true;
@@ -1586,7 +1608,7 @@ public interface Snapshotter extends Configurable {
 <pre class="highlightjs highlight"><code class="language-java hljs" data-lang="java">/**
  * {@link SnapshotQuery} is used to determine the query used during a data snapshot
  *
- * @author Mario Fiore Vitale
+ *
  */
 public interface SnapshotQuery extends Configurable, Service {
 
@@ -1617,7 +1639,7 @@ public interface SnapshotQuery extends Configurable, Service {
 <pre class="highlightjs highlight"><code class="language-java hljs" data-lang="java">/**
  * {@link SnapshotLock} is used to determine the table lock mode used during schema snapshot
  *
- * @author Mario Fiore Vitale
+ *
  */
 public interface SnapshotLock extends Configurable, Service {
 
@@ -6217,24 +6239,68 @@ For example,<br></p>
 <p><a id="postgresql-property-snapshot-mode"></a><a href="#postgresql-property-snapshot-mode"><code>snapshot.mode</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>initial</code></p>
+<p><em>initial</em></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Specifies the criteria for performing a snapshot when the connector starts:<br>
-<br>
-<code>initial</code> -  The connector performs a snapshot only when no offsets have been recorded for the logical server name.<br>
-<br>
-<code>always</code> - The connector performs a snapshot each time the connector starts.<br>
-<br>
-<code>never</code> - The connector never performs snapshots. When a connector is configured this way, its behavior when it starts is as follows. If there is a previously stored LSN in the Kafka offsets topic, the connector continues streaming changes from that position. If no LSN has been stored, the connector starts streaming changes from the point in time when the PostgreSQL logical replication slot was created on the server. The <code>never</code> snapshot mode is useful only when you know all data of interest is still reflected in the WAL.<br>
-<br>
-<code>initial_only</code> - The connector performs an initial snapshot and then stops, without processing any subsequent changes.<br>
-<br>
-<code>exported</code> -  deprecated<br>
-<br>
-<code>custom</code> - The connector performs a snapshot according to the implementation specified by the <a href="#postgresql-property-snapshot-mode-custom-name"><code>snapshot.mode.custom.name</code></a> property, which defines a custom implementation of the <code>io.debezium.spi.snapshot.Snapshotter</code> interface.<br>
-<br>
-For more information, see the <a href="#postgresql-connector-snapshot-mode-options">table of <code>snapshot.mode</code> options</a>.</p>
+<p>Specifies the criteria for performing a snapshot when the connector starts:<br></p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>always</code></dt>
+<dd>
+<p>The connector performs a snapshot every time that it starts.
+The snapshot includes the structure and data of the captured tables.
+Specify this value to populate topics with a complete representation of the data from the captured tables every time that the connector starts.
+After the snapshot completes, the connector begins to stream event records for subsequent database changes.</p>
+</dd>
+<dt class="hdlist1"><code>initial</code></dt>
+<dd>
+<p>The connector performs a snapshot only when no offsets have been recorded for the logical server name.</p>
+</dd>
+<dt class="hdlist1"><code>initial_only</code></dt>
+<dd>
+<p>The connector performs an initial snapshot and then stops, without processing any subsequent changes.</p>
+</dd>
+<dt class="hdlist1"><code>no_data</code></dt>
+<dd>
+<p>The connector never performs snapshots.
+When a connector is configured this way, after it starts, it behaves as follows:</p>
+</dd>
+</dl>
+</div>
+<div class="paragraph">
+<p>If there is a previously stored LSN in the Kafka offsets topic, the connector continues streaming changes from that position.
+If no LSN is stored, the connector starts streaming changes from the point in time when the PostgreSQL logical replication slot was created on the server.
+Use this snapshot mode only when you know all data of interest is still reflected in the WAL.</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>never</code></dt>
+<dd>
+<p>Deprecated see <code>no_data</code>.</p>
+</dd>
+<dt class="hdlist1"><code>when_needed</code></dt>
+<dd>
+<p>After the connector starts, it performs a snapshot only if it detects one of the following circumstances:</p>
+<div class="ulist">
+<ul>
+<li>
+<p>It cannot detect any topic offsets.</p>
+</li>
+<li>
+<p>A previously recorded offset specifies a log position that is not available on the server.</p>
+</li>
+</ul>
+</div>
+</dd>
+<dt class="hdlist1"><code>custom</code></dt>
+<dd>
+<p>The connector performs a snapshot according to the implementation specified by the <a href="#postgresql-property-snapshot-mode-custom-name"><code>snapshot.mode.custom.name</code></a> property, which defines a custom implementation of the <code>io.debezium.spi.snapshot.Snapshotter</code> interface.</p>
+</dd>
+</dl>
+</div>
+<div class="paragraph">
+<p>For more information, see the <a href="#postgresql-connector-snapshot-mode-options">table of <code>snapshot.mode</code> options</a>.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -6247,7 +6313,7 @@ For more information, see the <a href="#postgresql-connector-snapshot-mode-optio
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>When <code>snapshot.mode</code> is set as <code>custom</code>, use this setting to specify the name of the custom implementation provided in the <code>name()</code> method that is defined by the 'io.debezium.spi.snapshot.Snapshotter' interface.
 The provided implementation is called after a connector restart to determine whether to perform a snapshot.
-For more information, see <a href="#postgresql-custom-snapshot">custom snapshotter SPI</a>.</p>
+For more information, see <a href="#connector-custom-snapshot">custom snapshotter SPI</a>.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -6300,8 +6366,8 @@ After the initial phase, the snapshot no longer requires table locks.
 <p>No default</p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>When <code>snapshot.locking.mode</code> is set as <code>custom</code>, use this setting to specify the name of the custom implementation provided in the <code>name()</code> method that is defined by the 'io.debezium.spi.snapshot.SnapshotLock' interface.
-For more information, see <a href="#postgresql-custom-snapshot">custom snapshotter SPI</a>.</p>
+<p>When <a href="#postgresql-property-snapshot-locking-mode"><code>snapshot.locking.mode</code></a> is set to <code>custom</code>, use this setting to specify the name of the custom implementation provided in the <code>name()</code> method that is defined by the 'io.debezium.spi.snapshot.SnapshotLock' interface.
+For more information, see <a href="#connector-custom-snapshot">custom snapshotter SPI</a>.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -6319,7 +6385,7 @@ Set one of the following options:</p>
 <dl>
 <dt class="hdlist1"><code>select_all</code></dt>
 <dd>
-<p>The connector performs a <code>select all</code> query.</p>
+<p>The connector performs a <code>select all</code> query by default, optionally adjusting the columns selected based on the column include and exclude list configurations.</p>
 </dd>
 <dt class="hdlist1"><code>custom</code></dt>
 <dd>
@@ -6340,7 +6406,7 @@ Set one of the following options:</p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>When <a href="#postgresql-property-snapshot-query-mode"><code>snapshot.query.mode</code></a> is set as <code>custom</code>, use this setting to specify the name of the custom implementation provided in the <code>name()</code> method that is defined by the 'io.debezium.spi.snapshot.SnapshotQuery' interface.
-For more information, see <a href="#postgresql-custom-snapshot">custom snapshotter SPI</a>.</p>
+For more information, see <a href="#connector-custom-snapshot">custom snapshotter SPI</a>.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -7760,7 +7826,7 @@ If the primary server goes down, a new primary must be promoted.</p>
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2024 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/d359c0cd82ad8a8d8c9e73929699341d00ffc488">d359c0cd</a></span>)
+            <div class="copyright">Copyright &copy; 2024 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/2f35b82014255ed4361ae3c786bdd8e78043f006">2f35b820</a></span>)
             
         </div>
     </footer>
