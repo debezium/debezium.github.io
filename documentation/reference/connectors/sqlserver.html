@@ -379,6 +379,8 @@
 <li><a href="#sqlserver-snapshots">Snapshots</a></li>
 <li><a href="#sqlserver-ad-hoc-snapshots">Ad hoc snapshots</a></li>
 <li><a href="#sqlserver-incremental-snapshots">Incremental snapshots</a></li>
+<li><a href="#connector-custom-snapshot">Custom snapshotter SPI</a></li>
+<li><a href="#sqlserver-blocking-snapshots">Blocking snapshots</a></li>
 <li><a href="#_reading_the_change_data_tables">Reading the change data tables</a></li>
 <li><a href="#_no_maximum_lsn_recorded_in_the_database">No maximum LSN recorded in the database</a></li>
 <li><a href="#_limitations">Limitations</a></li>
@@ -500,7 +502,7 @@ That is, if the connector stops during a snapshot, the connector begins a new sn
 For the Debezium SQL Server connector to establish a baseline for the current state of the database, it uses a process called <em>snapshotting</em>.
 The initial snapshot captures the structure and data of the tables in the database.</p>
 </div>
-<div class="paragraph">
+<div id="default-workflow-for-performing-an-initial-snapshot" class="paragraph">
 <div class="title">Default workflow that the Debezium SQL Server connector uses to perform an initial snapshot</div>
 <p>The following workflow lists the steps that Debezium takes to create a snapshot.
 These steps describe the process for a snapshot when the <a href="#sqlserver-property-snapshot-mode"><code>snapshot.mode</code></a> configuration property is set to its default value, which is <code>initial</code>.
@@ -586,6 +588,110 @@ From this baseline state, the connector captures subsequent changes as they occu
 </div>
 <div class="paragraph">
 <p>If the connector stops again for any reason, after it restarts, it resumes streaming changes from where it previously left off.</p>
+</div>
+<table id="sqlserver-connector-snapshot-mode-options" class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 1. Settings for <code>snapshot.mode</code> connector configuration property</caption>
+<colgroup>
+<col style="width: 30%;">
+<col style="width: 70%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Setting</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>always</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Perform snapshot on each connector start.
+After the snapshot completes, the connector begins to stream event records for subsequent database changes.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>initial</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The connector performs a database snapshot as described in the <a href="#default-workflow-for-performing-an-initial-snapshot">default workflow for creating an initial snapshot</a>.
+After the snapshot completes, the connector begins to stream event records for subsequent database changes.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>initial_only</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The connector performs a database snapshot and stops before streaming any change event records, not allowing any subsequent change events to be captured.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>schema_only</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Deprecated, see <code>no_data</code>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>no_data</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The connector captures the structure of all relevant tables, performing all the steps described in the <a href="#default-workflow-for-performing-an-initial-snapshot">default snapshot workflow</a>, except that it does not create <code>READ</code> events to represent the data set at the point of the connector&#8217;s start-up (Step 7.b).</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>recovery</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Set this option to restore a database schema history topic that is lost or corrupted.
+After a restart, the connector runs a snapshot that rebuilds the topic from the source tables.
+You can also set the property to periodically prune a database schema history topic that experiences unexpected growth.<br></p>
+</div>
+<div class="paragraph">
+<p>+
+WARNING: Do not use this mode to perform a snapshot if schema changes were committed to the database after the last connector shutdown.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>when_needed</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>After the connector starts, it performs a snapshot only if it detects one of the following circumstances:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>It cannot detect any topic offsets.</p>
+</li>
+<li>
+<p>A previously recorded offset specifies a log position that is not available on the server.</p>
+</li>
+</ul>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>custom</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The <code>custom</code> snapshot mode lets you inject your own implementation of the <code>io.debezium.spi.snapshot.Snapshotter</code> interface.
+Set the <code>snapshot.mode.custom.name</code> configuration property to the name provided by the <code>name()</code> method of your implementation.
+The name is specified on the classpath of your Kafka Connect cluster.
+If you use the Debezium <code>EmbeddedEngine</code>, the name is included in the connector JAR file.
+For more information, see <a href="#connector-custom-snapshot">custom snapshotter SPI</a>.</p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
+<div class="paragraph">
+<p>For more information, see <a href="#sqlserver-property-snapshot-mode"><code>snapshot.mode</code></a> in the table of connector configuration properties.</p>
 </div>
 <div class="sect3">
 <h4 id="understanding-why-initial-snapshots-capture-the-schema-history-for-all-tables"><a class="anchor" href="#understanding-why-initial-snapshots-capture-the-schema-history-for-all-tables"></a>Understanding why initial snapshots capture the schema history for all tables</h4>
@@ -966,7 +1072,7 @@ Also, the snapshot can capture a subset of the contents of the table(s) in the d
 Set the type of the <code>execute-snapshot</code> signal to <code>incremental</code> or <code>blocking</code>, and provide the names of the tables to include in the snapshot, as described in the following table:</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 1. Example of an ad hoc <code>execute-snapshot</code> signal record</caption>
+<caption class="title">Table 2. Example of an ad hoc <code>execute-snapshot</code> signal record</caption>
 <colgroup>
 <col style="width: 20%;">
 <col style="width: 20%;">
@@ -1253,7 +1359,7 @@ values ('ad-hoc-1',   <i class="conum" data-value="2"></i><b>(2)</b>
 <p>The following table describes the parameters in the example:</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 2. Descriptions of fields in a SQL command for sending an incremental snapshot signal to the signaling table</caption>
+<caption class="title">Table 3. Descriptions of fields in a SQL command for sending an incremental snapshot signal to the signaling table</caption>
 <colgroup>
 <col style="width: 11.1111%;">
 <col style="width: 22.2222%;">
@@ -1443,7 +1549,7 @@ The value for snapshot events is <code>r</code>, signifying a <code>READ</code> 
 <p>The signal type is <code>execute-snapshot</code>, and the <code>data</code> field must have the following fields:</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 3. Execute snapshot data fields</caption>
+<caption class="title">Table 4. Execute snapshot data fields</caption>
 <colgroup>
 <col style="width: 20%;">
 <col style="width: 20%;">
@@ -1619,7 +1725,7 @@ values ('ad-hoc-1',   <i class="conum" data-value="2"></i><b>(2)</b>
 <p>The following table describes the parameters in the example:</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 4. Descriptions of fields in a SQL command for sending a stop incremental snapshot signal to the signaling table</caption>
+<caption class="title">Table 5. Descriptions of fields in a SQL command for sending a stop incremental snapshot signal to the signaling table</caption>
 <colgroup>
 <col style="width: 11.1111%;">
 <col style="width: 22.2222%;">
@@ -1685,7 +1791,7 @@ If you do not specify a <code>type</code> value, the signal fails to stop the in
 <p>The signal type is <code>stop-snapshot</code>, and the <code>data</code> field must have the following fields:</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 5. Execute snapshot data fields</caption>
+<caption class="title">Table 6. Execute snapshot data fields</caption>
 <colgroup>
 <col style="width: 20%;">
 <col style="width: 20%;">
@@ -1725,8 +1831,174 @@ Value = `{"type":"stop-snapshot","data": {"data-collections": ["schema1.table1",
 </div>
 </div>
 </div>
-<div class="sect3">
-<h4 id="sqlserver-blocking-snapshots"><a class="anchor" href="#sqlserver-blocking-snapshots"></a>Blocking snapshots</h4>
+</div>
+<div class="sect2">
+<h3 id="connector-custom-snapshot"><a class="anchor" href="#connector-custom-snapshot"></a>Custom snapshotter SPI</h3>
+<div class="paragraph">
+<p>For more advanced uses, you can fine-tune control of the snapshot by implementing one of the following interfaces:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>io.debezium.snapshot.spi.Snapshotter</code></dt>
+<dd>
+<p>Controls whether the connector takes a snapshot.</p>
+</dd>
+<dt class="hdlist1"><code>io.debezium.snapshot.spi.SnapshotQuery</code></dt>
+<dd>
+<p>Controls how data is queried during a snapshot.</p>
+</dd>
+<dt class="hdlist1"><code>io.debezium.snapshot.spi.SnapshotLock</code></dt>
+<dd>
+<p>Controls whether the connector locks tables when taking a snapshot.</p>
+</dd>
+</dl>
+</div>
+<div class="listingblock">
+<div class="title">io.debezium.snapshot.spi.Snapshotter interface. All built-in snapshot modes implement this interface.</div>
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-java hljs" data-lang="java">/**
+ * {@link Snapshotter} is used to determine the following details about the snapshot process:
+ * &lt;p&gt;
+ * - Whether a snapshot occurs. &lt;br&gt;
+ * - Whether streaming continues during the snapshot. &lt;br&gt;
+ * - Whether the snapshot includes schema (if supported). &lt;br&gt;
+ * - Whether to snapshot data or schema following an error.
+ * &lt;p&gt;
+ * Although Debezium provides many default snapshot modes,
+ * to provide more advanced functionality, such as partial snapshots,
+ * you can customize implementation of the interface.
+ * For more information, see the documentation.
+ *
+ *
+ *
+ */
+@Incubating
+public interface Snapshotter extends Configurable {
+
+    /**
+     * @return the name of the snapshotter.
+     *
+     *
+     */
+    String name();
+
+    /**
+     * @param offsetExists is {@code true} when the connector has an offset context (i.e. restarted)
+     * @param snapshotInProgress is {@code true} when the connector is started, but a snapshot is already in progress
+     *
+     * @return {@code true} if the snapshotter should take a data snapshot
+     */
+    boolean shouldSnapshotData(boolean offsetExists, boolean snapshotInProgress);
+
+    /**
+     * @param offsetExists is {@code true} when the connector has an offset context (i.e. restarted)
+     * @param snapshotInProgress is {@code true} when the connector is started, but a snapshot is already in progress
+     *
+     * @return {@code true} if the snapshotter should take a schema snapshot
+     */
+    boolean shouldSnapshotSchema(boolean offsetExists, boolean snapshotInProgress);
+
+    /**
+     * @return {@code true} if the snapshotter should stream after taking a snapshot
+     */
+    boolean shouldStream();
+
+    /**
+     * @return {@code true} whether the schema can be recovered if database schema history is corrupted.
+     */
+    boolean shouldSnapshotOnSchemaError();
+
+    /**
+     * @return {@code true} whether the snapshot should be re-executed when there is a gap in data stream.
+     */
+    boolean shouldSnapshotOnDataError();
+
+    /**
+     *
+     * @return {@code true} if streaming should resume from the start of the snapshot
+     * transaction, or {@code false} for when a connector resumes and takes a snapshot,
+     * streaming should resume from where streaming previously left off.
+     */
+    default boolean shouldStreamEventsStartingFromSnapshot() {
+        return true;
+    }
+
+    /**
+     * Lifecycle hook called after the snapshot phase is successful.
+     */
+    default void snapshotCompleted() {
+        // no operation
+    }
+
+    /**
+     * Lifecycle hook called after the snapshot phase is aborted.
+     */
+    default void snapshotAborted() {
+        // no operation
+    }
+}</code></pre>
+</div>
+</div>
+<div class="listingblock">
+<div class="title">io.debezium.snapshot.spi.SnapshotQuery interface. All built-in snapshot query modes implement this interface.</div>
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-java hljs" data-lang="java">/**
+ * {@link SnapshotQuery} is used to determine the query used during a data snapshot
+ *
+ *
+ */
+public interface SnapshotQuery extends Configurable, Service {
+
+    /**
+     * @return the name of the snapshot lock.
+     *
+     *
+     */
+    String name();
+
+    /**
+     * Generate a valid query string for the specified table, or an empty {@link Optional}
+     * to skip snapshotting this table (but that table will still be streamed from)
+     *
+     * @param tableId the table to generate a query for
+     * @param snapshotSelectColumns the columns to be used in the snapshot select based on the column
+     *                              include/exclude filters
+     * @return a valid query string, or none to skip snapshotting this table
+     */
+    Optional&lt;String&gt; snapshotQuery(String tableId, List&lt;String&gt; snapshotSelectColumns);
+
+}</code></pre>
+</div>
+</div>
+<div class="listingblock">
+<div class="title">io.debezium.snapshot.spi.SnapshotLock interface. All built-in snapshot lock modes implement this interface.</div>
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-java hljs" data-lang="java">/**
+ * {@link SnapshotLock} is used to determine the table lock mode used during schema snapshot
+ *
+ *
+ */
+public interface SnapshotLock extends Configurable, Service {
+
+    /**
+     * @return the name of the snapshot lock.
+     *
+     *
+     */
+    String name();
+
+    /**
+     * Returns a SQL statement for locking the given tables during snapshotting, if required by the specific snapshotter
+     * implementation.
+     */
+    Optional&lt;String&gt; tableLockingStatement(Duration lockTimeout, Set&lt;String&gt; tableIds);
+
+}</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="sqlserver-blocking-snapshots"><a class="anchor" href="#sqlserver-blocking-snapshots"></a>Blocking snapshots</h3>
 <div class="paragraph">
 <p>To provide more flexibility in managing snapshots, Debezium includes a supplementary ad hoc snapshot mechanism, known as a <em>blocking snapshot</em>.
 Blocking snapshots rely on the Debezium mechanism for <a href="../configuration/signalling.html#sending-signals-to-a-debezium-connector" class="xref page">sending signals to a Debezium connector</a>.</p>
@@ -1788,7 +2060,6 @@ After the snapshot completes, the streaming is resumed.</p>
 <div class="title">Possible duplicates</div>
 <p>A delay might exist between the time that you send the signal to trigger the snapshot, and the time when streaming stops and the snapshot starts.
 As a result of this delay, after the snapshot completes, the connector might emit some event records that duplicate records captured by the snapshot.</p>
-</div>
 </div>
 </div>
 <div class="sect2">
@@ -2195,7 +2466,7 @@ The message contains a logical representation of the table schema.</p>
 </div>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 6. Descriptions of fields in messages emitted to the schema change topic</caption>
+<caption class="title">Table 7. Descriptions of fields in messages emitted to the schema change topic</caption>
 <colgroup>
 <col style="width: 10%;">
 <col style="width: 40%;">
@@ -2337,7 +2608,7 @@ In the following example, the <code>payload</code> field contains the key:</p>
 </div>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 7. Overview of change event basic content</caption>
+<caption class="title">Table 8. Overview of change event basic content</caption>
 <colgroup>
 <col style="width: 10%;">
 <col style="width: 20%;">
@@ -2441,7 +2712,7 @@ For more information, see <a href="#sqlserver-topic-names">topic names</a>.</p>
 </div>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 8. Description of change event key</caption>
+<caption class="title">Table 9. Description of change event key</caption>
 <colgroup>
 <col style="width: 10%;">
 <col style="width: 20%;">
@@ -2747,7 +3018,7 @@ be sure that your settings permit the connector to capture the required primary 
 </div>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 9. Descriptions of <em>create</em> event value fields</caption>
+<caption class="title">Table 10. Descriptions of <em>create</em> event value fields</caption>
 <colgroup>
 <col style="width: 10%;">
 <col style="width: 20%;">
@@ -2925,7 +3196,7 @@ By comparing the value for <code>payload.source.ts_ms</code> with the value for 
 </div>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 10. Descriptions of <em>update</em> event value fields</caption>
+<caption class="title">Table 11. Descriptions of <em>update</em> event value fields</caption>
 <colgroup>
 <col style="width: 10%;">
 <col style="width: 20%;">
@@ -3072,7 +3343,7 @@ By comparing the value for <code>payload.source.ts_ms</code> with the value for 
 </div>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 11. Descriptions of <em>delete</em> event value fields</caption>
+<caption class="title">Table 12. Descriptions of <em>delete</em> event value fields</caption>
 <colgroup>
 <col style="width: 10%;">
 <col style="width: 20%;">
@@ -3343,7 +3614,7 @@ In the event, the connector maps the fields for each SQL Server data type to bot
 <p>The following table shows how the connector maps basic SQL Server data types.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 12. Data type mappings used by the SQL Server connector</caption>
+<caption class="title">Table 13. Data type mappings used by the SQL Server connector</caption>
 <colgroup>
 <col style="width: 30%;">
 <col style="width: 25%;">
@@ -3782,7 +4053,7 @@ So for instance the <code>DATETIME2</code> value "2018-06-20 15:13:16.945104" is
 <dt class="hdlist1">decimal.handling.mode=precise</dt>
 <dd>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 13. Mappings when <code>decimal.handling.mode=precise</code></caption>
+<caption class="title">Table 14. Mappings when <code>decimal.handling.mode=precise</code></caption>
 <colgroup>
 <col style="width: 30%;">
 <col style="width: 15%;">
@@ -3850,7 +4121,7 @@ The <code>scale</code> schema parameter contains an integer that represents how 
 <dt class="hdlist1">decimal.handling.mode=double</dt>
 <dd>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 14. Mappings when <code>decimal.handling.mode=double</code></caption>
+<caption class="title">Table 15. Mappings when <code>decimal.handling.mode=double</code></caption>
 <colgroup>
 <col style="width: 30%;">
 <col style="width: 30%;">
@@ -3914,7 +4185,7 @@ The <code>scale</code> schema parameter contains an integer that represents how 
 <dt class="hdlist1">decimal.handling.mode=string</dt>
 <dd>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 15. Mappings when <code>decimal.handling.mode=string</code></caption>
+<caption class="title">Table 16. Mappings when <code>decimal.handling.mode=string</code></caption>
 <colgroup>
 <col style="width: 30%;">
 <col style="width: 30%;">
@@ -5255,18 +5526,159 @@ For example,<br></p>
 Once the snapshot is complete, the connector will continue reading change events from the database&#8217;s redo logs.
 The following values are supported:</p>
 </div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>always</code></dt>
+<dd>
+<p>Perform snapshot on each connector start.
+After the snapshot completes, the connector begins to stream event records for subsequent database changes.</p>
+</dd>
+<dt class="hdlist1"><code>initial</code></dt>
+<dd>
+<p>The connector performs a database snapshot as described in the <a href="#default-workflow-for-performing-an-initial-snapshot">default workflow for creating an initial snapshot</a>.
+After the snapshot completes, the connector begins to stream event records for subsequent database changes.</p>
+</dd>
+<dt class="hdlist1"><code>initial_only</code></dt>
+<dd>
+<p>The connector performs a database snapshot and stops before streaming any change event records, not allowing any subsequent change events to be captured.</p>
+</dd>
+<dt class="hdlist1"><code>schema_only</code></dt>
+<dd>
+<p>Deprecated, see <code>no_data</code>.</p>
+</dd>
+<dt class="hdlist1"><code>no_data</code></dt>
+<dd>
+<p>The connector captures the structure of all relevant tables, performing all the steps described in the <a href="#default-workflow-for-performing-an-initial-snapshot">default snapshot workflow</a>, except that it does not create <code>READ</code> events to represent the data set at the point of the connector&#8217;s start-up (Step 7.b).</p>
+</dd>
+<dt class="hdlist1"><code>recovery</code></dt>
+<dd>
+<p>Set this option to restore a database schema history topic that is lost or corrupted.
+After a restart, the connector runs a snapshot that rebuilds the topic from the source tables.
+You can also set the property to periodically prune a database schema history topic that experiences unexpected growth.<br></p>
+<div class="admonitionblock warning">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-warning" title="Warning"></i>
+</td>
+<td class="content">
+Do not use this mode to perform a snapshot if schema changes were committed to the database after the last connector shutdown.
+</td>
+</tr>
+</table>
+</div>
+</dd>
+<dt class="hdlist1"><code>when_needed</code></dt>
+<dd>
+<p>After the connector starts, it performs a snapshot only if it detects one of the following circumstances:</p>
 <div class="ulist">
 <ul>
 <li>
-<p><code>initial</code>: Takes a snapshot of structure and data of captured tables; useful if topics should be populated with a complete representation of the data from the captured tables.<br></p>
+<p>It cannot detect any topic offsets.</p>
 </li>
 <li>
-<p><code>initial_only</code>: Takes a snapshot of structure and data like <code>initial</code> but instead does not transition into streaming changes once the snapshot has completed.<br></p>
-</li>
-<li>
-<p><code>schema_only</code>: Takes a snapshot of the structure of captured tables only; useful if only changes happening from now onwards should be propagated to topics.</p>
+<p>A previously recorded offset specifies a log position that is not available on the server.</p>
 </li>
 </ul>
+</div>
+</dd>
+<dt class="hdlist1"><code>custom</code></dt>
+<dd>
+<p>The <code>custom</code> snapshot mode lets you inject your own implementation of the <code>io.debezium.spi.snapshot.Snapshotter</code> interface.
+Set the <code>snapshot.mode.custom.name</code> configuration property to the name provided by the <code>name()</code> method of your implementation.</p>
+</dd>
+</dl>
+</div>
+<div class="paragraph">
+<p>For more information, see <a href="#connector-custom-snapshot">custom snapshotter SPI</a>.
+* <code>initial</code>: Takes a snapshot of structure and data of captured tables; useful if topics should be populated with a complete representation of the data from the captured tables.<br>
+* <code>initial_only</code>: Takes a snapshot of structure and data like <code>initial</code> but instead does not transition into streaming changes once the snapshot has completed.<br>
+* <code>schema_only</code>: Takes a snapshot of the structure of captured tables only; useful if only changes happening from now onwards should be propagated to topics.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="sqlserver-property-snapshot-locking-mode"></a><a href="#sqlserver-property-snapshot-locking-mode"><code>snapshot.locking.mode</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><em>exclusive</em></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Controls whether and for how long the connector holds a table lock. Table locks prevent certain types of changes table operations from occurring while the connector performs a snapshot.
+You can set the following values:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>exclusive</code></dt>
+<dd>
+<p>Controls how the connector holds locks on tables while performing the schema snapshot when <code>snapshot.isolation.mode</code> is <code>REPEATABLE_READ</code> or <code>EXCLUSIVE</code>.<br>
+The connector will hold a table lock for exclusive table access for just the initial portion of the snapshot
+while the database schemas and other metadata are being read. The remaining work in a snapshot involves selecting all rows from
+each table, and this is done using a flashback query that requires no locks. However, in some cases it may be desirable to avoid
+locks entirely which can be done by specifying <code>none</code>. This mode is only safe to use if no schema changes are happening while the
+snapshot is taken.</p>
+</dd>
+<dt class="hdlist1"><code>none</code></dt>
+<dd>
+<p>Prevents the connector from acquiring any table locks during the snapshot.
+Use this setting only if no schema changes might occur during the creation of the snapshot.</p>
+</dd>
+<dt class="hdlist1"><code>custom</code></dt>
+<dd>
+<p>The connector performs a snapshot according to the implementation specified by the <a href="#sqlserver-property-snapshot-locking-mode-custom-name"><code>snapshot.locking.mode.custom.name</code></a> property, which is a custom implementation of the <code>io.debezium.spi.snapshot.SnapshotLock</code> interface.</p>
+</dd>
+</dl>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="sqlserver-property-snapshot-locking-mode-custom-name"></a><a href="#sqlserver-property-snapshot-locking-mode-custom-name"><code>snapshot.locking.mode.custom.name</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>When <code>snapshot.locking.mode</code> is set as <code>custom</code>, use this setting to specify the name of the custom implementation provided in the <code>name()</code> method that is defined by the 'io.debezium.spi.snapshot.SnapshotLock' interface.
+For more information, see <a href="#connector-custom-snapshot">custom snapshotter SPI</a>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="sqlserver-property-snapshot-query-mode"></a><a href="#sqlserver-property-snapshot-query-mode"><code>snapshot.query.mode</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>select_all</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies how the connector queries data while performing a snapshot.<br>
+Set one of the following options:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>select_all</code></dt>
+<dd>
+<p>The connector performs a <code>select all</code> query by default, optionally adjusting the columns selected based on the column include and exclude list configurations.</p>
+</dd>
+<dt class="hdlist1"><code>custom</code></dt>
+<dd>
+<p>The connector performs a snapshot query according to the implementation specified by the <a href="#sqlserver-property-snapshot-snapshot-query-mode-custom-name"><code>snapshot.query.mode.custom.name</code></a> property, which defines a custom implementation of the <code>io.debezium.spi.snapshot.SnapshotQuery</code> interface.<br></p>
+</dd>
+</dl>
+</div>
+<div class="paragraph">
+<p>This setting enables you to manage snapshot content in a more flexible manner compared to using the <a href="#sqlserver-property-snapshot-select-statement-overrides"><code>snapshot.select.statement.overrides</code></a> property.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="sqlserver-property-snapshot-snapshot-query-mode-custom-name"></a><a href="#sqlserver-property-snapshot-query-mode-custom-name"><code>snapshot.query.mode.custom.name</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>When <a href="#sqlserver-property-snapshot-query-mode"><code>snapshot.query.mode</code></a> is set to <code>custom</code>, use this setting to specify the name of the custom implementation provided in the <code>name()</code> method that is defined by the 'io.debezium.spi.snapshot.SnapshotQuery' interface.
+For more information, see <a href="#connector-custom-snapshot">custom snapshotter SPI</a>.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -5839,7 +6251,7 @@ This feature is incubating.</p>
 <p>The following table describes the <code>schema.history.internal</code> properties for configuring the Debezium connector.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 16. Connector database schema history configuration properties</caption>
+<caption class="title">Table 17. Connector database schema history configuration properties</caption>
 <colgroup>
 <col style="width: 33%;">
 <col style="width: 17%;">
@@ -6039,7 +6451,7 @@ schema.history.internal.consumer.ssl.key.password=test1234</code></pre>
 <p>The following table describes the Kafka <code>signal</code> properties.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 17. Kafka signals configuration properties</caption>
+<caption class="title">Table 18. Kafka signals configuration properties</caption>
 <colgroup>
 <col style="width: 33%;">
 <col style="width: 17%;">
@@ -6145,7 +6557,7 @@ For example, the connector passes properties such as <code>signal.consumer.secur
 <p>The following table describes the <code>notification</code> properties.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 18. Sink notification configuration properties</caption>
+<caption class="title">Table 19. Sink notification configuration properties</caption>
 <colgroup>
 <col style="width: 33%;">
 <col style="width: 17%;">
@@ -7118,7 +7530,7 @@ The values will incoporate any differences between the clocks on the machines wh
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2024 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/6fdaa90d2207db3f17183466f56c95a9b3b18003">6fdaa90d</a></span>)
+            <div class="copyright">Copyright &copy; 2024 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/dad83f9d55ded63698cee8bb642786c2ec8989a0">dad83f9d</a></span>)
             
         </div>
     </footer>
