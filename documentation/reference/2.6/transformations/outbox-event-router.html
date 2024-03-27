@@ -363,9 +363,13 @@
 <li><a href="#basic-outbox-table">Basic outbox table</a></li>
 <li><a href="#basic-outbox-configuration">Basic configuration</a></li>
 <li><a href="#options-for-applying-the-transformation-selectively">Options for applying the transformation selectively</a></li>
-<li><a href="#avro-as-payload-format">Using Avro as the payload format</a></li>
+<li><a href="#_payload_serialization_format">Payload serialization format</a>
+<ul class="sectlevel2">
+<li><a href="#using-json-payload-format">Using JSON as the payload format</a></li>
+<li><a href="#avro-as-payload-format">Using Apache Avro as the payload format</a></li>
+</ul>
+</li>
 <li><a href="#emitting-messages-with-additional-fields">Emitting messages with additional fields</a></li>
-<li><a href="#expanding-escaped-json-string-as-json">Expanding escaped JSON String as JSON</a></li>
 <li><a href="#outbox-event-router-configuration-options">Configuration options</a></li>
 <li><a href="#_distributed_tracing">Distributed tracing</a></li>
 </ul>
@@ -454,7 +458,7 @@ For more information, see <a href="#options-for-applying-the-transformation-sele
     "type": "OrderCreated"
   },
   "source": {
-    "version": "2.6.0.Alpha2",
+    "version": "2.6.0.CR1",
     "connector": "postgresql",
     "name": "dbserver1-bare",
     "db": "orderdb",
@@ -468,7 +472,9 @@ For more information, see <a href="#options-for-applying-the-transformation-sele
     "xmin": null
   },
   "op": "c",
-  "ts_ms": 1556890294484
+  "ts_ms": 1556890294484,
+  "ts_us": 1556890294484651,
+  "ts_ns": 1556890294484651402
 }</code></pre>
 </div>
 </div>
@@ -614,11 +620,69 @@ You can use one of the following methods to configure the connector to apply the
 </div>
 </div>
 <div class="sect1">
-<h2 id="avro-as-payload-format"><a class="anchor" href="#avro-as-payload-format"></a>Using Avro as the payload format</h2>
+<h2 id="_payload_serialization_format"><a class="anchor" href="#_payload_serialization_format"></a>Payload serialization format</h2>
 <div class="sectionbody">
 <div class="paragraph">
-<p>The outbox event router SMT supports arbitrary payload formats. The <code>payload</code> column value in an outbox table is passed on transparently. An alternative to working with JSON is to use Avro.
-This can be beneficial for message format governance and for ensuring that outbox event schemas evolve in a backwards-compatible way.</p>
+<p>The outbox event router SMT supports arbitrary payload formats.
+The SMT passes on <code>payload</code> column values that it reads from the outbox table without modification.
+The way that the SMT converts these column values into Kafka message fields depends on how you configure the SMT.
+Common payload formats for serializing data are JSON and Avro.</p>
+</div>
+<div class="sect2">
+<h3 id="using-json-payload-format"><a class="anchor" href="#using-json-payload-format"></a>Using JSON as the payload format</h3>
+<div class="paragraph">
+<p>The default serialization format for the outbox event router SMT is JSON.
+To use this format, the data type of the source column must be JSON (for example, <code>jsonb</code> in PostgreSQL).</p>
+</div>
+<div class="sect3">
+<h4 id="expanding-escaped-json-string-as-json"><a class="anchor" href="#expanding-escaped-json-string-as-json"></a>Expanding escaped JSON String as JSON</h4>
+<div class="paragraph">
+<p>When a Debezium outbox message represents the <code>payload</code> as a JSON String, the resulting Kafka message escapes the string as in the following example:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript"># Kafka Topic: outbox.event.order
+# Kafka Message key: "1"
+# Kafka Message Headers: "id=4d47e190-0402-4048-bc2c-89dd54343cdc"
+# Kafka Message Timestamp: 1556890294484
+{
+  "{\"id\": 1, \"lineItems\": [{\"id\": 1, \"item\": \"Debezium in Action\", \"status\": \"ENTERED\", \"quantity\": 2, \"totalPrice\": 39.98}, {\"id\": 2, \"item\": \"Debezium for Dummies\", \"status\": \"ENTERED\", \"quantity\": 1, \"totalPrice\": 29.99}], \"orderDate\": \"2019-01-31T12:13:01\", \"customerId\": 123}"
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>The outbox event router enables you to expand the message content to "real" JSON, deducing the companion schema from the JSON document.
+The resulting Kafka message is formatted as in the following example:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript"># Kafka Topic: outbox.event.order
+# Kafka Message key: "1"
+# Kafka Message Headers: "id=4d47e190-0402-4048-bc2c-89dd54343cdc"
+# Kafka Message Timestamp: 1556890294484
+{
+  "id": 1, "lineItems": [{"id": 1, "item": "Debezium in Action", "status": "ENTERED", "quantity": 2, "totalPrice": 39.98}, {"id": 2, "item": "Debezium for Dummies", "status": "ENTERED", "quantity": 1, "totalPrice": 29.99}], "orderDate": "2019-01-31T12:13:01", "customerId": 123
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>To enable use of the outbox event router transformation, set the <a href="#outbox-event-router-property-table-expand-json-payload"><code>table.expand.json.payload</code></a> to true, and use the <code>JsonConverter</code> as shown in the following example:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-none hljs">transforms=outbox,...
+transforms.outbox.type=io.debezium.transforms.outbox.EventRouter
+transforms.outbox.table.expand.json.payload=true
+value.converter=org.apache.kafka.connect.json.JsonConverter</code></pre>
+</div>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="avro-as-payload-format"><a class="anchor" href="#avro-as-payload-format"></a>Using Apache Avro as the payload format</h3>
+<div class="paragraph">
+<p>Apache Avro is a common framework for serializing data.
+Using Avro can be beneficial for message format governance and for ensuring that outbox event schemas evolve in a backwards-compatible way.</p>
 </div>
 <div class="paragraph">
 <p>How a source application produces Avro formatted content for outbox message payloads is out of the scope of this documentation.
@@ -635,7 +699,8 @@ value.converter=io.debezium.converters.BinaryDataConverter</code></pre>
 </div>
 <div class="paragraph">
 <p>By default, the <code>payload</code> column value (the Avro data) is the only message value.
-Configuration of <code>BinaryDataConverter</code> as the value converter propagates the <code>payload</code> column value as-is into the Kafka message value.</p>
+When data is stored in Avro format, the column format must be set to a binary data type, such as <code>bytea</code> in PostgreSQL.
+The value converter for the SMT must also be set to <code>BinaryDataConverter</code>, so that it propagates the binary value of the <code>payload</code> column as-is into the Kafka message value.</p>
 </div>
 <div class="paragraph">
 <p>The Debezium connectors may be configured to emit heartbeat, transaction metadata, or schema change events (support varies by connector).
@@ -655,6 +720,34 @@ value.converter.delegate.converter.type.schemas.enable=false</code></pre>
 <p>The delegate <code>Converter</code> implementation is specified by the <code>delegate.converter.type</code> option.
 If any extra configuration options are needed by the converter, they can also be specified, such as the disablement of schemas shown above using <code>schemas.enable=false</code>.</p>
 </div>
+<div class="paragraph">
+<p>The following example illustrates how to configure the SMT to use a delegate converter with a Apicurio Registry to convert data into Avro format:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-none hljs">transforms=outbox,...
+transforms.outbox.type=io.debezium.transforms.outbox.EventRouter
+value.converter=io.debezium.converters.BinaryDataConverter
+value.converter.delegate.converter.type=io.apicurio.registry.utils.converter.AvroConverter
+value.converter.delegate.converter.apicurio.registry.url=http://apicurio:8080/apis/registry/v2
+value.converter.delegate.converter.apicurio.registry.auto-register=true
+value.converter.delegate.converter.registry.find-latest=true</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Finally, the following example illustrates how to configure the SMT to use a delegate converter with a Confluent Schema Registry to convert data into Avro format:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-none hljs">transforms=outbox,...
+transforms.outbox.type=io.debezium.transforms.outbox.EventRouter
+value.converter=io.debezium.converters.BinaryDataConverter
+value.converter.delegate.converter.type=io.confluent.connect.avro.AvroConverter
+value.converter.delegate.converter.type.basic.auth.credentials.source=USER_INFO
+value.converter.delegate.converter.type.basic.auth.user.info={CREDENTIALS}
+value.converter.delegate.converter.type.schema.registry.url={URL}</code></pre>
+</div>
+</div>
 <div class="admonitionblock note">
 <table>
 <tr>
@@ -663,11 +756,13 @@ If any extra configuration options are needed by the converter, they can also be
 </td>
 <td class="content">
 <div class="paragraph">
-<p>The converter <code>io.debezium.converters.ByteBufferConverter</code> has been deprecated since Debezium version 1.9, and has been removed in 2.0. Furthermore, when using Kafka Connect the connector&#8217;s configuration must be updated before upgrading to Debezium 2.x</p>
+<p>In the preceding configuration examples, because the <code>AvroConverter</code> is configured as a delegate converter, third-party libraries are required.
+Information about how to add third-party libraries to the classpath is beyond the scope of this document.</p>
 </div>
 </td>
 </tr>
 </table>
+</div>
 </div>
 </div>
 </div>
@@ -718,52 +813,6 @@ transforms.outbox.table.fields.additional.placement=partitionColumn:partition</c
 </div>
 <div class="paragraph">
 <p>Note that for the <code>partition</code> placement, adding an alias will have no effect.</p>
-</div>
-</div>
-</div>
-<div class="sect1">
-<h2 id="expanding-escaped-json-string-as-json"><a class="anchor" href="#expanding-escaped-json-string-as-json"></a>Expanding escaped JSON String as JSON</h2>
-<div class="sectionbody">
-<div class="paragraph">
-<p>You may have noticed that the Debezium outbox message contains the <code>payload</code> represented as a String.
-So when this string, is actually JSON, it appears as escaped in the result Kafka message like shown below:</p>
-</div>
-<div class="listingblock">
-<div class="content">
-<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript"># Kafka Topic: outbox.event.order
-# Kafka Message key: "1"
-# Kafka Message Headers: "id=4d47e190-0402-4048-bc2c-89dd54343cdc"
-# Kafka Message Timestamp: 1556890294484
-{
-  "{\"id\": 1, \"lineItems\": [{\"id\": 1, \"item\": \"Debezium in Action\", \"status\": \"ENTERED\", \"quantity\": 2, \"totalPrice\": 39.98}, {\"id\": 2, \"item\": \"Debezium for Dummies\", \"status\": \"ENTERED\", \"quantity\": 1, \"totalPrice\": 29.99}], \"orderDate\": \"2019-01-31T12:13:01\", \"customerId\": 123}"
-}</code></pre>
-</div>
-</div>
-<div class="paragraph">
-<p>The outbox event router allows you to expand this message content to "real" JSON with the companion schema
-being deduced from the JSON document itself. That way the result in Kafka message looks like:</p>
-</div>
-<div class="listingblock">
-<div class="content">
-<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript"># Kafka Topic: outbox.event.order
-# Kafka Message key: "1"
-# Kafka Message Headers: "id=4d47e190-0402-4048-bc2c-89dd54343cdc"
-# Kafka Message Timestamp: 1556890294484
-{
-  "id": 1, "lineItems": [{"id": 1, "item": "Debezium in Action", "status": "ENTERED", "quantity": 2, "totalPrice": 39.98}, {"id": 2, "item": "Debezium for Dummies", "status": "ENTERED", "quantity": 1, "totalPrice": 29.99}], "orderDate": "2019-01-31T12:13:01", "customerId": 123
-}</code></pre>
-</div>
-</div>
-<div class="paragraph">
-<p>To enable this transformation, you have to set the <a href="#outbox-event-router-property-table-expand-json-payload"><code>table.expand.json.payload</code></a> to true and use the <code>JsonConverter</code> like below:</p>
-</div>
-<div class="listingblock">
-<div class="content">
-<pre class="highlightjs highlight"><code class="language-none hljs">transforms=outbox,...
-transforms.outbox.type=io.debezium.transforms.outbox.EventRouter
-transforms.outbox.table.expand.json.payload=true
-value.converter=org.apache.kafka.connect.json.JsonConverter</code></pre>
-</div>
 </div>
 </div>
 </div>
@@ -1103,7 +1152,7 @@ See <a href="/documentation/reference/integrations/tracing">tracing documentatio
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2024 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/834eff4427a7d78bcb5209a07cad8a719204c92d">834eff44</a></span>)
+            <div class="copyright">Copyright &copy; 2024 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/582505b20b6ba149cf2d613c13a3ed82e666e77e">582505b2</a></span>)
             
         </div>
     </footer>
