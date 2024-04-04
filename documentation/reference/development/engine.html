@@ -367,6 +367,7 @@
 <li><a href="#advanced-consuming">Advanced Record Consuming</a></li>
 <li><a href="#engine-properties">Engine Properties</a>
 <ul class="sectlevel2">
+<li><a href="#async-engine-properties">Asynchronous Engine Properties</a></li>
 <li><a href="#database-history-properties">Database schema history properties</a></li>
 </ul>
 </li>
@@ -386,6 +387,23 @@ They still want the same data change events, but prefer to have the connectors s
 </div>
 <div class="paragraph">
 <p>This <code>debezium-api</code> module defines a small API that allows an application to easily configure and run Debezium connectors using Debezium Engine.</p>
+</div>
+<div class="paragraph">
+<p>Beginning with the 2.6.0 release, Debezium provides two implementations of the <code>DebeziumEngine</code> interface.
+The older <code>EmbeddedEngine</code> implementation runs a single connector that uses only one task.
+The connector emits all records sequentially.
+This the default implementation.</p>
+</div>
+<div class="paragraph">
+<p>Beginning with the 2.6.0 release, a new <code>AsyncEmbeddedEngine</code> implementation is available.
+This implementation also runs only a single connector, but it can process records in multiple threads, and run multiple tasks, if the connector supports it (currently only the connectors for SQL Server and MongoDB support running multiple tasks within a single connector).
+Because both of these engines implement the same interface and share the same API, the code examples that follow are valid for either engine.
+Both implementations support the same configuration options.</p>
+</div>
+<div class="paragraph">
+<p>However, the new <code>AsyncEmbeddedEngine</code> provides a couple of new configuration options for setting up and fine-tuning parallel processing.
+For information about these new configuration options, see the <a href="#async-engine-properties">Asynchronous Engine Properties</a>.
+To learn more about the motivation behind development of the <code>AsyncEmbeddedEngine</code> and about its implementation details, see the <a href="https://github.com/debezium/debezium-design-documents/blob/main/DDD-7.md">Asynchronous Embedded Engine design document</a>.</p>
 </div>
 </div>
 </div>
@@ -478,7 +496,7 @@ final Properties props = new Properties();
 props.setProperty("name", "engine");
 props.setProperty("connector.class", "io.debezium.connector.mysql.MySqlConnector");
 props.setProperty("offset.storage", "org.apache.kafka.connect.storage.FileOffsetBackingStore");
-props.setProperty("offset.storage.file.filename", "/tmp/offsets.dat");
+props.setProperty("offset.storage.file.filename", "/path/to/storage/offsets.dat");
 props.setProperty("offset.flush.interval.ms", "60000");
 /* begin connector properties */
 props.setProperty("database.hostname", "localhost");
@@ -487,10 +505,8 @@ props.setProperty("database.user", "mysqluser");
 props.setProperty("database.password", "mysqlpw");
 props.setProperty("database.server.id", "85744");
 props.setProperty("topic.prefix", "my-app-connector");
-props.setProperty("schema.history.internal",
-      "io.debezium.storage.file.history.FileSchemaHistory");
-props.setProperty("schema.history.internal.file.filename",
-      "/path/to/storage/schemahistory.dat");
+props.setProperty("schema.history.internal", "io.debezium.storage.file.history.FileSchemaHistory");
+props.setProperty("schema.history.internal.file.filename", "/path/to/storage/schemahistory.dat");
 
 // Create the engine with this configuration ...
 try (DebeziumEngine&lt;ChangeEvent&lt;String, String&gt;&gt; engine = DebeziumEngine.create(Json.class)
@@ -518,8 +534,8 @@ final Properties props = new Properties();
 props.setProperty("name", "engine");
 props.setProperty("connector.class", "io.debezium.connector.mysql.MySqlConnector");
 props.setProperty("offset.storage", "org.apache.kafka.connect.storage.FileOffsetBackingStore");
-props.setProperty("offset.storage.file.filename", "/tmp/offsets.dat");
-props.setProperty("offset.flush.interval.ms", 60000);</code></pre>
+props.setProperty("offset.storage.file.filename", "/path/to/storage/offsets.dat");
+props.setProperty("offset.flush.interval.ms", "60000");</code></pre>
 </div>
 </div>
 <div class="paragraph">
@@ -546,10 +562,8 @@ These fields can be tailored as needed for your application.</p>
     props.setProperty("database.password", "mysqlpw")
     props.setProperty("database.server.id", "85744")
     props.setProperty("topic.prefix", "my-app-connector")
-    props.setProperty("schema.history.internal",
-          "io.debezium.storage.file.history.FileSchemaHistory")
-    props.setProperty("schema.history.internal.file.filename",
-          "/path/to/storage/schemahistory.dat")</code></pre>
+    props.setProperty("schema.history.internal", "io.debezium.storage.file.history.FileSchemaHistory")
+    props.setProperty("schema.history.internal.file.filename", "/path/to/storage/schemahistory.dat")</code></pre>
 </div>
 </div>
 <div class="paragraph">
@@ -665,13 +679,41 @@ catch ( InterruptedException e ) {
 <p>Alternatively you can register <code>CompletionCallback</code> while creating <code>DebeziumEngine</code> as a callback to be informed when the engine terminates.</p>
 </div>
 <div class="paragraph">
-<p>Recall that when the JVM shuts down, it only waits for daemon threads.
-Therefore, if your application exits, be sure to wait for completion of the engine or alternatively run the engine on a daemon thread.</p>
+<p>Recall that when the JVM shuts down, it only waits for non-daemon threads.
+Therefore, when you run the engine on a daemon thread, if your application exits, be sure to wait for the engine process to complete.</p>
 </div>
 <div class="paragraph">
 <p>Your application should always properly stop the engine to ensure graceful and complete shutdown and that each source record is sent to the application exactly one time.
 For example, do not rely upon shutting down the <code>ExecutorService</code>, since that interrupts the running threads.
 Although the <code>DebeziumEngine</code> will indeed terminate when its thread is interrupted, the engine may not terminate cleanly, and when your application is restarted it may see some of the same source records that it had processed just prior to the shutdown.</p>
+</div>
+<div class="paragraph">
+<p>As mentioned earlier, there are two implementations of the <code>DebeziumEngine</code> interface.
+The two implementations use the same API, and the preceding code sample is valid for both versions.
+The only exception is the creation of the <code>DebeziumEngine</code> instance.
+As was also mentioned in the introduction, by default, the <code>EmbeddedEngine</code> implementation is used.
+Therefore, the method <code>DebeziumEngine.create(Json.class)</code> results internally in the use of the <code>EmbeddedEngine</code> instance.
+If you want to use the new <code>AsyncEmbeddedEngine</code> instance instead, use the following method:
+<code>DebeziumEngine#create(KeyValueHeaderChangeEventFormat&lt;K, V, H&gt; format, String builderFactory)</code>
+For example, to create an embedded engine that uses the <code>AsyncEmbeddedEngine</code>, and uses JSON as its key, value, and header format, you would use following code:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-java hljs" data-lang="java">try (DebeziumEngine&lt;ChangeEvent&lt;String, String&gt;&gt; engine = DebeziumEngine
+        .create(KeyValueHeaderChangeEventFormat.of(Json.class, Json.class, Json.class),
+                "io.debezium.embedded.async.ConvertingAsyncEngineBuilderFactory")
+        .using(props)
+        .notifying(record -&gt; {
+            System.out.println(record);
+        }).build()
+    ) {
+    // Also run the engine asynchronously ...
+    ExecutorService executor = Executors.newSingleThreadExecutor();
+    executor.execute(engine);
+
+    // Do something else or wait for a signal or an event
+}</code></pre>
+</div>
 </div>
 </div>
 </div>
@@ -716,7 +758,7 @@ Allowed values are:</p>
 </ul>
 </div>
 <div class="paragraph">
-<p>Internally, the engine uses the appropriate Kafka Connect converter implementation to which the conversion is delegated.
+<p>Internally, the engine delegates data conversion to the Kafka Connect or Apicurio converter implementation with the algorithm that is best suited to perform the conversion.
 The converter can be parametrized using engine properties to modify its behaviour.</p>
 </div>
 <div class="paragraph">
@@ -1076,6 +1118,103 @@ The default is a periodic commity policy based upon time intervals.</p>
 </tbody>
 </table>
 <div class="sect2">
+<h3 id="async-engine-properties"><a class="anchor" href="#async-engine-properties"></a>Asynchronous Engine Properties</h3>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 35%;">
+<col style="width: 10%;">
+<col style="width: 55%;">
+</colgroup>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Property</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Default</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Description</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>record.processing.threads</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of available cores.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The number of threads to use for processing CDC records.
+The default value is the number of available machine cores, with an upper limit of 16 threads.
+If you want to use all available threads without any limitation, use the <code>AVAILABLE_CORES</code> placeholder.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>record.processing.shutdown.timeout.ms</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>1000</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Maximum time in milliseconds to wait for processing submitted records after a task shutdown is called.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>record.processing.order</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>ORDERED</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Determines how the records should be produced.</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>ORDERED</code></dt>
+<dd>
+<p>Records are processed sequentially; that is, they are produced in the order in which they were obtained from the database.</p>
+</dd>
+<dt class="hdlist1"><code>UNORDERED</code></dt>
+<dd>
+<p>Records are processed non-sequentially; that is, they can be produced in an different order than in the source database.</p>
+</dd>
+</dl>
+</div>
+<div class="paragraph">
+<p>The non-sequential processing of the <code>UNORDERED</code> option results in better throughput, because records are produced immediately after any SMT processing and message serialization is complete, without waiting for other records.
+This option doesn&#8217;t have any effect when the <code>ChangeConsumer</code> method is provided to the engine.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>record.processing.with.serial.consumer</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>false</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies whether the default <code>ChangeConsumer</code> should be created from the provided <code>Consumer</code>, resulting in serial <code>Consumer</code> processing.
+This option has no effect if you specified the <code>ChangeConsumer</code> interface when you used the API to create the engine.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>task.management.timeout.ms</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>180,000 (3 min)</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Time, in milliseconds, that the engine waits for a task&#8217;s lifecycle management operations (starting and stopping) to complete.</p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="sect2">
 <h3 id="database-history-properties"><a class="anchor" href="#database-history-properties"></a>Database schema history properties</h3>
 <div class="paragraph">
 <p>Some of the connectors also requires additional set of properties that configures database schema history:</p>
@@ -1203,7 +1342,7 @@ If applications need more rigorous exactly-once behavior, then they should use t
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2024 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/499a1f61b825779faffad9ec198fea06e9336fe6">499a1f61</a></span>)
+            <div class="copyright">Copyright &copy; 2024 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/936bc33b4630c1f2d6fbd9382c2c31dc8b1a9964">936bc33b</a></span>)
             
         </div>
     </footer>
