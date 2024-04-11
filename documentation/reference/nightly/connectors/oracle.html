@@ -371,6 +371,7 @@
 <li><a href="#oracle-schema-history-topic">Schema history topic</a></li>
 <li><a href="#oracle-schema-change-topic">Schema change topic</a></li>
 <li><a href="#oracle-transaction-metadata">Transaction Metadata</a></li>
+<li><a href="#oracle-logminer-mining-strategies">LogMiner Mining Strategies</a></li>
 <li><a href="#oracle-logminer-query-modes">Query Modes</a></li>
 <li><a href="#oracle-event-buffering">Event buffering</a></li>
 <li><a href="#scn-jumps">SCN gap detection</a></li>
@@ -2679,6 +2680,108 @@ This field provides information about every event in the form of a composite of 
   }
 }</code></pre>
 </div>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="oracle-logminer-mining-strategies"><a class="anchor" href="#oracle-logminer-mining-strategies"></a>LogMiner Mining Strategies</h3>
+<div class="paragraph">
+<p>Entries in the Oracle redo logs do not store the original SQL statements that users submit to make DML changes.
+Instead, a redo entry holds a set of change vectors and a set of object identifiers that represent the tablespace, table, and columns related to these vectors.
+In other words, redo log entries don&#8217;t include the names of the schemas, tables, or columns affected by DML changes.</p>
+</div>
+<div class="paragraph">
+<p>The Debezium Oracle connector uses the <a href="#oracle-property-log-mining-strategy"><code>log.mining.strategy</code></a> configuration property to control how Oracle LogMiner handles the lookup of the object identifiers in the change vectors.
+In certain situations, one log mining strategy might prove more reliable than another with regard to schema changes.
+However, before you choose a log mining strategy, it&#8217;s important to consider the implications it might have on performance and overhead.</p>
+</div>
+<div class="sect3">
+<h4 id="_writing_the_data_dictionary_to_redo_logs"><a class="anchor" href="#_writing_the_data_dictionary_to_redo_logs"></a>Writing the data dictionary to redo logs</h4>
+<div class="paragraph">
+<p>The default mining strategy is called <code>redo_log_catalog</code>.
+In this strategy, the database flushes a copy of the data dictionary to the redo logs immediately after each redo log switch.
+This is the most reliable strategy for tracking schema changes that are interwoven with data changes, because Oracle LogMiner has a way to interpolate between the starting and ending data dictionary states across a series of change vectors.</p>
+</div>
+<div class="paragraph">
+<p>However, the <code>redo_log_catalog</code> mode is also the most expensive, because it requires several key steps to function.
+First, this mode requires the data dictionary to be flushed to the redo logs after every log switch.
+Flushing the logs after each switch can quickly consume valuable space in the archive log, and the high volume of archive logs might exceed the number that database administrators prepared for.
+If you intend to use this mode, coordinate with your database administrators to ensure that the database is configured appropriately.</p>
+</div>
+<div class="admonitionblock important">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-important" title="Important"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>If you configure the connector to use the <code>redo_log_catalog</code> mode, do not use multiple Debezium Oracle connectors to capture changes from the same logical database.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_using_the_online_catalog_directly"><a class="anchor" href="#_using_the_online_catalog_directly"></a>Using the online catalog directly</h4>
+<div class="paragraph">
+<p>The next strategy mode, <code>online_catalog</code>, works differently from the <code>redo_log_catalog</code> mode.
+When the strategy is set to <code>online_catalog</code>, the database never flushes the data dictionary to the redo logs.
+Instead, Oracle LogMiner always uses the most current data dictionary state to perform comparisons.
+By always using the current dictionary, and eliminating flushing to the redo logs, this strategy requires less overhead, and operates more efficiently.
+However, these benefits are offset by the inability to parse interwoven schema changes and data changes.
+As a result, this strategy can sometimes result in event failures.</p>
+</div>
+<div class="paragraph">
+<p>If LogMiner was unable to reconstruct the SQL reliability after a schema change, check the redo logs for evidence.
+Look for references to tables with names like <code>OBJ# 123456</code> (where the number is the table&#8217;s object identifier), or for columns with names like <code>COL1</code> or <code>COL2</code>.
+When you configure the connector to use the <code>online_catalog</code> strategy, take steps to ensure that the table schema and its indices remain static and free from change.
+If the Debezium connector is configured to use the <code>online_catalog</code> mode, and you must apply a schema change, perform the following steps:</p>
+</div>
+<div class="olist arabic">
+<ol class="arabic">
+<li>
+<p>Wait for the connector to capture all existing data changes (DML).</p>
+</li>
+<li>
+<p>Perform the schema (DDL) change, and then wait for the connector to capture the change.</p>
+</li>
+<li>
+<p>Resume data changes (DML) on the table.</p>
+</li>
+</ol>
+</div>
+<div class="paragraph">
+<p>Following this procedure helps to ensure that Oracle LogMiner can safely reconstruct the SQL for all data changes.</p>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_hybrid_approach"><a class="anchor" href="#_hybrid_approach"></a>Hybrid approach</h4>
+<div class="paragraph">
+<p>This is a new, experimental strategy that can be enabled by setting the strategy to <code>hybrid</code>.
+The goal of this strategy is to provide the reliability of the <code>redo_log_catalog</code> strategy with the performance and low overhead of the <code>online_catalog</code> strategy, without incurring the disadvantages of either strategy.</p>
+</div>
+<div class="paragraph">
+<p>The <code>hybrid</code> strategy works by primarily operating in the <code>online_catalog</code> mode, meaning that the Debezium Oracle connector first delegates event reconstruction to Oracle LogMiner.
+If Oracle LogMiner successfully reconstructs the SQL, Debezium processes the event normally, as if it were configured to use the <code>online_catalog</code> strategy.
+If the connector detects that Oracle LogMiner could not reconstruct the SQL, the connector attempts to reconstruct the SQL directly by using the schema history for that table object.
+The connector reports a failure only if both Oracle LogMiner and the connector are unable to reconstruct the SQL.</p>
+</div>
+<div class="admonitionblock important">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-important" title="Important"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>You cannot use the <code>hybrid</code> mining strategy if the <a href="#oracle-property-lob-enabled"><code>lob.enabled</code></a> property is set to <code>true</code>.
+If you require streaming <code>CLOB</code>, <code>BLOB</code>, or <code>XML</code> data, only the <code>online_catalog</code> or <code>redo_log_catalog</code> strategies can be used.</p>
+</div>
+</td>
+</tr>
+</table>
 </div>
 </div>
 </div>
@@ -10229,7 +10332,7 @@ When the following JVM argument is provided, the Oracle connector will start suc
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2024 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/a2eaddffcf98c5c2735b933c4d2cb8b3e343cf0b">a2eaddff</a></span>)
+            <div class="copyright">Copyright &copy; 2024 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/9467d4ac7d6da95be05fa7b6dc53150032b9e57c">9467d4ac</a></span>)
             
         </div>
     </footer>
