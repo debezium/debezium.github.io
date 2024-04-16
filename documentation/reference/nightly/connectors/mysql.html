@@ -396,6 +396,12 @@
 <li><a href="#mysql-spatial-types">Spatial types</a></li>
 </ul>
 </li>
+<li><a href="#debezium-mysql-connector-converters">Custom converters</a>
+<ul class="sectlevel2">
+<li><a href="#_tinyint1_to_boolean"><code>TINYINT(1)</code> to Boolean</a></li>
+<li><a href="#_jdbc_sink_data_types">JDBC sink data types</a></li>
+</ul>
+</li>
 <li><a href="#setting-up-mysql">Setting up MySQL</a>
 <ul class="sectlevel2">
 <li><a href="#mysql-creating-user">Creating a user</a></li>
@@ -4810,6 +4816,84 @@ Contains a structure with two fields:</p>
 </div>
 </div>
 <div class="sect1">
+<h2 id="debezium-mysql-connector-converters"><a class="anchor" href="#debezium-mysql-connector-converters"></a>Custom converters</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>By default, the Debezium MySQL connector provides several <code>CustomConverter</code> implementations for MySQL data types.
+These custom converters provide alternative mappings for specific data types based on the connector configuration.
+To add a <code>CustomConverter</code> to the connector, follow the instructions in the <a href="../development/converters.adoc">Custom Converters documentation</a>.</p>
+</div>
+<div class="sect2">
+<h3 id="_tinyint1_to_boolean"><a class="anchor" href="#_tinyint1_to_boolean"></a><code>TINYINT(1)</code> to Boolean</h3>
+<div class="paragraph">
+<p>By default, during a connector snapshot, the Debezium MySQL connector obtains column types from the JDBC driver, which assigns the <code>TINYINT(1)</code> type to <code>BOOLEAN</code> columns.
+Debezium then uses these JDBC column types to define the schema for the snapshot events.
+After the connector transitions from the snapshot to the streaming phase, the change event schema that results from the default mapping can lead to inconsistent mappings for <code>BOOLEAN</code> columns.
+To help ensure that MySQL emits <code>BOOLEAN</code> columns uniformly, you can apply the custom  <code>TinyIntOneToBooleanConverter</code>, as shown in the following configuration example.</p>
+</div>
+<div class="listingblock">
+<div class="title">Example: <code>TinyIntOneToBooleanConverter</code> configuration</div>
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-none hljs">converters=tinyint-one-to-boolean
+converters.tinyint-one-to-boolean.type=io.debezium.connector.mysql.converters.TinyIntOneToBooleanConverter
+converters.tinyint-one-to-boolean.selector=.*.MY_TABLE.DATA
+converters.tinyint-one-to-boolean.length.checker=false</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>In the preceding example, the <code>selector</code> and <code>length.checker</code> properties are optional.
+By default, the converter checks that <code>TINYINT</code> data types conform to a length of <code>1</code>.
+If <code>length.checker</code> to <code>false</code>, the converter does not explicitly confirm that the <code>TINYINT</code> data type conforms to a length of <code>1</code>.
+The <code>selector</code> designates the tables or columns to convert, based on the supplied regular expression.
+If you omit the <code>selector</code> property, the converter maps all <code>TINYINT</code> columns to logical <code>BOOL</code> field types.
+If you do not configure a <code>selector</code> option, and you want to map <code>TINYINT</code> columns to <code>TINYINT(1)</code>, omit the <code>length.checker</code> property, or set its value to <code>true</code>.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_jdbc_sink_data_types"><a class="anchor" href="#_jdbc_sink_data_types"></a>JDBC sink data types</h3>
+<div class="paragraph">
+<p>If you integrate the Debezium JDBC sink connector with a Debezium MySQL source connector, the MYSQL connector emits some column attributes differently during the snapshot and streaming phases.
+For the JDBC sink connector to consistently consume changes from both the snapshot and streaming phase, you must include the <code>JdbcSinkDataTypesConverter</code> converter as part of the MySQL source connector configuration, as shown in the following example:</p>
+</div>
+<div class="listingblock">
+<div class="title">Example: <code>JdbcSinkDataTypesConverter</code> configuration</div>
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-none hljs">converters=jdbc-sink
+converters.jdbc-sink.type=io.debezium.connector.mysql.converters.JdbcSinkDataTypesConverter
+converters.jdbc-sink.selector.boolean=.*.MY_TABLE.BOOL_COL
+converters.jdbc-sink.selector.real=.*.MY_TABLE.REAL_COL
+converters.jdbc-sink.selector.string=.*.MY_TABLE.STRING_COL
+converters.jdbc-sink.treat.real.as.double=true</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>In the preceding example, the <code>selector.*</code> and <code>treat.real.as.double</code> configuration properties are optional.</p>
+</div>
+<div class="paragraph">
+<p>The <code>selector.*</code> properties specify comma-separated lists of regular expressions that specify which tables and columns that the converter applies to.
+By default, the converter applies the following rules apply to all Boolean, real, and string-based column data types, across all tables:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p><code>BOOLEAN</code> data types are always emitted as <code>INT16</code> logical types, with <code>1</code> representing <code>true</code> and <code>0</code> representing <code>false</code></p>
+</li>
+<li>
+<p><code>REAL</code> data types are always emitted as <code>FLOAT64</code> logical types.</p>
+</li>
+<li>
+<p>String-based columns always include the <code>__debezium.source.column.character_set</code> schema parameter that contains the column&#8217;s character set.</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>For each data type, you can configure a selector rule to override the default scope and apply the selector to specific tables and columns only.
+For example, to set the scope of the Boolean converter, add the following rule to the connector configuration, as in the preceding example: <code>converters.jdbc-sink.selector.boolean=.*.MY_TABLE.BOOL_COL</code></p>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
 <h2 id="setting-up-mysql"><a class="anchor" href="#setting-up-mysql"></a>Setting up MySQL</h2>
 <div class="sectionbody">
 <div class="paragraph">
@@ -8457,7 +8541,7 @@ The values will incoporate any differences between the clocks on the machines wh
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2024 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/5fad9e57a704b2d2cd30344985ba58757acefc41">5fad9e57</a></span>)
+            <div class="copyright">Copyright &copy; 2024 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/083d340f3bb188763eb280811d616f522f3a84fd">083d340f</a></span>)
             
         </div>
     </footer>

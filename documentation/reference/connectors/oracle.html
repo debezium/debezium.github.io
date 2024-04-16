@@ -402,6 +402,13 @@
 <li><a href="#oracle-default-values">Default Values</a></li>
 </ul>
 </li>
+<li><a href="#debezium-oracle-connector-converters">Custom converters</a>
+<ul class="sectlevel2">
+<li><a href="#_number1_to_boolean"><code>NUMBER(1)</code> to Boolean</a></li>
+<li><a href="#_number_to_zero_scale"><code>NUMBER</code> To Zero Scale</a></li>
+<li><a href="#_raw_to_string"><code>RAW</code> to String</a></li>
+</ul>
+</li>
 <li><a href="#setting-up-oracle">Setting up Oracle</a>
 <ul class="sectlevel2">
 <li><a href="#compatibility-of-the-debezium-oracle-connector-with-oracle-installation-types">Compatibility with Oracle installation types</a></li>
@@ -4788,6 +4795,87 @@ For example, if a <code>DATE</code> column is defined with the default value of 
 <p>If a temporal type uses the <code>SYSDATE</code> constant to represent the default value, the connector will resolve this based on whether the column is defined as <code>NOT NULL</code> or <code>NULL</code>.
 If the column is nullable, no default value will be set; however, if the column isn&#8217;t nullable then the default value will be resolved as either <code>0</code> (for <code>DATE</code> or <code>TIMESTAMP(n)</code> data types) or <code>1970-01-01T00:00:00Z</code> (for <code>TIMESTAMP WITH TIME ZONE</code> or <code>TIMESTAMP WITH LOCAL TIME ZONE</code> data types).
 The default value type will be numeric except if the column is a <code>TIMESTAMP WITH TIME ZONE</code> or <code>TIMESTAMP WITH LOCAL TIME ZONE</code> in which case its emitted as a string.</p>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="debezium-oracle-connector-converters"><a class="anchor" href="#debezium-oracle-connector-converters"></a>Custom converters</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>By default, the Debezium Oracle connector provides several <code>CustomConverter</code> implementations specific to Oracle data types.
+These custom converters provide alternative mappings for specific data types based on the connector configuration.
+To add a <code>CustomConverter</code> to the connector, follow the instructions in the <a href="../development/converters.adoc">Custom Converters documentation</a>.</p>
+</div>
+<div class="sect2">
+<h3 id="_number1_to_boolean"><a class="anchor" href="#_number1_to_boolean"></a><code>NUMBER(1)</code> to Boolean</h3>
+<div class="paragraph">
+<p>Beginning with version 23, Oracle database provides a <code>BOOLEAN</code> logical data type.
+In earlier versions, the database simulates a <code>BOOLEAN</code> type by using a <code>NUMBER(1)</code> data type, constrained with a value of <code>0</code> for false, or a value of <code>1</code> for true.</p>
+</div>
+<div class="paragraph">
+<p>By default, when Debezium emits change events for source columns that use the <code>NUMBER(1)</code> data type, it converts the data to the <code>INT8</code> literal type.
+If the default mapping for <code>NUMBER(1)</code> data types does not meet your needs, you can configure the connector to use the logical <code>BOOL</code> type when it emits these columns by configuring the <code>NumberOneToBooleanConverter</code>, as shown in the following example:</p>
+</div>
+<div class="listingblock">
+<div class="title">Example: <code>NumberOneToBooleanConverter</code> configuration</div>
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-none hljs">converters=number-to-boolean
+converters.number-to-boolean.type=io.debezium.connector.oracle.converters.NumberOneToBooleanConverter
+converters.number-to-boolean.selector=.*.MY_TABLE.DATA</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>In the preceding example, the <code>selector</code> property is optional.
+The <code>selector</code> property specifies a regular expression that designates which tables or columns the converter applies to.
+If you omit the <code>selector</code> property, when Debezium emits an event, every column with the <code>NUMBER(1)</code> data type is converted to a field that uses the logical <code>BOOL</code> type.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_number_to_zero_scale"><a class="anchor" href="#_number_to_zero_scale"></a><code>NUMBER</code> To Zero Scale</h3>
+<div class="paragraph">
+<p>Oracle supports creating <code>NUMBER</code> based columns with negative scale, that is, <code>NUMBER(-2)</code>.
+Not all systems can process negative scale values, so these values can result in processing problems in your pipeline.
+For example, because Apache Avro does not support these values, problems can occur if Debezium converts events to Avro format.
+Similarly, downstream consumers that do not support these values can also encounter errors.</p>
+</div>
+<div class="listingblock">
+<div class="title">Example configuration</div>
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-none hljs">converters=number-zero-scale
+converters.number-zero-scale.type=io.debezium.connector.oracle.converters.NumberToZeroScaleConverter
+converters.number-zero-scale.decimal.mode=precise</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>In the preceding example, the <code>decimal.mode</code> property specifies how the connector emits decimal values.
+This property is optional.
+If you omit the <code>decimal.mode</code> property, the converter defaults to using the <code>PRECISE</code> decimal handling mode.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_raw_to_string"><a class="anchor" href="#_raw_to_string"></a><code>RAW</code> to String</h3>
+<div class="paragraph">
+<p>Although Oracle recommends against the use of certain data types, such as <code>RAW</code>, legacy systems might continue to use such types.
+By default, Debezium emits <code>RAW</code> column types as logical <code>BYTES</code>, a type that enables the storage of binary or text-based data.</p>
+</div>
+<div class="paragraph">
+<p>In some cases, <code>RAW</code> columns might store character data as a series of bytes.
+To facilitate consumption by consumers, you can configure Debezium to use the <code>RawToStringConverter</code>.
+The <code>RawToStringConverter</code> provides a way to easily target such <code>RAW</code> columns and emit values as strings, rather than bytes.
+The following example shows how to add the <code>RawToStringConverter</code> to the connector configuration:</p>
+</div>
+<div class="listingblock">
+<div class="title">Example: <code>RawToStringConverter</code> configuration</div>
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-none hljs">converters=raw-to-string
+converters.raw-to-string.type=io.debezium.connector.oracle.converters.RawToStringConverter
+converters.raw-to-string.selector=.*.MY_TABLE.DATA</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>In the preceding example, the <code>selector</code> property enables you to define a regular expression that specifies the tables or columns that the converter processes.
+If you omit the <code>selector</code> property, the converter maps all <code>RAW</code> column types to logical <code>STRING</code> field types.</p>
 </div>
 </div>
 </div>
@@ -10332,7 +10420,7 @@ When the following JVM argument is provided, the Oracle connector will start suc
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2024 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/5fad9e57a704b2d2cd30344985ba58757acefc41">5fad9e57</a></span>)
+            <div class="copyright">Copyright &copy; 2024 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/083d340f3bb188763eb280811d616f522f3a84fd">083d340f</a></span>)
             
         </div>
     </footer>
