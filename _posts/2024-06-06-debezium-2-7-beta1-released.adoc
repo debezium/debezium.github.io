@@ -1,0 +1,198 @@
+---
+layout: post
+title:  Debezium 2.7.0.Beta1 Released
+date:   2024-06-06
+tags: [ releases, mongodb, mysql, mariadb, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox, spanner, jdbc, informix, ibmi ]
+author: ccranfor
+---
+
+Although half of 2024 is nearly behind us, the team is pleased to announce the first beta preview release for Debezium, **2.7.0.Beta1**.
+
+This release includes incubating support for Db2 on z/OS, authentication and encryption with NATS JetStream, improvements for the MariaDB JDBC sink dialect, JMX Exporter with Debezium Server images, configurable metrics in Debezium Operator, and more.
+
+Let's walk through all the highlights and discuss these in more depth...
+
++++<!-- more -->+++
+
+[id="breaking-changes"]
+== Breaking changes
+
+The team aims to avoid any potential breaking changes between minor releases; however, such changes are sometimes inevitable.
+
+Snapshot Artifacts::
+Debezium snapshots were previously published to `oss.sonatype.org`.
+Sonatype has retired this repository and replaced it with `s01.oss.sonatype.org` (https://issues.redhat.com/browse/DBZ-7641[DBZ-7641]).
+If you wish to fetch Debezium snapshot artifacts, be sure to migrate your scripts and resources to use the new infrastructure.
+
+Oracle::
+In previous versions, `NUMERIC` data types with zero-scale ignored `decimal.handling.mode`, which prevented these values from being emitted as `FLOAT64` (double) or `STRING` based types when using a non-default decimal handling mode configuration.
+We have adjusted the behavior so that zero-scale numeric data types honor the decimal handling mode (https://issues.redhat.com/browse/DBZ-7882[DBZ-7882]).
+[NOTE]
+====
+If you use strict compatibility with schema registries, this will lead to incompatible schema concerns, and you'll need to adjust the compatibility settings in the schema registry.
+====
+
+[id="new-features-and-improvements"]
+== New features and improvements
+
+Debezium 2.7.0.Beta1 also introduces many improvements and features, lets take a look at each individually.
+
+=== Support Db2 on z/OS
+
+Debezium 2.7 introduces incubating support for using the Db2 connector on the z/OS platform.
+For the Db2 connector to work with z/OS, several configuration options are required to toggle the connector to work with the z/OS platform database (https://issues.redhat.com/browse/DBZ-4812[DBZ-4812]).
+
+.New connector properties
+[source,json]
+----
+{
+  ...,
+  "db2.platform": "ZOS",
+  "cdc.control.schema": "ASNCDC",
+  "cdc.change.tables.schema": "ASNCDC"
+}
+----
+
+The primary toggle to run in z/OS mode is done using the `db2.platform`, which defaults to `LUW` for running on Linux, Unix, and Windows.
+Setting this configuration option to `ZOS` enables z/OS.
+
+In addition, we have also added the `cdc.control.schema` and `cdc.change.tables.schema` connector configuration properties.
+These were previously hardcoded as `ASNCDC`, and while this remains the default, if your installation uses different schemas, this is now possible.
+
+[NOTE]
+====
+For existing Db2 connectors for Linux, Unix, and Windows, no configuration changes are required when upgrading.
+The `db2.platform` is only required for z/OS and the schema properties only if you put these objects in a different schema than `ASNCDC`.
+====
+
+=== NATS JetStream sink authentication improvements
+
+The Debezium Server NATS JetStream sink also includes improvements to support authentication and encryption in Debezium 2.7.
+Several new configuration properties are now supported to pass keystore details to the sink adapter (https://issues.redhat.com/browse/DBZ-7922[DBZ-7922]).
+
+.New configuration properties
+[source,properties]
+----
+...
+debezium.sink.nats-jetstream.auth.tls.keystore=<path-to-keystore-file>
+debezium.sink.nats-jetstream.auth.tls.keystore.password=secret-password
+debezium.sink.nats-jetstream.auth.tls.password=<tls-password>
+----
+
+To get started using the new authentication and encryption features, simply include the above three configurations into your Debezium Server configuration with appropriate values.
+
+=== JDBC sink MariaDB dialect support
+
+While MariaDB and MySQL often share a lot of similar syntax, unfortunately there are corner cases where these two vary slightly that introduces incompatibilities.
+One such incompatibility was found with now the Debezium JDBC sink constructed _upsert_ statements, which could not be executed when using a MariaDB target database.
+
+Debezium 2.7 officially introduces MariaDB dialect support for the JDBC sink connector, enabling users to configure the JDBC sink to write changes from Kafka topics to a MariaDB target (https://issues.redhat.com/browse/DBZ-7874[DBZ-7874]).
+In general, no special configuration should be necessary as both Hibernate and Debezium should detect the target is MariaDB and use the correct dialects.
+
+[NOTE]
+====
+If you find the dialect resolution does not resolve to MariaDB, you can enforce its use by setting the connector configuration `hibernate.dialect` with the fully qualified class name `org.hibernate.dialect.MariaDBDialect`.
+====
+
+[NOTE]
+====
+We are currently aware that if you wish to use MariaDB, the driver is not shipped as part of the JDBC sink connector dependency stack.
+This has been recorded in https://issues.redhat.com/browse/DBZ-7918[DBZ-7818] and will be fixed in the next release.
+For now, download and install the driver manually alongside the JDBC connector jars.
+====
+
+=== JMX Exporter added to Debezium Server
+
+The JMX Exporter agent has been added as part of the Debezium Server container image.
+This should enable users to easily fetch connector metrics while running Debezium Server out of the box (https://issues.redhat.com/browse/DBZ-7913[DBZ-7913]).
+
+To enable the JMX Exporter, simply specify the `JMX_EXPORTER_PORT` environment variable when creating a container based on `debezium/debezium-server:2.7` or later, and making sure that the agent's port is accessible to the outside world on the container.
+
+[NOTE]
+====
+The JMX Exporter uses the configuration in `config/metrics.yml` by default.
+If this configuration is insufficient, you will need to explicitly mount a custom file with the desired configuration to override the container's file.
+====
+
+=== Enabling JMX Exporter with Debezium Operator
+
+If you are deploying Debezium Server on Kubernetes using the Debezium Operator, the new JMX Exporter feature in Debezium Server can be enabled directly through the operator custom resource (https://issues.redhat.com/browse/DBZ-7914[DBZ-7914]).
+To get started using the exporter with the operator, new configuration operations were added:
+
+[source,yml]
+----
+runtime:
+  metrics:
+    jmxExporter:
+      enabled: true
+      configFrom:
+        key1: value1
+        key2: value2
+----
+
+In the custom resource, the `jmxExporter.enabled` toggles the exporter on or off.  Additionally, the metrics configuration can be supplied using key/value pairs in the `jmxExporter.configFrom` section.
+
+=== Optional delay between snapshot & streaming
+
+Debezium 2.7 ships with a new global configuration option, `streaming.delay.ms`.
+This new option causes the connector to perform a delay before it starts the streaming phase (https://issues.redhat.com/browse/DBZ-7902[DBZ-7902]).
+
+For some deployment use cases, you may want to guarantee that at least one offset flush interval has happened before the streaming phase begins.
+In such use cases, uses should guarantee that both properties, `streaming.delay.ms` and `offset.flush.interval.ms` are aligned.
+
+By default, Debezium will not perform a delay and immediately transitions to the streaming phase to remain consistent with prior version behavior.
+
+[id="other-changes"]
+== Other changes
+
+Altogether, https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20AND%20fixVersion%20%3D%202.7.0.Beta1%20ORDER%20BY%20issuetype%20DESC[36 issues] were fixed in this release.
+Here are a list of some additional noteworthy changes:
+
+* Debezium 1.9.2 cannot capture field that is date type of postgres https://issues.redhat.com/browse/DBZ-5182[DBZ-5182]
+* Ensure vgtid remains local to shards streamed by task https://issues.redhat.com/browse/DBZ-6721[DBZ-6721]
+* Decompose provide.transaction.metadata into components https://issues.redhat.com/browse/DBZ-6722[DBZ-6722]
+* Handle Enum as String or Int https://issues.redhat.com/browse/DBZ-7792[DBZ-7792]
+* Rewrite batch statement not supported for jdbc debezium sink https://issues.redhat.com/browse/DBZ-7845[DBZ-7845]
+* Debezium MySQL Snapshot Connector Fails https://issues.redhat.com/browse/DBZ-7858[DBZ-7858]
+* Reduce enum array allocation https://issues.redhat.com/browse/DBZ-7859[DBZ-7859]
+* Snapshot retrying logic falls into infinite retry loop https://issues.redhat.com/browse/DBZ-7860[DBZ-7860]
+* Bump Java in Debezium Server images https://issues.redhat.com/browse/DBZ-7861[DBZ-7861]
+* Default value of error retries not interpreted correctly https://issues.redhat.com/browse/DBZ-7870[DBZ-7870]
+* Avro schema compatibility issues when upgrading from Oracle Debezium 2.5.3.Final to 2.6.1.Final https://issues.redhat.com/browse/DBZ-7880[DBZ-7880]
+* Improve offset and history storage configuration https://issues.redhat.com/browse/DBZ-7884[DBZ-7884]
+* Oracle Debezium Connector cannot startup due to failing incremental snapshot https://issues.redhat.com/browse/DBZ-7886[DBZ-7886]
+* Allow customizing ObjectMapper in JsonSerde https://issues.redhat.com/browse/DBZ-7887[DBZ-7887]
+* Multiple completed reading from a capture instance notifications https://issues.redhat.com/browse/DBZ-7889[DBZ-7889]
+* Debezium can't handle columns with # in its name https://issues.redhat.com/browse/DBZ-7893[DBZ-7893]
+* Oracle interval default values are not properly parsed https://issues.redhat.com/browse/DBZ-7898[DBZ-7898]
+* Debezium server unable to shutdown on pubsub error  https://issues.redhat.com/browse/DBZ-7904[DBZ-7904]
+* Handle gtid without range only single position https://issues.redhat.com/browse/DBZ-7905[DBZ-7905]
+* Enhancing the threads utility class for broader use https://issues.redhat.com/browse/DBZ-7906[DBZ-7906]
+* Oracle connector cannot parse SUBPARTITION when altering table https://issues.redhat.com/browse/DBZ-7908[DBZ-7908]
+* Make column exclude use keyspace not shard https://issues.redhat.com/browse/DBZ-7910[DBZ-7910]
+* The explanation in the documentation is insufficient - metric https://issues.redhat.com/browse/DBZ-7912[DBZ-7912]
+
+A huge thank you to all contributors from the community who worked on this release:
+Ashwin Murali Krishnan,
+Mathijs van den Worm,
+https://github.com/ankurg03[Ankur Gupta],
+https://github.com/aristofanisl[Aristofanis Lekkos],
+https://github.com/Naros[Chris Cranford],
+https://github.com/chungeun-choi[Chungeun Choi],
+https://github.com/gaurav7261[Gaurav Miglani],
+https://github.com/ankurg03[Ankur Gupta],
+https://github.com/jcechace[Jakub Cechacek],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/mfvitale[Mario Fiore Vitale],
+https://github.com/markbanierink[Mark Banierink],
+https://github.com/augi[Michal Augustýn],
+https://github.com/rajdangwal[Rajendra Dangwal],
+https://github.com/roldanbob[Robert Roldan],
+https://github.com/rkudryashov[Roman Kudryashov],
+https://github.com/sullis[Sean C. Sullivan],
+https://github.com/joontube[Seongjoon Jeong],
+https://github.com/SylvainMarty[Sylvain Marty],
+https://github.com/twthorn[Thomas Thornton],
+https://github.com/ramanenka[Vadzim Ramanenka],
+https://github.com/vjuranek[Vojtech Juranek], and
+https://github.com/einar-rt[einar-rt]!
