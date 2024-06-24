@@ -100,7 +100,7 @@ def clone_versions()
   develDir = "_site/documentation/reference/devel"
   $refDir = "_site/documentation/reference"
 
-  if File.exists?($refDir)
+  if File.exist?($refDir)
     # Crete nigtly folder
     FileUtils.mkdir_p("#{$refDir}/nightly/")
     # Copy all .html files into nightly
@@ -119,12 +119,12 @@ def clone_versions()
   else
     puts "Unable to find reference dir"
   end 
-  if File.exists?(stableDir)
+  if File.exist?(stableDir)
    FileUtils.cp_r stableDir, "_site/documentation/reference/#{latestStableVersion}"
   else
     puts "Unable to find stable version dir"
   end  
-  if File.exists?(develDir)    
+  if File.exist?(develDir)    
    FileUtils.cp_r develDir, "_site/documentation/reference/#{latestDevelVersion}"
   else
     puts "Unable to find devel version dir"
