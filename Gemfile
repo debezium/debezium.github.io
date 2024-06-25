@@ -26,8 +26,10 @@ group :jekyll_plugins do
   gem 'jekyll-paginate-v2'
   gem 'jekyll-archives'
   gem 'jekyll-minifier'
-  gem "webrick", "~> 1.7"
 end
+
+# Needed for Ruby 3.x compatibility 
+gem "webrick", "~> 1.7"
 
 # Windows does not include zoneinfo files, so bundle the tzinfo-data gem
 gem "tzinfo-data", platforms: [:mingw, :mswin, :x64_mingw, :jruby]
