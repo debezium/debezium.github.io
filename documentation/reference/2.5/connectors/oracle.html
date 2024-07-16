@@ -409,7 +409,6 @@
 <li><a href="#_archive_log_destinations">Archive log destinations</a></li>
 <li><a href="#creating-users-for-the-connector">Creating users for the connector</a></li>
 <li><a href="#support-for-oracle-standby-databases">Standby databases</a></li>
-<li><a href="#_failover_databases">Failover databases</a></li>
 </ul>
 </li>
 <li><a href="#oracle-deploying-a-connector">Deployment</a>
@@ -4819,24 +4818,97 @@ Without these grants, the connector cannot operate.</p></td>
 <div class="sect2">
 <h3 id="support-for-oracle-standby-databases"><a class="anchor" href="#support-for-oracle-standby-databases"></a>Standby databases</h3>
 <div class="paragraph">
-<p>An Oracle database can be configured with either a physical or a logical standby environment to provide for recovery after of a production failure.
-At this time, the Debezium Oracle connector cannot use a physical or logical standby database as the change event source.
-There is an open <a href="https://issues.redhat.com/browse/DBZ-3866">Jira issue</a> to investigate this support.</p>
-</div>
-</div>
-<div class="sect2">
-<h3 id="_failover_databases"><a class="anchor" href="#_failover_databases"></a>Failover databases</h3>
-<div class="paragraph">
-<p>It is customary for a logical or physical standby to exist in the case of an Oracle production failure.
-When a failure occurs and the standby instance is promoted to production, the database must be opened for read/write transactions before the Debezium Oracle connector can connect to the database.</p>
+<p>A standby database provides a synchronized copy of the primary instance.
+In the event of a primary database failure, standby databases provide for continuous availability, and disaster recovery.
+Oracle makes use of both physical and logical standby databases.</p>
 </div>
 <div class="paragraph">
-<p>In the case of a physical standby, the standby is an exact copy of production, which implies that the SCN values are identical.
-When using a physical standby, it is sufficient to reconfigure the Debezium Oracle connector to use the hostname of the standby once the database is open.</p>
+<p>A physical standby is an exact, block-for-block copy of the primary production database, and its system change number (SCN) values are identical to those of the primary.
+The Debezium Oracle connector cannot capture change events directly from a physical standby database, because a physical standbys do not accept external connections.
+After a physical standby is converted to the primary database, the connector can access to capture events just as it would from any other primary database.</p>
 </div>
 <div class="paragraph">
-<p>In the case of a logical standby, the standby is not an exact copy of the production database, so the SCN offsets in the standby differ from those in the production database.
-If you use a logical standby, to help ensure that Debezium does not miss any change events, after the database is open, configure a new connector and perform a new database snapshot.</p>
+<p>A logical standby contains the same logical data as the primary, but data might be stored in a different physical manner.
+SCN offsets in a logical standby differ from the offsets in the primary database.
+You can <a href="#configuring-the-debezium-oracle-connector-to-capture-events-from-a-logical-standby">configure the Debezium Oracle connector to capture changes from a logical standby database</a>.</p>
+</div>
+<div class="sect3">
+<h4 id="_failover_databases"><a class="anchor" href="#_failover_databases"></a>Failover databases</h4>
+<div class="paragraph">
+<p>When you set up a failover database, it is generally best practice to use a physical standby database rather than a logical standby database.
+A physical standby maintains a more consistent state with the primary database than does a logical standby.
+Physical standbys contain an exact replica of the primary data, and the system change number (SCN) values of the standby are identical to those of the primary.
+In a Debezium environment, after the database fails over to physical standby, the presence of consistent SCN values ensure that the connector can find the last processed SCN value.</p>
+</div>
+<div class="paragraph">
+<p>A physical standby is locked in a read-only mode, with managed recovery running to maintain synchronization.
+When a database is in standby mode, it does not accept external JDBC connections from clients, and it cannot be accessed by external application.</p>
+</div>
+<div class="paragraph">
+<p>After a failure event, to permit Debezium to connect to the former physical standby,a DBA must perform several actions to enable failover to the standby, and promote it the the primary database.
+The following list identifies some of the key actions:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>Cancel managed recovery on the standby.</p>
+</li>
+<li>
+<p>Complete the active recovery process.</p>
+</li>
+<li>
+<p>Convert the standby to the primary role.</p>
+</li>
+<li>
+<p>Open the new primary to client read and write operations.</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>After the former physical standby is available for normal use, you can configure the Debezium Oracle connector to connect to it.
+To enable the connector to capture from the new primary, edit the database hostname in the connector configuration, replacing the hostname of the original primary with the hostname of the new primary.</p>
+</div>
+</div>
+<div class="sect3">
+<h4 id="configuring-the-debezium-oracle-connector-to-capture-events-from-a-logical-standby"><a class="anchor" href="#configuring-the-debezium-oracle-connector-to-capture-events-from-a-logical-standby"></a>Configuring the Debezium Oracle connector to capture events from a logical standby</h4>
+<div class="paragraph">
+<p>When the Debezium connector for Oracle connects to a primary database, it uses an internal flush table to manage the flush cycles of the Oracle Log Writer Buffer (LGWR) process.
+The flush process requires that the user account through which the connector accesses the database has permission to create and write to this flush table.
+However, a logical stand-by database typically permits read-only access, preventing the connector from writing to the database.
+You can modify the connector configuration to enable the connector to capture events from a logical standby, or the DBA can create a new writable tablespace in which the connector can store the flush table.</p>
+</div>
+<div class="admonitionblock warning">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-warning" title="Warning"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>The ability to use the connector with a logical standby in an incubating state and can change without notice.
+There is an open <a href="https://issues.redhat.com/browse/DBZ-3866">Jira issue</a> to investigate support for capturing changes from a physical standby.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="ulist">
+<div class="title">Procedure</div>
+<ul>
+<li>
+<p>To enable Debezium to capture events from an Oracle read-only logical standby database, add the following property to the connector configuration, to disable creation and management of the flush table:</p>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-none hljs">internal.log.mining.read.only=true</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>The preceding setting prevents the database from creating and updating the <code>LOG_MINING_FLUSH</code> table.
+You can use the <code>internal.log.mining.read.only</code> property with an Oracle Standalone database, or with an Oracle RAC installation.</p>
+</div>
+</li>
+</ul>
+</div>
 </div>
 </div>
 </div>
@@ -9706,7 +9778,7 @@ When the following JVM argument is provided, the Oracle connector will start suc
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2024 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/c0c0d016870df136da2c79a0c0fba0373551d2a6">c0c0d016</a></span>)
+            <div class="copyright">Copyright &copy; 2024 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/6d11a74a3da6468fcf88f2ce5d459045bbe8bf06">6d11a74a</a></span>)
             
         </div>
     </footer>
