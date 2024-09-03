@@ -902,15 +902,15 @@ Currently, you can request <code>incremental</code> or <code>blocking</code> sna
 <td class="tableblock halign-left valign-top"><p class="tableblock"><code>data-collections</code></p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock"><em>N/A</em></p></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>An array that contains regular expressions matching the fully-qualified names of the collection to be snapshotted.<br>
-The format of the names is the same as for the <code>signal.data.collection</code> configuration option.</p>
+<p>An array that contains regular expressions matching the fully-qualified names of the collections to include in the snapshot.<br>
+For the MongoDB connector, use the following format to specify the fully qualified name of a collection: <code>database.collection</code>.</p>
 </div></div></td>
 </tr>
 </tbody>
 </table>
 <div class="paragraph">
 <div class="title">Triggering an ad hoc incremental snapshot</div>
-<p>You initiate an ad hoc incremental snapshot by adding an entry with the <code>execute-snapshot</code> signal type to the signaling collection.
+<p>You initiate an ad hoc incremental snapshot by adding an entry with the <code>execute-snapshot</code> signal type to the signaling collection, or by <a href="#mongodb-triggering-an-incremental-snapshot-kafka">sending a signal message to a Kafka signaling topic</a>.
 After the connector processes the message, it begins the snapshot operation.
 The snapshot process reads the first and last primary key values and uses those values as the start and end point for each collection.
 Based on the number of entries in the collection, and the configured chunk size, Debezium divides the collection into chunks, and proceeds to snapshot each chunk, in succession, one at a time.</p>
@@ -920,7 +920,7 @@ Based on the number of entries in the collection, and the configured chunk size,
 </div>
 <div class="paragraph">
 <div class="title">Triggering an ad hoc blocking snapshot</div>
-<p>You initiate an ad hoc blocking snapshot by adding an entry with the <code>execute-snapshot</code> signal type to the signaling collection.
+<p>You initiate an ad hoc blocking snapshot by adding an entry with the <code>execute-snapshot</code> signal type to the signaling collection or signaling topic.
 After the connector processes the message, it begins the snapshot operation.
 The connector temporarily stops streaming, and then initiates a snapshot of the specified collection, following the same process that it uses during an initial snapshot.
 After the snapshot completes, the connector resumes streaming.</p>
@@ -985,7 +985,7 @@ Only after collisions between the snapshot events and the streamed events are re
 <div class="paragraph">
 <div class="title">Snapshot window</div>
 <p>To assist in resolving collisions between late-arriving <code>READ</code> events and streamed events that modify the same collection row, Debezium employs a so-called <em>snapshot window</em>.
-The snapshot windows demarcates the interval during which an incremental snapshot captures data for a specified collection chunk.
+The snapshot window demarcates the interval during which an incremental snapshot captures data for a specified collection chunk.
 Before the snapshot window for a chunk opens, Debezium follows its usual behavior and emits events from the transaction log directly downstream to the target Kafka topic.
 But from the moment that the snapshot for a particular chunk opens, until it closes, Debezium performs a de-duplication step to resolve collisions between events that have the same primary key..</p>
 </div>
@@ -1006,7 +1006,7 @@ Debezium emits these remaining <code>READ</code> events to the collection&#8217;
 <p>The connector repeats the process for each snapshot chunk.</p>
 </div>
 <div class="paragraph">
-<p>Currently, you can use one of the following methods to initiate an incremental snapshot:</p>
+<p>Currently, you can use either of the following methods to initiate an incremental snapshot:</p>
 </div>
 <div class="ulist">
 <ul>
@@ -1044,7 +1044,7 @@ When performing incremental snapshots, it&#8217;s best to set the primary key to
 <div class="sect3">
 <h4 id="mongodb-triggering-an-incremental-snapshot"><a class="anchor" href="#mongodb-triggering-an-incremental-snapshot"></a>Triggering an incremental snapshot</h4>
 <div class="paragraph">
-<p>Currently, the only way to initiate an incremental snapshot is to send an <a href="../configuration/signalling.html#debezium-signaling-ad-hoc-snapshots" class="xref page">ad hoc snapshot signal</a> to the signaling collection on the source database.</p>
+<p>To initiate an incremental snapshot, you can send an <a href="../configuration/signalling.html#debezium-signaling-ad-hoc-snapshots" class="xref page">ad hoc snapshot signal</a> to the signaling collection on the source database.</p>
 </div>
 <div class="paragraph">
 <p>You submit a signal to the signaling collection by using the MongoDB <code>insert()</code> method.</p>
@@ -1306,14 +1306,16 @@ The values that you assign to the <code>filter</code> parameter are the same typ
 </tr>
 </tbody>
 </table>
-<div class="paragraph">
-<p>An example of the execute-snapshot Kafka message:</p>
-</div>
+<div class="exampleblock">
+<div class="title">Example 1. An <code>execute-snapshot</code> Kafka message</div>
+<div class="content">
 <div class="listingblock">
 <div class="content">
 <pre>Key = `test_connector`
 
-Value = `{"type":"execute-snapshot","data": {"data-collections": ["schema1.table1", "schema1.table2"], "type": "INCREMENTAL"}}`</pre>
+Value = `{"type":"execute-snapshot","data": {"data-collections": ["{collection-container}.table1", "{collection-container}.table2"], "type": "INCREMENTAL"}}`</pre>
+</div>
+</div>
 </div>
 </div>
 <div class="paragraph">
@@ -1327,42 +1329,50 @@ Value = `{"type":"execute-snapshot","data": {"data-collections": ["schema1.table
 <p><code>SELECT * FROM <em>&lt;tableName&gt;</em> &#8230;&#8203;.</code></p>
 </div>
 <div class="paragraph">
-<p>When the snapshot request includes an <code>additional-conditions</code> property, the <code>data-collection</code> and <code>filter</code> parameters of the  property are appended to the SQL query, for example:</p>
+<p>When the snapshot request includes an <code>additional-conditions</code> property, the <code>data-collection</code> and <code>filter</code> parameters of the property are appended to the SQL query, for example:</p>
 </div>
 <div class="paragraph">
 <p><code>SELECT * FROM <em>&lt;data-collection&gt;</em> WHERE <em>&lt;filter&gt;</em> &#8230;&#8203;.</code></p>
 </div>
 <div class="paragraph">
-<p>For example, given a <code>products</code> collection with the columns <code>id</code> (primary key), <code>color</code>, and <code>brand</code>, if you want a snapshot to include only content for which <code>color='blue'</code>, when you request the snapshot, you could add the <code>additional-conditions</code> property to filter the content:</p>
+<p>For example, given a <code>products</code> collection with the columns <code>id</code> (primary key), <code>color</code>, and <code>brand</code>, if you want a snapshot to include only content for which <code>color='blue'</code>, when you request the snapshot, you could add the <code>additional-conditions</code> property to filter the content:
+:leveloffset: +1</p>
 </div>
 <div class="listingblock">
 <div class="content">
-<pre>Key = `test_connector`
+<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">Key = `test_connector`
 
-Value = `{"type":"execute-snapshot","data": {"data-collections": ["schema1.products"], "type": "INCREMENTAL", "additional-conditions": [{"data-collection": "schema1.products" ,"filter":"color='blue'"}]}}`</pre>
+Value = `{"type":"execute-snapshot","data": {"data-collections": ["db1.products"], "type": "INCREMENTAL", "additional-conditions": [{"data-collection": "db1.products" ,"filter":"color='blue'"}]}}`</code></pre>
 </div>
 </div>
 <div class="paragraph">
-<p>You can use the <code>additional-conditions</code> property to pass conditions based on multiple columns.
-For example, using the same <code>products</code> collection as in the previous example, if you want a snapshot to include only the content from the <code>products</code> collection for which <code>color='blue'</code>, and <code>brand='MyBrand'</code>, you could send the following request:</p>
+<p>You can also use the <code>additional-conditions</code> property to pass conditions based on multiple columns.
+For example, using the same <code>products</code> collection as in the previous example, if you want a snapshot to include only the content from the <code>products</code> collection for which <code>color='blue'</code>, and <code>brand='MyBrand'</code>, you could send the following request:
+:leveloffset: +1</p>
 </div>
 <div class="listingblock">
 <div class="content">
-<pre>Key = `test_connector`
+<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">Key = `test_connector`
 
-Value = `{"type":"execute-snapshot","data": {"data-collections": ["schema1.products"], "type": "INCREMENTAL", "additional-conditions": [{"data-collection": "schema1.products" ,"filter":"color='blue' AND brand='MyBrand'"}]}}`</pre>
+Value = `{"type":"execute-snapshot","data": {"data-collections": ["db1.products"], "type": "INCREMENTAL", "additional-conditions": [{"data-collection": "db1.products" ,"filter":"color='blue' AND brand='MyBrand'"}]}}`</code></pre>
 </div>
 </div>
 </div>
 <div class="sect3">
 <h4 id="mongodb-stopping-an-incremental-snapshot"><a class="anchor" href="#mongodb-stopping-an-incremental-snapshot"></a>Stopping an incremental snapshot</h4>
 <div class="paragraph">
-<p>You can also stop an incremental snapshot by sending a signal to the collection on the source database.
-You submit a stop snapshot signal by inserting a document into the to the signaling collection.
+<p>In some situations, it might be necessary to stop an incremental snapshot.
+For example, you might realize that snapshot was not configured correctly, or maybe you want to ensure that resources are available for other database operations.
+You can stop a snapshot that is already running by sending a signal to the collection on the source database.</p>
+</div>
+<div class="paragraph">
+<p>You submit a stop snapshot signal to the signaling collection by inserting a stop snapshot signal document into it.
+The stop snapshot signal that you submit specifies the <code>type</code> of the snapshot operation as <code>incremental</code>, and, optionally specifies the collections that you want to omit from the currently running snapshot.
 After Debezium detects the change in the signaling collection, it reads the signal, and stops the incremental snapshot operation if it&#8217;s in progress.</p>
 </div>
 <div class="paragraph">
-<p>The query that you submit specifies the snapshot operation of <code>incremental</code>, and, optionally, the collections of the current running snapshot to be removed.</p>
+<div class="title">Additional resources</div>
+<p>You can also stop an incremental snapshot by sending a JSON message to the <a href="#mongodb-stopping-an-incremental-snapshot-kafka">Kafka signaling topic</a>.</p>
 </div>
 <div class="ulist">
 <div class="title">Prerequisites</div>
@@ -1504,18 +1514,19 @@ See the next section for more details.</p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock"><code>data-collections</code></p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock"><em>N/A</em></p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock">An optional array of comma-separated regular expressions that match the fully-qualified names of the tables an array of collection names or regular expressions to match collection names to remove from the snapshot.<br>
-Specify collection names by using the format <code>{container}.collection</code>.</p></td>
+Specify collection names by using the format <code>database.collection</code>.</p></td>
 </tr>
 </tbody>
 </table>
 <div class="paragraph">
-<p>The following example shows a typical <code>stop-snapshot</code> Kafka message:</p>
+<p>The following example shows a typical <code>stop-snapshot</code> Kafka message:
+:leveloffset: +1</p>
 </div>
 <div class="listingblock">
 <div class="content">
-<pre>Key = `test_connector`
+<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">Key = `test_connector`
 
-Value = `{"type":"stop-snapshot","data": {"data-collections": ["schema1.table1", "schema1.table2"], "type": "INCREMENTAL"}}`</pre>
+Value = `{"type":"stop-snapshot","data": {"data-collections": ["db1.table1", "db1.table2"], "type": "INCREMENTAL"}}`</code></pre>
 </div>
 </div>
 </div>
@@ -3103,13 +3114,20 @@ Many properties have default values. Information about the properties is organiz
 <li>
 <p><a href="#debezium-mongodb-connector-advanced-configuration-properties">Advanced Debezium MongoDB connector configuration properties</a></p>
 </li>
+<li>
+<p><a href="#debezium-mongodb-connector-pass-through-kafka-signals-configuration-properties">Pass-through Kafka signals configuration properties</a></p>
+</li>
+<li>
+<p><a href="#debezium-mongodb-connector-pass-through-kafka-sink-notification-configuration-properties">Pass-through sink notification configuration properties</a></p>
+</li>
 </ul>
 </div>
 <div class="paragraph">
 <p>The following configuration properties are <em>required</em> unless a default value is available.</p>
 </div>
-<table id="debezium-mongodb-connector-required-configuration-properties" class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 13. Required Debezium MongoDB connector configuration properties</caption>
+<div class="sect3">
+<h4 id="debezium-mongodb-connector-required-configuration-properties"><a class="anchor" href="#debezium-mongodb-connector-required-configuration-properties"></a>Required Debezium MongoDB connector configuration properties</h4>
+<table class="tableblock frame-all grid-all stretch">
 <colgroup>
 <col style="width: 30%;">
 <col style="width: 25%;">
@@ -3664,8 +3682,10 @@ After a source record is deleted, emitting a tombstone event (the default behavi
 <div class="paragraph">
 <p>The following <em>advanced</em> configuration properties have good defaults that will work in most situations and therefore rarely need to be specified in the connector&#8217;s configuration.</p>
 </div>
-<table id="debezium-mongodb-connector-advanced-configuration-properties" class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 14. Debezium MongoDB connector advanced configuration properties</caption>
+</div>
+<div class="sect3">
+<h4 id="debezium-mongodb-connector-advanced-configuration-properties"><a class="anchor" href="#debezium-mongodb-connector-advanced-configuration-properties"></a>Debezium MongoDB connector advanced configuration properties</h4>
+<table class="tableblock frame-all grid-all stretch">
 <colgroup>
 <col style="width: 30%;">
 <col style="width: 25%;">
@@ -4496,8 +4516,9 @@ After the next failure, the connector stops, and user intervention is required t
 </tr>
 </tbody>
 </table>
+</div>
 <div class="sect3">
-<h4 id="debezium-mongodb-connector-kafka-signals-configuration-properties"><a class="anchor" href="#debezium-mongodb-connector-kafka-signals-configuration-properties"></a>Debezium connector Kafka signals configuration properties</h4>
+<h4 id="debezium-mongodb-connector-pass-through-kafka-signals-configuration-properties"><a class="anchor" href="#debezium-mongodb-connector-pass-through-kafka-signals-configuration-properties"></a>Pass-through properties for configuring how the MongoDB connector interacts with the Kafka signaling topic</h4>
 <div class="paragraph">
 <p>Debezium provides a set of <code>signal.*</code> properties that control how the connector interacts with the Kafka signals topic.</p>
 </div>
@@ -4505,7 +4526,7 @@ After the next failure, the connector stops, and user intervention is required t
 <p>The following table describes the Kafka <code>signal</code> properties.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 15. Kafka signals configuration properties</caption>
+<caption class="title">Table 13. Kafka signals configuration properties</caption>
 <colgroup>
 <col style="width: 33%;">
 <col style="width: 17%;">
@@ -4554,7 +4575,7 @@ The signaling topic must have a single partition.</p>
 <p>kafka-signal</p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The name of the group ID  that is used by Kafka consumers.</p>
+<p>The name of the group ID that is used by Kafka consumers.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -4565,7 +4586,7 @@ The signaling topic must have a single partition.</p>
 <p>No default</p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>A list of host/port pairs that the connector uses for establishing an initial connection to the Kafka cluster.
+<p>A list of the host and port pairs that the connector uses to establish its initial connection to the Kafka cluster.
 Each pair references the Kafka cluster that is used by the Debezium Kafka Connect process.</p>
 </div></div></td>
 </tr>
@@ -4588,30 +4609,38 @@ Each pair references the Kafka cluster that is used by the Debezium Kafka Connec
 <p><code>false</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Enable the offset commit for the signal topic in order to guarantee At-Least-Once delivery. If disabled, only signals received when the consumer is up&amp;running are processed. Any signals received when the consumer is down are lost.</p>
+<p>Specifies whether the Kafka consumer writes an offset commit after it reads a message from the signaling topic.
+The value that you assign to this property determines whether the connector can process requests that the signaling topic receives while the connector is offline.
+Choose one of the following settings:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>false</code></dt>
+<dd>
+<p>When the connector is unavailable, the Kafka consumer does not commit an offset after it reads a signal received by the signaling topic.
+As a result, if the connector is offline for any interval, it cannot process requests that the signaling topic receives during the downtime.
+After the connector restarts, it always reads from the last position in the Kafka signaling topic, processing only signals that it receives after the restart.
+Signals received while the connector is offline are ignored, and are effectively lost.</p>
+</dd>
+<dt class="hdlist1"><code>true</code></dt>
+<dd>
+<p>When a user submits a request to the signaling topic, after the Kafka consumer reads the signal message it commits a topic offset, even if the connector is offline.
+Choose this option to provide Debezium with information about the last signal message that the consumer read, helping to ensure At-Least-Once delivery.
+After a connector restarts, it resumes processing from the last recorded offset, responding to signals that users submitted while the connector is offline.</p>
+</dd>
+</dl>
 </div></div></td>
 </tr>
 </tbody>
 </table>
 </div>
 <div class="sect3">
-<h4 id="debezium-mongodb-connector-pass-through-signals-kafka-consumer-configuration-properties"><a class="anchor" href="#debezium-mongodb-connector-pass-through-signals-kafka-consumer-configuration-properties"></a>Debezium connector pass-through signals Kafka consumer client configuration properties</h4>
+<h4 id="debezium-mongodb-connector-pass-through-kafka-sink-notification-configuration-properties"><a class="anchor" href="#debezium-mongodb-connector-pass-through-kafka-sink-notification-configuration-properties"></a>Pass-through properties for configuring the MongoDB connector sink notification channel</h4>
 <div class="paragraph">
-<p>The Debezium connector provides for pass-through configuration of the signals Kafka consumer.
-Pass-through signals properties begin with the prefix <code>signals.consumer.*</code>.
-For example, the connector passes properties such as <code>signal.consumer.security.protocol=SSL</code> to the Kafka consumer.</p>
-</div>
-<div class="paragraph">
-<p>Debezium strips the prefixes from the properties before it passes the properties to the Kafka signals consumer.</p>
-</div>
-</div>
-<div class="sect3">
-<h4 id="debezium-mongodb-connector-kafka-notifications-configuration-properties"><a class="anchor" href="#debezium-mongodb-connector-kafka-notifications-configuration-properties"></a>Debezium connector sink notifications configuration properties</h4>
-<div class="paragraph">
-<p>The following table describes the <code>notification</code> properties.</p>
+<p>The following table describes properties that you can use to configure the Debezium sink <code>notification</code> channel.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 16. Sink notification configuration properties</caption>
+<caption class="title">Table 14. Sink notification configuration properties</caption>
 <colgroup>
 <col style="width: 33%;">
 <col style="width: 17%;">
@@ -4697,7 +4726,7 @@ If you specify multiple key-value pairs, all of the specified pairs are appended
 <p>The following example illustrates how tags modify the default MBean name.</p>
 </div>
 <div class="exampleblock">
-<div class="title">Example 1. How custom tags modify the connector MBean name</div>
+<div class="title">Example 2. How custom tags modify the connector MBean name</div>
 <div class="content">
 <div class="paragraph">
 <p>By default, the MongoDB connector uses the following MBean name for streaming metrics:
@@ -5586,7 +5615,7 @@ As a result, the secondary node that is elected as the new primary node might be
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2024 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/0046fa8e6d4bbdea675042efda530ac1be54debc">0046fa8e</a></span>)
+            <div class="copyright">Copyright &copy; 2024 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/3aa3068e38a6b81ad8ee5366c74a605ee8b097ea">3aa3068e</a></span>)
             
         </div>
     </footer>
