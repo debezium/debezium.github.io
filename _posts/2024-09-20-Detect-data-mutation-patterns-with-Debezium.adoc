@@ -1,0 +1,172 @@
+---
+layout: post
+title:  "Detect data mutation patterns with Debezium"
+date:   2024-09-20 11:11:11 +0100
+tags: [ debezium, features, monitoring, analytics, metrics ]
+featured: true
+author: mfvitale
+---
+In today's dynamic data environments, detecting and understanding data mutation patterns is critical for system reliability.
+In this blog post, we'll explore how to use Debezium for comprehensive database activity logging and analysis in microservice architectures.
+We'll delve into how Debezium captures row-level changes and streams them in real-time, enabling immediate visibility into database operations.
+By integrating with analytics tools, we'll see how to build detailed activity dashboards that reveal the volume and nature of operations per table.
+These insights are invaluable for identifying unexpected patterns, such as a sudden drop in inserts caused by a new microservice deployment with a bug.
+You will learn how to set up Debezium, configure it for this specific use case, and utilize the generated data to create actionable dashboards.
+
++++<!-- more -->+++
+
+== The concept and the idea behind
+In recent years, observability has become an essential part of modern systems due to a grown complexity, this especially in distributed architectures like microservices, containerized applications, and cloud environments.
+
+Here are some important reasons why observability is crucial today:
+
+* *Faster Troubleshooting and Incident Response*: Observability provides deep insights into system behavior, helping teams quickly identify and resolve issues by correlating logs, metrics, and traces, reducing downtime and improving response times.
+* *Proactive Issue Detection: Observability enables* proactive monitoring by identifying anomalies and patterns in real-time, allowing teams to address potential problems before they impact users.
+
+An application typically exposes different types of metrics to provide insights into its behavior, performance, and overall health. These metrics can be categorized into several key types:
+
+Infrastructure Metrics:: These track the resource usage of the underlying infrastructure, such as: CPU Usage, Memory Usage, Disk I/O, Network I/O.
+Application Performance Metrics:: These measure the application’s operational performance to ensure the application performs optimally and meets user expectations. For example: Request Rate, Error Rate, Latency, Throughput.
+Business Metrics:: These focus on the application's impact on business goals, such as: Number of Transactions, Conversion Rate, Revenue, User Signups.
+
+Usually, infrastructure and application metrics are quite "standard," and there are frameworks/tools that can be easily used to instruct your application to expose those metrics.
+On the other hand, business metrics can vary between applications, so you need to implement custom code every time to expose those metrics.
+
+The idea is to think at a lower level and leverage change data capture (CDC) to extract data that can be used as business metrics.
+
+Suppose we have an order service that processes and stores orders made by our customers.
+An important business metric to monitor would be the number of orders made.
+This number is very relevant to the business because it is directly correlated with the company’s earnings.
+A relevant drop in number of orders should alter the team responsible for that service as soon as possible.
+
+Normally, we would need to modify our application to instruct a https://prometheus.io/docs/concepts/metric_types/#counter[counter] metric that increments every time an order is correctly placed and stored in the database.
+But what if we could extract this information just by monitoring the database through CDC?
+
+Let’s explore how Debezium offers this possibility.
+
+== How Debezium Exposes Metrics
+
+Debezium exposes three categories of metrics:
+
+Snapshot metrics:: Provide information about connector operation while performing a snapshot, such as RowsScanned, RemainingTableCount, TotalTableCount.
+Streaming metrics:: Provide information about connector operation when the connector is reading the database log, such as TotalNumberOfCreateEventsSeen, QueueRemainingCapacity, QueueTotalCapacity.
+Schema history metrics:: Provide information about the status of the connector’s schema history, such as ChangesApplied, ChangesRecovered, Status.
+
+All these metrics are exposed through JMX. You can read more in our https://debezium.io/documentation/reference/stable/operations/monitoring.html[documentation].
+
+=== Database Activity Metrics
+
+Starting from the 3.0.0.Final release (specifically 3.0.0.Beta1), the following new streaming metrics have been introduced:
+
+NumberOfCreateEventsSeen:: Counts the number of create events per table.
+NumberOfDeleteEventsSeen:: Counts the number of delete events per table.
+NumberOfUpdateEventsSeen:: Counts the number of update events per table.
+NumberOfTruncateEventsSeen:: Counts the number of truncate events per table.
+
+Since these metrics are experimental, you need to opt-in to enable them by setting the internal.advanced.metrics.enable property to true.
+
+== Demo: Order service monitoring dashboard
+
+After you exposed these metrics with Debezium you can easily create a dashboard with alerts to monitor an eventual drastic drop that is significant for you business.
+We'll set up our order service with its own PostgreSQL database, Debezium PostgreSQL connector on the Kafka Connect runtime and Prometheus and Grafana as our observability platform.
+
+For this demo you need to clone the code in the https://github.com/debezium/debezium-examples[Debezium examples repository] and go to the `db-activity-monitoring` directory.
+
+== Components overview
+
+=== Order service
+The order service is a https://quarkus.io/[Quarkus] application that, per default, stores 100 orders every 10s, this mean a rate of ~10 orders per second.
+To simulate a wrong deployment, if you set the `app.version` application properties with a value different from `1.0`, it will start to insert orders with a drop of 50% of standard insert rate.
+
+The application also exposes the `application.info` metric with a constant value of `1.0` but with two labels: `version` and `name`.
+We will use this metric to put a label on the graph to indicate the version of the deployed service.
+
+=== JMX exporter configuration
+We saw that Debezium exposes metrics as a JMX bean so normally to expose those metrics to Prometheus we can use the https://github.com/prometheus/jmx_exporter[JMX exporter].
+In the `debezium-jmx-exporter` the `config.yml` file contain its configuration. The most important the following pattern
+
+[source, yaml]
+----
+- pattern: "debezium.([^:]+)<type=connector-metrics, context=([^,]+), server=([^,]+), key=([^>]+)><>NumberOfCreateEventsSeen"
+  name: "debezium_metrics_create_events_count"
+  labels:
+    plugin: "$1"
+    context: "$2"
+    name: "$3"
+    table: "$4"
+  type: "COUNTER"
+----
+
+Given that the name of the MBean is `debezium.postgres<type=connector-metrics, context=streaming, server=monitoring, key=inventory.orders><>NumberOfCreateEventsSeen`, the rule above simply creates the following metric:
+
+[source, text]
+----
+# TYPE debezium_metrics_create_events_count_total counter
+debezium_metrics_create_events_count{context="streaming",name="monitoring",plugin="postgres",table="inventory.orders",} 100.0
+----
+
+=== Components start up
+
+After that you are ready to start the demo with the following steps:
+
+. Build our order service.
+
++
+[source,shell]
+----
+order-service/mvnw package -f order-service/pom.xml
+----
+
+. Run our compose file to start everything is needed.
+
++
+[source,shell]
+----
+export DEBEZIUM_VERSION=3.0.0.Beta1
+docker-compose up -d --build
+----
+
+. When all service are up and running we can register our connector
+
++
+[source,shell]
+----
+curl -i -X POST -H "Accept:application/json" -H  "Content-Type:application/json" http://localhost:8083/connectors/ -d @postgres-activity-monitoring.json
+----
+
+=== Accessing the dashboard
+
+Open a web browser and go to the Grafana UI at http://localhost:3000[http://localhost:3000].
+Login into the console as user `admin` with password `admin`.
+When asked either change the password (you also can skip this step).
+
+Then, to monitor the order service activity, we have created the `General/ Microservices activity monitoring` dashboard.
+
+After a couple of minutes you should see that the order rate will be ~10 per second.
+
+To simulate a drop, we can just update the `APP_VERSION` env to a value different to `1.0`.
+
+```shell
+docker stop order-service
+docker rm -f order-service && \
+docker compose run -d -e APP_VERSION=1.1 --name order-service order-service
+```
+
+After a while you will see that the service will start creating orders with a ~50% drop (see _Figure 1_).
+
+Since we have also configured an alert to fire when the order rate is below 7, you can also check that it is firing in the alert panel.
+
+:imagesdir: /assets/images/2024-09-20-Detect-data-mutation-patterns-with-Debezium
+
+.{nbsp}
+image::activity-monitoring-dashboard.png[role=centered-image]
+
+But that's not all, we have also configured a mail notification that you can check accessing the Fake SMTP UI at http://localhost:8085[http://localhost:8085].
+
+== Conclusion
+We have seen how Change Data Capture (CDC) can be used to extract insight from the database that can serve as key business metrics for our services.
+This approach allows us to avoid modifying our service to expose these metrics and instead rely on Debezium for data collection.
+
+While not all business metrics can be derived from database operations, a significant portion can be.
+
+Any comments, suggestions, or questions are welcome, so please feel free to reach out to me to discuss further.
