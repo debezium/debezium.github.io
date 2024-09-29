@@ -29,7 +29,7 @@ group :jekyll_plugins do
 end
 
 # Needed for Ruby 3.x compatibility 
-gem "webrick", "~> 1.7"
+gem "webrick", "~> 1.8"
 
 # Windows does not include zoneinfo files, so bundle the tzinfo-data gem
 gem "tzinfo-data", platforms: [:mingw, :mswin, :x64_mingw, :jruby]
