@@ -74,13 +74,13 @@ To build the source code locally, checkout and update the `develop` branch:
 
 Then use Docker to run a container that initializes the Jekyll tooling. Start a new terminal, configure it with the Docker environment (if required), and run the following command:
 
-    $ docker run --privileged -it --rm -p 4000:4000 -e LC_ALL=C.UTF-8 -e LANG=C.UTF-8 -v $(pwd):/site debezium/website-builder setup
+    $ docker run --privileged -it --rm -p 4000:4000 -e LC_ALL=C.UTF-8 -e LANG=C.UTF-8 -v $(pwd):/site quay.io/debezium/website-builder setup
     
 *Note:* Some times you may wish to use the `root` user of your linux machine to run docker (as docker needs elevated privileges to run). It's probably a better idea to run docker containers while [running as a user other than root and using sudo](http://www.projectatomic.io/blog/2015/08/why-we-dont-let-non-root-users-run-docker-in-centos-fedora-or-rhel/) or adding the [user to the group that has privileges](https://developer.fedoraproject.org/tools/docker/docker-installation.html) to run docker. When you checkout the code for this project don't clone the source code and try running this command as the `root` user. When you do this, all of the code (and the entire folder) then gets owned by the `root` user. The reason why this is undesirable is when we run `docker run -v $(pwd):/site` we are actually mounting the local file system where the source code lives _into_ the docker container. If this directory is owned by `root`, the image cannot create the necessary directories for running `rake` and `bundle`.     
 
 This should download all of the Ruby Gems the tooling uses, as defined in the `Gemfile` file. After it completes, run a container using the same image but with a different command:
 
-    $ docker run --privileged -it --rm -p 4000:4000 -e LC_ALL=C.UTF-8 -e LANG=C.UTF-8 -v $(pwd):/site debezium/website-builder bash
+    $ docker run --privileged -it --rm -p 4000:4000 -e LC_ALL=C.UTF-8 -e LANG=C.UTF-8 -v $(pwd):/site quay.io/debezium/website-builder bash
 
 This command will start a container using the `debezium/jekyll` Docker image, first downloading the image if necessary. It also mounts the current directory (where the website code is located) into the container's `/site` directory. 
 
@@ -94,7 +94,7 @@ Note: With documentation maintained in the main Debezium code repository you may
 
 1. The docker container must have an additional volume mapped that points to the main Debezium repository that you've checked out locally.  In this example, we've checked out the https://github.com/debezium/debezium repository to `~/github/debezium`.  So in order to map that directory as a volume on the docker container, you will additionally need to provide the argument `-v ~/github/debezium:/debezium` when starting the container.  Below is an example of how it should look:
 
-        $ docker run --privileged -it --rm -p 4000:4000 -e LC_ALL=C.UTF-8 -e LANG=C.UTF-8 -v $(pwd):/site -v ~/github/debezium:/debezium debezium/website-builder bash
+        $ docker run --privileged -it --rm -p 4000:4000 -e LC_ALL=C.UTF-8 -e LANG=C.UTF-8 -v $(pwd):/site -v ~/github/debezium:/debezium quay.io/debezium/website-builder bash
         
       When inside the docker container, you should notice a `/debezium` directory now exists and its contents is that of the checked out repository.  In the event you do not see a `/debezium` directory or that its contents are empty or incorrect, please review how you mapped the volume above.
       
