@@ -522,9 +522,6 @@ For information about the PostgreSQL versions that are compatible with the conne
 <p>Logical decoding does not support DDL changes. This means that the connector is unable to report DDL change events back to consumers.</p>
 </li>
 <li>
-<p>Logical decoding replication slots are supported on only <code>primary</code> servers. When there is a cluster of PostgreSQL servers, the connector can run on only the active <code>primary</code> server. It cannot run on <code>hot</code> or <code>warm</code> standby replicas. If the <code>primary</code> server fails or is demoted, the connector stops. After the <code>primary</code> server has recovered, you can restart the connector. If a different PostgreSQL server has been promoted to <code>primary</code>, adjust the connector configuration before restarting the connector.</p>
-</li>
-<li>
 <p>Because logical decoding replication slots publish changes during commit&#8201;&#8212;&#8201;and not post commit&#8201;&#8212;&#8201;undesirable side-effects can occur. There are two main scenarios when clients can observe inconsistent states. First, publishing uncommitted changes when the master dies before replication completes. Second, publishing changes that cannot be read (i.e., read-after-write consistency) temporarily because they are being replicated. For example, an EmbeddedEngine consumer receives a notification of a row that was created but it cannot be read by a transaction.</p>
 </li>
 </ul>
@@ -4845,6 +4842,14 @@ Replication slots are guaranteed to retain all WAL segments required for Debeziu
 For more information, see the <a href="https://www.postgresql.org/docs/current/warm-standby.html#STREAMING-REPLICATION-SLOTS">PostgreSQL streaming replication documentation</a>.</p>
 </div>
 <div class="paragraph">
+<p>When connecting to a Postgres primary (i.e. not a read replica) and the version of Postgres is 17 or later,
+Debezium will create a replication slot enabled for <a href="https://www.postgresql.org/docs/current/logical-replication-failover.html">failover</a>.
+This means Debezium can continue to read changes from a replica promoted to primary in case of a failure,
+without missing any events.
+This requires the state of the slot to be synchronized from primary to replica server;
+refer to the Postgres documentation for the details.</p>
+</div>
+<div class="paragraph">
 <p>If you are working with a <code>synchronous_commit</code> setting other than <code>on</code>,
 the recommendation is to set <code>wal_writer_delay</code> to a value such as 10 milliseconds to achieve a low latency of change events.
 Otherwise, its default value is applied, which adds a latency of about 200 milliseconds.</p>
@@ -5052,7 +5057,19 @@ host    replication     &lt;youruser&gt;  ::1/128                 trust   <i cla
 <p>The PostgreSQL connector can be used with a standalone PostgreSQL server or with a cluster of PostgreSQL servers.</p>
 </div>
 <div class="paragraph">
-<p>As mentioned <a href="#postgresql-limitations">in the beginning</a>, PostgreSQL (for all versions &#8656; 12) supports logical replication slots on only <code>primary</code> servers. This means that a replica in a PostgreSQL cluster cannot be configured for logical replication, and consequently that the Debezium PostgreSQL connector can connect and communicate with only the primary server. Should this server fail, the connector stops. When the cluster is repaired, if the original primary server is once again promoted to <code>primary</code>, you can restart the connector. However, if a different PostgreSQL server <em>with the plug-in and proper configuration</em> is promoted to <code>primary</code>, you must change the connector configuration to point to the new <code>primary</code> server and then you can restart the connector.</p>
+<p>PostgreSQL (for all versions &#8656; 16) supports logical replication slots on only <code>primary</code> servers. This means that a replica in a PostgreSQL cluster cannot be configured for logical replication, and consequently that the Debezium PostgreSQL connector can connect and communicate with only the primary server. Should this server fail, the connector stops. When the cluster is repaired, if the original primary server is once again promoted to <code>primary</code>, you can restart the connector. However, if a different PostgreSQL server <em>with the plug-in and proper configuration</em> is promoted to <code>primary</code>, you must change the connector configuration to point to the new <code>primary</code> server and then you can restart the connector.</p>
+</div>
+<div class="paragraph">
+<p>When using PostgreSQL 16 or newer, you can set up logical replication slots also on replica servers,
+and Debezium does not need to connect to your primary server for ingesting change events.
+In comparison to connecting to the primary,
+connecting to a replica will yield slightly increased latencies, though.</p>
+</div>
+<div class="paragraph">
+<p>When using PostgreSQL 17 or newer, you can set up logical replication slots on primary serves which are enabled for failover.
+The state of such a failover slot can automatically be propagated to one or more replica servers,
+allowing Debezium to continue to ingest changes from a replica promoted to primary after a failure,
+without missing any events.</p>
 </div>
 </div>
 <div class="sect2">
@@ -5573,6 +5590,20 @@ The service records the configuration and starts one connector task that perform
 </div>
 <div class="paragraph">
 <p>Set to <code>true</code> in only testing or development environments. Dropping the slot allows the database to discard WAL segments. When the connector restarts it performs a new snapshot or it can continue from a persistent offset in the Kafka Connect offsets topic.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="postgresql-property-slot-failover"></a><a href="#postgresql-property-slot-failover"><code>slot.failover</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>false</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Whether or not to create a failover slot. When not specified, or when not connecting to a Postgres 17+ primary, no failover slot will be created.</p>
+</div>
+<div class="paragraph">
+<p>When using failover slots, make sure to add the physical replication slot(s) used for updating read replicas in the cluster to the <code>synchronized_standby_slots</code> configuration setting of the Postgres primary.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -8291,9 +8322,18 @@ For information about failure cases in which a slot has been removed, see the ne
 <div class="sect2">
 <h3 id="postgresql-cluster-failures"><a class="anchor" href="#postgresql-cluster-failures"></a>Cluster failures</h3>
 <div class="paragraph">
-<p>As of release 12, PostgreSQL allows logical replication slots <em>only on primary servers</em>. This means that you can point a Debezium PostgreSQL connector to only the active primary server of a database cluster.
+<p>Prior to version 16, PostgreSQL allows logical replication slots <em>only on primary servers</em>. This means that you can point a Debezium PostgreSQL connector to only the active primary server of a database cluster.
 Also, replication slots themselves are not propagated to replicas.
 If the primary server goes down, a new primary must be promoted.</p>
+</div>
+<div class="paragraph">
+<p>When using version 16 or newer, you can create logical replication slots also on replicas, but you need to take care of keeping them in sync with the corresponding slot on the primary server yourself.</p>
+</div>
+<div class="paragraph">
+<p>When using version 17 or newer, replication slots on a primary can be enabled for automatic failover.
+In this case Postgres itself can take care of synchronizing a slot from primary to replica automatically,
+allowing Debezium to continue reading from that slot after promoting a replica to new primary,
+without missing any change events.</p>
 </div>
 <div class="admonitionblock note">
 <table>
@@ -8313,7 +8353,8 @@ If the primary server goes down, a new primary must be promoted.</p>
 <p>The new primary must have the <a href="#installing-postgresql-output-plugin">logical decoding plug-in</a> installed and a replication slot that is configured for use by the plug-in and the database for which you want to capture changes. Only then can you point the connector to the new server and restart the connector.</p>
 </div>
 <div class="paragraph">
-<p>There are important caveats when failovers occur and you should pause Debezium until you can verify that you have an intact replication slot that has not lost data. After a failover:</p>
+<p>When not using failover replication slots, as supported by Postgres 17 and newer,
+there are important caveats when failovers occur and you should pause Debezium until you can verify that you have an intact replication slot that has not lost data. After a failover:</p>
 </div>
 <div class="ulist">
 <ul>
@@ -8327,23 +8368,6 @@ If the primary server goes down, a new primary must be promoted.</p>
 </div>
 <div class="paragraph">
 <p>One reliable method of recovering and verifying whether any changes were lost is to recover a backup of the failed primary to the point immediately before it failed. While this can be administratively difficult, it allows you to inspect the replication slot for any unconsumed changes.</p>
-</div>
-<div class="admonitionblock note">
-<table>
-<tr>
-<td class="icon">
-<i class="fa icon-note" title="Note"></i>
-</td>
-<td class="content">
-<div class="paragraph">
-<p>There are discussions in the PostgreSQL community around a feature called <code>failover slots</code> that would help mitigate this problem, but as of PostgreSQL 12, they have not been implemented.  However, there is active development for PostgreSQL 13 to support logical decoding on standbys, which is a major requirement to make failover possible. You can find more about this in this <a href="https://www.postgresql.org/message-id/CAJ3gD9fE%3D0w50sRagcs%2BjrktBXuJAWGZQdSTMa57CCY%2BDh-xbg%40mail.gmail.com">community thread</a>.</p>
-</div>
-<div class="paragraph">
-<p>More about the concept of failover slots is in <a href="http://blog.2ndquadrant.com/failover-slots-postgresql">this blog post</a>.</p>
-</div>
-</td>
-</tr>
-</table>
 </div>
 </div>
 <div class="sect2">
@@ -8389,7 +8413,7 @@ If the primary server goes down, a new primary must be promoted.</p>
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2024 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/c50f3ad52e40f6f8b42be1afb420ed6bb34a6ce8">c50f3ad5</a></span>)
+            <div class="copyright">Copyright &copy; 2024 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/78310ae8daa162e1c619a110daeb78d4bc6bba3d">78310ae8</a></span>)
             
         </div>
     </footer>
