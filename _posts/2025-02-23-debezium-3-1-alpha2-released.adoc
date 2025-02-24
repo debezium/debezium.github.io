@@ -1,0 +1,241 @@
+---
+layout: post
+title:  Debezium 3.1.0.Alpha2 Released
+date:   2025-02-23
+tags: [ releases, mongodb, mysql, mariadb, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox, spanner, jdbc, informix, ibmi ]
+author: ccranfor
+---
+
+We're pleased to announce the next pre-release of Debezium 3.1, **3.1.0.Alpha2**.
+This release includes a number of breaking changes, new features, and improvements.
+
++++<!-- more -->+++
+
+[id="breaking-changes"]
+== Breaking changes
+
+With any new major release of software, there is often several breaking changes.
+The Debezium **3.1.0.Alpha2** release is no exception, so let's discuss the major changes you should be aware about.
+
+=== Changes to schema history configuration defaults
+
+The documentation for `schema.history.internal.store.only.captured.databases.ddl` provided an incorrect default value.
+While this is not a code-specific breaking change, you should take a moment and reevaluate whether your deployment's configuration depends on the different default value or not (https://issues.redhat.com/browse/DBZ-8558[DBZ-8558]).
+
+=== Potential Vitess data loss
+
+The Debezium for Vitess connector had a rare but critical data loss bug that has existed since it was first introduced five years ago.
+If a primary key update is the last operation in a transaction, records may be lost.
+This bug affects all prior versions.
+It is highly recommended that users perform an immediate update to 3.1.Alpha2 or later to remedy this potential data loss (https://issues.redhat.com/browse/DBZ-8594[DBZ-8594]).
+
+=== Several Oracle LogMiner JMX metrics were removed
+
+A number of Oracle LogMiner JMX metrics were deprecated in Debezium 2.6 and replaced with new metrics.
+The following are the JMX metrics that were removed:
+
+[cols="40%a,60%a"]
+|===
+|Removed JMX Metric |Note
+
+|`CurrentRedoLogFileName`
+|Replaced by `CurrentLogFileNames`
+
+|`RedoLogStatus`
+|Replaced by `RedoLogStatuses`
+
+|`SwitchCounter`
+|Replaced by `LogSwitchCount`
+
+|`FetchingQueryCount`
+|Replaced by `FetchQueryCount`
+
+|`HoursToKeepTransactionInBuffer`
+|Replaced by `MillisecondsToKeepTransactionsInBuffer`
+
+|`TotalProcessingTimeInMilliseconds`
+|Replaced by `TotalBathcProcessingTimeInMilliseconds`
+
+|`RegisteredDmlCount`
+|Replaced by `TotalChangesCount`
+
+|`MillisecondsToSleepBetweenMiningQuery`
+|Replaced by `SleepTimeInMilliseconds`
+
+|`NetworkConnectionProblemsCounter`
+|Removed with no replacement.
+
+|===
+
+Please be sure to review your monitoring and observability infrastructure and adjust accordingly if you were still relying on any of the deprecated metrics (https://issues.redhat.com/browse/DBZ-8647[DBZ-8647]).
+
+=== Reselect column post processor behavior changed for Oracle
+
+The `ReselectColumnsPostProcessor` behavior has changed and Oracle LOB columns will be reselected regardless of the `lob.enabled` configuration property's value.
+This change enables users who may not want to mine LOB columns while streaming to still populate the LOB column using the column reselection process as an alternative (https://issues.redhat.com/browse/DBZ-8653[DBZ-8653]).
+
+[id="new-features-and-improvements"]
+== New features and improvements
+
+The upgrade to Debezium **3.1.0.Alpha2** introduces several new features and improvements in several components:
+
+=== Error handling modes for Reselect column post processor
+
+The `ReselectColumnsPostProcessor` is designed to supplement the streaming process, querying the current values for specific columns that require reselection based the connector configuration.
+This process is meant to be seamless and will use the streamed column data as a last resort if the query fails.
+
+The following configuration property has been added:
+
+`reselect.error.handling.mode`::
+Specifies how to handle errors when the reselect query fails.
+By setting this to `warn`, a warning will be logged when the reselect query fails, passing the streamed event data as-is.
+By setting this to `fail`, the connector will throw an exception when the reselect query fails.
+
+The default for `reselect.error.handling.mode` is `warn` to retain old expected behavior (https://issues.redhat.com/browse/DBZ-8336[DBZ-8336]).
+
+=== TinyGo WASM data type improvements
+
+Debezium's scripting transformation solution provides the ability to write scripts using Go, and compile the TinyGo programs into WebAssembly.
+The ChicoryEngine runtime has been improved and now includes coverage to support accessing and working with `Struct`, `Map`, and `Array` Kafka schema types.
+In addition, accessors for more concrete types such as `Int8`, `Int16`, `Int32`, `Int64`, `Float32`, `Float64`, `Bool`, and `Bytes` are now included.
+
+.Simple filter program in Go
+[source,go]
+----
+package main
+
+import ( "gihub.com/debezium/debezium-smt-go-pdk" )
+
+//export process
+func process(proxyPtr uint32) uint32 {
+  var op = debezium.GetString(debezium.Get(proxyPtr, "value.op"))
+  var beforeId = debezium.GetInt8(debezium.Get(proxyPtr, "value.before.id")) // Uses new GetInt8
+  // value.op != 'd' || value.before.id != 2
+  return debezium.SetBool(op != "d" || beforeId != 2)
+}
+
+func main() {}
+----
+
+=== Predicate support in Debezium Platform Transformation UI
+
+The team has been hard at work improving the new and upcoming Debezium Management Platform, a modern management interface for Debezium deployments on Kubernetes.
+
+In this release, we're pleased to share that we've added support for defining _predicates_ as part of the single message transformation interface.
+Below is a quick glimpse at this new interface (https://issues.redhat.com/browse/DBZ-8590[DBZ-8590]).
+
+.Debezium Platform Designer Interface
+[.centered-image.responsive-image]
+====
+++++
+<img src="/assets/images/platform-ui/platform-pipeline-designer.png" style="max-width:75%;" class="responsive-image">
+++++
+====
+
+.Debezium Platform Transformation Predicate Interface
+[.centered-image.responsive-image]
+====
+++++
+<img src="/assets/images/platform-ui/platform-transformation-predicate-configuration.png" style="max-width:75%;" class="responsive-image">
+++++
+====
+
+=== Debezium Platform nightly container images available
+
+We have begun publishing _nightly_ images of the Debezium Management Platform, a modern management interface for Debezium deployments on Kubernetes (https://issues.redhat.com/browse/DBZ-8603[DBZ-8603]).
+
+`quay.io/debezium/platform-conductor:nightly`::
+The backend service that provides administrative APIs to orchestrate and control Debezium deployments on Kubernetes.
+The image can be fetched using `docker pull quay.io/debezium/platform-conductor:nightly`.
+
+`quay.io/debezium/platform-stage:nightly`::
+The front-end that provides the user interface to interact with the conductor-based backend.
+The image can be fetched using `docker pull quay.io/debezium/platform-stage:nightly`.
+
+For more information, please see the https://github.com/debezium/debezium-platform/blob/main/README.md[README.md].
+
+[NOTE]
+====
+While these containers are **not intended for production**, they're a great way to explore the Debezium Management Platform.
+We're really excited about this new component, and would love to hear your feedback.
+====
+
+=== New Oracle LogMiner JMX metrics
+
+A new JMX metric, `MinedLogFileNames`, has been added to the Debezium Oracle connector.
+This metric, as it's name implies, returns a string array (`String[]`) of log file names that have been added to the current LogMiner session.
+This list represents all the log filenames are are currently being read by the connector (https://issues.redhat.com/browse/DBZ-8644[DBZ-8644]).
+
+[TIP]
+====
+One of the first things we check when users report lag streaming changes is to see how many logs are part of the mining session.
+When an unusually large number of logs are added, this can create a bottleneck while Oracle LogMiner reads all these logs from disk.
+
+This metric provides visibility into the number of logs being mined without needing to adjust the connector's logging levels.
+If you observe lag, one of the first things is to check how many logs are in this metric.
+
+A high volume of logs typically indicates potentially a high burst activity window on your database.
+====
+
+=== Vitess treats string types with binary collation as strings
+
+In an older change as part of https://issues.redhat.com/browse/DBZ-6748[DBZ-6748], a change was made to the Vitess connector to serialize `varchar` column types that had binary collation as Kafka string types.
+However, other character-driven data types like `text`, `enum`, and `set` were overlooked and these continued to be serialized as byte arrays.
+
+In Debezium 3.1, we've aligned this behavior so that `text`, `enum`, and `set` types are always emitted as Kafka string types, even when the column uses binary collation (https://issues.redhat.com/browse/DBZ-8679[DBZ-8679]).
+
+[WARNING]
+====
+Be aware that if you use schema registry, the change in how `text`, `enum`, and `set` column types are serialized with binary collation may introduce schema backward compatibility issues.
+====
+
+[id="other-changes"]
+== Other changes
+
+The following are some noteworthy changes in **3.1.0.Alpha2**:
+
+* Align MySQL and MariaDB grammars with upstream versions https://issues.redhat.com/browse/DBZ-8270[DBZ-8270]
+* Add transformations and predicates support in conductor https://issues.redhat.com/browse/DBZ-8459[DBZ-8459]
+* Reduced record buffer doesn't handle RECORD_VALUE with primary key fields https://issues.redhat.com/browse/DBZ-8593[DBZ-8593]
+* Events for tables with generated columns fail when using hybrid mining strategy https://issues.redhat.com/browse/DBZ-8597[DBZ-8597]
+* Change schema history producer configurations https://issues.redhat.com/browse/DBZ-8598[DBZ-8598]
+* ANTLR DDL Parsing error https://issues.redhat.com/browse/DBZ-8600[DBZ-8600]
+* Update Debezium Server and Operator to Quarkus 3.15.3 LTS https://issues.redhat.com/browse/DBZ-8601[DBZ-8601]
+* MySQL master and replica images fail to start https://issues.redhat.com/browse/DBZ-8633[DBZ-8633]
+* Remove misleading log entry about undo change failure https://issues.redhat.com/browse/DBZ-8645[DBZ-8645]
+* Oracle metric OldestScnAgeInMilliseconds does not account for database timezone https://issues.redhat.com/browse/DBZ-8646[DBZ-8646]
+* Using RECORD_VALUE with a DELETE event causes NullPointerException https://issues.redhat.com/browse/DBZ-8648[DBZ-8648]
+* Downstream JDBC system tests fails https://issues.redhat.com/browse/DBZ-8651[DBZ-8651]
+* Batch size calculation is incorrectly using min-batch-size https://issues.redhat.com/browse/DBZ-8652[DBZ-8652]
+* Mysql example images for replication don't work https://issues.redhat.com/browse/DBZ-8655[DBZ-8655]
+* Oracle performance drop when transaction contains many constraint violations https://issues.redhat.com/browse/DBZ-8665[DBZ-8665]
+* Upgrade protoc from 1.4 to 1.5 for postgres container images https://issues.redhat.com/browse/DBZ-8670[DBZ-8670]
+* Upstream system tests fail https://issues.redhat.com/browse/DBZ-8678[DBZ-8678]
+* Skip empty transactions with commit with redo thread equal to 0 https://issues.redhat.com/browse/DBZ-8681[DBZ-8681]
+* DDL statement couldn't be parsed: GRANT SENSITIVE_VARIABLES_OBSERVER https://issues.redhat.com/browse/DBZ-8685[DBZ-8685]
+* SQL Server - Errors related to schema validation should provide more details https://issues.redhat.com/browse/DBZ-8692[DBZ-8692]
+* Disable ARM images for PostgreSQL https://issues.redhat.com/browse/DBZ-8713[DBZ-8713]
+
+In total, https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20and%20fixVersion%20%20in%20(3.1.0.Alpha2)[51 issues] were resolved in Debezium 3.1.0.Alpha2.
+The list of changes can also be found in our https://debezium.io/releases/3.1[release notes].
+
+A big thank you to all the contributors from the community who worked diligently on this release:
+https://github.com/AlvarVG[Alvar Viana Gomez],
+https://github.com/andreaTP[Andrea Peruffo],
+https://github.com/ani-sha[Anisha Mohanty],
+https://github.com/Naros[Chris Cranford],
+https://github.com/gaurav7261[Gaurav Miglani],
+https://github.com/HenkvanDyk[Henk van Dyk],
+https://github.com/indraraj[Indra Shukla],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/VanRoy[Julien Roy],
+https://github.com/kgalieva[Katerina Galieva],
+https://github.com/kgoodies[Krzysztof Grzechnik],
+https://github.com/mfvitale[Mario Fiore Vitale],
+https://github.com/nareshgandi[Naresh Gandi],
+https://github.com/rajdangwal[Rajendra Dangwal],
+https://github.com/roldanbob[Robert Roldan],
+https://github.com/rodo[Rodolphe Quiedeville],
+https://github.com/twthorn[Thomas Thornton],
+https://github.com/vjuranek[Vojtěch Juránek], and
+https://github.com/ismailsimsek[ismail simsek]!
