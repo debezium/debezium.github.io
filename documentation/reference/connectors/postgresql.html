@@ -442,7 +442,7 @@
 </ul>
 </li>
 <li><a href="#custom-postgres-connector-converters">Custom converters</a></li>
-<li><a href="#setting-up-postgresql">Setting up Postgres</a>
+<li><a href="#setting-up-postgresql">Setting up PostgreSQL</a>
 <ul class="sectlevel2">
 <li><a href="#postgresql-in-the-cloud">PostgreSQL in the Cloud</a></li>
 <li><a href="#installing-postgresql-output-plugin">Installing the logical decoding output plug-in</a></li>
@@ -4916,7 +4916,7 @@ The default <code>false</code> setting causes the custom converter to always ret
 </div>
 </div>
 <div class="sect1">
-<h2 id="setting-up-postgresql"><a class="anchor" href="#setting-up-postgresql"></a>Setting up Postgres</h2>
+<h2 id="setting-up-postgresql"><a class="anchor" href="#setting-up-postgresql"></a>Setting up PostgreSQL</h2>
 <div class="sectionbody">
 <div class="paragraph">
 <p>Before using the PostgreSQL connector to monitor the changes committed on a PostgreSQL server, decide which logical decoding plug-in you intend to use.
@@ -5392,20 +5392,39 @@ host    replication     &lt;youruser&gt;  ::1/128                 trust   <i cla
 <div class="paragraph">
 <p>The PostgreSQL connector can be used with a standalone PostgreSQL server or with a cluster of PostgreSQL servers.</p>
 </div>
+<div class="sect3">
+<h4 id="postgresql-supported-topologies-pg15"><a class="anchor" href="#postgresql-supported-topologies-pg15"></a>PostgreSQL 15 or earlier clusters</h4>
 <div class="paragraph">
-<p>PostgreSQL (for all versions &#8656; 16) supports logical replication slots on only <code>primary</code> servers. This means that a replica in a PostgreSQL cluster cannot be configured for logical replication, and consequently that the Debezium PostgreSQL connector can connect and communicate with only the primary server. Should this server fail, the connector stops. When the cluster is repaired, if the original primary server is once again promoted to <code>primary</code>, you can restart the connector. However, if a different PostgreSQL server <em>with the plug-in and proper configuration</em> is promoted to <code>primary</code>, you must change the connector configuration to point to the new <code>primary</code> server and then you can restart the connector.</p>
+<p>When you deploy Debezium in environments that run PostgreSQL 15 or earlier, you can configure logical replication slots only on the primary server in the cluster.
+You cannot configure logical replication on replica servers in the cluster.</p>
 </div>
 <div class="paragraph">
-<p>When using PostgreSQL 16 or newer, you can set up logical replication slots also on replica servers,
-and Debezium does not need to connect to your primary server for ingesting change events.
-In comparison to connecting to the primary,
-connecting to a replica will yield slightly increased latencies, though.</p>
+<p>Consequently, the Debezium PostgreSQL connector can connect and communicate only with the primary server.
+If the primary server fails, the connector stops.
+To recover from a failure, you must repair the cluster and then either promote the original primary server to <code>primary</code>, or promote a different PostgreSQL server to <code>primary</code>.
+For more information, see <a href="#postgresql-cluster-failures-capturing-from-new-primary">Capturing data from a new primary after a failure</a>.</p>
+</div>
+</div>
+<div class="sect3">
+<h4 id="postgresql-supported-topologies-pg16"><a class="anchor" href="#postgresql-supported-topologies-pg16"></a>PostgreSQL 16 or later clusters</h4>
+<div class="paragraph">
+<p>When you deploy Debezium with a PostgreSQL 16 or later cluster, you can set up logical replication slots on replica servers.
+This feature enables Debezium to capture change events from servers other than the primary server.
+However, be aware that Debezium connections to replica servers generally experience higher latency than connections to a primary server.</p>
 </div>
 <div class="paragraph">
-<p>When using PostgreSQL 17 or newer, you can set up logical replication slots on primary serves which are enabled for failover.
-The state of such a failover slot can automatically be propagated to one or more replica servers,
-allowing Debezium to continue to ingest changes from a replica promoted to primary after a failure,
-without missing any events.</p>
+<p>Also, bear in mind that replication slots on PostgreSQL replica servers are not automatically synchronized with corresponding slots on the primary server.
+To facilitate recovery after a failure in a PostgreSQL 16 cluster, you should periodically perform a manual synchronization to advance the position of the replication slot on the standby server to match the position on the primary server.</p>
+</div>
+</div>
+<div class="sect3">
+<h4 id="postgresql-supported-topologies-pg17"><a class="anchor" href="#postgresql-supported-topologies-pg17"></a>Debezium with PostgreSQL 17 or later clusters</h4>
+<div class="paragraph">
+<p>When you deploy Debezium with PostgreSQL 17 or later, you can set up logical replication slots on primary servers and enable those slots for failover.
+PostgreSQL can automatically propagate the state of a failover slot to one or more replica servers.
+In environments where automatic replication is enabled, if a failure occurs, an available replica is automatically promoted to primary.
+Debezium can continue to ingest changes from the new primary server, without requiring any configuration changes, thus helping to ensure that the connector does not miss any events.</p>
+</div>
 </div>
 </div>
 <div class="sect2">
@@ -8755,18 +8774,21 @@ For information about failure cases in which a slot has been removed, see the ne
 <div class="sect2">
 <h3 id="postgresql-cluster-failures"><a class="anchor" href="#postgresql-cluster-failures"></a>Cluster failures</h3>
 <div class="paragraph">
-<p>Prior to version 16, PostgreSQL allows logical replication slots <em>only on primary servers</em>. This means that you can point a Debezium PostgreSQL connector to only the active primary server of a database cluster.
-Also, replication slots themselves are not propagated to replicas.
-If the primary server goes down, a new primary must be promoted.</p>
+<div class="title">PostgreSQL 15 or earlier</div>
+<p>In a PostgreSQL 15 or earlier cluster, you can create a logical replication slot only on the primary server.
+As a result, in a PostgreSQL 15 environment, a Debezium PostgreSQL connector can capture events only from the active primary server in the cluster.
+In a PostgreSQL 15 cluster, replication slots on the primary node are not propagated to replica servers.
+If the primary server goes down, you must promote a standby node to primary.</p>
 </div>
 <div class="paragraph">
-<p>When using version 16 or newer, you can create logical replication slots also on replicas, but you need to take care of keeping them in sync with the corresponding slot on the primary server yourself.</p>
+<div class="title">PostgreSQL 16 or later</div>
+<p>When you use Debezium with PostgreSQL 16 or later, you can create logical replication slots on replicas, but you must manually synchronize the replication slot on the replica with the corresponding slot on the primary server.
+Synchronization of replica slots is not automatic.</p>
 </div>
 <div class="paragraph">
-<p>When using version 17 or newer, replication slots on a primary can be enabled for automatic failover.
-In this case Postgres itself can take care of synchronizing a slot from primary to replica automatically,
-allowing Debezium to continue reading from that slot after promoting a replica to new primary,
-without missing any change events.</p>
+<div class="title">PostgreSQL 17 or later</div>
+<p>When you use Debezium with PostgreSQL 17 or later, you can configure replication slots on a primary server for automatic failover, so that Debezium does not miss any change events.
+When a replication slot is configured for failover, PostgreSQL automatically synchronizes the replication slot from the primary to the replica, enabling Debezium to continue reading from the slot after the replica is promoted and becomes the new primary.</p>
 </div>
 <div class="admonitionblock note">
 <table>
@@ -8776,31 +8798,109 @@ without missing any change events.</p>
 </td>
 <td class="content">
 <div class="paragraph">
-<p>Some managed PostgresSQL services (AWS RDS and GCP CloudSQL for example) implement replication to a standby via disk replication. This means that the replication slot does get replicated and will remain available after a failover.</p>
+<p>Some managed PostgreSQL services (for example, AWS RDS and GCP CloudSQL) use disk replication to implement replication to a standby.
+As a result, these services automatically replicate the replication slot so that it is available after a failover.</p>
 </div>
 </td>
 </tr>
 </table>
 </div>
 <div class="paragraph">
-<p>The new primary must have the <a href="#installing-postgresql-output-plugin">logical decoding plug-in</a> installed and a replication slot that is configured for use by the plug-in and the database for which you want to capture changes. Only then can you point the connector to the new server and restart the connector.</p>
+<p>The new primary must have the <a href="#installing-postgresql-output-plugin">logical decoding plug-in</a> installed and a replication slot that is configured for use by the plug-in and the database for which you want to capture changes.
+Only then can you point the connector to the new server and restart the connector.</p>
 </div>
+<div class="sect3">
+<h4 id="postgresql-cluster-failures-recovering-from-failures-pg17-cluster"><a class="anchor" href="#postgresql-cluster-failures-recovering-from-failures-pg17-cluster"></a>Recovering from failures in a PostgreSQL 17 cluster</h4>
 <div class="paragraph">
-<p>When not using failover replication slots, as supported by Postgres 17 and newer,
-there are important caveats when failovers occur and you should pause Debezium until you can verify that you have an intact replication slot that has not lost data. After a failover:</p>
+<p>Environments that run PostgreSQL 17 or later support the use of failover replication slots.
+If a failure occurs in a PostgreSQL 17 or later cluster, and a standby is configured with a failover replication slot, complete the following steps to enable Debezium to resume capture:</p>
 </div>
+<div class="olist arabic">
+<ol class="arabic">
+<li>
+<p>Pause Debezium until you can verify that you have an intact replication slot that has not lost data.</p>
+</li>
+<li>
+<p>Re-create the Debezium replication slot before you allow applications to write to the <strong>new</strong> primary.
+If you permit applications to write to the new primary before you re-create the replication slot, your application can miss change events.</p>
+</li>
+<li>
+<p>Restart the connector.</p>
+</li>
+<li>
+<p>Verify that Debezium can read the LSN from the replication slot for any change that occurred before the original primary failed.
+<br>
+For example, recover a backup of the failed primary from the point immediately before failure, and identify the last position that is recorded in the slot.
+Although retrieving backup data can be administratively difficult, inspecting the backup provides a mechanism for reliably determining whether Debezium has consumed all changes.</p>
+</li>
+</ol>
+</div>
+</div>
+<div class="sect3">
+<h4 id="postgresql-cluster-failures-capturing-from-new-pg15-primary"><a class="anchor" href="#postgresql-cluster-failures-capturing-from-new-pg15-primary"></a>Capturing data from a new primary server after a failure in a PostgreSQL 15 or earlier cluster</h4>
+<div class="paragraph">
+<p>Following the failure of the primary server in a PostgreSQL 15 or earlier cluster, you might decide to configure Debezium to capture data from one of the former replica servers rather than from the original primary server.
+To enable Debezium to capture data from a former replica server, complete the following procedure.</p>
+</div>
+<div class="olist arabic">
+<div class="title">Procedure</div>
+<ol class="arabic">
+<li>
+<p>Repair the condition that caused the cluster to fail.</p>
+</li>
+<li>
+<p>While the connector is stopped, update the values of properties in the connector configuration to reflect the details of the new server.
+For example, verify that the configuration includes the correct values for the following properties:</p>
 <div class="ulist">
 <ul>
 <li>
-<p>There must be a process that re-creates the Debezium replication slot before allowing the application to write to the <strong>new</strong> primary. This is crucial. Without this process, your application can miss change events.</p>
+<p><a href="#postgresql-property-database-hostname"><code>database.hostname</code></a></p>
 </li>
 <li>
-<p>You might need to verify that Debezium was able to read all changes in the slot <strong>before the old primary failed</strong>.</p>
+<p><a href="#postgresql-property-database-port"><code>database.port</code></a></p>
+</li>
+<li>
+<p><a href="#postgresql-property-database-dbname"><code>database.dbname</code></a></p>
+</li>
+<li>
+<p><a href="#postgresql-property-database-user"><code>database.user</code></a></p>
+</li>
+<li>
+<p><a href="#postgresql-property-database-password"><code>database.password</code></a></p>
+</li>
+<li>
+<p><a href="#postgresql-property-slot-name"><code>slot.name</code></a></p>
 </li>
 </ul>
 </div>
+</li>
+<li>
+<p>Configure the new primary server to work with Debezium by completing the following tasks:</p>
+<div class="ulist">
+<ul>
+<li>
+<p><a href="#configuring-a-replication-slot-for-the-debezium-pgoutput-plug-in">Configure a replication slot</a> on the server.</p>
+</li>
+<li>
+<p>Ensure that Debezium can <a href="#setting-up-postgresql-permissions-required-by-debezium-connectors">perform replications</a> and <a href="#postgresql-replication-user-privileges">create publications</a> on the server.</p>
 <div class="paragraph">
-<p>One reliable method of recovering and verifying whether any changes were lost is to recover a backup of the failed primary to the point immediately before it failed. While this can be administratively difficult, it allows you to inspect the replication slot for any unconsumed changes.</p>
+<p>For more information about how to configure the PostgreSQL server to work with Debezium, see <a href="#setting-up-postgresql">Setting up PostgreSQL</a>.</p>
+</div>
+</li>
+</ul>
+</div>
+</li>
+<li>
+<p>Promote the standby PostgreSQL node to <code>primary</code>.</p>
+</li>
+<li>
+<p>Restart the connector.</p>
+</li>
+<li>
+<p>Perform a snapshot on the new primary server to capture the initial state of the data on the server and ensure that no data is lost.</p>
+</li>
+</ol>
+</div>
 </div>
 </div>
 <div class="sect2">
@@ -8846,7 +8946,7 @@ there are important caveats when failovers occur and you should pause Debezium u
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2025 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/722e17cfe6dd22a04b57d2edd7e6dc76293f0709">722e17cf</a></span>)
+            <div class="copyright">Copyright &copy; 2025 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/86f76e603250bee7f1ff04d9b88c4a557dfdb585">86f76e60</a></span>)
             
         </div>
     </footer>
