@@ -10,7 +10,7 @@ Change Data Capture (CDC) is widely used in various contexts, such as microservi
 
 [id="why"]
 == Introduction
-One way to use Debezium is by embedding it in a web application along with a connector to listen for changes in a data source. What's particularly interesting is that, with some tweaks, it's possible to build a CDC system with ultra-fast startup times and a minimal memory footprint by leveraging Quarkus and GraalVM. We will ingest data from a postgres database into a native Quarkus application with Debezium.
+One way to use Debezium is by embedding it in a web application along with a connector to listen for changes in a data source. What's particularly interesting is that, with some tweaks, it's possible to build a CDC system with ultra-fast startup times and a minimal memory footprint by leveraging Quarkus and GraalVM. We will ingest data from a postgres database into a native Quarkus application with Debezium that apply an easy https://debezium.io/documentation/reference/stable/transformations/applying-transformations-selectively.html[transformation].
 
 [id="why"]
 === Why
@@ -645,13 +645,60 @@ public class ReflectingConfig { }
 
 If you followed the instructions, now the application should work. I didn't have enough time to evaluate performances, but **the memory consumption dropped from 150MB to 50MB**.
 
+[id="transformation"]
+== Adding a Transformation
+A common use case is to apply transformation during the ingestion of the events. If we add the following configuration:
+
+```properties
+# Transformation
+debezium.configuration.transforms.t0.add.fields=op,table
+debezium.configuration.transforms.t0.add.headers=db,table
+debezium.configuration.transforms.t0.negate=false
+debezium.configuration.transforms.t0.predicate=p2
+debezium.configuration.transforms.t0.type=io.debezium.transforms.ExtractNewRecordState
+debezium.configuration.transforms=t0
+debezium.configuration.predicates.p2.pattern=inventory.inventory.products
+debezium.configuration.predicates.p2.type=org.apache.kafka.connect.transforms.predicates.TopicNameMatches
+debezium.configuration.predicates=p2
+```
+
+The application will fail with something like that:
+
+```text
+2025-03-14 10:35:26,159 ERROR [io.qua.run.Application] (main) Failed to start application: java.lang.RuntimeException: Failed to start quarkus
+        at io.quarkus.runner.ApplicationImpl.doStart(Unknown Source)
+        at io.quarkus.runtime.Application.start(Application.java:101)
+        at io.quarkus.runtime.ApplicationLifecycleManager.run(ApplicationLifecycleManager.java:119)
+        at io.quarkus.runtime.Quarkus.run(Quarkus.java:71)
+        at io.quarkus.runtime.Quarkus.run(Quarkus.java:44)
+        at io.quarkus.runtime.Quarkus.run(Quarkus.java:124)
+        at io.quarkus.runner.GeneratedMain.main(Unknown Source)
+Caused by: io.debezium.DebeziumException: Error while instantiating predicate 'p2'
+```
+
+or:
+
+```text
+2025-03-14 10:43:13,230 ERROR [io.qua.run.Application] (main) Failed to start application: java.lang.RuntimeException: Failed to start quarkus
+        at io.quarkus.runner.ApplicationImpl.doStart(Unknown Source)
+        at io.quarkus.runtime.Application.start(Application.java:101)
+        at io.quarkus.runtime.ApplicationLifecycleManager.run(ApplicationLifecycleManager.java:119)
+        at io.quarkus.runtime.Quarkus.run(Quarkus.java:71)
+        at io.quarkus.runtime.Quarkus.run(Quarkus.java:44)
+        at io.quarkus.runtime.Quarkus.run(Quarkus.java:124)
+        at io.quarkus.runner.GeneratedMain.main(Unknown Source)
+Caused by: io.debezium.DebeziumException: Error while instantiating transformation 't0'
+```
+
+Actually is impossible for the application to load the classes defined in the trasformation like `TopicNameMatches` and `ExtractNewRecordState`. It's necessary to instrument the application adding them in the `ReflectingConfig`.
+
 [id="considerations"]
 == Considerations
 This is **not** (and I repeat, **not**) something ready for production use. There is still significant work to be done in two key areas:
 
 1. **Decoupling Debezium from Kafka Libraries**: Kafka and Debezium should share only a standardized method for moving and transforming data. The Kafka runtime used for creating Kafka Connect nodes should not be a dependency that Debezium imports unnecessarily.
 
-2. **Address Reflection in Debezium**: All the classes managed with the `ServiceLoader` should be registered using Quarkus and GraalVM guidelines.
+2. **Address Reflection in Debezium**: All the classes managed with the `ServiceLoader` should be registered using Quarkus and GraalVM guidelines. Furthermore, additional configurations (like a transformation) that inject classes should https://github.com/debezium/debezium-examples/pull/374#issuecomment-2724221196[take into account the native build].
 
 Addressing these challenges could pave the way for a Quarkus Extension that fully certifies Debezium’s native compatibility.
 
