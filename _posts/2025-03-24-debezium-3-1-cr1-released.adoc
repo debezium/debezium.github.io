@@ -1,0 +1,177 @@
+---
+layout: post
+title:  Debezium 3.1.0.CR1 Released
+date:   2025-03-24
+tags: [ releases, mongodb, mysql, mariadb, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox, spanner, jdbc, informix, ibmi ]
+author: ccranfor
+---
+
+We are excited to announce a candidate release for Debezium 3.1, **3.1.0.CR1**.
+
+This new release includes several improvements with the JDBC sink and MySQL connectors, support for ISO string temporal values and Keyspace heartbeats with Vitess, key-based routing for RabbitMQ, and more.
+Let's dive in and take a look at these new features and improvements.
+
++++<!-- more -->+++
+
+* link:#breaking-changes[Breaking changes]
+* link:#new-features-and-improvements[New Features and Improvements]
+* link:#other-changes[Other Changes]
+
+[id=breaking-changes]
+== Breaking changes
+
+With any new release of software, there is often several breaking changes.
+The Debezium **3.1.0.CR1** release is no exception, so let's discuss the major changes you should be aware about.
+
+=== Query timeout now applies to Oracle LogMiner queries
+
+When the Oracle connector executes its initial query to fetch data from LogMiner, this query will now be bound by the `database.query.timeout.ms` connector configuration property (https://issues.redhat.com/browse?DBZ-8830[DBZ-8830]).
+When upgrading, check the connector metric `MaxDurationOfFetchQueryInMilliseconds` to determine whether this new property may need adjustments.
+By default, the timeout is set to 10 minutes, but can be disabled when set to 0.
+
+[id="new-features-and-improvements"]
+== New features and improvements
+
+The upgrade to Debezium **3.1.0.CR1** introduces several new features and improvements in several components:
+
+=== Core: Centralize logging of sensitive data
+
+We understand that databases house all sorts of information, and that some columns may contain sensitive information.
+We take pride in making sure that information remains safe and secure.
+For this reason, we generally prefer to avoid logging sensitive information at INFO, WARN, or ERROR levels or make use of masking such details as necessary.
+
+However, there were some corner cases using the DEBUG or TRACE levels where there was the potential for sensitive column details may be logged.
+We added a `io.debezium.util.Loggings` class several versions ago to centralize this, but some instances were recently found that should use this `Loggings` class (https://issues.redhat.com/browse/DBZ-8525[DBZ-8525]).
+
+By default, users will simply notice that the `Loggings` class will now record the sensitive information in the logs when using the DEBUG or TRACE levels rather than it being included in the proceeding log entry.
+If you prefer to omit the sensitive information, you can now do this using configuration to uniquely set a logging level specific to `io.debezium.util.Loggings`.
+
+For example, if you want to provide a log but omit your sensitive information on Zulip, the following log configuration can be used:
+
+[source]
+====
+log4j.logger.io.debezium=TRACE,stdout
+log4j.logger.io.debezium.util.Loggings=ERROR,stdout
+====
+
+This configuration will omit all sensitive information while logging all non-sensitive information at TRACE level.
+
+=== JDBC: Improved performance
+
+We received several community reports that during peak volume, some databases were experiencing unusually high CPU utilization.
+After investigation, we identified that several SQL queries were being performed too frequently, causing the high CPU utilization and reducing connector write throughput (https://issues.redhat.com/browse/DBZ-8570[DBZ-8570]).
+Users should now find that the JDBC sink's write throughput is higher and that the CPU utilization should be more reasonable than before.
+
+=== JDBC: Automatic retries on connection errors
+
+For a Kafka Connect producer, if a connector throws a `RetriableException` and Kafka Connect is configured to support retries on errors, the runtime will automatically stop and restart the connector.
+This provides a useful way to handle the tearing down of resources and recreating those resources, such as database connections.
+
+But for a Kafka Connect consumer (sink), the lifecycle of the connector works differently.
+When the connector throws an error, the lifecycle doesn't stop and restart the connector, but instead simply calls the `put` method.
+This can be problematic in the case of certain connection errors because specific resources are not automatically recreated.
+
+Starting with Debezium 3.1, a new JDBC sink connector property `connection.restart.on.errors` will allow the JDBC sink to retry connection failures (https://issues.redhat.com/browse/DBZ-8727[DBZ-8727]).
+
+=== JDBC: Handle BYTES as VARBINARY for SQL Server targets
+
+A new JDBC sink mapping has been added for converting a Kafka `BYTES` field type to `VARBINARY` (https://issues.redhat.com/browse/DBZ-8790[DBZ-8790]).
+This will allow source connectors that serialize unknown or other binary data as a Kafka `BYTES` schema type safely to a SQL Server target using the `VARBINARY` data type.
+
+=== MySQL: Improved error handling for duplicate server id/uuid
+
+For most connectors, Debezium adopts the philosophy to retry all SQL or IO related failures.
+This strategy has been quite useful and allowing users to utilize the runtime retry mechanism as needed.
+
+However for MySQL, this presents a unique corner case when there are conflicts with the configured server id/uuid.
+MySQL uses the server id/uuid to uniquely identify itself on the cluster topology, and if there is more than one server that uses the same id/uuid, an error is thrown.
+Unfortunately, this error extends `SQLException`, and therefore was retried.
+
+With Debezium 3.1, we've improved the error handling of this scenario, preferring a fail-fast approach for this specific unique case (https://issues.redhat.com/browse/DBZ-8786[DBZ-8786]).
+If you are a MySQL user and notice your connectors are entering a FAILED status more frequently, we recommend checking if this use case applies to you.
+If it does, you should guarantee that your configuration consists of a server id/uuid that is always unique.
+
+=== Vitess: Keyspace heartbeat support
+
+Starting in Vitess v21, a new binlog watermarking strategy was introduced for VStream.
+This new feature allows sending a "heartbeat" equivalent event to represent that the shard's binlog events up to the provided timestamp have been received by the VStream client.
+
+A new configuration option `vitess.stream.keyspace.heartbeats` can be set to `true` to include the heartbeat events written to the keyspace heartbeat tables (https://issues.redhat.com/browse/DBZ-8775[DBZ-8775]).
+The `table.include.list` should also include the heartbeat table, using the format `<keyspace>.heartbeat`.
+
+=== Vitess: Support ISO string mode temporal precision mode
+
+We introduced the new temporal precision mode `IOSTRING` in https://issues.redhat.com/browse/DBZ-6387[DBZ-6387], which allow for specifying the serialization of temporal values as a string using the ISO8601 format.
+We're happy to report the Vitess connector includes support for this new mode (https://issues.redhat.com/browse/DBZ-8826[DBZ-8826]).
+
+=== Debezium Server: Key routing support for RabbitMQ
+
+In Debezium 3.1, we have changed how you can route events using configuration.
+This new approach uses a strategy-based design, that retains old behaviors and introduces the new key-based routing mechanism (https://issues.redhat.com/browse/DBZ-8752[DBZ-8752]).
+
+First and foremost, the `rabbitmq.routingKeyFromTopicName` is deprecated and will be removed in a future release.
+This functionality has been folded into the new `rabbitmq.routingKey.source` configuration property, and it can be set one to one of the following values:
+
+`static`::
+When using the _static_ routing source, the RabbitMQ sink will use the `rabbitmq.routingKey` static value you have specified in the sink's configuration.
+As this value is set in the configuration and read only during the sink startup, the value is static and does not change over the runtime of the sink.
+
+`topic`::
+When using the _topic_ routing source, the RabbitMQ sink will source the routing key based on the destination topic name.
+This mode replaces the old `rabbitmq.routingKeyFromTopicName` configuration property behavior, which is now deprecated.
+
+`key`::
+When using the **new** _key_ routing source, the RabbitMQ sink will source the routing key based on the event's record key.
+This provides the flexibility to control the routing mechanism for RabbitMQ to use the raw Debezium change event's key or by using a custom transformation to change the event's key in-flight before sending the event to RabbitMQ.
+
+=== Examples: Debezium optimized for GraalVM
+
+Change Data Capture (CDC) is widely used in various contexts, such as microservices communication, legacy system modernization, and cache invalidation.
+The core idea of this pattern is to detect and track changes in a data source (e.g., a database) and propagate them to other systems in https://www.reddit.com/r/embedded/comments/1ddbul4/people_always_abuse_the_term_realtime_but_what/[real-time] or near real-time.
+Debezium is a CDC platform that provides a wide range of connectors for most data sources.
+Beyond capturing changes, it also offers transformation capabilities through an intuitive UI for defining debezium instances.
+
+Check out our recent blog https://debezium.io/blog/2025/03/12-superfast-debezium[Superfast Debezium] which walks you through the latest example of using Debezium with GraalVM!
+
+[id="other-changes"]
+== Other changes
+
+The following are some noteworthy changes in **3.1.0.CR1**:
+
+* The first cdc message always lost when using debezium engine to capture oracle data https://issues.redhat.com/browse/DBZ-8141[DBZ-8141]
+* Update format-maven-plugin to 2.26.0 https://issues.redhat.com/browse/DBZ-8695[DBZ-8695]
+* Centralize helm chart repo https://issues.redhat.com/browse/DBZ-8707[DBZ-8707]
+* OTEL libs are not loaded to Docker image https://issues.redhat.com/browse/DBZ-8767[DBZ-8767]
+* Change the documentation of minimum Java version requirement from 11 to 21 https://issues.redhat.com/browse/DBZ-8771[DBZ-8771]
+* Add delete.tombstone.handling.mode to ConfigDef returned by config method and change its display name https://issues.redhat.com/browse/DBZ-8776[DBZ-8776]
+* Signal Channel Kafka restart snapshot multiple snapshot after connector restart https://issues.redhat.com/browse/DBZ-8780[DBZ-8780]
+* Update Debezium platform images in values.yaml https://issues.redhat.com/browse/DBZ-8781[DBZ-8781]
+* Allow Debezium server to use Kafka Connect format for the records https://issues.redhat.com/browse/DBZ-8782[DBZ-8782]
+* Sources and home in debezium platform helm chart points to old repo https://issues.redhat.com/browse/DBZ-8784[DBZ-8784]
+* Write README for debezium-chart repo https://issues.redhat.com/browse/DBZ-8785[DBZ-8785]
+* Remove Helm from Debezium operator manifest README https://issues.redhat.com/browse/DBZ-8791[DBZ-8791]
+* Write blog post about the recent changes on charts.debezium.io https://issues.redhat.com/browse/DBZ-8792[DBZ-8792]
+* DebeziumServerPostgresIT randomly fails https://issues.redhat.com/browse/DBZ-8821[DBZ-8821]
+* Test keyspace heartbeats during snapshot https://issues.redhat.com/browse/DBZ-8824[DBZ-8824]
+* Make methods for adding fields into the record reuseable https://issues.redhat.com/browse/DBZ-8825[DBZ-8825]
+* Enable build of debezium platform images  https://issues.redhat.com/browse/DBZ-8829[DBZ-8829]
+* Unexpected null value for Field Configuration deprecated aliases https://issues.redhat.com/browse/DBZ-8832[DBZ-8832]
+
+In total, https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20and%20fixVersion%20%20in%20(3.1.0.CR1)[30 issues] were resolved in Debezium 3.1.0.CR1.
+The list of changes can also be found in our https://debezium.io/releases/3.1/release-notes#release-3.1.0-cr1[release notes].
+
+A big thank you to all the contributors from the community who worked diligently on this release:
+https://github.com/b-goyal[Bhagyashree Goyal],
+https://github.com/Naros[Chris Cranford],
+https://github.com/kmos[Giovanni Panice],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/katsulau[Katsumi Miyajima],
+https://github.com/mfvitale[Mario Fiore Vitale],
+https://github.com/minleejae[Minjae Lee],
+https://github.com/rajdangwal[Rajendra Dangwal],
+https://github.com/roldanbob[Robert Roldan],
+https://github.com/twthorn[Thomas Thornton],
+https://github.com/victorcastanogutierrez[Victor Castaño],
+https://github.com/vjuranek[Vojtech Juranek],
+https://github.com/yuriyv[Yuriy Vikulov], and
+https://github.com/ZakariaeBenAllalSkeepers[Zakariae Ben Allal]!
