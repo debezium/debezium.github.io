@@ -1,0 +1,156 @@
+---
+layout: post
+title:  Debezium 3.1.1.Final Released
+date:   2025-04-24
+tags: [ releases, mongodb, mysql, mariadb, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox, spanner, jdbc, informix, ibmi ]
+author: ccranfor
+extraClasses: release-v2
+---
+
+It has only been three weeks since we released Debezium 3.1.0.Final, and we're happy to report the first maintenance release has arrived, **3.1.1.Final**.
+This release includes several critical performance improvements and a variety of bug fixes.
+
++++<!-- more -->+++
+
+In this post, we're going to take a deep dive into the performance improvements made across several key modules of Debezium, discussing any new features, and explaining any changes that could impact your upgrade process.
+As always, we recommend you read the link:/releases/3.1/release-notes#release-3.1.1-final[release notes] to learn about all the bugs that were fixed, update procedures, and more.
+
+* link:#breaking-changes[Breaking changes]
+* link:#new-features-and-improvements[New features and improvements]
+
+[id=breaking-changes]
+== Breaking changes
+
+With any new release of software, there is often several breaking changes.
+This release is no exception, so let's discuss the major changes you should be aware of before upgrading to **Debezium 3.1.1.Final**.
+
+[%noheader, cols="1"]
+|===
+| link:#breaking-changes-oracle[Debezium Core]
+|===
+
+[id=breaking-changes-oracle]
+=== Debezium for Oracle
+
+==== Using secure mTLS connections with JKS
+
+When using the Debezium for Oracle connector to establish a secure mTLS connection using Java Keystores (JKS), special configuration is necessary.
+We have added this information to the link:/documentation/reference/stable/connectors/oracle.html#using-mtls-secure-connections[Oracle connector documentation] (https://issues.redhat.com/browse/DBZ-8788[DBZ-8788]).
+
+[id=new-features-and-improvements]
+== New features and improvements
+
+The following describes all noteworthy new features and improvements in **Debezium 3.1.1.Final**.
+For a complete list, be sure to read the link:/releases/3.1/release-notes#release-3.1.1-final[release notes] for more details.
+
+[cols="1,1"]
+|===
+| link:#new-features-and-improvements-core[Debezium Core]
+| link:#new-features-and-improvements-oracle[Debezium for Oracle]
+
+| link:#new-features-and-improvements-ai[Debezium AI]
+|
+|===
+
+[id=new-features-and-improvements-core]
+=== Debezium Core
+
+==== Regression with logging performance
+
+In Debezium 3.1, a change was introduced to centralize the logging of sensitive information.
+Unfortunately, this change introduced a regression, leading to lower performance across a variety of code paths.
+
+This change has been reverted and replaced with an implementation that retains the centralized logging intent while restoring the prior performance (https://issues.redhat.com/browse/DBZ-8879[DBZ-8879]).
+
+==== Reset certain streaming metrics through JMX
+
+During periods of idle activity, a Debezium connector will continue to report `LagBehindSource` JMX metric as the last computed value, as this value is only updated as new changes are received.
+For some environments, this is less than desirable or not intuitive if you are unaware of the idle or low activity window.
+
+Debezium 3.1.1.Final introduces a new option that can be triggered through JConsole or other JMX integrations to reset the current `LagBehindSource` metric by calling the new function `resetLagBehindSource` (https://issues.redhat.com/browse/DBZ-8885[DBZ-8885]).
+
+==== Improved exceptions during post processing configuration validation
+
+When supplying a `post.processor` configuration, if there is a mismatch or missing configuration for a named post processor, Debezium would throw a `NullPointerException`.
+It's always preferred that in such scenarios, Debezium raise a custom exception with a more descriptive reason for the failure.
+
+Debezium 3.1.1.Final now performs better validation of these configurations and will now report a valid error stating that the post processing configuration is invalid or missing required values (https://issues.redhat.com/browse/DBZ-8901[DBZ-8901]).
+
+[id=new-features-and-improvements-ai]
+=== Debezium AI
+
+=== Improved resilience of FieldToEmbedding SMT
+
+There were several use cases where the `FieldToEmbedding` transformation did not perform was expected.
+For example, when processing delete records, the transformation would fail with a `NullPointerException` (https://issues.redhat.com/browse/DBZ-8907[DBZ-8907]) while in others the transformation would crash wehn source field names are substrings of an embedded name (https://issues.redhat.com/browse/DBZ-8910[DBZ-8910]).
+
+These problems have been corrected and the `FieldToEmbedding` transformation should be more resilient.
+
+[id=new-features-and-improvements-oracle]
+=== Debezium for Oracle
+
+==== Reduced CPU utilization under specific scenarios
+
+In Debezium 3.1, we introduced a change as part of https://issues.redhat.com/browse/DBZ-8665[DBZ-8665] to restore the same performance from 2.7.0.Final when processing constraint violations or save point rollback operations.
+While this change was successful at reducing the latency caused by processing such events in Debezium 3.0 through 3.0.7, we found that even the performance from Debezium 2.7 was overall suboptimal.
+
+We have implemented a complete rework of the transaction buffering solution to handle constraint violations and save point rollbacks more efficiently (https://issues.redhat.com/browse/DBZ-8860[DBZ-8860]).
+
+When using heap-based buffering, we reduced the time needed to process such events by nearly 90% while also reducing the time complexity for off-heap buffering by 97-99%.
+In addition to the time complexity reduction, we have also reduced the overall CPU usage while handling these events to remain aligned with expectations.
+
+==== Improved the `online_catalog` mining strategy performance
+
+Prior to adding the `hybrid` mining strategy, the Debezium Oracle LogMiner implementation included a specific condition to include events for tables where LogMiner failed to resolve the table name.
+This use case happens when the object id and version in the redo entry does not match the online data dictionary, which occurs after specific DDL operations are performed.
+
+Including these changes, particularly when users perform bulk operations and LogMiner fails to resolve the table name, this increases latency, connector overhead, only so that the connector can log the unknown table.
+Given the reduction of performance solely for logging, we have chosen to omit including these events in the data fetch moving forward (https://issues.redhat.com/browse/DBZ-8926[DBZ-8926]).
+
+==== Improved the `hybrid` mining strategy performance
+
+We also identified another performance bottleneck, this time when using the `hybrid` mining strategy while processing bulk events where LogMiner failed to resolve the table name during object id/version mismatches.
+The `hybrid` strategy is designed to handle this use case and fallback to Debezium's relational model to resolve the table name; however, despite using a cache, the cost overhead for the cache lookups for bulk operations was significantly high.
+
+In order to reduce the cost and improve throughput performance of bulk  operations on unknown tables, we have reworked the lookup in a way that increases the throughput by significantly, allowing bulk operations to be handled more efficiently and with less overall CPU utilization (https://issues.redhat.com/browse/DBZ-8925[DBZ-8925]).
+
+[id=summary]
+== Summary
+
+In total, https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20and%20fixVersion%20%20in%20(3.1.1.Final)[28 issues] were resolved in Debezium 3.1.1.Final.
+The list of changes can also be found in our https://debezium.io/releases/3.1/release-notes[release notes].
+
+A big thank you to all the contributors from the community who worked diligently on this release:
+ +
+https://github.com/AlvarVG[Alvar Viana],
+https://github.com/andreaTP[Andrea Peruffo],
+https://github.com/ani-sha[Anisha Mohanty],
+https://github.com/ashoke-cube[Ashok],
+https://github.com/b-goyal[Bhagyashree Goyal],
+Oskar Bonde,
+https://github.com/Naros[Chris Cranford],
+https://github.com/kmos[Giovanni Panice],
+https://github.com/hariso[Haris Osmanagić],
+https://github.com/jcechace[Jakub Cechacek],
+https://github.com/james-johnston-thumbtack[James Johnston],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/kgalieva[Katerina Galieva],
+https://github.com/katsulau[Katsumi Miyajima],
+https://github.com/kgoodies[Krzysztof Grzechnik],
+https://github.com/mfvitale[Mario Fiore Vitale],
+https://github.com/MarkusKull[Markus Kull],
+https://github.com/minleejae[Minjae Lee],
+https://github.com/nathan-smit-1[Nathan Smit],
+https://github.com/rajdangwal[Rajendra Dangwal],
+https://github.com/roldanbob[Robert Roldan],
+https://github.com/rkudryashov[Roman Kudryashov],
+https://github.com/twthorn[Thomas Thornton],
+https://github.com/ramanenka[Vadzim Ramanenka],
+https://github.com/victorcastanogutierrez[Victor Castaño],
+https://github.com/vjuranek[Vojtech Juranek],
+https://github.com/vjuranek[Vojtěch Juránek],
+https://github.com/yuriyv[Yuriy Vikulov],
+https://github.com/ZakariaeBenAllalSkeepers[Zakariae Ben Allal],
+https://github.com/GOODBOY008[Zhongqiang Gong],
+https://github.com/kesompochy[kesompochy],
+https://github.com/overwatcheddude[حمود سمبول]
