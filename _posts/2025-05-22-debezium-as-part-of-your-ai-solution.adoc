@@ -1,0 +1,440 @@
+---
+layout: post
+title: "Debezium as Part of Your AI Solution"
+date: 2025-05-19
+tags: [ demo, ai, rag ]
+author: jpechane
+---
+
+One of the questions we recently encounter is how to effectively integrate change data capture (CDC) with AI workloads — particularly for use cases where organization knowledge is not publicly available.
+With the release of Debezium 3.1, new AI-focused features such as the Embeddings SMT and the Milvus Sink make this scenario reality.
+You can read more about these enhancements in the https://debezium.io/blog/2025/04/24/debezium-3-1-1-final-released/[Debezium 3.1 release notes].
+
++++<!-- more -->+++
+
+:imagesdir: /assets/images/2025-05-22-debezium-as-part-of-your-ai-solution
+
+== Introduction
+
+In this post, we'll show how Debezium, Milvus, and Ollama can work together to form a Retrieval-Augmented Generation (RAG) pipeline.
+By capturing changes from a relational database, enriching them with vector embeddings, and enabling similarity search over these vectors, you can build AI-driven applications with up-to-date, domain-specific knowledge.
+
+Let's describe the problem we are aiming to solve.
+
+Our organization introduces new AI-driven application backed by an LLM.
+The model needs to be extended with the internal company knowledge that is stored in text documents in PostgreSQL database.
+Whenever user interacts with AI the local knowledge must be taken into consideration.
+Also the knowledge is constantly changing, new documents are added, existing documents are updated and sometimes some of the documents are withdrawn due to regulatory requirements.
+
+The common solution to this problem is Retrieval-Augmented Generation (RAG).
+This post will demostrate how to build CDC fed RAG system using
+
+* PostgreSQL as data storage
+* Milvus vector database
+* Debezium Server feeding Milvus from PostgreSQL
+* Local https://ollama.com/[Ollama] hosted LLM
+* Java application interacting with LLM and using RAG to provide prompt context
+
+== What is RAG (Retrieval-Augmented Generation)?
+
+Retrieval-Augmented Generation (RAG) is an AI technique that combines information retrieval with generative models to produce more accurate and contextually relevant responses.
+Instead of relying solely on a model's internal knowledge, RAG pipelines retrieve relevant documents or data from an external source (like a vector database) and use that information to enrich the model's responses.
+In our scenario, Debezium, Milvus, and Ollama work together to form a RAG workflow: data changes are captured and vectorized, stored in Milvus, and then retrieved to augment LLM outputs with up-to-date, domain-specific information.
+
+== What is Debezium Server?
+
+https://debezium.io/documentation/reference/3.1/operations/debezium-server.html[Debezium Server] is one of Debezium flavours that allows you to stream change events from databases to various sinks without the need to stand up a Kafka cluster.
+It provides a lightweight way to consume CDC events and forward them where you need them.
+It is also possible to use Kafka Connect single message transformations as a part of its processing pipeline.
+
+== What is Milvus?
+
+Milvus is a specialized vector database designed for similarity search and AI-heavy workloads.
+Whether it's product recommendations, image search, or any use case needing fast vector retrieval, Milvus is built for that.
+Vector database and fast vector retrieval are in the heart of any RAG solution.
+The vector database stores so called *embeddings* - vector representations the data that can be used for tasks like similarity search or clustering.
+Prompt context is extended according to similarity of stored data with requested prompt.
+
+=== Why Milvus as a Sink?
+
+For applications where you need up-to-date vector representations of your data, pushing changes from a transactional database into Milvus makes a lot of sense.
+This approach keeps your AI models in sync with operational data and offloads similarity search to a system built for it.
+
+=== How Debezium Milvus Sink Works
+
+The typical deployment of Milvus sink can be described with this workflow
+
+* Debezium Connector captures changes from the source database
+* If the source database does not contain a field with embedding then https://debezium.io/blog/2025/04/02/debezium-3-1-final-released/#new-features-and-improvements-ai[FieldToEmbedding SMT] is used to enrich change events with vector embeddings
+* Milvus sink writes the vector data into Milvus
+* Milvus stores and indexes the vectors for fast similarity search
+
+== Example application
+
+This blogpost is built around https://github.com/debezium/debezium-examples/tree/main/ai-rag[ai-rag] example application.
+We are going step-by-step through the details and internals of the application so you can easily built your own.
+
+image::overview.png[image,caption="Figure 1: Architecture",width=800,role=centered-image]
+
+The architecture identifies two different flows
+
+* Data pipeline
+* AI application
+
+that share common Milvus instance.
+Data pipeline is responsible for ingesting data into Milvus and AI application queries it.
+
+=== Data pipeline
+
+Our source of the documents is https://arxiv.org/[arXiv], service that provides scholarly articles for download in different formats.
+The test application downloads requested article based on its identifier and stores it in PostgreSQL table.
+
+The table is created with the following https://github.com/debezium/debezium-examples/blob/main/ai-rag/config-postgres/ai-sample-data.sql[DDL]
+[source,sql]
+----
+CREATE TABLE documents (
+  id VARCHAR(64) PRIMARY KEY,
+  metadata JSON,
+  text TEXT
+);
+ALTER TABLE documents REPLICA IDENTITY FULL;
+----
+
+The table has enabled full replica identity which means that original state of the database row will be available in update and delete messages.
+This is not required for our demo but can be useful for different implementations.
+
+Upon user request the application will download the document in text form and store it in the table.
+The document identifier will be used as the `id`, the textual representation of the article as `text` and JSON metadata `{"id:" "<document id>"}` in metadata.
+There is no column with embeddings so Debezium is responsible for calculation.
+
+We run LLM locally in Ollama LLM framework.
+As the model itself we selected https://ollama.com/library/granite3.1-dense:2b[granite3.1-dense:2b], that is text-only model optimized for also for RAG.
+It is one of large family of open-source https://huggingface.co/ibm-granite[IBM Granite models] but the application is not limited to it and can use an arbitrary one.
+
+Debezium Server links together PostgreSQL store with Milvus.
+As embeddings were not provided, they are calculated using https://github.com/debezium/debezium-examples/blob/main/ai-rag/config-server/application.properties#L16[FieldToEmbedding] SMT and stored in the field named `vector`.
+
+Our application uses LangChain4j Milvus store module internally so we will keep the default collection structure https://github.com/langchain4j/langchain4j/blob/main/langchain4j-milvus/src/main/java/dev/langchain4j/store/embedding/milvus/MilvusEmbeddingStore.java[expected by it]
+
+* `id` - `VarChar`
+* `metadata` - `JSON`
+* `text` -`VarChar`
+* `vector` - `FloatVector`
+
+There is a known https://github.com/langchain4j/langchain4j/issues/2834[issue] in the module that causes application failure when the store is empty.
+We are going to store one dummy document in the database (and thus in Milvus) to work around it.
+
+== AI Application
+
+The AI application is the application that interacts with LLM and extends the prompt with data loaded from Milvus stored base on the data and prompt embeddings similarity.
+
+The demo application is a command-line written using https://quarkus.io/[Quarkus framework].
+For AI features it uses Quarkus https://docs.quarkiverse.io/quarkus-langchain4j/dev/index.html[LangChain4j extension], specifically https://docs.quarkiverse.io/quarkus-langchain4j/dev/ollama.html[Ollama LLM] and https://docs.quarkiverse.io/quarkus-langchain4j/dev/milvus-store.html[Milvus Store] for RAG.
+
+The AI service is registered via https://github.com/debezium/debezium-examples/blob/main/ai-rag/client/src/main/java/io/debezium/examples/airag/Chat.java[Chat] class.
+
+[source,java]
+----
+package io.debezium.examples.airag;
+
+import dev.langchain4j.service.SystemMessage;
+import dev.langchain4j.service.UserMessage;
+import io.quarkiverse.langchain4j.RegisterAiService;
+
+@RegisterAiService(retrievalAugmentor = MilvusRetrieavalAugmentor.class)
+public interface Chat {
+
+    @SystemMessage("You are an expert that provides short summaries.")
+    String chat(@UserMessage String message);
+}
+----
+
+The module itself is configured in https://github.com/debezium/debezium-examples/blob/main/ai-rag/client/src/main/resources/application.properties[application.properties].
+
+----
+quarkus.langchain4j.ollama.base-url=http://localhost:11434
+quarkus.langchain4j.ollama.chat-model.model-id=granite3.1-dense:2b
+quarkus.langchain4j.ollama.embedding-model.model-id=granite3.1-dense:2b
+quarkus.langchain4j.ollama.timeout=120s
+----
+
+RAG is enabled via `retrievalAugmentor` parameter of `@RegisterAiService` and is implemented in https://github.com/debezium/debezium-examples/blob/main/ai-rag/client/src/main/java/io/debezium/examples/airag/MilvusRetrieavalAugmentor.java[MilvusRetrieavalAugmentor] bean.
+
+[source,java]
+----
+@ApplicationScoped
+public class MilvusRetrieavalAugmentor implements Supplier<RetrievalAugmentor> {
+
+    private final RetrievalAugmentor augmentor;
+
+    MilvusRetrieavalAugmentor(MilvusEmbeddingStore store, EmbeddingModel model) {
+        EmbeddingStoreContentRetriever contentRetriever = EmbeddingStoreContentRetriever.builder()
+                .embeddingModel(model)
+                .embeddingStore(store)
+                .maxResults(3)
+                .build();
+        augmentor = new RetrievalAugmentorDecorator(DefaultRetrievalAugmentor
+                .builder()
+                .contentRetriever(contentRetriever)
+                .build());
+    }
+
+    @Override
+    public RetrievalAugmentor get() {
+        return augmentor;
+    }
+
+    private class RetrievalAugmentorDecorator implements RetrievalAugmentor {
+
+        private final RetrievalAugmentor delegate;
+
+        public RetrievalAugmentorDecorator(RetrievalAugmentor delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public AugmentationResult augment(AugmentationRequest augmentationRequest) {
+            Log.infof("Requested augmentation of %s", augmentationRequest.chatMessage());
+            final var result = delegate.augment(augmentationRequest);
+            Log.infof("Result of augmentation is %s", result.contents());
+            return result;
+        }
+    }
+}
+----
+
+`EmbeddingStoreContentRetriever` is responsible for querying the Milvus vector database and it enhances prompt context with the 3 most similar documents.
+The class itself also provides `RetrievalAugmentorDecorator` which logs the detail of augmentation operation.
+
+The Milvus embedding store is again configured in https://github.com/debezium/debezium-examples/blob/main/ai-rag/client/src/main/resources/application.properties[application.properties].
+
+----
+quarkus.langchain4j.milvus.host=localhost
+quarkus.langchain4j.milvus.port=19530
+quarkus.langchain4j.milvus.create-collection=false
+quarkus.langchain4j.milvus.collection-name=demo_ai_documents
+
+# These two settings are not supported by the current version of Quarkus Langchain4j extension
+# Also field with text cannot be overriden and is default text
+quarkus.langchain4j.milvus.primary-field=id
+quarkus.langchain4j.milvus.vector-field=vector
+----
+
+== Demo
+
+The demo is composed of two components
+
+* Docker Compose configuration https://github.com/debezium/debezium-examples/blob/main/ai-rag/docker-compose.yml[file] that starts all services.
+* Java CLI application in https://github.com/debezium/debezium-examples/tree/main/ai-rag/client[client] directory that emulates both data pipeline and AI application.
+
+=== Start deployment
+
+In *Terminal 1* execute command and wait for the containers to start.
+
+----
+$ docker-compose up --build
+----
+
+The command will extend standard Debezium Server image with `debezium-ai-embeddings-ollama` module (the AI embeddings modules are not by default included).
+PostgreSQL (`postgres`), Milvus (`milvus`), Debezium Server (`debezium-server`) and ollama (`ollama`) containers are started.
+
+In *Terminal 2* execute command
+
+----
+$ docker exec -it ollama ollama run granite3.1-dense:2b
+----
+
+to start Granite LLM model.
+We need to make sure that we are testing the application with fact that model is unaware of.
+First we will check what is model's cut off date (what are the latest data that model seen).
+
+----
+>>> What is your cut off date?
+My knowledge cut off date is April 2024. I can provide information and answer questions based on data up to 
+that point. For more recent events or discoveries, I'm unable to include those details in my responses as 
+they weren't available at the time of my training data. If you have any questions within this timeframe, 
+feel free to ask!
+----
+
+Based on that fact we selected paper https://arxiv.org/abs/2504.05309v1[2504.05309v1] (IterQR: An Iterative Framework for LLM-based Query Rewrite in e-Commercial Search System) as the sample of the new knowledge.
+It was published in February 2025 so after cut off date and contains very specific keyword - `IterQR`.
+We will test the model by asking about the framework.
+
+----
+>>> Describe IterQR framework in 20 words.
+Iterative Quantized Ridge Regression (IterQR), a scalable method for large-scale regression, iteratively 
+refines coefficients via quantization and ridge regression techniques to minimize computational complexity 
+while maintaining accuracy.
+----
+
+The answer is completely unrelated to the framework and exhibits traits of https://en.wikipedia.org/wiki/Hallucination_(artificial_intelligence)[hallucination].
+The model does not know about the fact so it invents its own without any connection to reality.
+When model is asked multiple times it will provide different and unrelated descriptions.
+
+=== Data pipeline
+
+The rest of the demo will be executed in *Terminal 3* using Java application.
+The application is built via Maven so execute
+
+----
+$ cd client
+$ ./mvnw clean install
+----
+
+and the built application will be invoked with command `java -jar target/quarkus-app/quarkus-run.jar`.
+
+As the very first step it is necessary to initialize Milvus store with the collection and dummy record (see discussion above about known issue).
+The record is not inserted directly but a new row is written into the PostgreSQL source table that is then ingested into Milvus via Debezium.
+(Parts of the log are removed for readability and clarity purposes)
+
+----
+$ java -jar target/quarkus-app/quarkus-run.jar init
+
+...
+2025-05-20 06:05:10,712 INFO  [io.deb.exa.air.MilvusStore] (main) Created collection 'demo_ai_documents' with schema: CreateCollectionReq.CollectionSchema(fieldSchemaList=[CreateCollectionReq.FieldSchema(name=id, description=, dataType=VarChar, maxLength=64, dimension=null, isPrimaryKey=true, isPartitionKey=false, isClusteringKey=false, autoID=false, elementType=null, maxCapacity=null, isNullable=false, defaultValue=null, enableAnalyzer=null, analyzerParams=null, enableMatch=null), CreateCollectionReq.FieldSchema(name=metadata, description=, dataType=JSON, maxLength=65535, dimension=null, isPrimaryKey=false, isPartitionKey=false, isClusteringKey=false, autoID=false, elementType=null, maxCapacity=null, isNullable=true, defaultValue=null, enableAnalyzer=null, analyzerParams=null, enableMatch=null), CreateCollectionReq.FieldSchema(name=text, description=, dataType=VarChar, maxLength=65535, dimension=null, isPrimaryKey=false, isPartitionKey=false, isClusteringKey=false, autoID=false, elementType=null, maxCapacity=null, isNullable=false, defaultValue=null, enableAnalyzer=null, analyzerParams=null, enableMatch=null), CreateCollectionReq.FieldSchema(name=vector, description=, dataType=FloatVector, maxLength=65535, dimension=2048, isPrimaryKey=false, isPartitionKey=false, isClusteringKey=false, autoID=false, elementType=null, maxCapacity=null, isNullable=false, defaultValue=null, enableAnalyzer=null, analyzerParams=null, enableMatch=null)], enableDynamicField=false, functionList=[])
+...
+----
+
+Let's verify that there is only single (dummy) document in Milvus store.
+
+----
+$ java -jar target/quarkus-app/quarkus-run.jar list-milvus
+
+...
+2025-05-20 06:08:08,213 INFO  [io.deb.exa.air.MilvusStore] (main) Milvus list results size: 1
+2025-05-20 06:08:08,217 INFO  [io.deb.exa.air.MilvusStore] (main) Document: {metadata={"id":"permanent"}, vector=[...], text=permanent, id=permanent}
+...
+----
+
+=== Application pipeline
+
+The data pipeline is established but there is no domain specific knowledge available yet.
+We can check that model is still hallucinating.
+
+----
+$ java -jar target/quarkus-app/quarkus-run.jar query-chat Describe IterQR framework in 20 words
+
+2025-05-20 06:15:13,140 INFO  [io.deb.exa.air.RagCommand] (main) Sending query: Describe IterQR framework in 20 words
+2025-05-20 06:15:13,465 INFO  [io.deb.exa.air.MilvusRetrieavalAugmentor$RetrievalAugmentorDecorator] (main) Requested augmentation of UserMessage { name = null contents = [TextContent { text = "Describe IterQR framework in 20 words" }] }
+2025-05-20 06:15:21,521 INFO  [io.deb.exa.air.MilvusRetrieavalAugmentor$RetrievalAugmentorDecorator] (main) Result of augmentation is [DefaultContent { textSegment = TextSegment { text = "permanent" metadata = {id=permanent} }, metadata = {SCORE=0.5046951323747635, EMBEDDING_ID=permanent} }]
+2025-05-20 06:15:30,117 INFO  [io.deb.exa.air.RagCommand] (main) Chat reply: Iterative QR factorization, a permanent matrix method, breaks down data into orthogonal matrices for efficient computations.
+----
+
+Model reply is clearly unrelated to the real framework.
+Log lines emitted by `RetrievalAugmentorDecorator` shows the impact of augmentation on the message sent to the chat.
+Document `permanent` was added to the message.
+It is the dummy record from the store and as such it will be always added if it gets into top 3 matching documents.
+
+Data pipeline now processes a new domain fact (arXiv document).
+Document is downloaded from the server in textual form and inserted into PostgreSQL table.
+Debezium Server should propagate the document into Milvus store.
+
+----
+$ java -jar target/quarkus-app/quarkus-run.jar insert-document 2504.05309v1
+
+$ java -jar target/quarkus-app/quarkus-run.jar list-milvus
+
+...
+2025-05-20 06:25:00,203 INFO  [io.deb.exa.air.MilvusStore] (main) Milvus list results size: 2
+2025-05-20 06:25:00,206 INFO  [io.deb.exa.air.MilvusStore] (main) Document: {metadata={"id":"2504.05309v1"}, vector=[...], id=2504.05309v1, text=# Title
+IterQR: An Iterative Framework for LLM-based Query Rewrite in
+  e-Commercial Search System
+
+# Authors
+Shangyu Chen, Xinyu Jia, Yingfei Zhang, Shuai Zhang, Xiang Li, Wei Lin
+
+# Abstract
+The essence of modern e-Commercial search system lies in matching user's
+intent and available candidates depending on user's query, providing
+personalized and precise service. However, user's query may be incorrect due to
+ambiguous input and typo, leading to inaccurate search. These cases may be
+released by query rewr}
+2025-05-20 06:25:00,240 INFO  [io.deb.exa.air.MilvusStore] (main) Document: {metadata={"id":"permanent"}, vector=[...], id=permanent, text=permanent}...
+----
+
+Milvus store now contains the document about IterQR framework.
+Please note that by default we cut the document to 512 characters to make demo usable even on computers without GPU.
+This behaviour is controlled by https://github.com/debezium/debezium-examples/blob/main/ai-rag/client/src/main/java/io/debezium/examples/airag/DocumentDatabase.java[DocumentDatabase] class and configuration property `debezium.rag.demo.document.truncate`.
+
+Now if the query is repeated the answer should be relevant to the real description.
+
+----
+$ java -jar target/quarkus-app/quarkus-run.jar query-chat Describe IterQR framework in 20 words
+
+2025-05-20 06:30:36,703 INFO  [io.deb.exa.air.RagCommand] (main) Sending query: Describe IterQR framework in 20 words
+2025-05-20 06:30:37,014 INFO  [io.deb.exa.air.MilvusRetrieavalAugmentor$RetrievalAugmentorDecorator] (main) Requested augmentation of UserMessage { name = null contents = [TextContent { text = "Describe IterQR framework in 20 words" }] }
+2025-05-20 06:30:44,775 INFO  [io.deb.exa.air.MilvusRetrieavalAugmentor$RetrievalAugmentorDecorator] (main) Result of augmentation is [DefaultContent { textSegment = TextSegment { text = "# Title
+IterQR: An Iterative Framework for LLM-based Query Rewrite in
+  e-Commercial Search System
+
+# Authors
+Shangyu Chen, Xinyu Jia, Yingfei Zhang, Shuai Zhang, Xiang Li, Wei Lin
+
+# Abstract
+The essence of modern e-Commercial search system lies in matching user's
+intent and available candidates depending on user's query, providing
+personalized and precise service. However, user's query may be incorrect due to
+ambiguous input and typo, leading to inaccurate search. These cases may be
+released by query rewr" metadata = {id=2504.05309v1} }, metadata = {SCORE=0.5339204333722591, EMBEDDING_ID=2504.05309v1} }, DefaultContent { textSegment = TextSegment { text = "permanent" metadata = {id=permanent} }, metadata = {SCORE=0.5046951323747635, EMBEDDING_ID=permanent} }]
+2025-05-20 06:31:08,067 INFO  [io.deb.exa.air.RagCommand] (main) Chat reply: IterQR is an iterative framework for enhancing e-Commercial search system precision, addressing user query errors via continuous iterations of candidate selection based on language model outputs.
+----
+
+From the log you can see that:
+
+* The query was augmented with the arXiv document
+* The answer corresponds to the new fact
+
+But if you query the model in *Terminal 2* again then you will receive hallucinated answer as it does not have access to augmenting facts.
+
+----
+>>> Describe IterQR framework in 20 words.
+Iterative Quantized Ridge Regression (IterQR) is an efficient, iterative algorithm for large-scale linear 
+regression that leverages quantization and ridge regression to reduce computational complexity while 
+maintaining accuracy, offering a scalable approach for managing extensive datasets.
+----
+
+As a final step we are going to test if the knowledge can be forgotten.
+The data pipeline deletes the document from PostgreSQL database.
+
+----
+$ java -jar target/quarkus-app/quarkus-run.jar delete-document 2504.05309v1
+
+$ java -jar target/quarkus-app/quarkus-run.jar list-milvus
+
+...
+2025-05-20 06:40:02,797 INFO  [io.deb.exa.air.MilvusStore] (main) Milvus list results size: 1
+...
+
+$ java -jar target/quarkus-app/quarkus-run.jar query-chat Describe IterQR framework in 20 words
+
+...
+2025-05-20 06:40:44,373 INFO  [io.deb.exa.air.RagCommand] (main) Sending query: Describe IterQR framework in 20 words
+2025-05-20 06:40:44,665 INFO  [io.deb.exa.air.MilvusRetrieavalAugmentor$RetrievalAugmentorDecorator] (main) Requested augmentation of UserMessage { name = null contents = [TextContent { text = "Describe IterQR framework in 20 words" }] }
+2025-05-20 06:40:51,957 INFO  [io.deb.exa.air.MilvusRetrieavalAugmentor$RetrievalAugmentorDecorator] (main) Result of augmentation is [DefaultContent { textSegment = TextSegment { text = "permanent" metadata = {id=permanent} }, metadata = {SCORE=0.5046951323747635, EMBEDDING_ID=permanent} }]
+2025-05-20 06:41:01,424 INFO  [io.deb.exa.air.RagCommand] (main) Chat reply: Iterative QR (iterQR) is an algorithm for approximate singular value decomposition, efficiently computing sparse solutions to linear systems through iterative updates of the matrix representation.
+...
+----
+
+As the result of the document removal
+
+* Debezium Server captures the delete operation and removes document from Milvus store
+* Chat query is not augmented
+* Reply is again hallucinated
+
+=== Stop demo
+
+A the end the demo deployment is dropped via
+
+----
+$ docker-compose down
+----
+
+that will terminate containers in all terminals.
+
+== Conclusion
+
+This blogpost explains how Debezium 3.1 can be integrated into AI workflows, particularly those using Retrieval-Augmented Generation (RAG).
+Debezium captures real-time changes in databases and feeds them into vector databases.
+These updates are essential for keeping AI systems current with fresh, domain-specific data.
+The example setup involves PostgreSQL, Debezium Server, Milvus, and Granite LLM (with embeddings).
+This architecture enables intelligent applications that respond with accurate, up-to-date information.
