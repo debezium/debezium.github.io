@@ -1,0 +1,158 @@
+---
+layout: post
+title:  "Data Lineage with Debezium using OpenLineage"
+date:   2025-06-09
+tags: [ releases, cdc, integration, openlineage, data, lineage ]
+author: mfvitale
+---
+
+The modern data landscape bears little resemblance to the centralized databases and simple ETL processes of the past.
+Today's organizations operate in environments characterized by diverse data sources, real-time streaming, microservices architectures, and multi-cloud deployments.
+What began as straightforward data flows from operational systems to reporting databases has evolved into complex networks of interconnected pipelines, transformations, and dependencies.
+The shift from ETL to ELT patterns, the adoption of data lakes, and the proliferation of streaming platforms like Apache Kafka have created unprecedented flexibility in data processing.
+However, this flexibility comes at a cost: understanding how data moves, transforms, and evolves through these systems has become increasingly challenging.
+
+== Understanding data lineage
+Data lineage is the process of tracking the flow and transformations of data from its origin to its final destination.
+It essentially maps the "life cycle" of data, showing where it comes from, how it's changed, and where it ends up within a data pipeline.
+This includes documenting all transformations, joins, splits, and other manipulations the data undergoes during its journey.
+
+At its core, data lineage answers critical questions: Where did this data originate? What transformations has it undergone? Which downstream systems depend on it? When issues arise, where should teams focus their investigation?
+
++++<!-- more -->+++
+
+== Why data lineage matters
+
+Regulatory compliance and governance::
+Modern regulations like GDPR, SOX, and industry-specific compliance frameworks require organizations to demonstrate comprehensive understanding of how data is processed. Data lineage provides the audit trail necessary for regulatory compliance, enabling organizations to show exactly how sensitive information flows through their systems.
+
+Data quality and trust::
+When business users encounter unexpected values or anomalies in reports, data lineage enables rapid quality assessment.
+Teams can quickly trace data back through processing chains to identify where quality issues originated, building confidence in data-driven decisions.
+
+Operational efficiency::
+In complex data ecosystems, troubleshooting traditionally involves time-consuming manual investigation.
+Data lineage transforms this reactive process into systematic operations, enabling teams to quickly identify affected systems, assess impact scope, and implement targeted fixes.
+
+== OpenLineage
+
+https://openlineage.io/[OpenLineage] is an open standard for data lineage that provides a unified way to collect and track lineage metadata across multiple data systems.
+The specification defines a common model for describing datasets, jobs, and runs, making it easier to build comprehensive lineage graphs across heterogeneous data infrastructures.
+
+At the core of OpenLineage is a standard API for capturing lineage events.
+Pipeline components - like schedulers, warehouses, analysis tools, and SQL engines - can use this API to send data about runs, jobs, and datasets to a compatible OpenLineage backend for further study.
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2025-06-09-openlineage-integration/openlineage.svg" class="responsive-image" alt="OpenLineage architecture">
+</div>
+++++
+
+=== OpenLineage object model
+
+OpenLineage defines a generic model of run, job, and dataset entities identified using consistent naming strategies.
+The core lineage model is extensible by defining specific facets to enrich those entities.
+
+==== Core Entities
+https://openlineage.io/docs/spec/object-model#dataset[Dataset]:: A dataset is a unit of data, such as a table in a database or an object in a bucket for cloud storage. A dataset changes when a job writing to it gets completed.
+https://openlineage.io/docs/spec/object-model#job[Job]:: A job is a data pipeline process that creates or consumes datasets. Jobs can evolve, and documenting these changes is crucial to understanding your pipeline's mechanism.
+https://openlineage.io/docs/spec/object-model#run[Run]:: A run is an instance of a job that has been executed. It contains information about the job, such as the start and completion (or failure) time.
+
+== How Debezium integrates with OpenLineage
+
+To integrate with OpenLineage, Debezium uses the OpenLineage Java SDK.
+
+=== OpenLineage job mapping
+
+The Debezium connector is mapped to an OpenLineage *Job*, which includes the following elements:
+
+Name:: Inherited from the Debezium `topic.prefix`.<taskId>.
+Namespace:: Inherited from `openlineage.integration.job.namespace`, if specified; otherwise defaults to `topic.prefix`
+Debezium version information:: The connector version
+Complete connector configuration:: The whole configuration used by the connector
+Job metadata:: A job description, a set of configurable tags, and owners.
+
+=== Dataset Mapping for source connectors
+
+The following dataset mappings are possible:
+
+Input Datasets::
+Automatically created for the database tables that Debezium is configured to capture changes from.
+The following characteristics affect the mapping:
+
+* Each monitored table becomes an input dataset.
+* Schema information for a table is captured, including column names and types.
+* Dataset schemas are updated dynamically after a DDL change.
+
+Output Datasets::
+Represent the Kafka topics that result after you apply the OpenLineage transform.
+Mappings are created according to the following principles:
+
+* Each Kafka topic that the connector produces becomes an output dataset.
+* The output dataset captures the complete CDC event structure, including metadata fields.
+* The name of the dataset is based on the connector's topic prefix configuration.
+
+[Note]
+This mapping is valid for source connectors. We will add support also for sinks in next releases.
+
+=== Job status
+
+Every time the Debezium connector start, after a graceful shutdown or a failure, a new run event is associated to the job.
+So the job status will change as following:
+
+START:: Emitted during the connector initialization.
+RUNNING:: Emitted periodically during normal streaming operations and during processing individual tables. These periodic events ensure continuous lineage tracking for long-running streaming CDC operations.
+COMPLETE:: Emitted when the connector shut down gracefully.
+FAIL:: Emitted when the connector encountered an error.
+
+== So, what can we actually do with these lineage metadata?
+
+Well, one of the most powerful things is to visualize your lineage graph and how the different pieces of you data pipelines connects together.
+OpenLineage can be https://openlineage.io/docs/client/java/configuration[configured] to send lineage metadata to different `consumers`.
+One such consumer is https://marquezproject.ai/[Marquez].
+
+It is an open source metadata service for the collection, aggregation, and visualization of a data ecosystem's metadata.
+It maintains the provenance of how datasets are consumed and produced, provides global visibility into job runtime and frequency of dataset access, centralization of dataset lifecycle management, and much more.
+
+The following pictures shows the lineage graph generated by the Debezium Postgres connector with our example database, the `inventory`.
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2025-06-09-openlineage-integration/lineage-graph.png" class="responsive-image" alt="Inventory connector lineage graph">
+</div>
+++++
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2025-06-09-openlineage-integration/job-detail.png" class="responsive-image" alt="Job details">
+</div>
+++++
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2025-06-09-openlineage-integration/job-detail2.png" class="responsive-image" alt="Job detail with custom debezium facet">
+</div>
+++++
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2025-06-09-openlineage-integration/input-dataset-detail.png" class="responsive-image" alt="Input dataset">
+</div>
+++++
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2025-06-09-openlineage-integration/output-dataset-detail.png" class="responsive-image" alt="Output dataset">
+</div>
+++++
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2025-06-09-openlineage-integration/output2-dataset-detail.png" class="responsive-image" alt="Output dataset details">
+</div>
+++++
+
+This concludes our introduction article on OpenLinage integration. Another will follow with a complete showcase.
+Meanwhile, you can refer to our documentation to start playing with it.
+
+We also suggest to have a read to https://openlineage.io/blog/explore-lineage-api/[Exploring Lineage History via the Marquez API]
