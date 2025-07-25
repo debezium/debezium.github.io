@@ -4,7 +4,7 @@
 
 MAVEN_REPO="https://central.sonatype.com/repository/maven-snapshots"
 GROUP_ID="io/debezium"
-DEBEZIUM_VERSION="3.2.0-SNAPSHOT"
+DEBEZIUM_VERSION="3.3.0-SNAPSHOT"
 ARTIFACT_PREFIX="debezium-connector"
 FILE_EXT="tar.gz"
 ANTORA_FILE="playbook.yml"
