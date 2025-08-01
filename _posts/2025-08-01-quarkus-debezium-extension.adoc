@@ -1,0 +1,241 @@
+---
+layout: post
+title: "Subatomic & Effortless Change Data Capture with Debezium Extensions for Quarkus"
+date: 2025-08-01
+tags: [ releases, cdc, debezium, graalvm, mandrel, performance, native, embedded, engine ]
+author: gpanice
+---
+
+When I started working on Debezium, two questions came to mind:
+Is it possible to https://debezium.io/blog/2025/03/12/superfast-debezium[build a native version] of Debezium?
+Can I receive change data capture (CDC) events directly inside my microservice without relying on additional infrastructure?
+
+This led us to work on a new Debezium stream: I’m excited to announce the first release of *Debezium Extensions for Quarkus*!
+
++++<!-- more -->+++
+
+== Introduction
+
+Change Data Capture (CDC) has become a key pattern in *modern microservices architectures*, in some cases one of the best way to evolve https://www.confluent.io/events/kafka-summit-americas-2021/dissecting-our-legacy-the-strangler-fig-pattern-with-debezium-apache-kafka/[them].
+However, adopting CDC often comes with infrastructure overhead especially in fast-moving environments.
+
+Debezium Extensions for Quarkus aim to change that.
+With this extension, developers can consume CDC events *directly inside their Quarkus applications, anything else*.
+Just add the extension, configure your data source, and listen to changes as they happen.
+
+=== Supported Connectors
+
+The *Postgres* connector is the only supported connector at this time.
+
+=== When use it?
+
+- when infrastructure is a business concern
+- when low memory footprint is important, thanks to Quarkus Native support
+- ideal for lightweight use cases like POC, developer environments or monolith to microservices pattern
+- when the company is moving the first steps in CDC
+
+=== What isn't?
+
+- a replacement for Debezium Server or Kafka Connect that guarantee production-grade CDC
+- a ready-to-sink tool. You have to manage what happens after the change events reach your application
+- Coupling CDC logic into the application may reduce flexibility and lead to technical debt
+
+
+== Let's start: build a CDC microservice for Postgres
+
+In this section we will go through the creation of a Debezium capturing listener in a Quarkus application!
+
+=== Prerequisite
+
+- JDK 21+ installed with `JAVA_HOME` configured
+- Apache maven 3.9.9
+- Quarkus version 3.25.0
+- Docker or Podman
+- Optionally Mandrel or GraalVM installed and configured if you want to build a native executable
+
+=== Setup a Quarkus Project
+
+If you already have a Quarkus application, you can skip this step.
+Otherwise, the easiest way to create a new Quarkus Project is to open a terminal and run the following command:
+
+```bash
+mvn io.quarkus.platform:quarkus-maven-plugin:3.25.0:create \
+    -DprojectGroupId=org.acme \
+    -DprojectArtifactId=debezium-starter
+```
+
+it generates a maven project with some Quarkus boilerplate in `./debezium-starter` directory.
+
+=== Add the extension to the project
+
+In the project, add the Debezium extension dependency to your application’s `pom.xml` in the `dependencies` section:
+
+```xml
+        <dependency>
+            <groupId>io.debezium</groupId>
+            <artifactId>quarkus-debezium-postgres</artifactId>
+            <version>${version.debezium}</version>
+        </dependency>
+```
+
+=== Configuring the extension
+
+The Debezium extension is shipped with a *Connector* (in this case Postgres) that listen CDC events from the datasource but a minimal configuration is mandatory.
+The configuration parameters available for the connector are the same used in the https://debezium.io/documentation/reference/stable/connectors/postgresql.html[Debezium Documentation] with a prefix `quarkus.debezium.*`.
+Here the minimum configuration for the extension that you can add in the `src/main/resources/application.properties`:
+
+```properties
+# Debezium CDC configuration
+quarkus.debezium.offset.storage=org.apache.kafka.connect.storage.MemoryOffsetBackingStore
+quarkus.debezium.name=native
+quarkus.debezium.topic.prefix=dbz
+quarkus.debezium.plugin.name=pgoutput
+quarkus.debezium.snapshot.mode=initial
+```
+
+It's also necessary the configuration for the https://quarkus.io/guides/datasource#configure-a-jdbc-datasource[datasource] to the target database but in this guide we will use the https://quarkus.io/guides/dev-services[DevService support] with Official Debezium image which are already prepared for CDC.
+
+=== Example data
+
+Indeed, it's possible to add some sql script to the docker image for development purpose, so create a new file in `src/main/resources/init.sql` with the following:
+
+```sql
+CREATE SCHEMA inventory;
+
+CREATE TABLE inventory.products (
+    id INT PRIMARY KEY,
+    name VARCHAR(100),
+    description TEXT,
+    weight BIGINT
+);
+
+INSERT INTO inventory.products (id, name, description, weight) VALUES
+(1, 'Laptop', 'High-performance ultrabook', 1250),
+(2, 'Smartphone', 'Latest model with AMOLED display', 180),
+(3, 'Coffee Mug', 'Ceramic mug with lid', 350);
+```
+
+in a new dev configuration file like `src/main/resources/application-dev.properties` you can instrument dev-services to use it:
+
+```properties
+quarkus.datasource.devservices.init-script-path=init.sql
+```
+
+=== Receiving change data capture events from Debezium
+
+Your Quarkus application can receive events directly with a method annotated with `@Capturing`. So let's create an `InventoryListener`:
+
+```java
+package org.acme;
+
+import io.debezium.runtime.Capturing;
+import io.debezium.runtime.CapturingEvent;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import org.apache.kafka.connect.source.SourceRecord;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+@ApplicationScoped
+public class InventoryListener {
+
+    private final Logger logger = LoggerFactory.getLogger(InventoryListener.class);
+
+    @Capturing()
+    public void products(CapturingEvent<SourceRecord> event) {
+        logger.info("capturing event for destination {} with data {}", event.destination(), event.record());
+    }
+}
+```
+
+you can also filter events by destination:
+
+```java
+    @Capturing(destination = "dbz.inventory.products")
+    public void orders(CapturingEvent<SourceRecord> event) {
+        logger.info("capturing products for destination {} with data {}", event.destination(), event.record());
+    }
+```
+
+or map the event to a `Product` class with a `Deserializer` in this case `Jackson`:
+
+```java
+package org.acme;
+
+import io.quarkus.debezium.engine.deserializer.ObjectMapperDeserializer;
+
+public class ProductDeserializer extends ObjectMapperDeserializer<Product> {
+    public ProductDeserializer() {
+        super(Product.class);
+    }
+}
+```
+
+```java
+public record Product(Integer id, String name, String  description, BigDecimal weight) { }
+```
+
+and add the definition in the configuration in this way:
+
+```properties
+# Deserializer mapping for Product
+quarkus.debezium.capturing.product.destination=dbz.inventory.products
+quarkus.debezium.capturing.product.deserializer=org.acme.ProductDeserializer
+```
+
+Now you can use it directly:
+
+```java
+    @Capturing(destination = "dbz.inventory.products")
+    public void orders(CapturingEvent<Product> event) {
+        logger.info("capturing products for destination {} with data {}", event.destination(), event.record());
+    }
+```
+
+=== Running the application
+
+So if we run our application in development mode:
+
+```bash
+mvn quarkus:dev
+```
+
+you will see in the logs flowing the snapshot events taken from the example table.
+
+You can insert/update some row in the database and check it in the log:
+
+1. get the `container id`
+```bash
+container_id=$(docker ps --filter "ancestor=quay.io/debezium/postgres:15" --format "{{.ID}}") && echo $container_id
+```
+
+2. update the product name from Laptop to Notebook
+```bash
+docker exec "$container_id" bash -c "PGPASSWORD=quarkus psql -U quarkus quarkus -c \"UPDATE inventory.products SET name = 'Notebook' where id = 1\""
+```
+
+=== Build a Native Application
+
+If you have configured correctly your environment you can generate a native application with:
+
+```bash
+mvn clean install -Dnative
+```
+
+but don't forget to add in the `application.properties` or in `application-prod.properties` the configuration of your datasource like:
+
+```properties
+quarkus.datasource.db-kind=postgresql
+quarkus.datasource.username=native
+quarkus.datasource.password=native
+quarkus.datasource.jdbc.url=jdbc:postgresql://localhost:5432/native
+quarkus.datasource.jdbc.max-size=16
+```
+
+=== Going further
+
+This quick guide has shown how you can interact with Debezium using Quarkus. It utilizes the new Debezium Extension to build data streaming applications.
+
+For the exhaustive list of features and configuration options, check the https://debezium.io/documentation/reference/3.2/integrations/quarkus-debezium-engine-extension.html[Reference documentation for Debezium Extension].
+
+You can find a working example in the https://github.com/debezium/debezium-examples/tree/main/debezium-quarkus-extension-service[Debezium example repository].
