@@ -136,4 +136,4 @@ Use Git on your local machine to commit the changes to the site's codebase to yo
 As soon as you passes the pull request a GitHub action generates the link for preview the change in surge.sh. When a pull request is closed the surge preview instance will be torn down.
 ### 7. Publish the website
 
-Review the pull request and merge onto the `develop` branch. The [GitHub Actions](4https://github.com/features/actions) will then build the `develop` branch and, if successful, store the generated site in the `gh-pages` branch and publish to GitHub Pages.
+Review the pull request and merge onto the `develop` branch. The [GitHub Actions](https://github.com/features/actions) will then build the `develop` branch and, if successful, store the generated site in the `gh-pages` branch and publish to GitHub Pages.
