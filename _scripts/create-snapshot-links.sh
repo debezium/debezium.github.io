@@ -8,7 +8,7 @@ DEBEZIUM_VERSION="3.3.0-SNAPSHOT"
 ARTIFACT_PREFIX="debezium-connector"
 FILE_EXT="tar.gz"
 ANTORA_FILE="playbook.yml"
-CONNECTORS=(mysql mongodb postgres sqlserver oracle db2 jdbc spanner vitess informix ibmi mariadb cassandra-3 cassandra-4 cassandra-5)
+CONNECTORS=(mysql mongodb postgres sqlserver oracle db2 jdbc spanner vitess informix ibmi mariadb cassandra-3 cassandra-4 cassandra-5 cockroachdb)
 
 update_snapshot_link() {
     local COMPONENT=$1
