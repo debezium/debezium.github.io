@@ -1,0 +1,125 @@
+---
+layout: post
+title: "Why CTE Queries Are a Game-Changer for the Debezium Oracle Connector"
+date: 2025-08-14
+tags: [ cdc, debezium, oracle, performance, connectors ]
+author: ccranfor
+---
+
+Most engineers working in data streaming are not SQL specialists.
+So you might be asking yourself:
+What is a CTE?
+More importantly, what are CTE queries, why are they useful, and how do they help you in the context of Debezium?
+
+In this post, we’ll answer those questions, explore how the Debezium Oracle connector leverages CTE queries, and discuss the benefits and trade-offs involved.
+
++++<!-- more -->+++
+
+== What is a Common Table Expression (CTE)?
+
+A _Common Table Expression_ (CTE) is a SQL feature introduced in the SQL standard over 20 years ago.
+It allows you to define a temporary, named result set within a query — one that exists only for the lifetime of the query and is not stored in the database.
+
+CTEs help you write cleaner, more maintainable SQL by breaking down complex queries into logical, readable building blocks — much like constructing a complex structure from simpler, well-designed components.
+
+In practice, CTEs can serve as an alternative to views and can sometimes improve performance by avoiding repeated calculations, especially in queries that involve large joins or nested logic.
+
+== The problem CTE queries solve in Debezium
+
+Debezium must track detailed metadata for every transaction: when it starts, who initiated it, and when it ends.
+Databases represent these boundaries with markers such as `START` or `BEGIN` for the beginning of a transaction, and `COMMIT` or `ROLLBACK` for its conclusion.
+
+For the Debezium Oracle connector, these markers are essential.
+The connector consumes changes from Oracle transaction logs in uncommitted mode, which is efficient for database load but means Debezium receives all changes — including those from transactions that are later rolled back.
+To handle this, the connector uses a transaction buffer to store in-progress transactions until it encounters a `COMMIT` or `ROLLBACK`.
+
+Currently, users can configure `log.mining.query.filter.mode` to push table include/exclude filters down to Oracle LogMiner.
+This typically improves performance because it reduces the amount of data sent to Debezium over the network.
+However, this filter only applies to DML (e.g., inserts, updates, deletes) and DDL (schema changes) — not to transaction markers.
+
+In low-activity databases, the small number of transaction markers (`START`, `COMMIT`, `ROLLBACK`) usually isn’t an issue.
+But in high-volume environments — think millions of changes per day when only a few tables are captured — transaction markers can dominate the data stream, creating unnecessary processing and network overhead.
+
+This is where CTE queries come in.
+By performing a pre-filtering pass at the database level, a CTE query can limit transaction markers to only those transactions that include relevant DML or DDL events based on your include/exclude lists.
+
+== Requirements and enabling CTE support
+
+To enable the Oracle connector’s CTE query feature, set the following in your connector configuration:
+
+* `internal.log.mining.use.cte.query` — enables the feature (currently experimental).
+* `log.mining.query.filter.mode` — required so that include/exclude predicates are pushed to the database query.
+
+[NOTE]
+====
+If `log.mining.query.filter.mode` is not explicitly set to `in`, enabling CTE queries will result in an invalid connector configuration.
+====
+
+== Advantages
+
+When the CTE query feature is enabled, the Oracle LogMiner query performs a targeted pre-pass over the transaction logs to generate an in-memory CTE containing only the transaction identifiers (XIDs) that involve tables in your include/exclude list.
+This temporary table is then used to filter the main query, so Debezium processes *only the transactions that matter*.
+
+This approach offers several key benefits:
+
+Reduced network load::
+Without CTE filtering, Debezium receives all transaction markers (`START`, `COMMIT`, `ROLLBACK`), even for transactions unrelated to your captured tables.
+In high-volume databases, these markers can represent the majority of events sent over the network.
+By filtering them at the source, you transmit only the relevant markers, reducing the volume of network traffic.
+
+Lower Debezium CPU usage::
+The connector no longer wastes CPU cycles parsing, buffering, and discarding transaction markers for transactions that contain no relevant changes.
+This is particularly impactful when your Oracle instance has a large number of short-lived or transactions for non captured tables.
+
+Improved memory efficiency::
+In uncommitted mode, Debezium buffers all in-progress transactions until it encounters a `COMMIT` or `ROLLBACK`.
+Even though the include/exclude filters prevent buffering events for non-captured tables, transaction metadata is captured regardless.
+With CTE queries, fewer transaction markers are consumed, meaning that there is a smaller in-memory footprint for transaction metadata, reducing garbage collection pressure for many short-lived transactions.
+
+Better throughput and reduced latency::
+With fewer events to process, the connector can keep pace more easily during peak loads, improving end-to-end event delivery times to Kafka and downstream consumers.
+
+Minimal configuration complexity::
+The feature builds on the existing `log.mining.query.filter.mode` include/exclude rules.
+If you’ve already set this in your connector configuration, enabling CTE support requires only one additional configuration change.
+
+Database-side optimization::
+By offloading the filtering work to the database engine, you leverage Oracle’s own optimized execution paths for set-based operations.
+The database is highly efficient at scanning and filtering data before it leaves the server, which is often more performant than handling these operations in Debezium’s JVM process.
+
+In real-world workloads — particularly those with millions of transactions per day and relatively small capture scopes — these combined benefits can significantly reduce infrastructure load, improve stability under burst traffic, and allow for more predictable scaling of CDC pipelines.
+
+== Disadvantages
+
+As with most optimizations, the CTE query feature comes with trade-offs that should be carefully evaluated against your environment.
+
+When the feature is enabled, the CTE table contains only a distinct list of transaction identifiers (a single `RAW(8)` column).
+Because this table is not directly joined into the main query’s result set, Oracle must scan the transaction logs twice for each pass:
+
+First pass:: Build the CTE of transaction IDs that involve only captured tables.
+Second pass:: Use the list of generated transaction IDs to filter and return the relevant transaction events.
+
+This dual-pass approach increases the I/O workload on the database server.
+On systems where log mining I/O is already near capacity — especially on busy Oracle instances with large redo log volumes — this additional read overhead could impact mining throughput or overall system performance.
+
+Other considerations include:
+
+Potentially higher CPU on database server::
+The extra filtering and CTE materialization require additional CPU cycles, which could be noticeable in environments with constrained resources.
+
+Less benefit in low-volume or full-capture environments::
+If you already capture most tables or have minimal transaction traffic, the filtering benefit may be negligible while still incurring the extra I/O cost.
+
+Log mining query filter requirements::
+The feature requires explicitly using `log.mining.query.filter.mode` set to `in`.
+If you are currently using `regex`, this feature is currently unsupported and cannot be used.
+
+In most high-volume, targeted-capture deployments, the performance gains in reduced network and Debezium-side processing outweigh the I/O cost on the database.
+However, it’s important to measure and monitor your environment after enabling the feature to ensure the trade-off is favorable for your workload.
+
+== Feedback
+
+This feature is experimental, and we want to hear from you.
+It may not be suitable for all environments, and further tuning may be needed to optimize performance for broader use cases.
+
+If you try it, please share your experiences on the Debezium link:++https://groups.google.com/forum/#!forum/debezium[mailing list]++[mailing list] or in our Zulip https://debezium.zulipchat.com/\#narrow/stream/302529-users[chat].
