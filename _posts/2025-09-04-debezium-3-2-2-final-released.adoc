@@ -1,0 +1,135 @@
+---
+layout: post
+title:  Debezium 3.2.2.Final Released
+date:   2025-09-04
+tags: [ releases, mongodb, mysql, mariadb, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox, spanner, jdbc, informix, ibmi ]
+author: ccranfor
+extraClasses: release-v2
+---
+
+Debezium 3.2.2.Final delivers critical stability improvements, including a fix for potential data loss during failed ad-hoc blocking snapshots, resolution of confusing connector startup errors, and enhanced JMX throughput metrics for Oracle LogMiner.
+
++++<!-- more -->+++
+
+In this post, we're going to take a deep dive into the improvements made across several key modules of Debezium, discussing any new features, and explaining any changes that could impact your upgrade process.
+As always, we recommend you read the link:/releases/3.2/release-notes#release-3.2.2-final[release notes] to learn about all the bugs that were fixed, update procedures, and more.
+
+[id=new-features-and-improvements]
+== New features and improvements
+
+The following describes all noteworthy new features and improvements in **Debezium 3.2.2.Final**.
+For a complete list, be sure to read the link:/releases/3.2/release-notes#release-3.2.2-final[release notes] for more details.
+
+[cols="1,1"]
+|===
+| link:#new-features-and-improvements-core[Debezium Core]
+| link:#new-features-and-improvements-oracle[Debezium for Oracle]
+|===
+
+[id=new-features-and-improvements-cire]
+=== Debezium Core
+
+==== Connector startup fails with cryptic error
+
+We've resolved an issue where connectors would fail to start with a misleading error message, restoring smooth startup while preserving improved offset validation.
+
+Users began encountering this confusing exception during connector startup in one corner case:
+
+[source,java]
+----
+org.apache.kafka.connect.errors.DataException: Invalid value: null used for required field: "schema", schema type: STRING
+----
+
+This cryptic error message provided no useful information about what was actually wrong, making troubleshooting nearly impossible.
+
+The issue was an unintended consequence of a recent improvement we made to offset validation.
+We enhanced the logic to provide better error messages when offset positions are no longer available in the source database—a valuable feature that helps diagnose common operational issues.
+
+However, the new validation logic made assumptions about certain offset attributes being available during connector startup.
+In reality, these attributes aren't populated until later in the connector's lifecycle, causing the validation to fail prematurely with an unhelpful error message.
+
+We've updated the exception handling logic to:
+
+* Avoid assumptions about offset attribute availability during startup
+* Preserve the enhanced validation for cases where offsets are genuinely invalid
+* Provide meaningful error messages when offset positions are actually problematic
+* Allow normal startup to proceed without false positives
+
+This fix ensures you get the benefits of enhanced error reporting without the startup disruption (https://issues.redhat.com/browse/DBZ-9416[DBZ-9416]).
+
+==== Possible data loss after failed ad-hoc blocking snapshots
+
+We've resolved a critical issue that could cause data loss when ad-hoc blocking snapshots encountered problems, ensuring your streaming data remains intact even when snapshots fail.
+
+When running ad-hoc blocking snapshots, encountering invalid data in a table would cause the snapshot to fail.
+Unfortunately, this failure had a serious side effect: streaming events that occurred during the snapshot period were permanently lost.
+
+This meant that if your snapshot ran for several hours before hitting bad data, all the real-time changes that happened during those hours would be skipped entirely when the connector resumed normal streaming operations.
+
+Blocking snapshots now handle failures gracefully by:
+
+* Preserving the streaming position from immediately before the snapshot began
+* Automatically resuming from the correct position when the snapshot fails
+* Ensuring zero data loss regardless of when or why the snapshot encounters issues
+
+This improvement makes blocking snapshots much more reliable for production environments (https://issues.redhat.com/browse/DBZ-9337[DBZ-9337]).
+
+[id=new-features-and-improvements-oracle]
+=== Debezium for Oracle
+
+==== Last Batch Processing Throughput Metric Improved
+
+We've enhanced the accuracy of the `LastBatchProcessingThroughput` JMX metric in the Oracle LogMiner adapter, giving you better visibility into your connector's performance.
+
+Previously, this metric calculated throughput based on the number of captured table events that were actually processed during each batch.
+While this seemed logical, it led to misleading results in several common scenarios:
+
+* Database-level filtering would reduce the count of processed events, even though the connector was still doing the work to read and evaluate those filtered records
+* Transaction markers in the event stream could skew the numbers, sometimes dramatically understating the actual processing load
+* Various configuration settings would impact the metric in ways that didn't reflect the connector's true performance
+
+The metric now measures throughput based on the physical number of JDBC rows read from the LogMiner dataset, regardless of whether those rows end up being:
+
+* Filtered out by your configuration in the JVM
+* Transaction control records
+* Events that don't match your table or schema filters
+
+This gives you a much more accurate picture of the raw processing power your Debezium connector is delivering during each batch processing window (https://issues.redhat.com/browse/DBZ-9399[DBZ-9399]).
+
+[id=other-fixes]
+=== Other fixes
+
+There are several other noteworthy fixes in this release worth mentioning:
+
+* JdbcSchemaHistory Fails to Handle Data Sharding When Recovering Records https://issues.redhat.com/browse/DBZ-8979[DBZ-8979]
+* Quarkus-Debezium-Extension does not work with Hibernate ORM 7  https://issues.redhat.com/browse/DBZ-9193[DBZ-9193]
+* Issue in ReselectColumnsPostProcessor when field's schema type is BYTES https://issues.redhat.com/browse/DBZ-9356[DBZ-9356]
+* MariaDB fails to parse ALTER TABLE using RENAME COLUMN IF EXISTS syntax https://issues.redhat.com/browse/DBZ-9358[DBZ-9358]
+* Oracle fails to reselect columns when table structure changes and throws ORA-01466 https://issues.redhat.com/browse/DBZ-9359[DBZ-9359]
+* Single quotes getting double quotes in a create operation https://issues.redhat.com/browse/DBZ-9366[DBZ-9366]
+* Mining upper boundary is miscalculated when using archive log only mode https://issues.redhat.com/browse/DBZ-9370[DBZ-9370]
+* Proper Kafka producer exception not logged due to record.key serialisation error https://issues.redhat.com/browse/DBZ-9378[DBZ-9378]
+* Oracle DDL parser exception - DROP MATERIALIZED https://issues.redhat.com/browse/DBZ-9397[DBZ-9397]
+* Oracle connector does not parse syntax : PARALLEL in DDL  https://issues.redhat.com/browse/DBZ-9406[DBZ-9406]
+* Increase max allowed json string length https://issues.redhat.com/browse/DBZ-9407[DBZ-9407]
+* LCR flushing can cause low watermark to be invalidated https://issues.redhat.com/browse/DBZ-9413[DBZ-9413]
+* Context headers are added two times during an incremental snapshot https://issues.redhat.com/browse/DBZ-9422[DBZ-9422]
+
+[id=summary]
+== Summary
+
+In total, https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20and%20fixVersion%20%20in%20(3.2.2.Final)[24 issues] were resolved in Debezium 3.2.2.Final.
+The list of changes can also be found in our https://debezium.io/releases/3.2/release-notes[release notes].
+
+A big thank you to all the contributors from the community who worked diligently on this release:
+ +
+https://github.com/AlvarVG[Alvar Viana],
+https://github.com/Naros[Chris Cranford],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/jschnab[Jonathan Schnabel],
+https://github.com/ufou[Luke Alexander],
+https://github.com/Marci0817[Marci],
+https://github.com/mfvitale[Mario Fiore Vitale],
+https://github.com/ochedru[Olivier CHÉDRU],
+https://github.com/roldanbob[Robert Roldan], and
+https://github.com/spsheni[Shyama Praveena S]!
