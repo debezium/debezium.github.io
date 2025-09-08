@@ -6,14 +6,14 @@ tags: [ sqlserver, tx-log, cdc-tables, internals]
 author: vjuranek
 ---
 
-SQL Server offers change data capture (CDC) through link:https://learn.microsoft.com/en-us/sql/relational-databases/track-changes/about-change-data-capture-sql-server?view=sql-server-ver17[captured tables] - a special set of system tables that record modifications in selected “ordinary” tables.
-If you want to monitor changes in real time, you query these captured tables periodically.
-That’s exactly how Debezium works today: it polls SQL Server’s captured tables at configured intervals and turns the results into a continuous stream of CDC records.
+SQL Server offers change data capture (CDC) through link:https://learn.microsoft.com/en-us/sql/relational-databases/track-changes/about-change-data-capture-sql-server?view=sql-server-ver17[change tables] - a special set of system tables that record modifications in selected “ordinary” tables.
+If you want to monitor changes in real time, you query these change tables periodically.
+That’s exactly how Debezium works today: it polls SQL Server’s change tables at configured intervals and turns the results into a continuous stream of CDC records.
 This approach works fine, but could we do better?
 
-Captured tables are filled by the SQL Server Agent, which reads the transaction log, extracts changes, and stores them for in captured tables.
+Captured tables are filled by the SQL Server Agent, which reads the transaction log, extracts changes, and stores them in change tables.
 In theory, we could skip the middleman and parse the transaction log directly.
-That’s how tools like OpenLogReplicator can handle CDC for Oracle databases.
+That’s how tools like OpenLogReplicator handle CDC for Oracle databases.
 Let's peek inside the SQL Server internals and explore little bit how it works and stores the records.
 
 In this post, we’ll:
@@ -91,7 +91,7 @@ firewall-cmd --reload
 
 Once the server is up and running, we can create a test database and table in it:
 
-[source, sql]
+[source, sql, options="nowrap"]
 ----
 CREATE DATABASE TestDB;
 GO
@@ -123,15 +123,17 @@ For our example database, those files are `TestDB.mdf` and `TestDB_log.ldf`.
 
 If, for whatever reason you cannot find these files on this location, you can obtain location of physical files directly from the SQL server by running following query:
 
-[source, sql]
+[source, sql, options="nowrap"]
 ----
-SELECT name, physical_name FROM sys.master_files WHERE database_id = DB_ID('TestDB');
+SELECT name, physical_name 
+FROM sys.master_files 
+WHERE database_id = DB_ID('TestDB');
 GO
 ----
 
 SQL server should give a result like this:
 
-[source, sql]
+[source, sql, options="nowrap"]
 ----
 name                           physical_name                 
 ------------------------------ ------------------------------
@@ -146,9 +148,10 @@ A transaction log isn’t one giant monolithic space — it’s divided into Vir
 SQL Server decides how many VLFs to create based on the log size.
 You can get VLF sequence numbers and other information about the database by calling `sys.dm_db_log_info` procedure:
 
-[source, sql]
+[source, sql, options="nowrap"]
 ----
-SELECT file_id, vlf_sequence_number, vlf_begin_offset, vlf_size_mb FROM sys.dm_db_log_info(DB_ID('TestDB'));
+SELECT file_id, vlf_sequence_number, vlf_begin_offset, vlf_size_mb 
+FROM sys.dm_db_log_info(DB_ID('TestDB'));
 ----
 
 Example output containing a VLF sequence number (unique per file),  begin offset (where it starts in the file) and size in MB looks like this:
@@ -169,19 +172,36 @@ The first 8kB are reserved for the log file header.
 
 VLFs header contains information whether VLFs is active or not.
 VLFs are used in a circular fashion and unused VLFs can be reused for newly created VLFs.
-VLF cannot be reused until it’s in an active state.
-This typically happens when it contains records which are part of an uncommitted transaction or the records weren’t archived yet or processed by other parts of the system (copied to the captured tables, replicated to another server etc.).
+VLF cannot be reused when it’s in an active state.
+This typically happens when it contains records which are part of an uncommitted transaction or the records weren’t archived yet or processed by other parts of the system (copied to the change tables, replicated to another server etc.).
 VFLs are converted from active to inactive state by the process called `log truncation`.
 Exact behavior when and how VLFs are being reused depends also on the link:https://learn.microsoft.com/en-us/sql/relational-databases/backup-restore/recovery-models-sql-server?view=sql-server-ver17[recovery model] of the given database.
 For `SIMPLE` recovery model VLFs are eventually reused after the checkpoint operation, while in `FULL` recovery model checkpoint operation doesn't result into TX log truncation.
 
 You can find out current recovery mode of the database by running following SQL command:
 
-[source, sql]
+[source, sql, options="nowrap"]
 ----
-SELECT name, recovery_model,recovery_model_desc FROM sys.databases WHERE name = N'TestDB';
+SELECT name, recovery_model,recovery_model_desc 
+FROM sys.databases 
+WHERE name = N'TestDB';
 GO
 ----
+
+Physical structure of the VLFs on the disk is the same as the VLFs rows in the above listing. 
+This can be seen also from the VLF offsets `vlf_begin_offset`.
+However, the logical structure of VLFs can be different.
+The sequence of the VLFs is determined by the `vlf_sequence_number`. 
+0 means that VLS haven’t been used yet.
+
+Very similar output to the query above can be obtained using DBCC tool by running
+
+[source, sql, options="nowrap"]
+----
+DBCC LOGINFO('TestDB')
+----
+
+More about DBCC utility will be mentioned later in this post.
 
 
 === Blocks, records and LSN
@@ -279,7 +299,7 @@ Details about partitions and allocation units are available in `sys.partitions`,
 These views can be linked together using the function `OBJECT_ID`. 
 For example, to determine how many partitions our `products` table consists of, we can run the following query:
 
-[source, sql]
+[source, sql, options="nowrap"]
 ----
 SELECT object_id, partition_id, partition_number, hobt_id
 FROM sys.partitions
@@ -288,7 +308,7 @@ WHERE object_id = OBJECT_ID(N'products');
 
 The output can look like this:
 
-[source, sql]
+[source, sql, options="nowrap"]
 ----
 object_id   partition_id         partition_number hobt_id             
 ----------- -------------------- ---------------- --------------------
@@ -297,7 +317,7 @@ object_id   partition_id         partition_number hobt_id
 
 The resulting `partition_id` can then be used to obtain information about allocations for this table:
 
-[source, sql]
+[source, sql, options="nowrap"]
 ----
 SELECT *
 FROM sys.allocation_units
@@ -310,7 +330,7 @@ WHERE container_id = (
 
 The query gave us following result:
 
-[source, sql]
+[source, sql, options="nowrap"]
 ----
 allocation_unit_id   type type_desc                                                    container_id         data_space_id total_pages          used_pages           data_pages          
 -------------------- ---- ------------------------------------------------------------ -------------------- ------------- -------------------- -------------------- --------------------
@@ -328,7 +348,7 @@ Many of the functions we need are undocumented but well described in community r
 The first useful command is `DBCC IND`, which returns page information for a given table.
 The syntax of the command is as follows:
 
-[source, sql]
+[source, sql, options="nowrap"]
 ----
 DBCC IND ( [ database_name | database_id ], table_name, index_id )
 ----
@@ -337,14 +357,14 @@ DBCC IND ( [ database_name | database_id ], table_name, index_id )
 
 For our `products` table:
 
-[source, sql]
+[source, sql, options="nowrap"]
 ----
 DBCC IND ('TestDB', 'products', -1)
 ----
 
 results into
 
-[source, sql]
+[source, sql, options="nowrap"]
 ----
 PageFID PagePID     IAMFID IAMPID      ObjectID    IndexID     PartitionNumber PartitionID          iam_chain_type       PageType IndexLevel NextPageFID NextPagePID PrevPageFID PrevPagePID
 ------- ----------- ------ ----------- ----------- ----------- --------------- -------------------- -------------------- -------- ---------- ----------- ----------- ----------- -----------
@@ -360,14 +380,14 @@ The key values here are `PageFID` and `PagePID`, which we’ll use in the next c
 Another undocumented function of `DBCC` utility is `DBCC PAGE`, which dumps the content of the requested page.
 Before running DBCC PAGE, you must enable trace flag 3604 to send the output to the client:
 
-[source, sql]
+[source, sql, options="nowrap"]
 ----
 DBCC TRACEON(3604);
 ----
 
 The syntax of `DBCC PAGE` command is 
 
-[source, sql]
+[source, sql, options="nowrap"]
 ----
 DBCC PAGE ( [ database_name | database_id ], file_number, page_number, print_option )
 ----
@@ -378,14 +398,14 @@ Adding `WITH TABLERESULTS` formats the output in tabular form.
 
 For our data page table:
 
-[source, sql]
+[source, sql, options="nowrap"]
 ----
 DBCC PAGE ('TestDB', 1, 336, 0)
 ----
 
 we get
 
-[source, sql]
+[source, sql, options="nowrap"]
 ----
 PAGE: (1:336)
 
@@ -451,7 +471,7 @@ DIFF (1:6) = CHANGED                ML (1:7) = NOT MIN_LOGGED
 
 The `Page Header` section reveals useful metadata such as:
 
-* `m_lsn` -  the log sequence number of the last change to this page
+* `m_lsn` -  the log sequence number of the last change to this page, which is useful during recovery process
 * `m_slotCnt` - number of rows (slots) on the page
 * `pminlen` - size of fixed-length data
 * `m_freeData` - offset where free space begins
@@ -461,7 +481,7 @@ With `print_option` set to 1 or 3, `DBCC PAGE` also shows the byte representatio
 You can easily identify variable string column there.
 For brevity only the first row is shown here:
 
-[source, sql]
+[source, sql, options="nowrap"]
 ----
 Slot 0, Offset 0x60, Length 81, DumpStyle BYTE
 
@@ -485,7 +505,7 @@ Memory Dump @0x000000096A026060
 
 At the end of the output you can also see the offset map, dumped at the same (reverse) order, as written on the disk:
 
-[source, sql]
+[source, sql, options="nowrap"]
 ----
 OFFSET TABLE:
 
