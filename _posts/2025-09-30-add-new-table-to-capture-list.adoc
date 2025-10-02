@@ -29,46 +29,53 @@ Debezium offers configurations to set which database/schema/table to capture via
 `schema.include.list`:: An optional, comma-separated list of regular expressions that match names of schemas for which you want to capture changes. Any schema name not included in schema.include.list is excluded from having its changes captured. By default, all non-system schemas have their changes captured.
 `table.include.list`:: An optional, comma-separated list of regular expressions that match fully-qualified table identifiers for tables whose changes you want to capture. When this property is set, the connector captures changes only from the specified tables. Each identifier is of the form schemaName.tableName. By default, the connector captures changes in every non-system table in each schema whose changes are being captured.
 
-there are also properties to apply opposite logic:
+there are also properties to achieve the opposite logic:
 
 `database.exclude.list`:: An optional, comma-separated list of regular expressions that match the names of databases from which you do not want the connector to capture changes.
 `schema.exclude.list`:: An optional, comma-separated list of regular expressions that match names of schemas for which you do not want to capture changes.
 `table.exclude.list`:: An optional, comma-separated list of regular expressions that match fully-qualified table identifiers for tables whose changes you do not want to capture.
 
 the final configuration of these properties tells Debezium which tables to capture events from.
+Remember: you can use either the _include_ properties or the _exclude_ properties, but not both at the same time.
 
 _How Debezium gets table schema information?_
 
 Debezium, in order to start streaming data changes from a table, needs to know its schema so it can provide information about the table’s structure.
-Normally, Debezium learns about table schemas while streaming by reading DDL statements, parsing them, and updating an in-memory representation of each table’s schema.
-This information is also persisted so that it can survive a connector restart or failure.
+Normally, Debezium learns about table schemas while streaming so it can correctly interpret events. The exact mechanism depends on the database connector:
 
+DDL statements:: Majority of connectors,  such as MariaDB, MySQL, and Oracle, reads DDL statements from the transaction log, parses them, and update an in-memory representation of each table’s schema.
+
+Metadata messages:: PostgreSQL uses https://www.postgresql.org/docs/current/logicaldecoding-explanation.html[Logical
+ Decoding] to send relation (table) metadata messages.
+Debezium receives a relation message (https://www.postgresql.org/docs/current/protocol-logicalrep-message-formats.html#PROTOCOL-LOGICALREP-MESSAGE-FORMATS-RELATION[`R`]) before the first change event for a table is sent, whenever a schema change occurs, or when replication resumes.
+These messages allow Debezium to know which table a change belongs to, the column order, data types, and other structural information.
+
+JDBC queries:: For connectors such as SQL Server and Db2, if a change event arrives for a table that is not yet in the in-memory schema representation,
+Debezium directly queries the database to retrieve the table schema.
+
+For connectors that do not rely on metadata messages, the schema information is also persisted so that it can survive a connector restart or failure.
 For this purpose, there are several properties prefixed with `schema.history.internal.` that manage configuration in this area.
-Of particular interest is the property:
+Of particular interest this the property:
 
 `schema.history.internal.store.only.captured.tables.ddl`:: Specifies whether the connector records schema structures from all tables in a schema or database, or only from tables that are designated for capture.
+
+There is also a related property:
+
+`schema.history.internal.store.only.captured.databases.ddl`:: Specifies whether the connector records schema structures from all databases or only from databases that are designated for capture.
 
 For now remember it, we will see in detail what role it has later.
 
 Now, let’s take a step back: what happens when a connector is started for the first time?
 
-Debezium requires an initial snapshot for the very same reason.
-Before it can start emitting events for a table, it needs to know the table structure. And even though this information can be obtained from a DDL change while streaming,
-when the connector starts for the very first time it’s quite unlikely that this DDL is still present in the logs.
-This is why Debezium requires the initial snapshot, and you can configure its behavior via the `snapshot.mode` configuration.
+Before emitting events for a table, Debezium needs to know the table structure.
+Even though this information could be obtained from a DDL change while streaming, it’s unlikely that the DDL is still present in the logs when the connector starts for the very first time.
+This is why Debezium requires capturing the database schema at first start-up.
 
-As a side note, the initial snapshot is required for this reason, but it can also be useful for snapshotting the current database state — both data and schema — before streaming begins.
-If you’re not interested in capturing the existing data in the table, you can simply rely on the `no_data` snapshot mode.
-
-This is true for the majority of connectors, except PostgreSQL.
-PostgreSQL uses https://www.postgresql.org/docs/current/logicaldecoding-explanation.html[Logical
- Decoding] to send relation (table) metadata messages.
-Debezium receives a relation message (https://www.postgresql.org/docs/current/protocol-logicalrep-message-formats.html#PROTOCOL-LOGICALREP-MESSAGE-FORMATS-RELATION[`R`])
-before the first change event for a table is sent.
-It also receives one when a schema change occurs or when replication resumes.
-
-These messages allow the subscriber to know which table a change belongs to, the column order, types, and other structural information.
-Even so, on the very first start, Debezium still needs to retrieve the table schema to emit events from snapshotted data.
+As a side note, the initial snapshot exists primarily to capture the current data present in the database,
+since not all data may be available in the transaction log when Debezium starts for the very first time.
+Capturing the schema is required so that Debezium knows the table structures.
+Even if you don’t want to capture the existing data, schema capture cannot be disabled.
+You can, however, skip capturing the data itself by using the no_data snapshot mode.
 
 That said, you should start to understand why the answer is “it depends.”
 
@@ -80,8 +87,8 @@ Let’s start with an easy scenario: you’ve set the `*.include.list` propertie
 
 First of all, in this scenario, the `schema.history.internal.store.only.captured.tables.ddl` property has no impact, since all table schemas are captured anyway.
 
-Then, if you create a new table while Debezium is streaming, it will capture the DDL and update its internal schema representation.
-When DML happens on that table, Debezium will start emitting change events for it since it already knows the table structure.
+If you create a new table while Debezium is streaming, it captures the DDL and updates its internal schema representation.
+When DML occurs on that table, Debezium starts emitting change events immediately, since the table structure is already known.
 
 NOTE: You need to check that the database configuration for CDC is set up so that a new table is automatically enabled for CDC.
 This depends on the connector specifics.
@@ -98,7 +105,7 @@ So, if you want to start capturing changes from a table that wasn’t previously
 . Restart the connector.
 . [Optional] Initiate an `incremental snapshot` if you want to capture existing data from the newly added tables.
 
-The process becomes a bit more complicated if you set `schema.history.internal.store.only.captured.tables.ddl` to `true`.
+The process is slightly more complex if you set `schema.history.internal.store.only.captured.tables.ddl` to `true`.
 In that case, since Debezium has no information about the table you want to add, you need to explicitly tell the connector to retrieve it.
 
 The procedure is:
