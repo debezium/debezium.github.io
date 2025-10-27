@@ -1,0 +1,334 @@
+---
+layout: post
+title:  Debezium 3.4.0.Alpha1 Released
+date:   2025-10-27
+tags: [ releases, mongodb, mysql, mariadb, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox, spanner, jdbc, informix, ibmi, cockroachdb ]
+author: ccranfor
+extraClasses: release-v2
+---
+
+With October nearly gone, the team has been hard at work on the next minor release of Debezium, and today we're happy to announce the first alpha build, **3.4.0.Alpha1**.
+his release brings exciting enhancements to Debezium's Quarkus extension with MongoDB support and the ability to capture changes concurrently across multiple sources seamlessly.
+There are also improvements to PostgreSQL's support matrix, enhanced geometry data type handling, OpenLineage integration with Debezium Server, and more.
+
++++<!-- more -->+++
+
+[id="breaking-changes"]
+== Breaking changes
+
+With any new major release of software, there is often several breaking changes.
+The Debezium **3.4.0.Alpha1** release is no exception, so let's discuss the major changes you should be aware of.
+
+=== IBMi trims string-based default values
+
+The IBMi connector will now automatically trim both leading and trailing whitespaces for string-based fields that have default values.
+In previous versions, no trimming was performed and the default value was provided as given by the database.
+This behavior is configurable using `trim.non.xml.charsequence.field.mode` that can be set to `both` (default), `leading`, `trailing`, or `none` (https://issues.redhat.com/browse/DBZ-8835[DBZ-8835]).
+
+=== PostgreSQL 13 support has ended
+
+In November 2025, support for PostgreSQL 13 will reach end-of-life.
+With Debezium 3.4's release scheduled for December 2025, Debezium will no longer test PosgreSQL 13 and be supported by the development team (https://issues.redhat.com/browse/DBZ-9376[DBZ-9376]).
+
+
+[id="new-features-and-improvements"]
+== New features and improvements
+
+The following describes all noteworthy new features and improvements in **Debezium 3.4.0.Alpha1**.
+For a complete list, be sure to read the link:/releases/3.4/release-notes#release-3.4.0-alpha1[release notes] for more details.
+
+=== Support for PostgreSQL 18
+
+The next major milestone for the PostgerSQL database was released in September 2025, version 18.0.
+We're pleased to announce that Debezium is now tested and compatible with PostgreSQL 18 (https://issues.redhat.com/browse/DBZ-9523[DBZ-9523]).
+
+=== Oracle LogMiner metrics improvements
+
+In some troubleshooting scenarios, it's often useful to understand what redo log positions are used by Debezium's Oracle connector.
+To obtain this information requires increasing the connector's logging verbosity, which is not always feasible in a production environment.
+
+In addition, Debezium introduced a separation between the mining log range and the data read range to improve performance and address a number of outstanding issues in https://issues.redhat.com/browse/DBZ-8747[DBZ-8747] for the LogMiner adapter.
+To compliment that change, we have added these ranges to the existing breadth of connector streaming metrics.
+
+[cols="30%,15%,65%"]
+|===
+|Metric Name |Type |Description
+
+|MiningSessionLowerBounds
+|BigInteger
+|The system change number used as the LogMiner session lower boundary.
+
+|MiningSessionUpperBounds
+|BigInteger
+|The system change number used as the LogMiner session upper boundary.
+
+|MiningFetchLowerBounds
+|BigInteger
+|The system change number currently used as the LogMiner fetch query lower boundary.
+
+|MiningFetchUpperBounds
+|BigInteger
+|The system change number currently used as the LogMiner fetch query upper boundary.
+
+|===
+
+[TIP]
+====
+The `MiningSession*` metrics represent the range that redo logs are gathered between while the `MiningFetch*` metrics represent the range Debezium requests to read the redo logs.
+While Debezium may request a specific range, LogMiner may opt to read outside the fetch range but within the session range to satisfy transaction stitching needs.
+====
+
+=== MongoDB Quarkus extension
+
+Debezium 3.4 now includes a new Quarkus Extension module designed specifically for MongoDB, enabling Debezium users to use the Debezium Quarkus extension to capture changes from a MongoDB source with ease (https://issues.redhat.com/browse/DBZ-9432[DBZ-9432]).
+
+To get started using the new MongoDB Debezium Quarkus Extension, add the dependency directly into your Quarkus application.
+As this is a preview build of the extension, these dependencies are not yet in the Quarkus BOM and need to be added manually.
+
+.Maven dependency
+[source,xml]
+----
+<dependency>
+  <groupId>io.debezium.quarkus</groupId>
+  <artifactId>quarkus-debezium-mongodb</artifactId>
+  <version>3.4.0.Alpha1</version>
+</dependency>
+----
+
+With the dependency added to your Quarkus project, you can now use the extension to capture changes with just a few configuration properties in your `application.properties` file, e.g.
+
+.Example MongoDB configuration in application.properties
+[source,properties]
+----
+quarkus.debezium.devservices.mongodb.enabled=true
+
+quarkus.debezium.offset.storage=org.apache.kafka.connect.storage.MemoryOffsetBackingStore
+quarkus.debezium.name=native
+quarkus.debezium.topic.prefix=integration
+quarkus.debezium.database.include.list=test
+quarkus.debezium.snapshot.mode=initial
+quarkus.mongodb.connection-string=mongodb://native:native@127.0.0.1:27017/?replicaSet=rs0
+----
+
+Capturing changes from MongoDB as simple as creating a Quarkus bean with the right annotations.
+
+.Quarkus Debezium MongoDB change event bean
+[source,java]
+----
+@ApplicationScoped
+public class MongoDbChangeEventHandler {
+    @Capturing
+    public void handleChanges(RecordChangeEvent<SourceRecord> event) throws Exception {
+        // your custom change event handler logic
+    }
+}
+----
+
+[NOTE]
+====
+Debezium's PostgreSQL and MongoDB connectors are currently all that are supported.
+The team is actively developing the other connector modules, and will debut throughout the remainder of the Debezium 3.4 release cycle, so stay tuned!
+====
+
+=== Multi-engine support
+
+In a Quarkus application, users can read data from multiple sources using a variety of Quarkus ready services, such as Hibernate using JPA.
+So it raises a very valid question, why can't Debezium's Quarkus extension services?
+
+In Debezium 3.4, this is now a reality.
+In a single Quarkus application using Debezium's Quarkus extension, you can now capture changes from two independent Debezium connector services.
+This enables a variety of application use cases where the data is aggregated to produce a data stream of warehousing or caches.
+It can also be used to publish or emit enriched events from those multiple sources to any number of consumers or consumer types.
+
+To get started, annotate your event observers using the `@Engine` annotation or `@DefaultEngine` annotation, e.g.
+
+.Example snapshot event listeners
+[source,java]
+----
+@ApplicationScoped
+public class DefaultSnapshotEventObserver {
+  public void handleSnapshotEvent(@Observes @Engine("default") SnapshotEvent event) {
+  }
+}
+
+@ApplicationScoped
+public class AlternativeSnapshotEventObserver {
+  public void handleSnapshotEvent(@Observers @Engine("alternative") SnapshotEvent event) {
+  }
+}
+----
+
+With this pattern, multiple Debezium configurations can be added to your `application.properties`, e.g.
+
+.Example application.properties
+[source,properties]
+----
+quarkus.debezium.name=native-default
+quarkus.debezium.topic.prefix=default
+quarkus.debezium.plugin.name=pgoutput
+quarkus.debezium.snapshot.mode=initial
+quarkus.datasource.db-kind=postgresql
+quarkus.datasource.username=native
+quarkus.datasource.password=native
+quarkus.datasource.jdbc.url=jdbc:postgresql://localhost:5432/native
+
+quarkus.debezium.capturing.alternative.name=native-alternative
+quarkus.debezium.capturing.alternative.topic.prefix=alt
+quarkus.debezium.capturing.alternative.plugin.name=pgoutput
+quarkus.debezium.capturing.alternative.snapshot.mode=initial
+quarkus.datasource.alternative.db-kind=postgresql
+quarkus.datasource.alternative.username=native
+quarkus.datasource.alternative.password=native
+quarkus.datasource.alternative.jdbc.url=jdbc:postgresql://localhost:5432/native-alt
+
+quarkus.datasource.devservices.enabled=false
+----
+
+In this trivial example, we've configured two independent data sources, each used by different Debezium Quarkus extension instances running all within the same Quarkus application.
+
+=== OpenLineage output datasets for Debezium Server
+
+OpenLineage is an open framework for data lineage collection and analysis.
+Its purpose is to track metadata about datasets giving information needed to help identify the root cause of complexities often present in change data capture pipelines.
+
+Debezium has supported OpenLineage with its source connectors through the use of a transformation while deployed on Kafka Connect.
+To simply the process to integrate with OpenLineage, Debezium Server natively provides the integration out of the box without the need to configure a separate transformation (https://issues.redhat.com/browse/DBZ-9059[DBZ-9059]).
+
+The following example configuration shows how easy it is to get started.
+
+.Example Debezium Server application.properties
+[source,properties]
+----
+# Standard Debezium configuration here
+...
+
+# OpenLineage configuration
+debezium.source.openlineage.integration.enabled=true
+debezium.source.openlineage.integration.job.tags=env=prod,team=cdc
+debezium.source.openlineage.integration.job.description=This connector does cdc for products
+debezium.source.openlineage.integration.job.owers=Mario=maintainer,John Doe=Data scientist
+debezium.source.openlineage.integration.config.file.path=<path>/debezium-openlineage.yml
+----
+
+.Example debezium-openlineage.yml
+[source,yaml]
+----
+transport:
+  type: debezium
+----
+
+=== Geometry data type support in JDBC sink
+
+Debezium's source connectors have had long-standing support for various geometry and geography column types.
+These types are serialized using custom Debezium logical types based on Kafka's semantic type `Struct`.
+This is a complex field type that allows Debezium to encode both the Well Known Binary (or Extended Well Known Binary) WKB/EWKB byte array along with the spatial reference identifier or SRID.
+
+When pairing Debezium's JDBC sink with a source connector, the JDBC sink connector will seamlessly convert geometry column values to the target database's desired format if it supports such column types (https://issues.redhat.com/browse/DBZ-9508[DBZ-9508]).
+This new feature is available out of the box with no special configuration.
+
+=== New geometry coordinate system swap transformation
+
+Not every source uses the same coordinate system to represent geometry and geography data.
+In some sources, they prefer (longitude latitude) while others prefer (latitude longitude), similarly to (x y) versus (y x).
+
+This inconsistency is prevalent in databases when replicating geometry data, so it's critical to understand not only how the source serializes the data, but equally important how the target database expects the coordinates to be provided.
+For example, if your source uses (x y), and the target database expects (y x), incorrectly serializing the data to the target database will mean applications that read the geometry data will have inverted coordinates.
+
+To make working with geometry data easier and to avoid needing to convert the byte data manually, Debezium introduces a new `SwapGeometryCoordinates` transformation specifically for this purpose (https://issues.redhat.com/browse/DBZ-9556[DBZ-9556]).
+This transform is extremely important when you are emitting geometry data from one source like PostgreSQL and writing the data to Oracle where they use opposite coordinate systems.
+
+.Example connector transform configuration
+[source,json]
+----
+{
+  "transforms": "swapcoords",
+  "transforms.swapcoords.type": "io.debezium.transforms.SwapGeometryCoordinates",
+  "transforms.swapcoords.srids": "4326,3857,4269"
+}
+----
+
+By default, the transform will only swap the coordinates for geometry fields with a spatial reference identifier of `4326`, `3857`, or `4269`.
+The list of spatial reference identifiers can be adjusted to your needs through configuration.
+
+[IMPORTANT]
+====
+The transformation is designed to swap the coordinates for all encoded geometry types as long as the spatial reference identifier in the field's `Struct` matches on of the spatial references in the SRID list.
+It's the sole responsibility of the user to understand the differences in the coordinate systems used by the source and target to determine if the transformation is necessary.
+====
+
+[id="other-changes"]
+== Other changes
+
+In addition, there are a number of other noteworthy changes that may be of interest:
+
+* Can bind a LONG value only for insert into a LONG column https://issues.redhat.com/browse/DBZ-8276[DBZ-8276]
+* Oracle Connector stops mining on REVOKE FLASHBACK on ... https://issues.redhat.com/browse/DBZ-9112[DBZ-9112]
+* Support Redis Cluster mode in the Debezium Redis sink module https://issues.redhat.com/browse/DBZ-9226[DBZ-9226]
+* Align Debezium Oracle DDL grammar with upstream https://issues.redhat.com/browse/DBZ-9302[DBZ-9302]
+* Update docs about new chart versioning https://issues.redhat.com/browse/DBZ-9365[DBZ-9365]
+* Clarify the use of $$ for escaping $-based variable substitutions in Debezium Server https://issues.redhat.com/browse/DBZ-9385[DBZ-9385]
+* MariaDB Connector Fails to Parse DDL for System-Versioned Table with Custom ROW START/ROW END Columns https://issues.redhat.com/browse/DBZ-9411[DBZ-9411]
+* Update Quarkus platform on Debezium Platform  https://issues.redhat.com/browse/DBZ-9418[DBZ-9418]
+* Apply query.fetch.size universally to all Oracle non-snapshot queries https://issues.redhat.com/browse/DBZ-9448[DBZ-9448]
+* Apply mining upper boundary to avoid PGA_AGGREGATE_LIMIT https://issues.redhat.com/browse/DBZ-9476[DBZ-9476]
+* MySQL example container images are not properly configured https://issues.redhat.com/browse/DBZ-9485[DBZ-9485]
+* Upgrade Apicurio to version 2.6.13.Final https://issues.redhat.com/browse/DBZ-9491[DBZ-9491]
+* Debezium platform conductor service fails on /q/openapi https://issues.redhat.com/browse/DBZ-9496[DBZ-9496]
+* Blog post on how add a new table to capture list https://issues.redhat.com/browse/DBZ-9507[DBZ-9507]
+* Doc: Document metric `NumberOfErroneousEvents` https://issues.redhat.com/browse/DBZ-9510[DBZ-9510]
+* Replace Kafka cluster test infra with test containers based https://issues.redhat.com/browse/DBZ-9512[DBZ-9512]
+* Oracle pom does not trigger annotation processors across profiles for Java 25 https://issues.redhat.com/browse/DBZ-9513[DBZ-9513]
+* MongoDB docker image with replica set enabled https://issues.redhat.com/browse/DBZ-9516[DBZ-9516]
+* Use Jakarta variant of ehcache https://issues.redhat.com/browse/DBZ-9517[DBZ-9517]
+* Only log an error when the dump folder is provided but doesn't exist https://issues.redhat.com/browse/DBZ-9519[DBZ-9519]
+* Events are mistakenly skipped during commit dispatch when LOB is enabled  https://issues.redhat.com/browse/DBZ-9521[DBZ-9521]
+* Missing OpenLineage Complete event during gracefully shutdown https://issues.redhat.com/browse/DBZ-9524[DBZ-9524]
+* Update service-provider-enforcer-rule https://issues.redhat.com/browse/DBZ-9525[DBZ-9525]
+* Support TOKENLIST datatype in Spanner connector https://issues.redhat.com/browse/DBZ-9526[DBZ-9526]
+* Oracle test shouldHandleParentChildIndexOrganizedTables randomly fails  https://issues.redhat.com/browse/DBZ-9528[DBZ-9528]
+* Oracle TestHelper#dropTable should retry on resource locks https://issues.redhat.com/browse/DBZ-9529[DBZ-9529]
+* Correct type is not used for the PORT field in the connection payload https://issues.redhat.com/browse/DBZ-9530[DBZ-9530]
+* Add support to show the Active count in the Connection page https://issues.redhat.com/browse/DBZ-9531[DBZ-9531]
+* Oracle alter DDL to move partition/subpartition fails to be parsed https://issues.redhat.com/browse/DBZ-9534[DBZ-9534]
+* SchemaUtil creates invalid JSON https://issues.redhat.com/browse/DBZ-9540[DBZ-9540]
+* Refactor CdcSourceTaskContext https://issues.redhat.com/browse/DBZ-9542[DBZ-9542]
+* Test shouldNotFailToStartWhenSignalDataCollectionNotDefinedWithinTableIncludeList does not work with non-CDB images https://issues.redhat.com/browse/DBZ-9544[DBZ-9544]
+* Deadlock due to lost interrupt with blc keep alive thread https://issues.redhat.com/browse/DBZ-9548[DBZ-9548]
+* Timestamp values cause NPE in Postgres on JDK23+ https://issues.redhat.com/browse/DBZ-9558[DBZ-9558]
+* Add basic UI validation in the Pipeline package specific log configuration options https://issues.redhat.com/browse/DBZ-9561[DBZ-9561]
+* Send the signal.data.collection property in the source payload only when its added https://issues.redhat.com/browse/DBZ-9562[DBZ-9562]
+* Use StrimziKafkaCluster instead of custom made KafkaCluster class https://issues.redhat.com/browse/DBZ-9565[DBZ-9565]
+* Update Debezium Quarkus and Outbox Extensions to Quarkus 3.28.4 https://issues.redhat.com/browse/DBZ-9568[DBZ-9568]
+* Update Debezium Server/Operator to Quarkus 3.20.3 https://issues.redhat.com/browse/DBZ-9569[DBZ-9569]
+* Improve Informix pom to be similar to the debezium/debezium ones.  https://issues.redhat.com/browse/DBZ-9576[DBZ-9576]
+* Update MongoDB driver to 5.5.1 https://issues.redhat.com/browse/DBZ-9585[DBZ-9585]
+
+
+== Summary
+
+In total, https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20and%20fixVersion%20%20in%20(3.4.0.Alpha1)[51 issues] were resolved in Debezium 3.4.0.Alpha1.
+The list of changes can also be found in our https://debezium.io/releases/3.4[release notes].
+
+A big thank you to all the contributors from the community who worked diligently on this release:
+ +
+https://github.com/graya-fnz[Adam Gray],
+https://github.com/AlvarVG[Alvar Viana Gomez],
+https://github.com/shybovycha[Artem Shubovych],
+https://github.com/Naros[Chris Cranford],
+https://github.com/moench-tegeder[Christoph Moench-Tegeder],
+https://github.com/hamnis[Erlend Hamnaberg],
+https://github.com/kmos[Giovanni Panice],
+https://github.com/jiangzzhu[Jiang Zhu],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/lgazire[Lucas Gazire],
+https://github.com/piatekmarcin[Marcin Piatek],
+https://github.com/mfvitale[Mario Fiore Vitale],
+https://github.com/see-quick[Maros Orsak],
+https://github.com/mhejnas[Matt Hejnas],
+https://github.com/rajdangwal[Rajendra Dangwal],
+https://github.com/roldanbob[Robert Roldan],
+https://github.com/doljae[Seokjae Lee],
+https://github.com/twthorn[Thomas Thornton],
+https://github.com/PlugaruT[Tudor Plugaru],
+https://github.com/notation-v[Vipin Kalra], and
+https://github.com/vjuranek[Vojtech Juranek]!
