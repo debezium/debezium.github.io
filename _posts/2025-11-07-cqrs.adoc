@@ -1,7 +1,7 @@
 ---
 layout: post
 title:  CQRS Design Pattern
-date:   2025-10-14 00:00:00 -0000
+date:   2025-11-07 00:00:00 -0000
 tags: [cqrs, design-patterns, postgres, mysql, questdb, replication]
 author: vjuranek
 ---
@@ -33,7 +33,7 @@ The following diagram illustrates this concept:
 
 ++++
 <div class="imageblock centered-image">
-    <img src="/assets/images/2025-10-14-cqrs/cqrs.png" class="responsive-image" alt="Data flow in CQRS design pattern">
+    <img src="/assets/images/2025-11-07-cqrs/cqrs.png" class="responsive-image" alt="Data flow in CQRS design pattern">
 </div>
 ++++
 
@@ -111,7 +111,7 @@ Schematically, our demo application looks like this:
 
 ++++
 <div class="imageblock centered-image">
-    <img src="/assets/images/2025-10-14-cqrs/cqrs-replication.png" class="responsive-image" alt="Demo application with DB replication">
+    <img src="/assets/images/2025-11-07-cqrs/cqrs-replication.png" class="responsive-image" alt="Demo application with DB replication">
 </div>
 ++++
 
@@ -127,7 +127,7 @@ GRANT SELECT ON ALL TABLES IN SCHEMA public TO replicator;
 For simplicity, we granted `SELECT` rights on all tables.
 In a production setup, you should limit these privileges to only the tables that actually need to be replicated.
 
-Because Hibernate may drop and recreate tables as part of schema updates, we also need to replicate `DELETE` operations.
+Because Hibernate may drop rows during update operation, we also need to replicate `DELETE` operations.
 To do this, we configure full table replication for the tables that need to be synchronized:
 
 [source,sql,options="nowrap"]
@@ -171,13 +171,16 @@ For database which support inserting data over JDBC, we can use link:https://deb
 For databases which don't support inserts over JDBC, other than MongoDB, we have to rely on the custom sink connector provided by the database vendor.
 
 However, Debezium usage is not limited to Kafka Connect runtime.
-We can e.g. embed Debezium into our custom microservice, but in such case we have to implement sink part (part which writes the captured data into target database) ourselves.
+Besides using standalone link:https://debezium.io/documentation/reference/stable/operations/debezium-server.html[Debezium server], Debezium can be embedded into a custom microservice using link:https://debezium.io/documentation/reference/stable/development/engine.html[Debezium embedded engine].
+Another option is to consume CDC events leveraging link:https://debezium.io/documentation/reference/stable/integrations/quarkus-debezium-engine-extension.html[Debezium extension for Quarkus].
+This is probably the most easy way how to consume CDC events in your microservice, as it's just a matter of simple configuration and annotating appropriate consumer methods with the right annotations.
+None the less, in all these cases we still have to implement sink part (part which writes the captured data into target database) ourselves.
 
 The following diagram illustrates this setup:
 
 ++++
 <div class="imageblock centered-image">
-	<img src="/assets/images/2025-10-14-cqrs/cqrs-debezium.png" class="responsive-image" alt="Demo application with Debezium-based replication">
+	<img src="/assets/images/2025-11-07-cqrs/cqrs-debezium.png" class="responsive-image" alt="Demo application with Debezium-based replication">
 </div>
 ++++
 
@@ -236,8 +239,8 @@ Since the JDBC sink understands Debezium’s event format, no single message tra
 }
 ----
 
-In this configuration, the `insert.mode` is set to `upsert`, which ensures that both new inserts and updates are properly reflected in the target database.
-Deletes are enabled as well, since Hibernate may drop tables.
+In this configuration, the `insert.mode` is set to `upsert`, which ensures that both new inserts are properly reflected in the target database.
+Deletes are enabled as well, since Hibernate does deletes during updating the collection of votes.
 The `${source.table}` placeholder ensures that each target table in MySQL matches the corresponding table name in PostgreSQL.
 
 With just two simple configurations, Debezium ensures continuous data replication between two different database vendors.
@@ -250,19 +253,15 @@ Fortunately not.
 We can take advantage of popularity of Kafka Connect platform.
 Due to Kafka popularity many database vendors provides their own sink connectors for Kafka Connect.
 
-In the second example, we replicate data from PostgreSQL into link:https://questdb.com/[QuestDB], a high-performance time-series database optimized for analytical queries.
+In the second example, we are going to replicate data from PostgreSQL into link:https://questdb.com/[QuestDB], a high-performance time-series database optimized for analytical queries.
 To keep out demo application simple and unified across all the examples, we don't use any QuestDB features or don't so provide any time-related charts, e.g. how the number of votes evolved during the time, but you can easily image that it would just a simple modification of the reader microservice to provide such plots.
 We cannot use JDBC sink connector for QuestDB as for ingesting the data it supports InfluxDB Line Protocol.
 However, QuestDB provides their own link:https://questdb.com/docs/third-party-tools/kafka/[sink connector] for Kafka Connect.
 Moreover it works well with Debezium format.
 
-QuestDB sink connector behaves little bit differently to Debezium sink connectors.
-It coverts into table columns all fields in the records.
-Thus, as the first step, we will modify our PostgreSQL source connector configuration little bit and flatten the record to contain only new record state.
-Conveniently Debezium provides link:https://debezium.io/documentation//reference/transformations/event-flattening.html[New record state SMT], which does exactly this - extracts only new state from the Debezium record.
-The configuration of the PostgreSQL source connector now looks like this:
+The configuration of the PostgreSQL source connector can remain the same:
 
-[source, json, options="nowrap"]
+[source,json,options="nowrap"]
 ----
 {
     "name": "postgres-source",
@@ -273,67 +272,42 @@ The configuration of the PostgreSQL source connector now looks like this:
         "database.port": "5432",
         "database.user": "postgres",
         "database.password": "postgres",
-        "database.dbname" : "postgres",
+        "database.dbname": "postgres",
         "topic.prefix": "polls",
-        "table.include.list": "public.optionentity, public.pollentity, public.pollentity_optionentity, public.pollentity_voteentity, public.voteentity",
+        "table.include.list": "public.optionentity, public.pollentity, public.pollentity_optionentity, public.pollentity_voteentity, public.voteentity"
+    }
+}
+----
+
+QuestDB sink connector behaves little bit differently to Debezium sink connectors.
+It coverts into table columns all fields in the records.
+Thus, as the first step, we will flatten Debezium records to contain only new record state.
+Conveniently Debezium provides link:https://debezium.io/documentation//reference/transformations/event-flattening.html[New record state SMT], which does exactly this - extracts only new state from the Debezium record.
+
+The configuration for the QuestDB poll sink would look like this:
+
+[source, json, options="nowrap"]
+----
+{
+    "name": "questdb-sink",
+    "config": {
+        "connector.class": "io.questdb.kafka.QuestDBSinkConnector",
+        "tasks.max": "5",
+        "topics": "optionentity, pollentity, pollentity_optionentity, voteentity",
+        "table": "${topic}",
+        "client.conf.string": "http::addr=questdb:9000;",
+        "timestamp.field.name": "ts",
+        "include.key": false,
+        "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+        "value.converter.schemas.enable": true,
+        "key.converter": "org.apache.kafka.connect.storage.StringConverter",
         "transforms": "unwrap",
-        "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState",
-        "transforms.unwrap.add.fields": "table"
+        "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState"
     }
 }
 ----
 
-In the SMT configuration we also add additional field - the name of the table which the record comes from.
-
-Another difference from the Debezium sink connectors is that single sink connector ingest data only to a single table.
-We can either put everything into a single table or we have to deploy multiple connector.
-Not to mix everything together and at the same time not to create several sink connectors and their configs for this simple demo, we can choose a compromise and create two sink connectors - one for polls and one for votes.
-To be able to distinguish what was the original table, we included `table` field into the records.
-
-The configuration for poll sink would look like this:
-
-[source, json, options="nowrap"]
-----
-{
-    "name": "questdb-sink-polls",
-    "config": {
-        "connector.class": "io.questdb.kafka.QuestDBSinkConnector",
-        "tasks.max": "5",
-        "topics": "polls.public.optionentity, polls.public.pollentity, polls.public.pollentity_optionentity",
-        "table": "polls",
-        "client.conf.string": "http::addr=questdb:9000;",
-        "timestamp.field.name": "ts",
-        "value.converter": "org.apache.kafka.connect.json.JsonConverter",
-        "value.converter.schemas.enable": true,
-        "include.key": false,
-        "key.converter": "org.apache.kafka.connect.storage.StringConverter"
-    }
-}
-----
-
-And the votes sink like this:
-
-[source, json, options="nowrap"]
-----
-{
-    "name": "questdb-sink-votes",
-    "config": {
-        "connector.class": "io.questdb.kafka.QuestDBSinkConnector",
-        "tasks.max": "5",
-        "topics": "polls.public.voteentity",
-        "table": "votes",
-        "client.conf.string": "http::addr=questdb:9000;",
-        "timestamp.field.name": "ts",
-        "value.converter": "org.apache.kafka.connect.json.JsonConverter",
-        "value.converter.schemas.enable": true,
-        "include.key": false,
-        "key.converter": "org.apache.kafka.connect.storage.StringConverter"
-    }
-}
-----
-
-This configuration ensures that poll-related data and vote data are written into separate QuestDB tables.
-Even though this setup requires slightly more configuration compared to the JDBC sink, it remains straightforward and easy to configure.
+The setup is quite similar to JDBC sink connector setup and additional SMT configuration is just for the convenience and simplicity.
 
 == Application point of view
 
@@ -342,7 +316,7 @@ No matter which setup you choose, the end result from the user perspective shoul
 
 ++++
 <div class="imageblock centered-image">
-	<img src="/assets/images/2025-10-14-cqrs/poll-results.png" class="responsive-image" alt="Demo application ">
+	<img src="/assets/images/2025-11-07-cqrs/poll-results.png" class="responsive-image" alt="Demo application ">
 </div>
 ++++
 
