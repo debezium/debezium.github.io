@@ -1,0 +1,207 @@
+---
+layout: post
+title:  Debezium 3.4.0.Alpha2 Released
+date:   2025-11-06
+tags: [ releases, mongodb, mysql, mariadb, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox, spanner, jdbc, informix, ibmi, cockroachdb ]
+author: ccranfor
+extraClasses: release-v2
+---
+
+As we're half-way through the last quarter of 2025, the team has been hard at work on the next preview build of Debezium, **3.4.0.Alpha2**.
+This release introduces a variety of improvements to the newly added Debezium Quarkus Extension, Oracle / IBMi / Vitess connectors, and Debezium Server to name a few.
+Let's take a few moments and look at what are some of the highlights.
+
++++<!-- more -->+++
+
+[id="breaking-changes"]
+== Breaking changes
+
+With any new major release of software, there is often several breaking changes.
+The Debezium **3.4.0.Alpha2** release is no exception, so let's discuss the major changes you should be aware of.
+
+=== SQL Server streaming query mode changed
+
+In previous builds, the SQL Server connector used `function` as the default value for `data.query.mode`.
+This meant that Debezium relied on SQL Server's built-in functions to provide the list of changes for a given table.
+
+The default for `data.query.mode` has changed in Debezium 3.4, and is now `direct` (https://issues.redhat.com/browse/DBZ-9394[DBZ-9394]).
+This uses a more efficient query that is built by Debezium for collecting changes for tables.
+
+If you would like to restore the old behavior, please set `data.query.mode` to `function` in your connector configuration.
+
+=== Oracle connector ships with XML dependencies
+
+The Debezium Oracle connector now ships with the XDB and XMLParserV2 libraries as part of the plugin bundle.
+This simplifies the process for capturing XML column types as community users no longer need to download these dependencies separately (https://issues.redhat.com/browse/DBZ-9587[DBZ-9587]).
+
+
+[id="new-features-and-improvements"]
+== New features and improvements
+
+The following describes all noteworthy new features and improvements in **Debezium 3.4.0.Alpha2**.
+For a complete list, be sure to read the link:/releases/3.4/release-notes#release-3.4.0-alpha2[release notes] for more details.
+
+=== New Geometry format conversion transformation
+
+We have introduced a new Kafka transformation called `GeometryFormatTransformer`, which is part of Debezium Core, that enables the conversion of `io.debezium.data.Geometry` and `io.debezium.data.Geography` logical types between Well-Known Binary (WKB) and Extended Well-Know Binary (EWKB) formats (https://issues.redhat.com/browse/DBZ-9575[DBZ-9575]).
+To get started with this transformation, simply add it to your connector configuration
+
+[source,json]
+----
+{
+  "transforms": "geo-format",
+  "transforms.geo-format.type": "io.debezium.transforms.GeometryFormatTransformer",
+  "transforms.geo-format.format": "WKB"
+}
+----
+
+In the above example, if a geometry logical type field contains serialized bytes using the EWKB format, that value will be converted to use WKB instead.
+See the https://debezium.io/documentation//reference/transformations/geometry-format-transformer.html[documentation] for more details.
+
+=== Quarkus Extensions for MariaDB, MySQL, and SQL Server
+
+Debezium 3.4 also introduces new extensions to our Quarkus Native ready builds of Debezium, which now includes the MySQL (https://issues.redhat.com/browse/DBZ-9380[DBZ-9380]), MariaDB (MariaDB https://issues.redhat.com/browse/DBZ-9381[DBZ-9381]), and SQL Server (https://issues.redhat.com/browse/DBZ-9384[DBZ-9384]) connectors joined by the existing PostgreSQL and MongoDB implementations.
+As this is a preview build of the extension, these dependencies are not yet in the Quarkus BOM and need to be added manually.
+
+.MySQL Maven Dependency
+[source,xml]
+----
+<dependency>
+  <groupId>io.debezium.quarkus</groupId>
+  <artifactId>quarkus-debezium-mysql</artifactId>
+  <version>3.4.0.Alpha2</version>
+</dependency>
+----
+
+.MariaDB Maven Dependency
+[source,xml]
+----
+<dependency>
+  <groupId>io.debezium.quarkus</groupId>
+  <artifactId>quarkus-debezium-mariadb</artifactId>
+  <version>3.4.0.Alpha2</version>
+</dependency>
+----
+
+.SQL Server Maven Dependency
+[source,xml]
+----
+<dependency>
+  <groupId>io.debezium.quarkus</groupId>
+  <artifactId>quarkus-debezium-sqlserver</artifactId>
+  <version>3.4.0.Alpha2</version>
+</dependency>
+----
+
+With the dependency added to your Quarkus project, you can now use the extension to capture changes with just a few configuration properties in your `application.properties` file
+
+.Example configuration in application.properties
+[source,properties]
+----
+quarkus.debezium.devservices.<connector-type>.enabled=true
+
+quarkus.debezium.offset.storage=org.apache.kafka.connect.storage.MemoryOffsetBackingStore
+quarkus.debezium.name=native
+quarkus.debezium.topic.prefix=integration
+
+# Add Debezium configurations here using quarkus.debezium.* prefixes
+----
+
+=== Oracle Metrics improvements
+
+We have improved several Oracle LogMiner JMX metrics providing better clarity about the connector's performance.
+
+Previously, the LogMiner `CommitThroughput` JMX metric was calculated over the connector's entire runtime, which meant extended periods of inactivity would progressively reduce the reported throughput value.
+This approach proved unhelpful for users trying to gauge the actual throughput achieved during active change emission from Oracle's transaction buffer to Kafka.
+
+To address this, the calculation of `CommiThroughput` has changed to focus exclusively on the commit duration window, delivering a more precise measure of the connector's capacity to queue changes for Kafka delivery (https://issues.redhat.com/browse/DBZ-9639[DBZ-9639]).
+
+[TIP]
+====
+A declining value over time may indicate that your `QueueRemainingCapacity` has hit `0`, suggesting you should consider adjusting the outbound queue configuration or review your throughput to your target system.
+====
+
+Additionally, to align with metrics from other LogMiner processing stages, we've introduced a new JMX metric named `TotalCommitTimeInMilliseconds`.
+This metric tracks the aggregate time spent executing the commit loop since the connector's current startup (https://issues.redhat.com/browse/DBZ-9637[DBZ-9637]).
+
+=== Azure Event Hubs dynamic partition routing
+
+Debezium 3.2 introduced a new dynamic partitioning mechanism that inadvertently disrupted the `PartitionRouting` transformation's capability to pre-generate partition identifiers for Event Hubs publishing in specific scenarios.
+To resolve this issue, we've added a new configuration option called `debezium.sink.eventhubs.dynamicpartitionrouting` (https://issues.redhat.com/browse/DBZ-9572[DBZ-9572]) that accepts one of the following values:
+
+`default`:: If the event has a key, uses the hash algorithm to compute the partition based on the event key; otherwise when there is no key, falls back to using the `partitionId` strategy.
+`key`:: If the event has a key, uses the hash algorithm to compute the partition based on the event key; otherwise falls back to the batch index for non partition id.
+`partitionid`:: Will use the event's computed partition if present, otherwise falls back to the batch index for non partition id.
+
+=== Incremental snapshots for IBMi
+
+The community-led Debezium IBMi connector now supports incremental snapshots, allowing for on-demand, concurrent and resumable snapshot/backfill of historical data for one or more tables (https://issues.redhat.com/browse/DBZ-7958[DBZ-7958]).
+
+=== Multi-journal support for IBMi
+
+The IBMi database allows for the assignment of different journals to multiple tables under the same schema.
+To address this unique database behavior and to provide sufficient context for correctly ordering events across a database, the IBMi connector's `source` information block now includes information about the journals receiver file name, receiver library, entry's timestamp, and sequence number (https://issues.redhat.com/browse/DBZ-9291[DBZ-9291]).
+
+=== Exclude keyspace from table name in Vitess for improved performance
+
+The Debezium Vitess connector now permits users to exclude the keyspace from the table name by setting the `vitess.exclude.keyspace.from.table.name` configuration property.
+When set to `true`, the keyspace is excluded from the table name which boosts the VTGate performance significantly, which avoids copying each event unnecessarily before they're sent to Debezium  (https://issues.redhat.com/browse/DBZ-9522[DBZ-9522]).
+
+[WARNING]
+====
+This feature should be used only when streaming from one keyspace, which is currently the only supported mode of operation.
+====
+
+[id="other-changes"]
+== Other changes
+
+In addition, there are a number of other noteworthy changes that may be of interest:
+
+* Enable Dependabot on debezium platform repo https://issues.redhat.com/browse/DBZ-8994[DBZ-8994]
+* Update Oracle connector doc to specify unsupported Oracle 23ai features https://issues.redhat.com/browse/DBZ-9402[DBZ-9402]
+* Migrate Surge.sh Preview Teardown from ubuntu-20.04 to ubuntu-latest https://issues.redhat.com/browse/DBZ-9518[DBZ-9518]
+* Pipeline page Issues https://issues.redhat.com/browse/DBZ-9543[DBZ-9543]
+* DdlChanges not reset in schema history recovery https://issues.redhat.com/browse/DBZ-9549[DBZ-9549]
+* Handle the form properties with dot present in their name https://issues.redhat.com/browse/DBZ-9560[DBZ-9560]
+* Fix failed to initialize open lineage for vitess connector https://issues.redhat.com/browse/DBZ-9613[DBZ-9613]
+* Handle exceptions thrown from performCommit method to gracefully cleanup the coordinator during the stop call https://issues.redhat.com/browse/DBZ-9617[DBZ-9617]
+* Table column metadata is not fetched when table name has a '/' character https://issues.redhat.com/browse/DBZ-9620[DBZ-9620]
+* Clarify case-sensitive nature of signal.data.collection and table names in signals https://issues.redhat.com/browse/DBZ-9621[DBZ-9621]
+* MySQL connector does not parse CREATE TABLE https://issues.redhat.com/browse/DBZ-9623[DBZ-9623]
+* Debezium Server run.bat fails to execute on Windows https://issues.redhat.com/browse/DBZ-9625[DBZ-9625]
+* Remove Technology Preview label on MariaDB list entries in signaling doc https://issues.redhat.com/browse/DBZ-9624[DBZ-9624]
+* Begin marker but no end marker for rollback transactions https://issues.redhat.com/browse/DBZ-9628[DBZ-9628]
+* Fix minor issues in the Platform UI dark mode https://issues.redhat.com/browse/DBZ-9633[DBZ-9633]
+* MariaDB fails to parse "CONVERT TO CHARSET <character-set>" https://issues.redhat.com/browse/DBZ-9634[DBZ-9634]
+* Buffered event count set unnecessarily https://issues.redhat.com/browse/DBZ-9638[DBZ-9638]
+* Update to use only StrimziKafkaCluster https://issues.redhat.com/browse/DBZ-9640[DBZ-9640]
+* Standardize source catalog descriptions https://issues.redhat.com/browse/DBZ-9642[DBZ-9642]
+
+== Summary
+
+In total, https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20and%20fixVersion%20%20in%20(3.4.0.Alpha2)[34 issues] were resolved in Debezium 3.4.0.Alpha2.
+The list of changes can also be found in our https://debezium.io/releases/3.4[release notes].
+
+A big thank you to all the contributors from the community who worked diligently on this release:
+ +
+https://github.com/akanimesh7[Animesh Kumar],
+https://github.com/Naros[Chris Cranford],
+https://github.com/nrkdaer11[Daniel Eriksson],
+https://github.com/kmos[Giovanni Panice],
+https://github.com/jiangzzhu[Jiang Zhu],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/pricelessjunk[Kaustuv Chakrabarti],
+https://github.com/see-quick[Maros Orsak],
+https://github.com/mateuszmichalik-collab[Mateusz Michalik],
+https://github.com/mateuszmichalik1993[Mateusz Michalik],
+https://github.com/nagasreevalaboju[Nagasree Valaboju],
+https://github.com/ochedru[Olivier Chédru],
+https://github.com/pypsink[Pierre-Yves Péton],
+https://github.com/rajdangwal[Rajendra Dangwal],
+https://github.com/roldanbob[Robert Roldan],
+https://github.com/twthorn[Thomas Thornton],
+https://github.com/battmush[battmush], and
+https://github.com/msillence[martin]!
+
+
+
