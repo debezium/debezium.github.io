@@ -4,11 +4,13 @@
 
 MAVEN_REPO="https://central.sonatype.com/repository/maven-snapshots"
 GROUP_ID="io/debezium"
-DEBEZIUM_VERSION="3.4.0-SNAPSHOT"
-ARTIFACT_PREFIX="debezium-connector"
 FILE_EXT="tar.gz"
 ANTORA_FILE="playbook.yml"
 CONNECTORS=(mysql mongodb postgres sqlserver oracle db2 jdbc spanner vitess informix ibmi mariadb cassandra-3 cassandra-4 cassandra-5 cockroachdb)
+
+# Fetch the latest Debezium snapshot version
+DEBEZIUM_VERSION=$(curl --silent -fSL $MAVEN_REPO/$GROUP_ID/debezium-bom/maven-metadata.xml | sed -n 's/.*<version>\([^<]*\)<\/version>.*/\1/p' | tail -1)
+echo "Resolved Debezium Snapshot Version: $DEBEZIUM_VERSION"
 
 update_snapshot_link() {
     local COMPONENT=$1
