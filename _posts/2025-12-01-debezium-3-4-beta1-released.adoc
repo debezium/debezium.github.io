@@ -1,0 +1,232 @@
+---
+layout: post
+title:  Debezium 3.4.0.Beta1 Released
+date:   2025-12-01 00:01:00 -0600
+tags: [ releases, mongodb, mysql, mariadb, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox, spanner, jdbc, informix, ibmi, cockroachdb ]
+author: ccranfor
+extraClasses: release-v2
+---
+
+We are nearing the end of the quarter, and we're excited to announce that the next preview build of Debezium is available, **3.4.0.Beta1**.
+This release introduces support for extended authentication modes, timezone conversion support for source info block fields, and numerous improvements and enhancements to the Debezium connector portfolio.
+Let's take a few moments and look at what are some of the highlights.
+
++++<!-- more -->+++
+
+[id="breaking-changes"]
+== Breaking changes
+
+With any new major release of software, there is often several breaking changes.
+The Debezium **3.4.0.Beta1** release is no exception, so let's discuss the major changes you should be aware of.
+
+=== Configurable PostgreSQL flush strategy changes
+
+A new configuration option was added for PostgreSQL users called `lsn.flush.mode`.
+This option provides more control over the replication slot flush strategy (https://issues.redhat.com/browse/DBZ-9641[DBZ-9641]).
+This configuration option replaces `flush.lsn.source`, which is now deprecated and will be removed in a future update.
+
+
+[id="new-features-and-improvements"]
+== New features and improvements
+
+The following describes all noteworthy new features and improvements in **Debezium 3.4.0.Beta1**.
+For a complete list, be sure to read the link:/releases/3.4/release-notes#release-3.4.0-beta1[release notes] for more details.
+
+=== AWS IAM authentication support for PostgreSQL
+
+Debezium 3.4 introduces the ability to specify user credentials that must be validated using AWS IAM authentication.
+This feature, while present for MySQL, is now available for PostgreSQL connector users.
+
+.Prerequisites
+* Add the https://github.com/aws/aws-advanced-jdbc-wrapper[AWS Advanced JDBC Wrapper] to your connector's plugin directory or class path. +
+You can find more information about this process https://github.com/aws/aws-advanced-jdbc-wrapper/blob/main/docs/using-the-jdbc-driver/using-plugins/UsingTheIamAuthenticationPlugin.md[here].
+* Add the connector configuration property `database.connection.factory.class` in the connector configuration. +
+Set the value to `io.debezium.connector.postgresql.connection.PostgresAwsIamConnectionFactory`.
+
+With this configuration, the connector credentials will be validated against AWS IAM rather than the database (https://issues.redhat.com/browse/DBZ-7297[DBZ-7297]).
+
+=== Timezone conversion support for source info block fields
+
+The `ConvertTimezone` SMT has been a great addition for specific use cases where the community has wanted to shift the values of timestamps by timezone offsets.
+However, this transformation's capabilities were limited to very specific Debezium logical field types.
+
+One request from the community was to extend this transformation to support for additional fields in the Debezium event's `source` information block.
+Debezium 3.4 adds the `ts_ms`, `ts_us`, and `ts_ns` fields from the `source` information block as eligible fields that can be converted (https://issues.redhat.com/browse/DBZ-9372[DBZ-9372]).
+
+Please see the https://debezium.io/documentation/reference/3.4/transformations/timezone-converter.html[ConvertTimezone documentation] for more details.
+
+=== Support MongoDB wall clock time
+
+In MongoDB 6+, `wallTime` was added to MongoDB change stream events to represent the server's date and time when a database operation occurred, specifically when the transaction was committed or the operation completed.
+This is slightly different from `clusterTime`, which is when the entry was added to the database's oplog.
+
+With Debezium 3.4, the `ts_ms`, `ts_us`, and `ts_ns` source information block fields will be based on the `wallTime` if it's available in the change event, falling back to `clusterTime` when it's unavailable (https://issues.redhat.com/browse/DBZ-9683[DBZ-9683]).
+
+=== Improved PostgreSQL LSN flushing strategy
+
+In previous versions of Debezium for PostgreSQL, typically users would allow Debezium to control when the LSN was flushed to the replication slot using `flush.lsn.source`; however, users could set this `false` and control the flush manually outside of Debezium.
+
+Starting with Debezium 3.4, a new connector configuration `lsn.flush.mode` was added to provide an extended way to control how the LSN is flushed to PostgreSQL during the connector's lifecycle (https://issues.redhat.com/browse/DBZ-9641[DBZ-9641]).
+This new property can be set to one of the following options:
+
+`connector`:: Specifies that the Debezium PostgreSQL connector controls when the LSN is flushed to the replication slot.
+This is the same behavior as the deprecated `flush.lsn.source` option when set to `true`.
+
+`manual`:: Specifies that the Debezium PostgreSQL connector no longer controls when the LSN is flushed to the replication slot and that it must be performed manually or externally to the connector.
+This is the same behavior as the deprecated `flush.lsn.source` option when set to `false`.
+
+`connector_and_driver`:: Specifies a new mode where both the Debezium PostgreSQL connector and the PostgreSQL JDBC driver manage when the LSN is flushed to the replication slot.
+Debezium will flush as it processes events while the driver will flush during idle periods based on the server keepalive messages.
+
+=== Support Oracle's subset database replication logging mode
+
+Debezium has long recommended that the best supplemental logging mode is to enable minimum supplemental logging mode at the database level and then specify all column logging on a per-table basis.
+This minimizes the volume of data recorded in your database transaction logs and improves the overall performance of Debezium.
+
+In Oracle 21, a new supplemental logging mode was introduced called `SUBSET DATABASE REPLICATION`, which replaces the the previously used Minimum Supplemental Logging Mode.
+
+In Debezium 3.4, the Debezium Oracle connector recognizes this new logging mode as an equivalent to the minimum supplemental logging mode, allowing users to set one or the other rather than both (https://issues.redhat.com/browse/DBZ-7341[DBZ-7341]), simplifying the setup required for capturing changes using LogMiner.
+
+=== Discard Oracle in-progress transactions manually
+
+Debezium's Oracle connector is a bit unique in that it must buffer all events for a transaction before the transaction can be emitted as change events when using LogMiner.
+In some situations, users have found themselves in a situation where a transaction is being buffered, but it's not something they care about.
+Currently, you need to wait for the transaction commit or rollback to be observed or the transaction buffer retention to be met.
+In some environments, this is less than ideal.
+
+Debezium 3.4 introduces a new special Oracle signal called `drop-transaction`, that allows you to specifically discard an in-progress transaction that is currently being buffered (https://issues.redhat.com/browse/DBZ-9552[DBZ-9552]).
+
+.Example discard transaction signal
+[source,sql]
+----
+INSERT INTO the_signal_table
+VALUES ('my-signal-id', 'drop-transaction', '{"transaction-id": "<the-database-trx-id>"}');
+----
+
+When this signal is processed, Debezium will locate the transaction in the buffer, and if it exists, the transaction will be abandoned immediately rather than waiting for the transaction buffer retention if configured.
+
+=== Configurable Oracle session hash/sort area values
+
+An Oracle database is configured by database administrators with a variety of session default values, many of which control the amount of resources the connection can consume when executing queries or running PL/SQL programs.
+Two very specific database parameters are:
+
+`hash_area_size`:: This specifies the maximum amount of memory, in bytes, to be used when performing hash joins.
+`sort_area_size`:: This specifies the maximum amount of memory, in bytes, to be used when performing query sorts.
+
+Normally these values are set automatically by the database sizing configuration and should not be altered; however, there are some corner cases where adjusting these values larger can help improve specific queries and performance, including the log mining pass used by Debezium.
+
+To adjust these two options, the Debezium Oracle connector provides two internal, experimental properties:
+
+`internal.log.mining.hash.area.size`:: Specifies the maximum amount of memory, in bytes, to be used for hash joins.
+`internal.log.mining.sort.area.size`:: Specifies the maximum amount of memory, in bytes, to be used for query sorts.
+
+[WARNING]
+====
+Careful consideration should be taken before explicitly setting these configuration options.
+In situations where these values are set too large, they can create stability issues in the database.
+
+You should consult your database administrator before setting either of these.
+====
+
+=== Oracle low watermark calculation no longer causes performance loss
+
+When an Oracle LogMiner mining step completes, the Debezium Oracle connector needs to calculate the next starting position for mining.
+When `lob.enabled` is set to `false` (the default), it was observed that this calculation was too conservative, and could lead to a regression in performance.
+
+This regression has been fixed, and the connector should once again resume reading changes without the low watermark calculation causing performance loss (https://issues.redhat.com/browse/DBZ-9664[DBZ-9664]).
+
+=== Oracle heartbeats no longer stop when mining returns no data
+
+The Debezium Oracle connector recently introduced an experimental feature using Common Table Expression (CTE) queries to allow another way to optimize the data fetch from Oracle LogMiner.
+However, the community reported that when using this feature, if the query returned no events, Debezium stopped emitting heartbeat events.
+
+This has been fixed, and users should observe that heartbeat events should always be emitted by the Oracle connector, even if the mining pass fetched no data (https://issues.redhat.com/browse/DBZ-9443[DBZ-9443]).
+
+=== SQL Server incremental snapshots now resume after restart
+
+When an incremental snapshot was in progress for a SQL Server connector, if a rebalance or connector restart was triggered for any reason, any in-progress incremental snapshot would fail to resume upon restart.
+This is unintended and was due to regression in the handling of the connector's offsets during incremental snapshots.
+
+This issue is fixed for SQL Sever, and we identified that no other connector was impacted by this regression.
+SQL Server users should now observe that if the connector is restarted during an incremental snapshot, the snapshot resumes upon restart as intended (https://issues.redhat.com/browse/DBZ-9533[DBZ-9533]).
+
+=== Selectively target tables during Vitess copy phase
+
+=== New JDBC connector passthrough collection naming strategy
+
+While the Debezium JDBC connector is purpose-built to consume Debezium change events without the `ExtractNewRecordState` transformation, some use cases require it anyway.
+This creates a challenge: you may want to use the `+${source.*}+` pattern with `collection.naming.format` to map events to your target tables.
+But with the source information block stripped away, this approach no longer works.
+
+To solve this problem and streamline deployments that need this capability, the JDBC sink connector now includes a passthrough collection naming strategy.
+This strategy uses the event's topic name directly, without any sanitization, as the target table name (https://issues.redhat.com/browse/DBZ-9679[DBZ-9679]).
+It enables you to pair other transformations that modify the topic name with precise control over how events map to tables.
+
+To enable the passthrough collection naming strategy, add this to your connector configuration:
+
+[source,json]
+----
+{
+  "collection.naming.strategy": "io.debezium.sink.naming.PassthroughCollectionNamingStrategy"
+}
+----
+
+With this strategy, events from topic `public.orders` will be written directly to a table named `public.orders`.
+
+=== OpenLineage can now be fully disabled
+
+Several users reported issues when `openlineage.integration.enabled` was set to `false`, Debezium was still trying to resolve OpenLineage features in some parts of the code, which could lead to undesirable `IllegalStateException` errors while trying to initialize OpenLineage.
+
+This issue is resolved and Debezium fully respects the `openlineage.integration.enabled` property and will not attempt to perform any OpenLineage setup or initialization when set to `false` (https://issues.redhat.com/browse/DBZ-9504[DBZ-9504]).
+
+[id="other-changes"]
+== Other changes
+
+In addition, there are a number of other noteworthy changes that may be of interest:
+
+* Provide the table explorer table component https://issues.redhat.com/browse/DBZ-9318[DBZ-9318]
+* Skipped events counter not handled correctly for compressed transactions https://issues.redhat.com/browse/DBZ-9564[DBZ-9564]
+* Validation for a Kafka target fails https://issues.redhat.com/browse/DBZ-9645[DBZ-9645]
+* Oracle does not support renaming partitions using alter table https://issues.redhat.com/browse/DBZ-9651[DBZ-9651]
+* Debezium Server configuration import creates invalid pipelines https://issues.redhat.com/browse/DBZ-9652[DBZ-9652]
+* MongoDB connector: Whitespace in collection.include.list causes incorrect regex pattern in change streams https://issues.redhat.com/browse/DBZ-9657[DBZ-9657]
+* Debezium Oracle restarting mining session too frequently https://issues.redhat.com/browse/DBZ-9680[DBZ-9680]
+* Debezium Oracle connector fails to parse Oracle database version https://issues.redhat.com/browse/DBZ-9681[DBZ-9681]
+* MySQLGTIDSet Subtractions Fail on UUIDSet that exist only in the Left Operand https://issues.redhat.com/browse/DBZ-9682[DBZ-9682]
+* Connection list shows connection of all source/destination https://issues.redhat.com/browse/DBZ-9685[DBZ-9685]
+* Incorrect documentation about storing state in JDBC https://issues.redhat.com/browse/DBZ-9692[DBZ-9692]
+* Snapshot SQL Override Spaces https://issues.redhat.com/browse/DBZ-9695[DBZ-9695]
+* NPE during sending to HTTP sink https://issues.redhat.com/browse/DBZ-9698[DBZ-9698]
+* Update testcontainers to 2.0.2 https://issues.redhat.com/browse/DBZ-9699[DBZ-9699]
+
+== Summary
+
+In total, https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20and%20fixVersion%20%20in%20(3.4.0.Beta1)[38 issues] were resolved in Debezium 3.4.0.Beta1.
+The list of changes can also be found in our https://debezium.io/releases/3.4[release notes].
+
+A big thank you to all the contributors from the community who worked diligently on this release:
+ +
+https://github.com/akanimesh7[Animesh Kumar],
+https://github.com/aukevanleeuwen[Auke van Leeuwen],
+https://github.com/bpaquet[Bertrand Paquet],
+https://github.com/chaitradalawai[Chaitra Dalawai],
+https://github.com/Naros[Chris Cranford],
+https://github.com/cjbooms[Conor Gallagher],
+https://github.com/seanshi007[Guangnan Shi],
+https://github.com/hagar-yasser1[Hagar Yasser],
+https://github.com/HongqunXia[Hong Xia],
+https://github.com/ismailsimsek[ismail simsek],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/mhejnas[Matt Hejnas],
+https://github.com/nathan-smit-1[Nathan Smit],
+https://github.com/poonam-meghnani[Poonam Meghnani],
+https://github.com/roldanbob[Robert Roldan],
+https://github.com/rptroberts[rptroberts],
+https://github.com/morozov[Sergei Morozov],
+https://github.com/sumitjha4321[Sumit Jha],
+https://github.com/twthorn[Thomas Thornton],
+https://github.com/vjuranek[Vojtech Juranek], and
+https://github.com/yramanovich[Yauheni Ramanovich]!
+
+
+
