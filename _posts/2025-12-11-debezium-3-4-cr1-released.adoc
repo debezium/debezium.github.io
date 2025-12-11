@@ -1,0 +1,132 @@
+---
+layout: post
+title:  Debezium 3.4.0.CR1 Released
+date:   2025-12-11 00:00:00 -0600
+tags: [ releases, mongodb, mysql, mariadb, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox, spanner, jdbc, informix, ibmi, cockroachdb ]
+author: ccranfor
+extraClasses: release-v2
+---
+
+As the end of year draws closer, we're happy to announce the first candidate build of Debezium 3.4 is available, **3.4.0.CR1**.
+This release introduces support for Kafka 4.1.1, signaling for multitask SQL Server deployments, memory guards for large schemas, improved OpenLineage integration, migration to JUnit 5, and much more!
+Let's take a few minutes and discuss these highlights and more.
+
++++<!-- more -->+++
+
+[id="new-features-and-improvements"]
+== New features and improvements
+
+The following describes all noteworthy new features and improvements in **Debezium 3.4.0.CR1**.
+For a complete list, be sure to read the link:/releases/3.4/release-notes#release-3.4.0-cr1[release notes] for more details.
+
+=== Kafka 4.1.1 support
+
+We are pleased to report that Debezium has been tested and built based on Kafka 4.1.1 (https://issues.redhat.com/browse/DBZ-9709[DBZ-9709]).
+
+The upgrade to Kafka 4.1.1 is noteworthy not only because of our compatibility testing, but also because this build fixes https://issues.apache.org/jira/browse/KAFKA-19758[KAFKA-19758], a class loading issue that the Debezium team reported to the Kafka community.
+This class loading bug was a regression in class loading behavior that resulted in several of Debezium's transformations not working correctly with Kafka 4.1.
+
+We recommend anyone who may be upgrading their Kafka environment, please consider moving to 4.1.1 or later, skipping 4.1.0 to avoid any compatibility issues with Debezium's transformations and the Kafka runtime environment.
+
+=== Multitask SQL Server signaling support
+
+The Debezium SQL Server connector is the only core relational source connector that supports the ability to capture changes from multiple databases on a shared instance using multiple tasks.
+This deployment model provides for an efficient solution to use different tasks for different databases, while supporting a single configuration.
+However, because of this unique deployment model, not all of Debezium's advanced features were supported when using this model, such as signaling.
+
+We are pleased to report that with Debezium 3.4, using a multitask single connector deployment for SQL Server, can be used safely with signals (https://issues.redhat.com/browse/DBZ-7243[DBZ-7243]).
+This allows for triggering adhoc blocking or incremental snapshots while using a multitask SQL Server connector deployment.
+
+=== Memory guards for large schemas
+
+For every table that a connector maintains schema history for and/or captures, Debezium maintains a model in-memory that describes the primary keys, columns, column types, and other attributes after the table.
+In large environments where a connector is managing hundreds to tens of thousands of tables, the memory footprint for the in-memory relational model can be quite large.
+
+To address these concerns, users can opt-in and configure limits to minimize the potential for OutOfMemoryError issues (https://issues.redhat.com/browse/DBZ-9427[DBZ-9427]).
+These new configuration properties include the following:
+
+`guardrail.collections.max`:: Specifies the maximum number of tables that the connector can capture.
+Exceeding this limit triggers the action specified by `guardrail.collections.limit.action`.
+Setting this property to `0` (the default) prevents the connector from triggering the guardrail action.
+
+`guardrail.collections.limit.action`:: Specifies the action to trigger if the number of tables that the connector captures exceeds the number specified in `guardrails.collections.max`.
+The property can be set to `fail` to report an exception or `warn` (the default) to log a warning.
+
+These settings help avoid misconfigurations or malicious setups that lead to downtime or memory issues.
+These are particularly useful for end users who want to avoid accidental crashes or for managed service vendors who use Debezium to minimize infrastructure risks.
+
+=== Improved OpenLineage integration
+
+While the Kafka Connect update to 4.1.1 fixes https://issues.apache.org/jira/browse/KAFKA-19758[KAFKA-19758], we felt it was important for Debezium to take a different path to minimize any regression surface in the future if Kafka chooses to change how class loading works.
+
+With that, we're pleased to report that Debezium 3.4 introduces changes to the OpenLineage integration so that the integration manages the necessary state across component boundaries without making any assumptions on how Kafka Connect's class loading subsystem works (https://issues.redhat.com/browse/DBZ-9541[DBZ-9541]).
+
+For updating, this should be entirely transparent and require no user action.
+
+=== Oracle active transactions logged on stale offsets
+
+When the Debezium Oracle connector writes to the log file, _"Offset SCN X has not advanced in Y mining sessions..."_, users are often concerned about what this means and exactly do they determine what transactions are active.
+
+In Debezium 3.4, we have improved this log message so that not only is it clearer, but that this message includes all the current active transaction identifiers, making it easy for users to work with their DBA team to understand why there are long-running transactions (https://github.com/debezium/dbz/issues/20[debezium/dbz#20]).
+
+The log message will now read, _"Offset SCN X has noot changed in Y mining session iterations. This may indicate long running transaction(s), active transactions: <list of transaction ids>. Commit SCN: <commit details>"_.
+
+=== Oracle transaction buffer retention improved
+
+For Debezium Oracle connector users who use `log.mining.transaction.retention.ms`, there was an issue reported that indicated after transactions were evicted from the buffer due to the retention policy, the connector was not properly calculating several key metrics and values (https://issues.redhat.com/browse/DBZ-9659[DBZ-9659]).
+
+This specific regression led to several metrics to report incorrect values, and moreover to LogMiner re-reading data that it should have otherwise skipped.
+While this did not introduce any data issues, it did introduce a performance penality that could add up over time in high-traffic systems that we're happy to have resolved.
+
+=== JDBC sink field name transformation correctly handles case
+
+Several users have reported problems with the JDBC sink transformation `FieldNameTransformation` not applying the desired case to field names.
+We identified there were a few corner cases where the transformation did not correctly account for situations where case should be adjusted.
+This led to sporadic issues where the JDBC sink would report the column names were not adjusted by the transformation (https://issues.redhat.com/browse/DBZ-9747[DBZ-9747]).
+
+We are pleased to report that Debezium 3.4 addresses this regression and that the transform should now account for all use cases correctly so that the JDBC sink can process events with the desired field case.
+
+[id="other-changes"]
+== Other changes
+
+In addition, there are a number of other noteworthy changes that may be of interest:
+
+* Debezium db2i CDC source connector randomly loses Events https://issues.redhat.com/browse/DBZ-8538[DBZ-8538]
+* Signal Processing With Idle Database https://issues.redhat.com/browse/DBZ-9707[DBZ-9707]
+* Task getErrorHandler throws NullPointerException https://issues.redhat.com/browse/DBZ-9708[DBZ-9708]
+* Debezium Cassandra Connector Silently Stops Processing After CommitLog Move Failure https://issues.redhat.com/browse/DBZ-9710[DBZ-9710]
+* MongoDb connector throws null ref exception https://issues.redhat.com/browse/DBZ-9719[DBZ-9719]
+* JDBC offset store requires PK when connecting with a MySQL cluster https://github.com/debezium/dbz/issues/5[debezium/dbz#5]
+* Oracle connector can incorrectly build on-demand table schema with optional key fields. https://github.com/debezium/dbz/issues/7[debezium/dbz#7]
+* Migrate from JUnit4 to JUnit 5 https://github.com/debezium/dbz/issues/11[debezium/dbz#11]
+* Bump Pulsar Java client version in Debezium Server Pulsar connector https://github.com/debezium/dbz/issues/12[debezium/dbz#12]
+* PostgreSQL Connector: Keep-alive thread logs ERROR on normal shutdown due to InterruptedException https://github.com/debezium/dbz/issues/14[debezium/dbz#14]
+* Oracle numeric default values wrapped in `(` and `)` are mistakenly treated as expressions https://github.com/debezium/dbz/issues/16[debezium/dbz#16]
+* Migration to JUnit 5 missed new test classes https://github.com/debezium/dbz/issues/25[debezium/dbz#25]
+
+== Summary
+
+In total, https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20and%20fixVersion%20%20in%20(3.4.0.CR1)[12 issues] were resolved in Debezium 3.4.0.CR1.
+The list of changes can also be found in our https://debezium.io/releases/3.4[release notes].
+
+A big thank you to all the contributors from the community who worked diligently on this release:
+ +
+https://github.com/AlvarVG[Alvar Viana],
+https://github.com/Naros[Chris Cranford],
+https://github.com/dvolontyr1[Dmitry Volontyr],
+https://github.com/gmiklos-ltg[Gabriel Miklós],
+https://github.com/kmos[Giovanni Panice],
+https://github.com/seanshi007[Guangnan Shi],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/jogomez97[Joan Gomez],
+https://github.com/mfvitale[Mario Fiore Vitale],
+https://github.com/mhejnas[Matt Hejnas],
+https://github.com/nkokitkar[Nikita Kokitkar],
+https://github.com/gildur[Piotr Wolny],
+https://github.com/rajdangwal[Rajendra Dangwal],
+https://github.com/twthorn[Thomas Thornton],
+https://github.com/ThomasVerhoeven1998[Thomas Verhoeven],
+https://github.com/vjuranek[Vojtech Juranek],
+https://github.com/william-xiang[William Xiang],
+https://github.com/internCoder[Xiang Qiu Min], and
+https://github.com/msillence[martin]!
