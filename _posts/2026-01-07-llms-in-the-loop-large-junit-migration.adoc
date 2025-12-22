@@ -1,0 +1,180 @@
+---
+layout: post
+title:  "LLMs in the Loop: Using AI to Migrate JUnit Tests"
+date:   2026-01-07
+tags: [llm, ai, refactoring]
+author: mfvitale
+---
+
+JUnit 5 was released in late 2017, and since then the migration from JUnit 4 has been written about extensively, so much so that, at first glance, it may feel like an old and well-trodden topic.
+
+[.centered-image.responsive-image]
+====
+++++
+<img src="/assets/images/2026-01-07-llms-in-the-loop-large-junit-migration/junit-dependencies-comparison.png" style="max-width:70%;" class="responsive-image" alt="JUnit4 and JUnit5 usages">
+++++
+*JUnit usage statistics*
+====
+
+Yet in reality, the chart makes it clear that JUnit 4 is still very much alive in the ecosystem.
+According to https://libraries.io/[Libraries.io], JUnit 4 has **91.5K dependent packages** and **29.3K dependent repositories**.
+By comparison, JUnit 5’s `junit-jupiter-engine` has only **20.8K dependent packages** and **5.3K dependent repositories**.
+
+Clearly, there are still many projects running on JUnit 4 today.
+
++++<!-- more -->+++
+
+The reasons can vary, but in my experience the most common ones are:
+
+* JUnit 5 introduced the possibility of running existing JUnit 4 tests via the `junit-vintage` engine.
+The idea was to allow users to temporarily keep running old tests on the new `jupiter` engine and migrate incrementally.
+* Migration is a time-consuming task. (It fits perfectly in any long-lived tech debt list :))
+* The tests work. Don’t touch them.
+
+Regarding junit-vintage, I don’t think the original expectation was for this **temporary** period to last this long.
+That phase now appears to be approaching its end, as suggested by the https://docs.junit.org/6.0.0-M1/release-notes/#release-notes-6.0.0-M1-junit-vintage[JUnit 6 release notes], where a deprecation notice states:
+
+> The JUnit Vintage engine is now deprecated and will report an INFO level discovery issue when it finds at least one JUnit 4 test class. For now, the intent of the deprecation is not to signal removal in the next major version but to clarify the intended purpose of the engine. It should only be used temporarily while migrating tests to JUnit Jupiter or another testing framework with native JUnit Platform support.
+
+To be honest I just discovered this deprecation notice while _writing this article_.
+For us, the real motivation was a combination of all the points above, amplified by a very large test suite and limited team capacity.
+
+Within the Debezium team, we’ve been aware of this technical debt for years.
+We discussed it multiple times and even sketched out plans, but priorities kept shifting—as they often do.
+
+Recently, the topic came up again in a https://debezium.zulipchat.com/#narrow/channel/302533-dev/topic/JUnit.204.20-.3E.20JUnit.206/with/563479332[discussion] this time driven by Quarkus 3.31 adding support for JUnit 6.
+
+Around the same time, I had been experimenting with Claude Code and thought: _why not use it here?_
+
+In this article, I’ll walk through the migration process, explain how we approached it, and share what worked—and what didn’t—along the way.
+
+Before the migration, the Debezium test suite was still largely based on JUnit 4.
+The distribution of test files across JUnit 4 and JUnit 5 is shown in the chart below:
+
+[.centered-image.responsive-image]
+====
+++++
+<img src="/assets/images/2026-01-07-llms-in-the-loop-large-junit-migration/junit-test-files-chart.png" style="max-width:70%;" class="responsive-image" alt="JUnit tests files">
+++++
+*Debezium JUnit stats*
+====
+
+The chart makes it clear: JUnit 4 was still deeply entrenched in the project, which explains why a fully manual migration would have been slow, error-prone, and difficult to sustain.
+
+== About the JUnit migration
+
+In the years following the introduction of JUnit 5, and as users gained experience with the migration from JUnit 4, a fairly well-defined high-level recipe emerged.
+
+.JUnit 4 to JUnit 5 migration recipe
+* Update dependencies to JUnit Jupiter
+* Change imports from `org.junit.*` to `org.junit.jupiter.api.*`
+* Update lifecycle annotations (**@Before → @BeforeEach**, **@BeforeClass → @BeforeAll**, etc.)
+* Migrate Rules to Extensions (**@Rule → @ExtendWith**)
+
+Thanks to these clearly defined rules, I had already come across a dedicated https://docs.openrewrite.org/running-recipes/popular-recipe-guides/migrate-from-junit-4-to-junit-5[JUnit 5 migration recipe for OpenRewrite]:
+
+However, for the reasons described earlier, we never seriously approached the migration.
+
+Since then, things have changed a bit.
+AI, and in particular GenAI, has started to show up everywhere.
+
+For me, this felt like an almost ideal task for an LLM: a clear set of rules applied repeatedly to a large codebase.
+
+== AI Augmented approach
+
+I recently started using https://claude.com/product/claude-code[Claude Code] during my daily work to help me:
+
+* investigating and fixing bugs
+* writing tests
+* challenging my design choices
+
+It doesn’t always help, but in some cases it has genuinely helped me avoid mistakes or resolve issues more quickly.
+
+So, why not try it here?
+
+I don’t recall the exact prompt I used, but the idea was to ask Claude to analyze the codebase and provide an overview of the changes needed for the migration.
+I’m pretty sure I used the word `plan`, because Claude immediately switched into _plan mode_.
+
+At the time, I wasn’t aware this mode even existed, so I checked the Claude Code documentation, which describes it as:
+
+> Plan Mode instructs Claude to create a plan by analyzing the codebase with read-only operations, perfect for exploring codebases, planning complex changes, or reviewing code safely.
+
+The documentation also suggests using plan mode in the following situations:
+
+> * Multi-step implementation: When your feature requires making edits to many files
+> * Code exploration: When you want to research the codebase thoroughly before changing anything
+> * Interactive development: When you want to iterate on the direction with Claude
+
+This was exactly what I was looking for.
+Claude also asked a few questions about the possible approaches to use during the migration.
+After some back and forth, it proposed the following _Executive Summary_.
+
+----
+This plan details a phased, module-by-module migration of the Debezium codebase from JUnit 4 to JUnit 5. The migration will use a hybrid approach where JUnit 5 Extensions are created alongside existing JUnit 4 Rules, allowing both to coexist during the transition. The migration will start with core modules and progress through connector modules in dependency order.
+
+Key Stats:
+- 384+ test files using JUnit 4 (100% of tests)
+- ~95 Maven modules in the project
+- JUnit 5.9.1 already in BOM with vintage engine available
+- All test dependencies (Mockito 5.19.0, AssertJ 3.27.5, TestContainers 2.0.2) are JUnit 5 compatible
+
+Migration Approach:
+- Strategy: Phased module-by-module migration
+- Custom Rules: Hybrid approach - create JUnit 5 Extensions alongside existing Rules
+- Priority: Start with core modules (debezium-core and shared infrastructure)
+- Scope: Minimal changes - JUnit 5 migration only, no additional modernization
+----
+
+You can find the full and detailed plan https://gist.github.com/mfvitale/bcc78386d9a6c6e48e7891c787cd5afd[here]
+
+I accepted the plan and asked Claude Code to start implementing it.
+The way it worked was exactly how a software engineer would expect it: apply a change, verify that the code still compiles, and then move on to the next step.
+Once a module was completed, it didn’t just stop at compilation—it also verified that the tests were actually passing.
+
+[.centered-image.responsive-image]
+====
+++++
+<img src="/assets/images/2026-01-07-llms-in-the-loop-large-junit-migration/claude-at-work.png" style="max-width:70%;" class="responsive-image" alt="Claude code doing code changes">
+++++
+*Claude working on code changes*
+====
+
+I don’t have the exact number of hours the process took, but in roughly one working day (split into two half-days) I was able to open the final https://github.com/debezium/debezium/pull/6935[pull request].
+
+It worked. In just one day, we migrated the entire test suite to JUnit 5.
+
+That said, the process was not completely hands-off. I had to supervise it and occasionally provide more specific prompts to address issues.
+For example, Claude initially claimed that the codebase no longer depended on JUnit 4, while I could still see old JUnit imports. After being nudged, it correctly identified a transitive dependency as the source.
+
+In other cases, assertions were mechanically migrated by renaming methods, but without adjusting the order of parameters, causing some tests to fail.
+Finally, there were a few manual changes needed to fix test isolation issues that only surfaced under the JUnit 5 engine, which executes tests in a different order compared to JUnit 4.
+
+Apart from these cases, the process was surprisingly smooth.
+For the most part, I just supervised it while working on other tasks.
+
+== Conclusion
+We finally removed a technical debt, and for me, that is the most important part, _how_ we did it comes second.
+This was also the perfect occasion to “test” GenAI on a real problem, and we can fairly say that it worked.
+
+I know the question you’re probably repeating in your head: _Will we be replaced by AI?_
+
+It’s not an easy question.
+
+History shows that some roles can vanish as technology evolves. Think of switchboard operators, once essential for connecting phone calls, or lamplighters, who lit and maintained gas street lamps before electric lighting—both replaced by automation.
+
+At the same time, technological evolution creates entirely new roles that didn’t exist before. Software developers and programmers, for instance, only came into existence with computers. Social media managers now shape online presence for brands, data scientists analyze massive datasets, and drone operators handle photography, delivery, inspections, and other commercial tasks that were impossible just a few years ago.
+
+The lesson is clear: technology changes the landscape, sometimes replacing roles, sometimes creating them.
+What _I do_ think is that as of now, AI models still need guidance and supervision, but when used well,
+they can genuinely augment our work—helping us avoid mistakes,
+catch issues early, and move faster than ever before.
+
+I also found that when an LLM keeps iterating on a problem without making real progress,
+it’s often just shooting in the dark.
+At that point, a human intervention is usually the better choice.
+
+Feeling augmented can be incredibly fulfilling, to the point of wanting to do more and more.
+But this can easily increase context switching, which for us humans is particularly costly.
+Finding the right balance, and avoiding overdoing it, becomes essential.
+
+That said, if you’re still on JUnit 4, you really don’t have any excuses these days!
