@@ -1,0 +1,168 @@
+---
+layout: post
+title:  Debezium 2.0.0.Alpha2 Released
+date:   2022-06-09
+tags: [ releases, mysql, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox ]
+author: ccranfor
+---
+
+I am thrilled to share that Debezium *2.0.0.Alpha2* has been released!
+
+
+This release is packed with tons of bugfixes and improvements,
+https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20AND%20fixVersion%20%3D%202.0.0.Alpha2%20ORDER%20BY%20component%20ASC[110 issues] resolved in total.
+Just, WOW!
+
+A few noteworthy changes include incremental snapshots gaining support for regular expressions and a new stop signal.
+We also did some housekeeping and removed a number of deprecated configuration options and as well as the legacy MongoDB oplog implementation.
+
+
+Lets take a look at these in closer detail.
+
++++<!-- more -->+++
+
+== Incremental snapshot changes
+
+First, incremental snapshots has been a tremendous success.
+The feedback we've gotten from the community has been overwhelmingly positive about how this process works and how its helped streamline capturing changes, particularly for users with very large datasets.
+So we took an opportunity in this release to build upon that momentum and introduced several new options:
+
+* The ability to stop an in-progress incremental snapshot
+* Support the use of regular expressions
+
+=== Stopping incremental snapshots
+
+Since we first introduced incremental snapshots, users have asked for a way to stop an in-progress snapshot.
+To accomplish this, we have added a new signal, `stop-snapshot`, which allows stopping an in-progress incremental snapshot.
+This signal is to be sent just like any other, by inserting a row into the signal table/collection, as shown below:
+
+[source,sql]
+----
+INSERT INTO schema.signal_table (id, type,data)
+VALUES ('unique-id', 'stop-snapshot', '_<signal payload>_`);
+----
+
+The `stop-snapshot` payload looks very similar to its `execute-snapshot` counterpart.
+An example:
+
+[source,json]
+----
+{
+  "data-collections": ["schema1.table1", "schema2.table2"],
+  "type": "incremental"
+}
+----
+
+This example removes both `schema1.table1` and `schema2.table2` from the incremental snapshot, so long as the table or collection had not already finished its incremental snapshot.
+If other tables or collections remain outstanding after the removal of those specified by `data-collections`, the incremental snapshot will continue to process those that are outstanding.
+If no other table or collection remains, the incremental snapshot will stop.
+
+Another example of a `stop-snapshot` payload is quite simply:
+[source,json]
+----
+{
+  "type": "incremental"
+}
+----
+
+This example does not specify the `data-collections` property, it is optional for the `stop-snapshot` signal.
+When this property isn't specified, the signal implies the current in-progress incremental snapshot should be stopped entirely.
+This gives the ability to stop an incremental snapshot without knowledge of the current or outstanding tables or collections yet to be captured.
+
+=== Signals support regular expressions
+
+Incremental snapshot signals have required the use of explicit table/collection names in the `data-collections` payload attribute.
+While this worked well, there may be situations where broad capture configurations could take advantage of regular expression usage.
+We already support regular expressions in connector configuration options, such as include/exclude lists, so it made sense to extend that to incremental snapshots as well.
+
+Starting in Debezium 2.0, all incremental snapshot signals can use regular expressions in the `data-collections` payload property.
+Using one of the stop signal examples from above, the payload can be rewritten using regular expressions:
+
+[source,json]
+----
+{
+  "data-collections": ["schema[1|2].table[1|2]"],
+  "type": "incremental"
+}
+----
+
+Just like the explicit usage, this signal with regular expressions would also stop both `schema1.table1` and `schema2.table2`.
+
+== Removal of MongoDB oplog support
+
+In Debezium 1.8, we introduced the new MongoDB change stream feature while also deprecating the oplog implementation.
+The transition to change streams offers a variety of benefits, such as being able to stream changes from non-primary nodes,
+the ability to emit update events with a full document representation for downstream consumers,
+and so much more.  In short, change streams is just a much more superior way to perform change data capture with MongoDB.
+
+The removal of the oplog implementation also means that MongoDB 3.x is no longer supported.
+If you are using MongoDB 3.x, you will need to upgrade to at least MongoDB 4.0 or later with Debezium 2.0.
+
+== Configuration option clean-up
+
+Debezium 1.x has seen a lot of evolution over the years.
+We added connector-specific options to handle migration or specific features that have been deprecated or even replaced by common options that are universal for all connectors.
+One of the major tasks for Debezium 2.0 is to do some internal housekeeping on configuration options as many have been deprecated.
+
+With that, there is also more configuration housekeeping coming in the future when we look at option namespaces.
+Suffice to say, it will be important as a part of the upgrade path to review the connector's documentation on its relevant options with current connector configurations.
+You just might find that you can streamline your configurations with fewer options or that some option names have changed entirely.
+
+== Other fixes & improvements
+
+There are several bugfixes and stability changes in this release, some noteworthy are:
+
+* Postgres existing publication is not updated with the new table https://issues.redhat.com/browse/DBZ-3921[DBZ-3921]
+* MySQL connector increment snapshot failed parse datetime column length when connector set "snapshot.fetch.size": 20000  https://issues.redhat.com/browse/DBZ-4939[DBZ-4939]
+* DateTimeParseException: Text 'infinity' could not be parsed in Postgres connector https://issues.redhat.com/browse/DBZ-5014[DBZ-5014]
+* PostgreSQL ENUM default values are missing from generated schema https://issues.redhat.com/browse/DBZ-5038[DBZ-5038]
+* All connectors now use multi-partitioned codebase https://issues.redhat.com/browse/DBZ-5042[DBZ-5042]
+* Oracle LogMiner: records missed during switch from snapshot to streaming mode https://issues.redhat.com/browse/DBZ-5085[DBZ-5085]
+* Introduce a new field "ts_ms" to identify the process time for schema change event https://issues.redhat.com/browse/DBZ-5098[DBZ-5098]
+* Parsing zero-day fails https://issues.redhat.com/browse/DBZ-5099[DBZ-5099]
+
+
+Altogether, an amazing https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20AND%20fixVersion%20%3D%202.0.0.Alpha2%20ORDER%20BY%20component%20ASC[110 issues] were fixed for this release.
+
+A big thank you to all the contributors from the community who worked on this release:
+Rotem Adhoh,
+https://github.com/AlexMiroshnikov[Alexey Miroshnikov],
+https://github.com/ajunwalker[Andrew Walker],
+https://github.com/ani-sha[Anisha Mohanty],
+https://github.com/roldanbob[Bob Roldan],
+https://github.com/Naros[Chris Cranford],
+https://github.com/Chrisss93[Chris Lee],
+https://github.com/connorszczepaniak-wk[Connor Szczepaniak],
+https://github.com/cmartinez-enve[César Martínez],
+https://github.com/elirag[Eliran Agranovich],
+https://github.com/EthanZ328[Ethan Zou],
+https://github.com/gunnarmorling[Gunnar Morling],
+https://github.com/harveyyue[Harvey Yue],
+https://github.com/Himanshu-LT[Himanshu Mishra],
+https://github.com/jcechace[Jakub Cechacek],
+https://github.com/Jiabao-Sun[Jiabao Sun],
+https://github.com/novotnyJiri[Jiri Novotny],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/markallanson[Mark Allanson],
+https://github.com/alwaysbemark[Mark Bereznitsky],
+https://github.com/MartinMedek[Martin Medek],
+https://github.com/nathan-bradshaw-at[Nathan Bradshaw],
+https://github.com/sagarrao12[Sagar Rao],
+https://github.com/morozov[Sergei Morozov],
+https://github.com/shichao-an[Shichao An],
+https://github.com/smiklosovic[Stefan Miklosovic],
+https://github.com/troeselereos[Timo Roeseler],
+https://github.com/ramanenka[Vadzim Ramanenka],
+https://github.com/vjuranek[Vojtech Juranek], and
+https://github.com/y5w[Yang]!
+
+== What's Next?
+
+So while this release is a bit behind schedule, Debezium 2.0 is shaping up quite well.
+
+The next major milestones includes unifying snapshot modes across connectors, a new `Snapshotter` API for all connectors, compactable JSON database history, offset unification, offset storage API and much more.
+So the coming weeks do have a lot in store, as we continue to work on Debezium 2.0.
+And as usual, you can expect some (hopefully all) of these in approximately 3-weeks, sticking to our usual release cadence.
+
+Until then, let the data capturing continue!
+

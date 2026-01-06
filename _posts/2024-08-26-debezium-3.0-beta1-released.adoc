@@ -1,0 +1,244 @@
+---
+layout: post
+title:  Debezium 3.0.0.Beta Released
+date:   2024-08-26
+tags: [ releases, mongodb, mysql, mariadb, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox, spanner, jdbc, informix, ibmi ]
+author: ccranfor
+---
+
+Even as the summer heat continues to rise, the Debezium team has some new, cool news to share.
+We're pleased to announce the first beta preview of Debezium 3, **3.0.0.beta1**.
+
+This release includes a host of new features and improvements, including detailed metrics for creates, updates, and deletes per table, replication slot creation timeout, support for `PgVector` data types with PostgreSQL, a new Oracle embedded buffer implementation based on Ehcache, and others.
+Let's take a few moments and dive into these new features and how you can take advantage of them in Debezium 3!
+
++++<!-- more -->+++
+
+[id="breaking-changes"]
+== Breaking changes
+
+The team aims to avoid any potential breaking changes between minor releases; however, such changes are sometimes inevitable.
+
+Debezium Server Kafka Sink::
+The Debezium Server Kafka sink adapter could wait indefinitely when a Kafka broker becomes unavailable.
+A new configurable timeout has been added to the sink adapter to force the adapter to fail when the timeout is reached.
+The new option, `debezium.sink.kafka.wait.message.delivery.timeout.ms`, has a default value of 30 seconds.
+Please adjust this accordingly if the default is insufficient for your needs (https://issues.redhat.com/browse/DBZ-7575[DBZ-7575]).
+
+Debezium Server RabbitMQ sink::
+The Debezium Server RabbitMQ sink adapter was sending all changes to the same single stream.
+While this may be useful for some scenarios, this does not align well with other broker systems where each table is streamed to its own unique topic or stream.
+With Debezium 3, this logic has changed and each table will be streamed to its own unique stream by default.
+When setting `debezium.sink.rabbitmqstream.stream`, you can enable the legacy behavior of streaming all changes to the same stream (https://issues.redhat.com/browse/DBZ-8118[DBZ-8118]).
+
+[id="new-features-and-improvements"]
+== New features and improvements
+
+Debezium 3.0.0.Beta1 also introduces many improvements and features, lets take a look at each individually.
+
+=== Detailed metrics per table
+
+Debezium will now begin to track metrics based on the individual _create_, _update_, and _delete_ operations performed per relational table.
+For some connectors such as PostgreSQL and Oracle, these new detailed metrics also track the _truncate_ operations performed per relational table.
+This can be quite useful for situations where you need to detect specific mutation patterns or where you may want to integrate analytics or observability stacks where this detailed information could be valuable to identifying problems.
+
+For users upgrading to Debezium 3, these new metrics are captured automatically.
+They are exposed using a map-based pattern of `Map<String, Long>` where the key is the table name and the value is the number of events observed.
+The new metrics names are `NumberOfCreateEventsSeen`, `NumberOfDeleteEventsSeen`, `NumberOfUpdateEventsSeen`, and `NumberOfTruncateEventsSeen` (https://issues.redhat.com/browse/DBZ-8035[DBZ-8035]).
+
+=== PostgreSQL replication slot creation timeout
+
+When the PostgreSQL connector is first deployed, one of its first tasks is to create a replication slot in the database if it doesn't already exist.
+The replication slot is pivotal to how the connector works and facilitates the capture and dispatch of changes to Debezium.
+Unfortunately, there are some database operations that will block the creation of replication slots, such as in-progress transactions, forcing the connector to block indefinitely while waiting for the transaction to conclude.
+For short-lived transactions, this isn't generally a concern; however, for long-running transactions that's an entirely different situation.
+
+In order to improve this experience, a new internal option was added, `internal.create.slot.command.timeout`, which defaults to 90 seconds.
+If the creation of the replication slot does not complete within 90 seconds, it will retry up to `slot.max.retries`.
+Once the retries are exhausted, the connector will throw an unrecoverable error (https://issues.redhat.com/browse/DBZ-8073[DBZ-8073]).
+
+=== Support for PostgreSQL `PgVector` data types
+
+The `pgvector` extension introduces vector search functionality for PostgreSQL.
+There are three data types this extension introduces: `vector`, `halfvec`, and `sparsevec`.
+
+In Debezium 3, all three data types will be streamed like any other data type. Each data type is emitted based on the following semantic mappings:
+
+* `vector` as an `ARRAY` of numeric values
+* `halfvec` as an `ARRAY` of numeric values
+* `sparsevec` as a `Struct` with number of dimensions and map of index to values
+
+There is no additional configuration required after enabling the `pgvector` extension in your database.
+Please see the documentation for more details on the semantic mappings (https://issues.redhat.com/browse/DBZ-8121[DBZ-8121]).
+
+=== Oracle Ehcache transaction buffer implementation
+
+Debezium 3 introduces as new Oracle connector transaction buffer implementation, based on Ehcache to provide off-heap storage of transaction processing and event data.
+This new implementation adds to the existing Java Heap, Infinispan Embedded, and Infinispan Remote buffer types.
+
+To begin taking advantage of the Ehcache implementation, the `log.mining.buffer.type` must be set to `ehcache`.
+By default, the buffer type is `memory` to use the JVM's heap for optimal performance.
+
+In order to for the Ehcache library to start successfully, several additional configurations must be provided to explicitly configure the caches maintained by the cache manager.
+These new configuration options are:
+
+* log.mining.buffer.ehcache.global.config
+* log.mining.buffer.ehcache.transactions.config
+* log.mining.buffer.ehcache.processedtransactions.config
+* log.mining.buffer.ehcache.schemachanges.config
+* log.mining.buffer.ehcache.events.config
+
+Debezium creates the Ehcache configuration using XML, so each of these configurations provide XML snippets.
+
+The _global_ configuration is optional, and allows you to provide details about persistence and other Ehcache attributes, excluding specifying `<cache>` or `<default-serializers>` tags, which are handled separately.
+The other individual cache configurations are meant to supply the inner XML bits of a `<cache>` configuration tag, excluding its `<key-type>` and `<value-type>`, which are managed directly by Debezium.
+
+.An example configuration
+[source,json]
+----
+{
+  "log.mining.buffer.type": "ehcache",
+  "log.mining.buffer.ehcache.global.config": "<persistence directory=\"./data\"/>",
+  "log.mining.buffer.ehcache.transactions.config": "<resources><heap unit=\"entries\">256</heap><disk unit=\"B\">10485760</disk></resources>",
+  "log.mining.buffer.ehcache.processedtransactions.config": "<resources><heap unit=\"entries\">256</heap><disk unit=\"B\">10485760</disk></resources>",
+  "log.mining.buffer.ehcache.schemachanges.config": "<resources><heap unit=\"entries\">256</heap><disk unit=\"B\">10485760</disk></resources>",
+  "log.mining.buffer.ehcache.events.config": "<resources><heap unit=\"entries\">256</heap><disk unit=\"B\">10485760</disk></resources>"
+}
+----
+
+In this example, Ehcache will maintain a combination of heap and off-heap storage for the caches, maintaining at most 256 entries in heap at all times and flushing to disk.
+The disk caches will be stored at the relative path `./data`.
+This implies that you will need a persistent storage volume available when using disk-based caches.
+
+This is a new feature and is experimental, so we would love your feedback on how we can improve this (https://issues.redhat.com/browse/DBZ-7758[DBZ-7758]).
+
+=== Transformation to decode PostgreSQL logical messages
+
+PostgreSQL is unique in that you can implement the Outbox pattern without creating an outbox table, by writing logical messages directly into the WAL using `pg_logical_emit_message`.
+The unfortunate part is that this data is then sent to Kafka as a series of bytes, which may not always be ideal for consumers who may be looking for structured messages.
+
+Debezium 3 introduces a new PostgreSQL-specific transform called `DecodeLogicalDecodingMessageContent`.
+This transform is specifically meant to convert the `pg_logical_emit_message` event bytes to a structured event payload that consumer applications are capable of understanding.
+
+Given the following configuration:
+
+[source,json]
+----
+{
+  "transforms": "decode",
+  "transforms.decode.type": "io.debezium.connector.postgresql.transforms.DecodeLogicalDecodingMessageContent"
+}
+----
+
+The event's `value` of an event written using `pg_logical_emit_message` before the transform would be:
+
+[source,json]
+----
+{
+  "op": "m",
+  "ts_ms": 1723115240065,
+  "source": {
+    ...
+  },
+  "message": {
+    "prefix": "test-prefix",
+    "content": "eyJpZCI6IDEsICJpdGVtIjogIkRlYmV6aXVtIGluIEFjdGlvbiIsICJzdGF0dXMiOiAiRU5URVJFRCIsICJxdWFudGl0eSI6IDIsICJ0b3RhbFByaWNlIjogMzkuOTh9"
+  }
+}
+----
+
+After applying the transformation, the event's `value` now looks like:
+
+[source,json]
+----
+{
+  "op": "c",
+  "ts_ms": 1723115415729,
+  "source": {
+    ...
+  },
+  "after": {
+	"id": 1,
+	"item": "Debezium in Action",
+	"status": "ENTERED",
+	"quantity": 2,
+	"totalPrice": 39.98
+  }
+}
+----
+
+So you can safely implement the Outbox pattern without the physical outbox table! (https://issues.redhat.com/browse/DBZ-8103[DBZ-8103]).
+
+[id="other-changes"]
+== Other changes
+
+Altogether, https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20AND%20fixVersion%20%3D%203.0.0.Beta1%20ORDER%20BY%20issuetype%20DESC[48 issues] were fixed in this release.
+Here are a list of some additional noteworthy changes:
+
+* MySQL has deprecated mysql_native_password usage https://issues.redhat.com/browse/DBZ-7049[DBZ-7049]
+* Upgrade to Apicurio 2.5.8 or higher https://issues.redhat.com/browse/DBZ-7357[DBZ-7357]
+* Incremental snapshots don't work with CloudEvent converter https://issues.redhat.com/browse/DBZ-7601[DBZ-7601]
+* Snapshot retrying logic falls into infinite retry loop https://issues.redhat.com/browse/DBZ-7860[DBZ-7860]
+* Move Debezium Conductor repository under Debezium Organisation https://issues.redhat.com/browse/DBZ-7973[DBZ-7973]
+* Log additional details about abandoned transactions https://issues.redhat.com/browse/DBZ-8044[DBZ-8044]
+* ConverterBuilder doesn't pass Headers to be manipulated https://issues.redhat.com/browse/DBZ-8082[DBZ-8082]
+* Bump Debezium Server to Quarkus 3.8.5 https://issues.redhat.com/browse/DBZ-8095[DBZ-8095]
+* Primary Key Update/ Snapshot Race Condition https://issues.redhat.com/browse/DBZ-8113[DBZ-8113]
+* Support DECIMAL(p) Floating Point https://issues.redhat.com/browse/DBZ-8114[DBZ-8114]
+* Recalculating mining range upper bounds causes getScnFromTimestamp to fail https://issues.redhat.com/browse/DBZ-8119[DBZ-8119]
+* Update Oracle connector doc to describe options for restricting access permissions for the Debezium LogMiner user  https://issues.redhat.com/browse/DBZ-8124[DBZ-8124]
+* ORA-00600: internal error code, arguments: [krvrdGetUID:2], [18446744073709551614], [], [], [], [], [], [], [], [], [], [] https://issues.redhat.com/browse/DBZ-8125[DBZ-8125]
+* Use SQLSTATE to handle exceptions for replication slot creation command timeout https://issues.redhat.com/browse/DBZ-8127[DBZ-8127]
+* ibmi Connector does not take custom properties into account anymore https://issues.redhat.com/browse/DBZ-8129[DBZ-8129]
+* Unpredicatable ordering of table rows during insertion causing foreign key error https://issues.redhat.com/browse/DBZ-8130[DBZ-8130]
+* schema_only crashes ibmi Connector https://issues.redhat.com/browse/DBZ-8131[DBZ-8131]
+* Support larger database.server.id values https://issues.redhat.com/browse/DBZ-8134[DBZ-8134]
+* Implement in process signal channel  https://issues.redhat.com/browse/DBZ-8135[DBZ-8135]
+* Re-add check to test for if assembly profile is active https://issues.redhat.com/browse/DBZ-8138[DBZ-8138]
+* Validate log position method missing gtid info from SourceInfo https://issues.redhat.com/browse/DBZ-8140[DBZ-8140]
+* Add LogMiner start mining session retry attempt counter to logs https://issues.redhat.com/browse/DBZ-8143[DBZ-8143]
+* Open redo thread consistency check can lead to ORA-01291 - missing logfile https://issues.redhat.com/browse/DBZ-8144[DBZ-8144]
+* SchemaOnlyRecoverySnapshotter not registered as an SPI service implementation https://issues.redhat.com/browse/DBZ-8147[DBZ-8147]
+* Reduce logging verbosity of XStream DML event data https://issues.redhat.com/browse/DBZ-8148[DBZ-8148]
+* When stopping the Oracle rac node the Debezium server throws an expections - ORA-12514: Cannot connect to database and retries  https://issues.redhat.com/browse/DBZ-8149[DBZ-8149]
+* Issue with Debezium Snapshot: DateTimeParseException with plugin pgoutput https://issues.redhat.com/browse/DBZ-8150[DBZ-8150]
+* JDBC connector validation fails when using record_value with no primary.key.fields https://issues.redhat.com/browse/DBZ-8151[DBZ-8151]
+* Vitess Connector Epoch should support parallelism & shard changes https://issues.redhat.com/browse/DBZ-8154[DBZ-8154]
+* Add an option for `publication.autocreate.mode` to create a publication with no tables https://issues.redhat.com/browse/DBZ-8156[DBZ-8156]
+* Taking RAC node offline and back online can lead to thread inconsistency https://issues.redhat.com/browse/DBZ-8162[DBZ-8162]
+* Upgrade Outbox Extension to Quarkus 3.14.0 https://issues.redhat.com/browse/DBZ-8164[DBZ-8164]
+
+A huge thank you to all contributors from the community who worked on this release:
+https://github.com/ashishbinu[Ashish Binu],
+https://github.com/Bue-von-hon[Bue Von Hun],
+https://github.com/Naros[Chris Cranford],
+https://github.com/harveyyue[Harvey Yue],
+https://github.com/jcechace[Jakub Cechacek],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/nrkljo[Lars M. Johansson],
+https://github.com/mfvitale[Mario Fiore Vitale],
+https://github.com/obabec[Ondrej Babec],
+https://github.com/rajdangwal[Rajendra Dangwal],
+https://github.com/rk3rn3r[René Kerner],
+https://github.com/roldanbob[Robert Roldan],
+https://github.com/rkudryashov[Roman Kudryashov],
+https://github.com/ryanvanhuuksloot[Ryan van Huuksloot],
+https://github.com/twthorn[Thomas Thornton],
+https://github.com/PlugaruT[Tudor Plugaru],
+https://github.com/vjuranek[Vojtech Juranek], and
+https://github.com/LucasZhanye[张展业]!
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

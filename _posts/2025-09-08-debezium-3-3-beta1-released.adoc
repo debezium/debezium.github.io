@@ -1,0 +1,207 @@
+---
+layout: post
+title:  Debezium 3.3.0.Beta1 Released
+date:   2025-09-08
+tags: [ releases, mongodb, mysql, mariadb, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox, spanner, jdbc, informix, ibmi, cockroachdb ]
+author: ccranfor
+extraClasses: release-v2
+---
+
+Although the end of summer is near, the Debezium team has a hot off the pressed preview release available with a fresh batch of improvements and enhancements.
+With Debezium **3.3.0.Beta1**, this release brings a variety of stability fixes, performance optimizations, and user experience improvements across the connector ecosystem.
+Let's take a look at what those are.
+
++++<!-- more -->+++
+
+[id="breaking-changes"]
+== Breaking changes
+
+With any new major release of software, there is often several breaking changes.
+The Debezium **3.3.0.Beta1** release is no exception, so let's discuss the major changes you should be aware of.
+
+=== Cassandra JMX metrics have changed
+
+In previous iterations of the Debezium for Cassandra connector, each JMX metric was exposed as different MBeans in the `<logical-name>` domain, with an example shown below:
+
+[source]
+----
+#domain = <logical-name>:
+<logical-name>:name=commitlog-filename
+<logical-name>:name=commitlog-position
+----
+
+This approach significantly differs from other connectors where the metrics implementation has a single domain with multiple MBeans, i.e.:
+
+[source]
+----
+#domain = debezium.cassandra:
+debezium.cassandra:context=snapshot,server=<logical-name>,type=connector-metrics
+debezium.cassandra:context=streaming,server=<logical-name>,type=connector-metrics
+----
+
+Now any metric that pertains to snapshot will be in the `snapshot` MBean and those for streaming are in the `streaming` MBean (https://issues.redhat.com/browse/DBZ-9281[DBZ-9281]).
+Using the `commitlog-filename` as an example, it is now in the `streaming` MBean as `CommitLogFilename`.
+
+[TIP]
+====
+Please see the https://debezium.io/documentation//reference/3.3/connectors/cassandra.html#cassandra-monitoring[Cassandra documentation] for all details about the new JMX metrics names.
+====
+
+=== Debezium Engine class loader changes
+
+Debezium Engine did not set thread context classloader which could complicate integration with projects like SpringBoot.
+The thread context classloader is now set and Debezium Engine uses provided classloader to load all classes, not only the connector (https://issues.redhat.com/browse/DBZ-9375[DBZ-9375]).
+
+[id="new-features-and-improvements"]
+== New features and improvements
+
+The following describes all noteworthy new features and improvements in **Debezium 3.3.0.Beta1**.
+For a complete list, be sure to read the link:/releases/3.3/release-notes#release-3.3.0-beta1[release notes] for more details.
+
+=== Notify Platform users of pipeline restart on changes
+
+When working with the Debezium Platform, a source, destination, or other resources may be shared across two or more pipelines.
+When making changes to these resources, any pipeline that makes use of that resource must be restarted for those changes to take effect.
+
+In an effort to avoid unexpected outcomes due to pipeline restarts, Debezium Platform will notify users when making changes that could lead to a pipeline being restarted so that the updated configuration can be applied (https://issues.redhat.com/browse/DBZ-9104[DBZ-9104]).
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2025-09-08-debezium-3-3-beta1-released/platform-ui-confirm-changes.png" class="responsive-image" alt="Platform Notify Restart">
+</div>
+++++
+
+=== MongoEventRouter supports custom tracing values
+
+The `MongoEventRouter` now supports the ability to pass custom tracing configuration values into the router so they're made available in the event payload (https://issues.redhat.com/browse/DBZ-9328[DBZ-9328]).
+The following configuration options can be provided:
+
+|===
+|Property |Description
+
+|`tracing.span.context.field`
+| THe name of the field containing `java.util.Properties` representation of serialized span context, defaulting to `tracingspancontext`.
+
+|`tracing.operation.name`
+|The operation name representing the Debezium procesing span, defaulting to `debezium-read`.
+
+|`tracing.with.context.field.only`
+|Set to `true` when only events that have serialized context field should be traced, defaults to `false`.
+|===
+
+=== Improved heartbeat processing for all connectors
+
+The new `ScheduledHeartbeat` implementation is unified across the various connector implementations (https://issues.redhat.com/browse/DBZ-9377[DBZ-9377]).
+This provides a common API and consistent heartbeat behavior for all connectors.
+
+=== Only alter PostgreSQL publication as needed
+
+When a Debezium PostgreSQL connector is configured with `publication.autocreate.mode` set to `filtered`, the connector issues an `ALTER PUBLICATION` statement on each connector restart to guarantee that the publication remains aligned with the connector configuration.
+
+In some cases where the underlying tables may be undergoing a vacuum or are involved in a long-running DDL operation, this will force the connector wait until those tasks complete before the alter can complete.
+In an effort to streamline this and to only block when absolutely necessary, the connector will now check the configured table list against the publication when using _filtered_ mode.
+Only if there are differences in the table list will the alter command be executed, otherwise it is skipped to avoid potential blocking calls (https://issues.redhat.com/browse/DBZ-9395[DBZ-9395]).
+
+==== Connector startup fails with cryptic error
+
+We've resolved an issue where connectors would fail to start with a misleading error message, restoring smooth startup while preserving improved offset validation.
+
+Users began encountering this confusing exception during connector startup in one corner case:
+
+[source,java]
+----
+org.apache.kafka.connect.errors.DataException: Invalid value: null used for required field: "schema", schema type: STRING
+----
+
+This cryptic error message provided no useful information about what was actually wrong, making troubleshooting nearly impossible.
+
+The issue was an unintended consequence of a recent improvement we made to offset validation.
+We enhanced the logic to provide better error messages when offset positions are no longer available in the source database—a valuable feature that helps diagnose common operational issues.
+
+However, the new validation logic made assumptions about certain offset attributes being available during connector startup.
+In reality, these attributes aren't populated until later in the connector's lifecycle, causing the validation to fail prematurely with an unhelpful error message.
+
+We've updated the exception handling logic to:
+
+* Avoid assumptions about offset attribute availability during startup
+* Preserve the enhanced validation for cases where offsets are genuinely invalid
+* Provide meaningful error messages when offset positions are actually problematic
+* Allow normal startup to proceed without false positives
+
+This fix ensures you get the benefits of enhanced error reporting without the startup disruption (https://issues.redhat.com/browse/DBZ-9416[DBZ-9416]).
+
+==== Possible data loss after failed ad-hoc blocking snapshots
+
+We've resolved a critical issue that could cause data loss when ad-hoc blocking snapshots encountered problems, ensuring your streaming data remains intact even when snapshots fail.
+
+When running ad-hoc blocking snapshots, encountering invalid data in a table would cause the snapshot to fail.
+Unfortunately, this failure had a serious side effect: streaming events that occurred during the snapshot period were permanently lost.
+
+This meant that if your snapshot ran for several hours before hitting bad data, all the real-time changes that happened during those hours would be skipped entirely when the connector resumed normal streaming operations.
+
+Blocking snapshots now handle failures gracefully by:
+
+* Preserving the streaming position from immediately before the snapshot began
+* Automatically resuming from the correct position when the snapshot fails
+* Ensuring zero data loss regardless of when or why the snapshot encounters issues
+
+This improvement makes blocking snapshots much more reliable for production environments (https://issues.redhat.com/browse/DBZ-9337[DBZ-9337]).
+
+==== Oracle's Last Batch Processing Throughput Metric Improved
+
+We've enhanced the accuracy of the `LastBatchProcessingThroughput` JMX metric in the Oracle LogMiner adapter, giving you better visibility into your connector's performance.
+
+Previously, this metric calculated throughput based on the number of captured table events that were actually processed during each batch.
+While this seemed logical, it led to misleading results in several common scenarios:
+
+* Database-level filtering would reduce the count of processed events, even though the connector was still doing the work to read and evaluate those filtered records
+* Transaction markers in the event stream could skew the numbers, sometimes dramatically understating the actual processing load
+* Various configuration settings would impact the metric in ways that didn't reflect the connector's true performance
+
+The metric now measures throughput based on the physical number of JDBC rows read from the LogMiner dataset, regardless of whether those rows end up being:
+
+* Filtered out by your configuration in the JVM
+* Transaction control records
+* Events that don't match your table or schema filters
+
+This gives you a much more accurate picture of the raw processing power your Debezium connector is delivering during each batch processing window (https://issues.redhat.com/browse/DBZ-9399[DBZ-9399]).
+
+[id="other-changes"]
+== Other changes
+
+* Debezium not recovering from connection errors https://issues.redhat.com/browse/DBZ-7872[DBZ-7872]
+* JdbcSchemaHistory Fails to Handle Data Sharding When Recovering Records https://issues.redhat.com/browse/DBZ-8979[DBZ-8979]
+* Debezium Quarkus Outbox Extension does not work with Hibernate ORM 7 https://issues.redhat.com/browse/DBZ-9193[DBZ-9193]
+* Debezium Engine Quarkus Extension: add a quick start in the example repository https://issues.redhat.com/browse/DBZ-9301[DBZ-9301]
+* Add a rest API to validate a connection https://issues.redhat.com/browse/DBZ-9315[DBZ-9315]
+* Oracle connector does not support large CLOB and BLOB values https://issues.redhat.com/browse/DBZ-9392[DBZ-9392]
+* Oracle DDL parser exception - DROP MATERIALIZED https://issues.redhat.com/browse/DBZ-9397[DBZ-9397]
+* Debezium Platform OpenAPI spec miss returns schemas https://issues.redhat.com/browse/DBZ-9405[DBZ-9405]
+* Oracle connector does not parse syntax : PARALLEL in DDL  https://issues.redhat.com/browse/DBZ-9406[DBZ-9406]
+* Increase max allowed json string length https://issues.redhat.com/browse/DBZ-9407[DBZ-9407]
+* Wrong default value of task.management.timeout.ms https://issues.redhat.com/browse/DBZ-9408[DBZ-9408]
+* LCR flushing can cause low watermark to be invalidated https://issues.redhat.com/browse/DBZ-9413[DBZ-9413]
+* Infinispan Protostream compatibility for Java compiler > 22 https://issues.redhat.com/browse/DBZ-9417[DBZ-9417]
+* Context headers are added two times during an incremental snapshot https://issues.redhat.com/browse/DBZ-9422[DBZ-9422]
+
+In total, https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20and%20fixVersion%20%20in%20(3.3.0.Beta1)[30 issues] were resolved in Debezium 3.3.0.Beta1.
+The list of changes can also be found in our https://debezium.io/releases/3.3[release notes].
+
+A big thank you to all the contributors from the community who worked diligently on this release:
+ +
+https://github.com/adasari[Anil Dasari],
+https://github.com/shybovycha[Artem Shubovych],
+https://github.com/barbaralocsi[Barbara Lócsi],
+https://github.com/Naros[Chris Cranford],
+https://github.com/kmos[Giovanni Panice],
+https://github.com/hapem85[Harris Nguyen],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/jogomez97[Joan Gomez],
+https://github.com/jschnab[Jonathan Schnabel],
+https://github.com/ufou[Luke Alexander],
+https://github.com/mfvitale[Mario Fiore Vitale],
+https://github.com/ochedru[Olivier Chédru],
+https://github.com/rajdangwal[Rajendra Dangwal],
+https://github.com/roldanbob[Robert Roldan],
+https://github.com/eljeko[Stefano Linguerri], and
+https://github.com/vjuranek[Vojtech Juranek]!

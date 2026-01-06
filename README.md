@@ -1,14 +1,14 @@
 [![Build Status](https://github.com/debezium/debezium.github.io/actions/workflows/gh-pages-deployment.yml/badge.svg?branch=develop)](https://github.com/debezium/debezium.github.io/actions/workflows/gh-pages-deployment.yml)
 [![License](http://img.shields.io/:license-apache%202.0-brightgreen.svg)](http://www.apache.org/licenses/LICENSE-2.0.html)
-[![Developer chat](https://img.shields.io/badge/chat-devs-brightgreen.svg)](https://gitter.im/debezium/dev)
+[![Developer chat](https://img.shields.io/badge/chat-devs-brightgreen.svg)](https://debezium.zulipchat.com/#narrow/stream/302533-dev)
 [![Google Group](https://img.shields.io/:mailing%20list-debezium-brightgreen.svg)](https://groups.google.com/forum/#!forum/debezium)
 
 # Introduction
 
-This is the source code for the [Debezium website](https://debezium.io/). This is based on [templates](https://github.com/rhmwes/community-theme) created by the Red Hat Upstream Community using [Jekyll](https://jekyllrb.com/).
+This is the source code for the [Debezium website](https://debezium.io/). This is based on [templates](https://github.com/rhmwes/community-theme) created by the Red Hat upstream community using [Jekyll](https://jekyllrb.com/).
 
 For publishing the Debezium reference documentation, the [Antora](https://antora.org/) tool is used,
-which produces the documentation based on [AsciiDoc files](https://github.com/debezium/debezium/tree/master/documentation) in different branches of the Debezium main code repository.
+which produces the documentation based on [AsciiDoc files](https://github.com/debezium/debezium/tree/main/documentation) in different branches of the Debezium main code repository.
 The rendered HTML pages are added as-is to the website generated with Jekyll.
 Please see [ANTORA.md](./ANTORA.md) to learn more.
 
@@ -45,9 +45,9 @@ The latter is a bit quicker, but requires Ruby/Jekyll to be set up correctly, wh
 
 In a new terminal initialized with the Docker host environment, start a Docker container that has the build environment for our website:
 
-    $ docker run --privileged -it --rm -p 4000:4000 -e LC_ALL=C.UTF-8 -e LANG=C.UTF-8 -v $(pwd):/site --name website-builder debezium/website-builder bash
+    $ docker run --privileged -it --rm -p 4000:4000 -e LC_ALL=C.UTF-8 -e LANG=C.UTF-8 -v $(pwd):/site --name website-builder quay.io/debezium/website-builder bash
 
-This command tells Docker to start a container using the `debezium/website-builder` image (downloading it if necessary) with an interactive terminal (via `-it` flag) to the container so that you will see the output of the process running in the container. The `--rm` flag will remove the container when it stops, while the `-p 4000` flag maps the container's 4000 port to the same port on the Docker host (which is the local machine on Linux or the virtual machine if running Boot2Docker or Docker Machine on OS X and Windows). The `-v $(pwd):/site` option mounts your current working directory (where the website's code is located) into the `/site` directory within the container.
+This command tells Docker to start a container using the `quay.io/debezium/website-builder` image (downloading it if necessary) with an interactive terminal (via `-it` flag) to the container so that you will see the output of the process running in the container. The `--rm` flag will remove the container when it stops, while the `-p 4000` flag maps the container's 4000 port to the same port on the Docker host (which is the local machine on Linux or the virtual machine if running Boot2Docker or Docker Machine on OS X and Windows). The `-v $(pwd):/site` option mounts your current working directory (where the website's code is located) into the `/site` directory within the container.
 
 Next, in the shell in the container, run the following commands to update and then (re)install all of the Ruby libraries required by the website:
 
@@ -68,7 +68,7 @@ First, you must have a local clone of the [Debezium repository](https://github.c
 
 Then start the Docker container:
 
-    $ docker run --privileged -it --rm -p 4000:4000 -e LC_ALL=C.UTF-8 -e LANG=C.UTF-8 -v $(pwd):/site -v ~/<PATH_TO_REPOS>/debezium:/debezium --name website-builder debezium/website-builder bash
+    $ docker run --privileged -it --rm -p 4000:4000 -e LC_ALL=C.UTF-8 -e LANG=C.UTF-8 -v $(pwd):/site -v ~/<PATH_TO_REPOS>/debezium:/debezium --name website-builder quay.io/debezium/website-builder bash
 
 **Note** the addition of the volume mapping **-v ~/<PATH_TO_REPO_DIR>/debezium:/debezium**  -  ( replace <PATH_TO_REPO_DIR> with the actual location on your system ).
 
@@ -130,11 +130,10 @@ If you have to change the Gemfile to use different libraries, you will need to l
 
 Use Git on your local machine to commit the changes to the site's codebase to your topic branch, and then create a pull request.
 
-### 6. Publish the website
 
-Review the pull request and merge onto the `develop` branch. The [GitHub Actions](https://github.com/features/actions) will then build the `develop` branch and, if successful, store the generated site in the `master` branch and publish to GitHub Pages.
+### 6. PR Preview the website
 
-Optionally, you can preview the website in the staging environment at https://debezium-builder.github.io/.
-To do so, push your change to the `staging` branch, from where it will automatically be published to the `staging_publish` branch, backing the staging environment.
-Unlike as with the `development` branch, it is expected and accepted that the `staging` branch is force-updated,
-e.g. when previewing multiple changes in the staging environment.
+As soon as you passes the pull request a GitHub action generates the link for preview the change in surge.sh. When a pull request is closed the surge preview instance will be torn down.
+### 7. Publish the website
+
+Review the pull request and merge onto the `develop` branch. The [GitHub Actions](https://github.com/features/actions) will then build the `develop` branch and, if successful, store the generated site in the `gh-pages` branch and publish to GitHub Pages.

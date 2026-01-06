@@ -1,0 +1,241 @@
+---
+layout: post
+title:  Debezium 3.0.2.Final Released
+date:   2024-11-18
+tags: [ releases, mongodb, mysql, mariadb, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox, spanner, jdbc, informix, ibmi ]
+author: ccranfor
+---
+
+I am excited to announce the second maintenance release for the Debezium 3 release stream, **3.0.2.Final**.
+This maintenance release introduces a number of features, let's take a moment and dive into the highlights.
+
++++<!-- more -->+++
+
+[id="new-features-and-improvements"]
+== New features and improvements
+
+Debezium 3.0.2.Final introduces a couple of improvements and features, lets take a look at each individually.
+
+=== Core
+
+==== Perform blocking snapshots with never snapshot mode
+
+The Debezium blocking snapshot process is designed to execute the _initial_ snapshot based on the signal provided, selectively emitting the historical data for one or more tables.
+When this was paired with the _never_ `snapshot mode`, this lead to unexpected behavior.
+
+In this release, we modified the connector offsets to track the configured `snapshot.mode`, allowing the blocking snapshot to succeed and perform the _initial_ snapshot when signaled, even if the `snapshot.mode` is configured to _never_ perform a snapshot.
+This allows users to safely use this feature with this configuration (https://issues.redhat.com/browse/DBZ-7903[DBZ-7903]).
+
+[WARNING]
+====
+Due to the connector offset storage change, once the connector is upgraded to 3.0.2.Final or later, the connector cannot be downgraded to 3.0.1.Final or earlier.
+====
+
+=== MongoDB
+
+==== RowsChanged JMX metric type changed
+
+In previous builds of the MongoDB connector, the `RowsChanged` JMX metric is exposed as a `java.util.Map`, which contradicts the same JMX metric exposed on relational connectors, which is `TabularData`.
+This has been fixed in 3.0.2.Final, the JMX metric uses `TabularData` across all connector implementations for uniformity (https://issues.redhat.com/browse/DBZ-8359[DBZ-8359]).
+
+[NOTE]
+====
+Any existing MongoDB JMX pipelines may need to be adjusted if you were previously capturing `RowsChanged`.
+====
+
+=== Oracle
+
+=== Higher precision with timestamps
+
+Debezium for Oracle has traditionally emitted column timestamp values with millisecond precision that is controlled by the NLS session properties set on the mining session connection.
+The precision is improved and provides nanosecond-based (aka `FF9`) values (https://issues.redhat.com/browse/DBZ-8379[DBZ-8379]).
+
+[NOTE]
+====
+The emitted field type is based on the column's data type, so field emitted data types remain unchanged.
+What will change is cases where columns have micro or nanosecond-based values, where these were previously zero, they'll now have non-zero values.
+====
+
+==== Warn or skip DML exceptions
+
+The `event.processing.failure.handling.mode` can be configured to _fail_, _warn_, or _skip_ specific connector error conditions to improve connector reliability to various data issues.
+THis configuration is historically used to control how the Oracle connector behaves when a DDL failure is observed.
+
+In this release, the `event.processing.failure.handling.mode` is also used to control failures for DML-based events.
+If there was an issue with the Oracle connector parsing your _insert_, _update_, or _delete_ operations, you can safely configure the connector to _fail_, _warn_, or _skip_ the DML event based on your needs (https://issues.redhat.com/browse/DBZ-8208[DBZ-8208]).
+
+[NOTE]
+====
+The default behavior is to always _fail_ when an event is not safely handled by the connector.
+By adjusting this to _warn_ or _skip_, while the connector will safely continue past the failed event, you will introduce data loss and will needs to be addressed manually.
+====
+
+=== Vitess
+
+==== Performance improvements
+
+In earlier builds of the Debezium for Vitess connector, the connector used a regular expression-based filter system that matches all tables based on a prefix with varying suffixes, and later exclusions would be applied based on configuration.
+This has the potential to waste CPU and create hotspots due to creating intermediate objects for the event that would later to be filtered and garbage collected.
+
+In this release, we've improved the way the Vitess connector processes this use case by applying the filtration earlier in the event processing chain.
+This should reduce the number of intermediate objects created and improve the overall performance of the connector.
+For key spaces that have the same prefix and differing suffixes, this should provide better overall performance than older builds (https://issues.redhat.com/browse/DBZ-8354[DBZ-8354]).
+
+=== Sink connectors
+
+Debezium 0.x introduced a common source-connector framework that has become the foundation for source connectors provided by the project, including our community-led connectors such as Spanner, Vitess, and others.
+With the introduction of the MongoDB sink connector recently, our long-term goal is to approach sink connectors in a similar way, providing a common sink-connector framework to ease the creation of Debezium-based sink connectors.
+
+Over Debezium 3.x lifecycle, you will see incremental steps to streamline the source across the JDBC and MongoDB sink connectors.
+We will minimize disruptions in maintenance releases as you have come to expect, but expect future major and minor releases to introduce deprecations and changes to support this endeavor.
+
+In this first round of changes, we've introduced a new Debezium module: `debezium-sink`.
+This module acts as the foundation for all sink connectors and is home to a variety of common classes, including the `SinkConnectorConfig` class, naming strategy implementations, and the common representation of a sink record, `DebeziumSinkRecord`.
+
+As we continue to streamline the MongoDB and JDBC sink connectors, additional common behavior will be added.
+
+==== JDBC sink connector changes
+
+With the sink module using the naming convention of _collection_ rather than _table_, several configuration properties have been deprecated and replaced.
+The old properties will continue to work in Debezium 3.0.x builds; however will be removed in Debezium 3.1.
+
+* The `table.name.format` property is replaced by `collection.name.format`.
+* The `table.naming.strategy` property is replaced by `collection.naming.strategy`.
+
+In addition, the contract for `io.debezium.connector.jdbc.naming.TableNamingStrategy` specified by the `table.naming.strategy` property is deprecated.
+A new `io.debezium.sink.naming.CollectionNamingStrategy` has been introduced with a slightly different signature.
+
+.TableNamingStrategy contract
+[source,java]
+----
+    /**
+     * Resolves the logical table name from the sink record.
+     *
+     * @param config sink connector configuration, should not be {@code null}
+     * @param record Kafka sink record, should not be {@code null}
+     * @return the resolved logical table name; if {@code null} the record should not be processed
+     */
+    String resolveTableName(JdbcSinkConnectorConfig config, SinkRecord record);
+----
+
+.CollectionNamingStrategy contract
+[source,java]
+----
+    /**
+     * Resolves the logical collection name from the Debezium sink record.
+     *
+     * @param record Debezium sink record, should not be {@code null}
+     * @param collectionNameFormat the format string for the collection name (mapped from the topic name)
+     * @return the resolved logical collection name; if {@code null} the record should not be processed
+     */
+    String resolveCollectionName(DebeziumSinkRecord record, String collectionNameFormat);
+----
+
+The main differences include the new `DebeziumSinkRecord` which replaces `SinkRecord` and explicitly passing the collection naming format rather than the configuration class.
+
+[WARNING]
+====
+If you implement a custom `TableNamingStrategy` in your deployment of the Debezium JDBC sink connector, be sure to adjust your code to use the new `CollectionNamingStrategy` so that your pipeline continues to function safely when updating to Debezium 3.1+.
+====
+
+=== Debezium Operator
+
+==== Enabling Debezium Server REST endpoint
+
+The Debezium Server API REST-ful endpoint can now be enabled automatically through a Debezium Server deployment on Kubernetes using the Debezium Operator.
+In the `spec` section of the deployment descriptor, you can include the `runtime.api.enabled` property to toggle the API endpoint (https://issues.redhat.com/browse/DBZ-8234[DBZ-8234]), as shown below.
+
+.An example YAML configuration
+[source,yaml]
+----
+apiVersion: debezium.io/v1alpha1
+kind: DebeziumServer
+metadata:
+  name: my-debezium
+spec:
+  image: quay.io/debezium/server:3.0.2.Final
+  quarkus:
+    config:
+      log.console.json: false
+      kubernetes-config.enabled: true
+      kubernetes-config.secrets: postgresql-credentials
+  runtime:
+    api:
+      enabled: true
+  sink:
+    type: kafka
+    config:
+      producer.bootstrap.servers: dbz-kafka-kafka-bootstrap:9092
+      producer.key.serializer: org.apache.kafka.common.serialization.StringSerializer
+      producer.value.serializer: org.apache.kafka.common.serialization.StringSerializer
+  source:
+    class: io.debezium.connector.postgresql.PostgresConnector
+    offset:
+      memory: { }
+    schemaHistory:
+      memory: { }
+    config:
+      database.hostname: postgresql
+      database.port: 5432
+      database.user: ${POSTGRES_USER}
+      database.password: ${POSTGRES_PASSWORD}
+      database.dbname: ${POSTGRES_DB}
+      topic.prefix: inventory
+      schema.include.list: inventory
+----
+
+By default, the Debezium Server API endpoint is disabled, but can be enabled by setting the `spec.runtime.api.enabled` with a value of `true`, as shown above.
+
+[id="other-fixes"]
+== Other fixes
+
+In total there were https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20and%20fixVersion%20%20in%20(3.0.2.Final)[46 issues] resolved in Debezium 3.0.2.Final.
+The list of changes can also be found in our https://debezium.io/releases/3.0[release notes].
+
+Here are some noteworthy changes:
+
+* Clarify signal data collection should be unique per connector https://issues.redhat.com/browse/DBZ-6837[DBZ-6837]
+* Race condition in stop-snapshot signal https://issues.redhat.com/browse/DBZ-8303[DBZ-8303]
+* Debezium shifts binlog offset despite RabbitMQ Timeout and unconfirmed messages https://issues.redhat.com/browse/DBZ-8307[DBZ-8307]
+* Use DebeziumSinkRecord instead of Kafka Connect's SinkRecord inside Debezium sink connectors https://issues.redhat.com/browse/DBZ-8346[DBZ-8346]
+* Implement new config map offset store in DS https://issues.redhat.com/browse/DBZ-8351[DBZ-8351]
+* Debezium server with eventhubs sink type and eventhubs emulator connection string fails https://issues.redhat.com/browse/DBZ-8357[DBZ-8357]
+* Filter for snapshot using signal doesn't seem to work https://issues.redhat.com/browse/DBZ-8358[DBZ-8358]
+* JDBC storage module does not use quay.io images https://issues.redhat.com/browse/DBZ-8362[DBZ-8362]
+* Failure on offset store call to configure/start is logged at DEBUG level https://issues.redhat.com/browse/DBZ-8364[DBZ-8364]
+* Object name is not in the list of S3 schema history fields https://issues.redhat.com/browse/DBZ-8366[DBZ-8366]
+* Faulty "Failed to load mandatory config" error message https://issues.redhat.com/browse/DBZ-8367[DBZ-8367]
+* Upgrade protobuf dependencies to avoid potential vulnerability https://issues.redhat.com/browse/DBZ-8371[DBZ-8371]
+* Add transform page to provide a single place to list the already configured transform plus UI to add a new transform https://issues.redhat.com/browse/DBZ-8374[DBZ-8374]
+* Upgrade Kafka to 3.8.1 https://issues.redhat.com/browse/DBZ-8385[DBZ-8385]
+* Tests in IncrementalSnapshotIT may fail randomly https://issues.redhat.com/browse/DBZ-8386[DBZ-8386]
+* Add Transform Edit and delete support. https://issues.redhat.com/browse/DBZ-8388[DBZ-8388]
+* Log SCN existence check may throw ORA-01291 if a recent checkpoint occurred https://issues.redhat.com/browse/DBZ-8389[DBZ-8389]
+* ExtractNewRecordState transform: NPE when processing non-envelope records  https://issues.redhat.com/browse/DBZ-8393[DBZ-8393]
+* Oracle LogMiner metric OldestScnAgeInMilliseconds can be negative https://issues.redhat.com/browse/DBZ-8395[DBZ-8395]
+* SqlServerConnectorIT.restartInTheMiddleOfTxAfterCompletedTx fails randomly https://issues.redhat.com/browse/DBZ-8396[DBZ-8396]
+* ExtractNewDocumentStateTestIT fails randomly https://issues.redhat.com/browse/DBZ-8397[DBZ-8397]
+* BlockingSnapshotIT fails on Oracle https://issues.redhat.com/browse/DBZ-8398[DBZ-8398]
+* Oracle OBJECT_ID lookup and cause high CPU and latency in Hybrid mining mode https://issues.redhat.com/browse/DBZ-8399[DBZ-8399]
+* Upgrade Kafka to 3.9.0 https://issues.redhat.com/browse/DBZ-8400[DBZ-8400]
+* Protobuf plugin does not compile for PostgreSQL 17 on Debian https://issues.redhat.com/browse/DBZ-8403[DBZ-8403]
+* Update Quarkus Outbox Extension to Quarkus 3.16.3 https://issues.redhat.com/browse/DBZ-8409[DBZ-8409]
+
+A big thank you to all the contributors from the community who worked diligently on this release:
+https://github.com/ani-sha[Anisha Mohanty],
+https://github.com/dasvh[dario],
+https://github.com/Naros[Chris Cranford],
+https://github.com/enzo-cappa[Enzo Cappa],
+https://github.com/jcechace[Jakub Cechacek],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/kavyaramaiah1991[Kavya Ramaiah],
+https://github.com/nrkljo[Lars M. Johansson],
+https://github.com/mfvitale[Mario Fiore Vitale],
+https://github.com/martinvlk[Martin Vlk],
+https://github.com/paumr[P. Aum],
+https://github.com/rk3rn3r[René Kerner],
+https://github.com/stn1slv[Stanislav Deviatov],
+https://github.com/smiklosovic[Stefan Miklosovic],
+https://github.com/twthorn[Thomas Thornton],
+https://github.com/vjuranek[Vojtech Juranek], and
+Yevhenii Lopatenko!

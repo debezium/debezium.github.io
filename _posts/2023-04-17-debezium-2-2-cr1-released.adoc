@@ -1,0 +1,147 @@
+---
+layout: post
+title:  Debezium 2.2.0.CR1 Released
+date:   2023-04-17
+tags: [ releases, mongodb, mysql, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox ]
+author: ccranfor
+---
+
+The Debezium team is excited to announce the first release candidate of Deebzium 2.2, Debezium *2.2.0.CR1*.
+
+This release primarily focuses on stability improvements and bug fixes; however, there are a number of new features and breaking changes.
+In this release, Debezium migrated to Quarkus 3.0.0.Final,
+there are performance improvements to Debezium Server Pulsar sink,
+Jolokia can be enabled inside Debezium's Kafka Connect container image,
+incubating support for incremental snapshots on MongoDB multi-replica and sharded clusters,
+and the deprecation usage of Docker Hub for images.
+
+Let's take a moment and dive into several of these and what it means moving forward!
+
++++<!-- more -->+++
+
+== Upgrade to Quarkus 3
+
+Quarkus is a Kubernetes Native Java stack that combines the best Java libraries to create fast, low footprint applications.
+The Debezium Server runtime is based on Quarkus as well as part of Debezium UI.
+Additionally, the Debezium Outbox extension is also based on the Quarkus platform.
+
+The upgrade to Quarkus 3 introduces a number of improvements, including using the latest stable releases of a plethora of Java libraries, including the migration from Java EE to Jakarta EE.
+If you are not familiar with this migration, previously most Java EE platform classes were bundled in the package `javax.\*`.
+Over the past year or two, more applications have started the move from JavaEE or J2EE to Jakarta EE, and Quarkus 3 marks this transition era.
+Overall, the only real change is that classes that previously resided in `javax.*` now are placed in `jakarta.*`.
+
+If your application makes use of the Debezium Quarkus Outbox extension, be aware that in order to use Debezium 2.2 with Quarkus, you will need to migrate to Quarkus 3.
+This also means that if you want to take advantage of the Outbox extension for Reactive data sources, you will be required to use Quarkus 3 as well.
+
+Finally, if you are developing or maintaining sink adapters for Debezium Server, you will also need to make adjustments to using the new Jakarta EE annotations rather than the older Java EE annotations.
+
+== Debezium Server Pulsar Changes
+
+In prior versions of the Debezium Server Pulsar sink, the adapter leveraged the `send()` method to deliver messages in a synchronous way.
+While this works for sending one-off messages, this has the potential to introduce connector latency as the method waits an acknowledgement of send operation sequentially.
+Since the Debezium Server sink adapters are provided a collection of events to deliver, the synchronous nature just does not perform well.
+
+Starting Debezium 2.2, the Pulsar sink will now use `sendAsync()` to asynchronously deliver the batch of events to Pulsar, netting a substantial increase in overall throughput.
+While each event within the batch is delivered asynchronously, the adapter will only proceed to the next batch once the current batch is acknowledged in entirety.
+
+== Jolokia support
+
+Jolokia is a JMX-HTTP bridge that provides an alternative to using JSR-160 to gather metrics.
+It is an agent based approach that improves traditional JMX by introducing unique features like bulk requests and fine-grained security policies.
+
+With Debezium 2.2, the `debezium/connect` image now ships with Jolokia, but this agent isn't enabled by default.  In order to enable Jolokia support, the container must be started with `ENABLE_JOLOKIA` set to `true`.
+By default, Jolokia will bind to port 8778 when enabled.
+
+In the event that a different port is required, Jolokia will need to be enabled differently.
+For example, in order to enable Jolokia using port 9779, do not set the `ENABLE_JOLOKIA` but instead configure the `KAFKA_OPTS` environment variable as follows:
+
+[source,propreties]
+----
+-e KAFKA_OPTS="-javaagent:$(ls "$KAFKA_HOME"/libs/jolokia-jvm-*.jar)=port=9779,host=*"
+----
+
+By specifying the above environment variable, Jolokia's JMX-HTTP bridge will be available on port 9779 of the container.
+
+[NOTE]
+====
+Do not forget to add the Jolokia port to the container's list of exposed ports when starting.
+====
+
+== Deprecation of Docker Hub
+
+Docker recently announced a reduction in their free organization account offerings, which is leveraged by a number of open-source communities, including Debezium.
+Unfortunately, Debezium does not qualify according to their rules.
+
+Despite that Docker chose to walk back their decision, the Debezium team believes that we need a solid path forward to guarantee the availability of our images to our community without disruption.
+Debezium has been dual-publishing to both `docker.io` and `quay.io` for quite some time, and we will continue this for Debezium 2.2.0.Final and for all Debezium 2.3 *preview* releases.
+
+We plan to publish a blog post going into more detail in the coming days with more details.
+In the meantime, all users should plan to migrate to `quay.io` as soon as possible to avoid disruption of fetching newer versions of Debezium.
+
+== Other fixes
+
+There were quite a number of other improvements, bug fixes, and stability changes in this release, some noteworthy are:
+
+* Upgrade dependencies (Quarkus, etc) of Debezium UI https://issues.redhat.com/browse/DBZ-4109[DBZ-4109]
+* Failed retriable operations are retried infinitely https://issues.redhat.com/browse/DBZ-4488[DBZ-4488]
+* UI- Add the UI to configure the additional properties for a connector https://issues.redhat.com/browse/DBZ-5365[DBZ-5365]
+* Capture events in order across mongodb shards https://issues.redhat.com/browse/DBZ-5590[DBZ-5590]
+* DDL events not stored in schema history topic for excluded tables https://issues.redhat.com/browse/DBZ-6070[DBZ-6070]
+* Oracle path used current batchSize to calculate end scn is wrong, need to use min batch size https://issues.redhat.com/browse/DBZ-6155[DBZ-6155]
+* Upgrade UI build to use Debezium 2.2 or latest https://issues.redhat.com/browse/DBZ-6173[DBZ-6173]
+* Oracle-Connector dbz##user needs more rights https://issues.redhat.com/browse/DBZ-6198[DBZ-6198]
+* Make quay.io primary image repository https://issues.redhat.com/browse/DBZ-6216[DBZ-6216]
+* Multiplatform build of example-postres fails https://issues.redhat.com/browse/DBZ-6258[DBZ-6258]
+* Add protoc version property to postgres connector pom.xml https://issues.redhat.com/browse/DBZ-6261[DBZ-6261]
+* Pass through configurations for kafka topics/configuration https://issues.redhat.com/browse/DBZ-6262[DBZ-6262]
+* Postgres connector doesn't need logical WAL level when snapshotting only https://issues.redhat.com/browse/DBZ-6265[DBZ-6265]
+* Update config properties in RHEL deployment instructions https://issues.redhat.com/browse/DBZ-6266[DBZ-6266]
+* MySQL connector doesn't need to query binlog when snapshotting only https://issues.redhat.com/browse/DBZ-6271[DBZ-6271]
+* Table names with spaces are not correctly deserialized when using an Infinispan cache as the transaction buffer https://issues.redhat.com/browse/DBZ-6273[DBZ-6273]
+* Infinispan cache configuration used by Oracle tests are not compatible with Infinispan 14.0.2 https://issues.redhat.com/browse/DBZ-6274[DBZ-6274]
+* Transaction buffer state can become corrupted when using Infinispan cache with LOBs https://issues.redhat.com/browse/DBZ-6275[DBZ-6275]
+* Enable the docker tag to be configurable in the Spanner connector https://issues.redhat.com/browse/DBZ-6302[DBZ-6302]
+* Upgrade MySQL JDBC driver to 8.0.32 https://issues.redhat.com/browse/DBZ-6304[DBZ-6304]
+* Allow specifying docker image reference in MongoDB testcontainers implementation https://issues.redhat.com/browse/DBZ-6305[DBZ-6305]
+* Use *MongoDbContainer* instead of *MongoDBContainer* test containers class  in ConnectorConfiguration class https://issues.redhat.com/browse/DBZ-6306[DBZ-6306]
+* DDL statement couldn't be parsed - Oracle connector 2.1.3.Final https://issues.redhat.com/browse/DBZ-6314[DBZ-6314]
+* Unparsable DDL statements (MySQL/MariaDB) https://issues.redhat.com/browse/DBZ-6316[DBZ-6316]
+* Remove outdated information about SYS user accounts with Oracle https://issues.redhat.com/browse/DBZ-6318[DBZ-6318]
+* Cassandra 3 cannot be built using JDK20 https://issues.redhat.com/browse/DBZ-6320[DBZ-6320]
+* Bundle Jolokia with Debezium connect image  https://issues.redhat.com/browse/DBZ-6323[DBZ-6323]
+
+
+Altogether, https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20AND%20fixVersion%20%3D%202.2.0.CR1%20ORDER%20BY%20component%20ASC[34 issues] were fixed for this release.
+A big thank you to all the contributors from the community who worked on this release:
+https://github.com/ani-sha[Anisha Mohanty],
+https://github.com/roldanbob[Bob Roldan],
+https://github.com/Naros[Chris Cranford],
+https://github.com/harveyyue[Harvey Yue],
+https://github.com/sugarcrm-jgminder[Jacob Gminder],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/joschi[Jochen Schalanda],
+https://github.com/mfvitale[Mario Fiore Vitale],
+https://github.com/alwaysbemark[Mark Bereznitsky],
+https://github.com/obabec[Ondrej Babec],
+https://github.com/smallYellowCat[Pengwei Dou],
+https://github.com/roldanbob[Robert Roldan], and
+https://github.com/vjuranek[Vojtech Juranek]!
+
+== Outlook & What's Next?
+
+We are approaching the end of the Debezium 2.2 release cycle, with a final release expected this week.
+If there are any outstanding bugs or issues, please get in touch with us so that can be addressed prior to the final release.
+
+The Debezium team is shifting their focus on Debezium 2.3.
+The Debezium 2.3 release will be a much more condensed and focused release, as our goal is to release it in late June.
+The Debezium roadmap has been updated and the following features are planned for this quarter:
+
+* Support configurable signaling channels
+* Support exactly once delivery semantics (phase 1)
+* Kubernetes operator for Debezium Server
+* Oracle OpenLogReplicator adapter proof-of-concept / incubating implementation
+* Debezium UI improvements
+
+We would like to hear your feedback or suggestions, so if you have anything you'd like to share be sure to get in touch with us on the https://groups.google.com/g/debezium[mailing list] or our https://debezium.zulipchat.com/login/#narrow/stream/302529-users[chat].
+
+Until next time, let the changes continue to stream...

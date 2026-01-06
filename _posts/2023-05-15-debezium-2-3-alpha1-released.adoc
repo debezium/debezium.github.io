@@ -1,0 +1,217 @@
+---
+layout: post
+title:  Debezium 2.3.0.Alpha1 Released
+date:   2023-05-15
+tags: [ releases, mongodb, mysql, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox, spanner ]
+author: ccranfor
+---
+
+It's my pleasure to announce the first release of the Debezium 2.3 series, *2.3.0.Alpha1*!
+
+This release brings many new and exciting features as well as bug fixes,
+including Debezium status notifications, storage of Debezium state into a JDBC data store,
+configurable signaling channels, the ability to edit connector configurations via Debezium UI,
+the parallelization of Vitess shards processing,
+and much more.
+
+This release contains changes for https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20AND%20fixVersion%20%3D%202.3.0.Alpha1%20ORDER%20BY%20issuetype%20DESC[59 issues],
+so lets take a moment and dive into several of these new features and any potential bug fixes or breaking changes that are noteworthy!
+
++++<!-- more -->+++
+
+== Breaking Changes
+
+Debezium for PostgreSQL and MySQL can be configured to use a secured SSL connection.
+For PostgreSQL, this can be done by configuring https://debezium.io/documentation/reference/2.3/connectors/postgresql.html#postgresql-property-database-sslmode[`database.sslmode`] while for MySQL this can be done with https://debezium.io/documentation/reference/2.3/connectors/mysql.html#mysql-property-database-ssl-mode[`database.ssl.mode`].
+
+With Debezium 2.3, this configuration option no longer defaults to `disable` (PostgreSQL) or `disabled` (MySQL) but instead defaults to `prefer` (PostgreSQL) and `preferred` (MySQL).
+This means that when attempting to connect using an encrypted, secure connection is unavailable, the connector will fallback to using an unsecured connection by default unless configured otherwise.
+
+== Status Notifications
+
+Debezium 2.3 introduces a brand-new feature called notifications, allowing Debezium to emit events that can be consumed by any external system to know the status of various stages of Debezium's lifecycle.
+
+Notification events are represented as a series of key/value tuples, with a structure that contains several out-of-the-box fields.
+The following is an example of a simple notification event.
+
+.Example Notification Event
+[source,json]
+----
+{
+  "id": "c485ccc3-16ff-47cc-b4e8-b56a57c3bad2",
+  "aggregate_type": "Snapshot",
+  "type": "Started",
+  "additional_data": {
+    ...
+  }
+}
+----
+
+Each notification event consists of an `id` field, a UUID to identify the notification,
+an `aggregate_type` field to which the notification is related based on the concept of domain-driven design,
+a `type` field that is mean to given more detail about the aggregate type itself,
+and an optional `additional_data` field which consists of a map of string-based key/value pairs with additional information about the event.
+
+At this time, there are two notification event types supported by Debezium:
+
+    * Status of the initial snapshot
+    * Monitoring of the incremental snapshot
+
+=== Initial Snapshot Notifications
+
+An initial snapshot is the consistent capture of the existing data when a connector first starts.
+An initial snapshot event will have an aggregate type with the value of `"Initial Snapshot"` and the type of event will consist of one of three logical values:
+
+`SKIPPED`:: Represents the initial snapshot was skipped.
+`ABORTED`:: Represents the initial snapshot was aborted.
+`COMPLETED`:: Represents the initial snapshot has concluded successfully.
+
+The following is an example of a notification about the completion of the initial snapshot:
+
+.Example snapshot completed event
+[source,json]
+----
+{
+  "id": "5563ae14-49f8-4579-9641-c1bbc2d76f99",
+  "aggregate_type": "Initial Snapshot",
+  "type": "COMPLETED"
+}
+----
+
+=== Incremental Snapshot Notifications
+
+An incremental snapshot is a capture of the existing data from a configured set of tables while the connector is actively streaming changes.
+An incremental snapshot event will have an aggregate type with the value of `"Incremental Snapshot"` and the type will consist of one of several logical values:
+
+`STARTED`:: Indicates an incremental snapshot has started.
+`PAUSED`:: Indicates an incremental snapshot has been temporarily paused.
+`RESUMED`:: Indicates an incremental snapshot that had been paused has now resumed.
+`STOPPED`:: Indicates an incremental snapshot has stopped.
+`IN_PROGRESS`:: Indicates an incremental snapshot is in-progress.
+`TABLE_SCAN_COMPLETED`:: Indicates an incremental snapshot has concluded for a given table.
+`COMPLETED`:: Indicates that an incremental snapshot has concluded for all tables.
+
+=== Configuring Notifications
+
+Debezium notifications are configured via the connector's configuration.
+The following examples show how to configure the out-of-the-box Kafka Topic or Log based channels.
+
+.Using a Kafka Topic
+[source,json]
+----
+{
+  "notification.enable.channels": "sink",
+  "notification.sink.topic.name": "debezium_notifications",
+  ...
+}
+----
+
+.Using the connector logs
+[source,json]
+----
+{
+    "notification.enable.channels": "log"
+}
+----
+
+== JDBC Storage Module
+
+Debezium 2.3 introduces a new storage module implementation supporting the persistence of schema history and offset data in a datastore via JDBC.
+For environments where you may not have easy access to persistent filesystems, this offers yet another alternative for storage via a remote, persistent storage platform.
+
+In order to take advantage of this new module, the following dependency must be added to your project or application:
+
+.Maven coordinates
+[source,xml]
+----
+<dependency>
+    <groupId>io.debezium</groupId>
+    <artifactId>debezium-storage-jdbc</artifactId>
+    <version>2.3.0.Alpha1</version>
+</dependency>
+----
+
+The following examples show how to configure Offset or Schema History storage via the JDBC storage module:
+
+.Configuration example for Offset JDBC storage
+[source,json]
+----
+{
+  "offset.storage.jdbc.url": "<jdbc-connection-url>",
+  "offset.storage.jdbc.user": "dbuser",
+  "offset.storage.jdbc.password": "secret",
+  "offset.storage.jdbc.offset_table_name": "debezium_offset_storage"
+}
+----
+
+.Configuration example for Schema History JDBC storage
+[source,json]
+----
+{
+  "schema.history.internal.jdbc.url": "<jdbc-connection-url>",
+  "schema.history.internal.jdbc.user": "dbuser",
+  "schema.history.internal.jdbc.password": "secret",
+  "schema.history.internal.jdbc.schema.history.table.name": "debezium_database_history"
+}
+----
+
+== Other fixes
+
+There were quite a number of bugfixes and stability changes in this release, some noteworthy are:
+
+* Toasted varying character array and date array are not correcly processed https://issues.redhat.com/browse/DBZ-6122[DBZ-6122]
+* Introduce LogMiner query filtering modes https://issues.redhat.com/browse/DBZ-6254[DBZ-6254]
+* Lock contention on LOG_MINING_FLUSH table when multiple connectors deployed https://issues.redhat.com/browse/DBZ-6256[DBZ-6256]
+* Ensure that the connector can start from a stale timestamp more than one hour into the past https://issues.redhat.com/browse/DBZ-6307[DBZ-6307]
+* The rs_id field is null in Oracle change event source information block https://issues.redhat.com/browse/DBZ-6329[DBZ-6329]
+* Add JWT authentication to HTTP Client https://issues.redhat.com/browse/DBZ-6348[DBZ-6348]
+* Using pg_replication_slot_advance which is not supported by PostgreSQL10. https://issues.redhat.com/browse/DBZ-6353[DBZ-6353]
+* log.mining.transaction.retention.hours should reference last offset and not sysdate https://issues.redhat.com/browse/DBZ-6355[DBZ-6355]
+* Support multiple tasks when streaming shard list https://issues.redhat.com/browse/DBZ-6365[DBZ-6365]
+* Kinesis Sink - AWS Credentials Provider https://issues.redhat.com/browse/DBZ-6372[DBZ-6372]
+* Toasted hstore are not correcly processed https://issues.redhat.com/browse/DBZ-6379[DBZ-6379]
+* Oracle DDL shrink space for table partition can not be parsed https://issues.redhat.com/browse/DBZ-6386[DBZ-6386]
+* __source_ts_ms r (read) operation date is set to future for SQL Server https://issues.redhat.com/browse/DBZ-6388[DBZ-6388]
+* PostgreSQL connector task fails to resume streaming because replication slot is active https://issues.redhat.com/browse/DBZ-6396[DBZ-6396]
+* MongoDB connector crashes on invalid resume token https://issues.redhat.com/browse/DBZ-6402[DBZ-6402]
+* NPE on read-only MySQL connector start up https://issues.redhat.com/browse/DBZ-6440[DBZ-6440]
+
+Altogether, https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20AND%20fixVersion%20%3D%202.3.0.Alpha1%20ORDER%20BY%20component%20ASC[59 issues] were fixed for this release.
+A big thank you to all the contributors from the community who worked on this release:
+https://github.com/ani-sha[Anisha Mohanty],
+https://github.com/bpaquet[Bertrand Paquet],
+https://github.com/roldanbob[Bob Roldan],
+https://github.com/brenoavm[Breno Moreira],
+https://github.com/Naros[Chris Cranford],
+https://github.com/fredlegaucher[Frederic Laurent],
+https://github.com/ddsr-ops[Gong Chang Hua],
+https://github.com/harveyyue[Harvey Yue],
+https://github.com/Hidetomi[Hidetomi Umaki],
+https://github.com/jcechace[Jakub Cechacek],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/subkanthi[Kanthi Subramanian],
+https://github.com/kgalieva[Katerina Galieva],
+https://github.com/mfvitale[Mario Fiore Vitale],
+https://github.com/MartinMedek[Martin Medek],
+https://github.com/miguelbirdie[Miguel Angel Sotomayor],
+https://github.com/nirolevy[Nir Levy],
+https://github.com/zalmane[Oren Elias],
+https://github.com/rnowling-memphis[RJ Nowling],
+https://github.com/roldanbob[Robert Roldan],
+https://github.com/ironakj[Ronak Jain],
+https://github.com/eizners[Sergey Eizner],
+https://github.com/sclarkson-zoomcare[Stephen Clarkson],
+https://github.com/twthorn[Thomas Thornton], and
+https://github.com/caicancai[蔡灿材]!
+
+== What's next?
+
+With Debezium 2.3 underway, I do expect a rather quick cycle of alpha, beta, and final releases over the next six weeks.
+We still have a lot to do in this time period that we hope to get into this release, so stay tuned.
+As we get closer to the end of June, we'll begin our planning for Debezium 2.4!
+
+Also, Red Hat Summit 2023 is next week in Boston.
+There will be a break-out session where Hugo and Chris will be discussing the new Debezium JDBC sink connector.
+If you're able to attend, we'd love to have an opportunity to chat with you before or after the session.
+
+Until next time...

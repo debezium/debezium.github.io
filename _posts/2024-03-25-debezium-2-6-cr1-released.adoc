@@ -1,0 +1,180 @@
+---
+layout: post
+title:  Debezium 2.6.0.CR1 Released
+date:   2024-03-25
+tags: [ releases, mongodb, mysql, mariadb, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox, spanner, informix, ibmi ]
+author: ccranfor
+---
+
+As we are just a week away from Debezium 2.6.0.Final, I am pleased to announce Debezium **2.6.0.CR1**, the first release candidate for the 2.6 release stream.
+This release includes a number of improvements, including XML support for the Oracle OpenLogReplicator adapter, TRACE level logging support for Debezium Server, configurable partition modes for Cassandra, the new Snapshot API for MongoDB and Db2, and more.
+
+Additionally, this release includes a variety of bug fixes and several breaking changes.
+
+Let's take a closer look at all these changes and improvements included in Debezium 2.6.0.CR1;
+as always, you can find the complete list of changes for this release in the link:/releases/2.6/release-notes[release notes].
+Please remember to take special note to any breaking changes that could affect your upgrade path.
+
++++<!-- more -->+++
+
+== Breaking changes
+
+While we strive to avoid breaking changes, sometimes those changes are inevitable to evolve the right direction.
+This release includes several breaking changes.
+
+MySQL::
+The MysQL driver was updated to version 8.3.0, and this driver is not compatible with MySQL 5.x.
+If you still need to use an older MySQL version, please downgrade the driver after installation to a version that is compatible with your database (https://issues.redhat.com/browse/DBZ-7652[DBZ-7652]).
+
+SQL Server::
+The SQL Server connector was not capturing all schemas when the connector was first deployed, and instead, was only capturing the schemas based on the tables defined in the configuration's include list.
+This was a bug that could prevent users from easily adding new tables to the connector when expecting that the new table's schema would already exist in the schema history topic.
+The connector now correctly honors the `store.only.captured.tables.ddl` configuration option (https://issues.redhat.com/browse/DBZ-7593[DBZ-7593]). +
+ +
+For existing connector deployments, if you do not specifically set the `store.only.captured.tables.ddl` property for the schema history topic, the connector will begin capturing schema changes for all relevant tables in your database.
+If you want to prevent this and retain the prior behavior, you will need to adjust your connector configuration by adding `schema.history.internal.store.only.captured.tables.ddl` with a value of `true`.
+
+Vitess::
+The Vitess connector previously used the timestamp of `BEGIN` message as the source timestamp.
+This has been changed to the usage of the `COMMIT` timestamp to reflect the behaviour of other connectors (https://issues.redhat.com/browse/DBZ-7628[DBZ-7628]).
+
+== New features and improvements
+
+Debezium 2.6.CR1 also introduces more improvements and features, lets take a look at each individually.
+
+=== XML Support for OpenLogReplicator
+
+The Debezium for Oracle connector supports connections with OpenLogReplicator, allowing Oracle users to stream changes directly from the transaction logs.
+The latest build of OpenLogReplicator, version **1.5.0** has added support for XML column types.
+
+To get started streaming XML with OpenLogReplicator, please upgrade the OpenLogReplicator process to 1.5.0 and restart the replicator process.
+Be aware that if you want to stream binary-based XML column data, you will need to toggle this feature as enabled in the OpenLogReplicator configuration.
+
+=== TRACE level logging for Debezium Server
+
+Debezium Server is a ready-made runtime for Debezium source connectors that uses the Quarkus framework to manage the source and sink deployments.
+As most Debezium Server users are aware who have reached out with questions or bugs, we often ask for TRACE-level logs and this has often proven difficult as it requires a full rebuild of Debezium Server due to how minimum logging level is a build-time configuration in Quarkus.
+
+With Debezium 2.6.0.CR1 release and later, this will no longer be required.
+The build time configuration has been adjusted by default to include TRACE logging levels, so moving forward users can simply set the log level to TRACE and restart Debezium Server to obtain the logs (https://issues.redhat.com/brwose/DBZ-7369[DBZ-7369]).
+
+=== New Unified Snapshot Modes
+
+The snapshot process is an integral part of each connector's lifecycle, and it's responsible for collecting and sending all the historical data that exists in your data store to your target systems, if desired.
+For Debezium users who work with multiple connector types, we understand that having differing snapshot modes across connectors can sometimes be confusing to work with.
+So this change is designed to address that.
+
+For many of you who may have already tried or installed Debezium 2.6 pre-releases, you're already using the unified snapshot SPI as it was designed to be a drop-in-replacement initially, requiring no changes.
+This release finishes that work for MongoDB and DB2.
+
+Of these changes, the most notable include the following:
+
+* All snapshot modes are available to all connectors, excluding `never` which remains specific to MySQL.
+This means that connectors that may have previously not supported a snapshot mode, such as `when_needed`, can now use this mode to retake a snapshot when the connector identifies that its necessary.
+* The `schema_only_recovery` mode has been deprecated and replaced by `recovery`.
+* The `schema_only` mode has also been deprecated and replaced by `no_data`.
+
+[IMPORTANT]
+====
+All deprecated modes will remain available until Debezium 3 later this year.
+This provides users with about six months to adjust scripts, configurations, and processes in advance.
+====
+
+=== Cassandra configurable partition modes
+
+When a Debezium Cassandra connector read the commit logs, events are processed sequentially and added to a queue.
+If multiple queues exist, events become distributed between these queues based on the hash of the commit log filename.
+This resulted in situations where events could be emitted in non-chronological order.
+
+With Debezium 2.6, the Cassandra connector's hashing algorithm now uses the partition column names to resolve the queue index for insertion.
+This should provide a more stable insert order so that events are emitted in the correct order.
+
+A new configuration option has been added to opt-in to this new behavior.
+Debezium users can add the new configuration property `event.order.guarantee.mode` set to `partition_values` to take advantage of this new mode.
+By default, the property retains the old behavior using a default of `commitlog_file`.
+
+== Other fixes
+
+In addition, there were quite a number of stability and bug fixes that made it into this release.
+These include the following:
+
+* Log Mining Processor advances SCN incorrectly if LogMiner query returns no rows https://issues.redhat.com/browse/DBZ-6679[DBZ-6679]
+* debezium-connector-jdbc occurred  java.sql.SQLException: ORA-01461: can bind a LONG value only https://issues.redhat.com/browse/DBZ-6900[DBZ-6900]
+* Align snapshot modes for MongoDB https://issues.redhat.com/browse/DBZ-7304[DBZ-7304]
+* Align snapshot modes for DB2 https://issues.redhat.com/browse/DBZ-7305[DBZ-7305]
+* Align all snapshot mode on all connectors https://issues.redhat.com/browse/DBZ-7308[DBZ-7308]
+* Oracle connector unable to find SCN after Exadata maintenance updates https://issues.redhat.com/browse/DBZ-7389[DBZ-7389]
+* Oracle LOB requery on Primary Key change does not work for all column types https://issues.redhat.com/browse/DBZ-7458[DBZ-7458]
+* Incorrect value of TIME(n) replicate from MySQL if the original value is negative https://issues.redhat.com/browse/DBZ-7594[DBZ-7594]
+* Re-select Post Processor not working for complex types https://issues.redhat.com/browse/DBZ-7596[DBZ-7596]
+* Null instead of toast placeholder written for binary types when "hex" mode configured https://issues.redhat.com/browse/DBZ-7599[DBZ-7599]
+* Poor snapshot performance during schema snapshot DDL processing https://issues.redhat.com/browse/DBZ-7608[DBZ-7608]
+* Remove LogMiner continuous mining configuration option https://issues.redhat.com/browse/DBZ-7610[DBZ-7610]
+* Re-select post processor performance https://issues.redhat.com/browse/DBZ-7611[DBZ-7611]
+* Uncaught exception during config validation in Engine https://issues.redhat.com/browse/DBZ-7614[DBZ-7614]
+* Enhanced event timestamp precision combined with ExtractNewRecordState not working https://issues.redhat.com/browse/DBZ-7615[DBZ-7615]
+* Incremental snapshot query doesn't honor message.key.columns order https://issues.redhat.com/browse/DBZ-7617[DBZ-7617]
+* Metric ScnFreezeCount never increases https://issues.redhat.com/browse/DBZ-7619[DBZ-7619]
+* JDBC connector does not process ByteBuffer field value https://issues.redhat.com/browse/DBZ-7620[DBZ-7620]
+* Update Quarkus Outbox to Quarkus 3.8.2 https://issues.redhat.com/browse/DBZ-7623[DBZ-7623]
+* Upgrade Debezium Server to Quarkus 3.2.10 https://issues.redhat.com/browse/DBZ-7624[DBZ-7624]
+* MongoDbReplicaSet and MongoDbShardedCluster should not create a new network for each builder instance by default https://issues.redhat.com/browse/DBZ-7626[DBZ-7626]
+* Cassandra can have misaligned Jackson dependencies https://issues.redhat.com/browse/DBZ-7629[DBZ-7629]
+* Remove forgotten lombok code from system tests https://issues.redhat.com/browse/DBZ-7634[DBZ-7634]
+* Numerci value without mantissa cannot be parsed https://issues.redhat.com/browse/DBZ-7643[DBZ-7643]
+* Add JDBC connector to artifact server image preparation https://issues.redhat.com/browse/DBZ-7644[DBZ-7644]
+* Revert removal of Oracle LogMiner continuous mining https://issues.redhat.com/browse/DBZ-7645[DBZ-7645]
+* Add documentation for MongoDB capture.mode.full.update.type property https://issues.redhat.com/browse/DBZ-7647[DBZ-7647]
+* Missing test annotation in PostgresConnectorIT https://issues.redhat.com/browse/DBZ-7649[DBZ-7649]
+* Fix MySQL image fetch for tests https://issues.redhat.com/browse/DBZ-7651[DBZ-7651]
+* RedisSchemaHistoryIT continually fails https://issues.redhat.com/browse/DBZ-7654[DBZ-7654]
+* Upgrade Quarkus Outbox Extension to Quarkus 3.8.3 https://issues.redhat.com/browse/DBZ-7656[DBZ-7656]
+* Bump SQL Server test image to SQL Server 2022 https://issues.redhat.com/browse/DBZ-7657[DBZ-7657]
+* Upgrade Debezium Server to Quarkus 3.2.11.Final https://issues.redhat.com/browse/DBZ-7662[DBZ-7662]
+* Update QOSDK and Quarkus to fix vcs-url annotation  CVE https://issues.redhat.com/browse/DBZ-7664[DBZ-7664]
+* Exclude jcl-over-slf4j dependency https://issues.redhat.com/browse/DBZ-7665[DBZ-7665]
+* MySQL connector fails to parse DDL with RETURNING keyword https://issues.redhat.com/browse/DBZ-7666[DBZ-7666]
+* Schema history comparator doesn't handle SERVER_ID_KEY and TIMESTAMP_KEY properly https://issues.redhat.com/browse/DBZ-7690[DBZ-7690]
+* Duplicate envar generated in operator bundle https://issues.redhat.com/browse/DBZ-7703[DBZ-7703]
+
+Altogether, https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20AND%20fixVersion%20%3D%202.6.0.CR1%20ORDER%20BY%20component%20ASC[48 issues] were fixed for this release.
+A big thank you to all the contributors from the community who worked on this release:
+https://github.com/samssh[Amirmohammad Sadat Shokouhi],
+https://github.com/andreas-ibm[Andreas Martens],
+https://github.com/jchipmunk[Andrey Pustovetov],
+https://github.com/Naros[Chris Cranford],
+https://github.com/gunnarmorling[Gunnar Morling],
+https://github.com/harveyyue[Harvey Yue],
+https://github.com/indraraj[Indra Shukla],
+https://github.com/jcechace[Jakub Cechacek],
+https://github.com/novotnyJiri[Jiri Novotny],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/Lucascanna[Luca Scannapieco],
+https://github.com/mfvitale[Mario Fiore Vitale],
+https://github.com/MartinMedek[Martin Medek],
+https://github.com/nivolg[Nick Golubev],
+https://github.com/roldanbob[Robert Roldan],
+https://github.com/VWagen1989[Sean Wu],
+https://github.com/eizners[Sergey Eizner],
+https://github.com/twthorn[Thomas Thornton], and
+https://github.com/fourpointfour[Vaibhav Kushwaha]!
+
+== What's next?
+
+We have just over a week before the Debezium 2.6 final release.
+If you have not given any of the latest pre-releases a try, we encourage everyone to do so and provide feedback if you face any problems or issues deploying this release candidate.
+Our goal is to release the 2.6.0.Final build immediately after the upcoming holiday break.
+
+As the team begins to shift gears toward Debezium 2.7, here's a speak peek at some upcoming highlights:
+
+* Standalone, Official MariaDB connector
+* User-friendly offset manipulation
+* Read-only incremental snapshots for all relational connectors
+* Sneak peek at the first PoC of the Debezium Server UI
+
+For more details, please check out our https://debezium.io/roadmap[road map] for all upcoming details around Debezium 2.7 and beyond.
+
+As always, please be sure to get in touch with us on the https://groups.google.com/g/debezium[mailing list] or https://debezium.zulipchat.com/login/#narrow/stream/302529-users[Zulip chat] if you have questions or feedback.
+We're interested to know what you'd like to see changed in Debezium 3, so let us know!
+
+Until next time...

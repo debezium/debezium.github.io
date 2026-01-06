@@ -1,0 +1,173 @@
+---
+layout: post
+title:  Debezium 3.0.5.Final Released
+date:   2024-12-18
+tags: [ releases, mongodb, mysql, mariadb, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox, spanner, jdbc, informix, ibmi ]
+author: ccranfor
+---
+
+Just in time for the holidays, it's my pleasure to announce the fifth maintenance release for Debezium 3, **3.0.5.Final**.
+This release introduces several minor improvements, bugfixes, and some breaking changes.
+Let's take a few moments and dive into the details...
+
++++<!-- more -->+++
+
+[id="breaking-changes"]
+== Breaking Changes
+
+The team aims to avoid any potential breaking changes between minor releases; however, such changes are sometimes inevitable.
+
+Kafka Signal Source::
+Debezium was reprocessing Kafka-based signals on connector restarts, which could introduce unpredictable behavior with unintended side effects.
+As a result, this feature has been removed, and if a connector stops, then the signal must be re-sent (https://issues.redhat.com/browse/DBZ-7856[DBZ-7856]).
+
+Change Event Source Info Block::
+The snapshot enumeration in the `source` information block in Debezium's change events was extended to include all possible cases (https://issues.redhat.com/browse/DBZ-8496[DBZ-8496]).
+
+[id="new-features-and-improvements"]
+== New features and improvements
+
+Debezium 3.0.5.Final introduces a couple of improvements and features, lets take a look at each individually.
+
+=== Core
+
+==== Allow ad-hoc blocking snapshots on unknown tables
+
+While we recommend using the default configurations for schema management for all tables, we understand that isn't always possible for every environment.
+A common question we often see is how does one snapshot newly added tables, particularly if the connector is configured using `store.only.captured.tables.ddl` as `true`.
+
+In this update, we have simplified the process where you can update your connector configuration with the new table, and once the connector task has restarted, sending an ad-hoc blocking snapshot signal will be permitted even on tables that are unknown but match the capture filters (https://issues.redhat.com/browse/DBZ-4903[DBZ-4903]).
+
+==== Snapshot dispatch failure handling improvements
+
+When processing change events, users can control how the connector reacts to specific event handling failures using `event.processing.failure.handling.mode`; however, this has traditionally only been applicable for streaming changes.
+
+There are some corner cases where emitting snapshot events could also raise failures.
+To improve this experience, the `event.processing.failure.handling.mode` now influences failures when dispatching snapshot events, too (https://issues.redhat.com/browse/DBZ-8433[DBZ-8433]).
+
+==== Connector startup configuration logging improved
+
+When a Debezium source connector starts, it logs all connector configurations.
+This is very helpful for both the team when diagnosing problems but also for users to identify that their configurations are being understood properly.
+
+In this update, the logging for the connector configuration has changed slightly.
+You will notice rather than placing each configuration property as a new log entry, each key/value will be appended together separated by new lines, and added to the log as a single entry.
+This makes it easier to identify these log lines and for tooling to exclude such log entries easier if needed (https://issues.redhat.com/browse/DBZ-8472[DBZ-8472]).
+
+=== Postgres
+
+==== Support for PostgreSQL 17 fail-over replication slots
+
+PostgreSQL 17 introduces a long awaited feature called _fail-over for replication slots_.
+
+When the replication slot is created, a new property can be specified to enable the replication slot to be created and available on the fail-over replica.
+The synchronization of the fail-over replication slot can be performed manually by calling `pg_sync_replication_slots()` or automatically by enabling the `sync_replication_slots` feature.
+
+When automatic synchronization is enabled, this allows Debezium to consume from that slot immediately on fail-over to the replica and not miss any events.
+
+To take advantage of this new feature, your connector must be configured with `slot.failover` set to `true`.
+Debezium must be connecting to PostgreSQL 17+ and the primary on the cluster, otherwise no fail-over replication slot will be created (https://issues.redhat.com/browse/DBZ-8412[DBZ-8412]).
+
+=== Oracle
+
+==== New metrics to track partial rollback events
+
+A partial rollback event is something unique to Oracle where a user performs an operation, it gets recorded as being performed in the transaction logs, but then a validation check forces the operation to be undone and rolled back.
+One of the most notable ways to trigger partial rollbacks are with constraint violations.
+
+The new JMX metric, `NumberOfPartialRollbackCount`, tracks the frequency of this event sequence in the transaction logs (https://issues.redhat.com/browse/DBZ-8491[DBZ-8491]).
+
+[NOTE]
+====
+The increase in this metric should be rare, and having a few occurrences throughout the day should pose no major problem.
+
+When you notice this metric increases frequently in a small window of time, this means you could have a poorly written script where a job is relying on constraint violations for some logic.
+While the connector can handle these use cases, it's important to understand this creates unnecessary transaction log activity that can directly impact the speed and latency of streaming changes.
+====
+
+==== Skip GoldenGate replication markers
+
+When using Debezium to capture changes from an Oracle database that interacts with Oracle GoldenGate, you may have observed some situations where the low watermark in the offsets did not advance across restarts.
+This was especially the case when setting `lob.enabled` to `true`.
+
+In this update, the Debezium Oracle connector will now skip GoldenGate's replication marker events, which will prevent those synthetic transactions from cluttering the transaction buffer and forcing users to rely on transaction retention (https://issues.redhat.com/browse/DBZ-8533[DBZ-8533]).
+
+=== Vitess
+
+==== Unparseable DDL handling improvements
+
+Several new improvements have been added to Vitess to make the parsing and handling of DDL changes more fault-tolerant (https://issues.redhat.com/browse/DBZ-8479[DBZ-8479]).
+These improvements include:
+
+* Only parsing DDL events if that specific table is tracked in the schema history
+* Strip comments to mimic parse failures
+* Make table and type fault tolerance to gracefully handle edge cases
+
+=== K8s Operator
+
+==== Support JDBC offset/history configurations DBZ-8501
+
+We have improved the Kubernetes Operator by introducing support for the JDBC storage module, allowing it to be configured via the CRD.
+
+In the https://github.com/debezium/debezium-operator/blob/main/docs/reference.adoc#debezium-operator-schema-reference-offset[offset] schema reference, a new property section called `jdbc` has been added, which describes the https://github.com/debezium/debezium-operator/blob/main/docs/reference.adoc#debezium-operator-schema-reference-jdbcoffsetstore[JDBC offset backing store properties].
+In the https://github.com/debezium/debezium-operator/blob/main/docs/reference.adoc#debezium-operator-schema-reference-schemahistory[schema history] reference, a new property section called `jdbc` has been added, which describes the https://github.com/debezium/debezium-operator/blob/main/docs/reference.adoc#debezium-operator-schema-reference-jdbcschemahistorystore[JDBC schema history store properties].
+
+This allows users to store offsets and schema history details for a connector deployed using the Debezium Operator in a JDBC data store easily (https://issues.redhat.com/browse/DBZ-8501[DBZ-8501]).
+
+[id="other-fixes"]
+== Other fixes
+
+In total there were https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20and%20fixVersion%20%20in%20(3.0.5.Final)[43 issues] resolved in Debezium 3.0.5.Final.
+The list of changes can also be found in our https://debezium.io/releases/3.0[release notes].
+
+Here are some noteworthy changes:
+
+* Create smoke test to make sure Debezium Server container image works https://issues.redhat.com/browse/DBZ-3226[DBZ-3226]
+* Error with debezium.sink.pulsar.client.serviceUrl and debezium-server https://issues.redhat.com/browse/DBZ-3720[DBZ-3720]
+* MySQL regression - Defaults store.only.captured.tables.ddl to true https://issues.redhat.com/browse/DBZ-6709[DBZ-6709]
+* ExtractNewRecordState value of optional null field which has default value https://issues.redhat.com/browse/DBZ-7094[DBZ-7094]
+* DebeziumException: No column '' where ' found in table https://issues.redhat.com/browse/DBZ-8034[DBZ-8034]
+* Align MySQL and MariaDB grammars with upstream versions https://issues.redhat.com/browse/DBZ-8270[DBZ-8270]
+* MySQL Connector Does Not Act On `CREATE DATABASE` Records In The Binlog https://issues.redhat.com/browse/DBZ-8291[DBZ-8291]
+* Vgtid doesn't contain multiple shard GTIDs when multiple tasks are used https://issues.redhat.com/browse/DBZ-8432[DBZ-8432]
+* Support MongoDB 8.0 https://issues.redhat.com/browse/DBZ-8451[DBZ-8451]
+* Update description of `message.key.columns` and format admonitions in PG doc https://issues.redhat.com/browse/DBZ-8455[DBZ-8455]
+* Object ID cache may fail with concurrent modification exception https://issues.redhat.com/browse/DBZ-8465[DBZ-8465]
+* Add Basic validation in UI to check for form completion before submitting. https://issues.redhat.com/browse/DBZ-8474[DBZ-8474]
+* Use schema evolution tool to manage the conductor database https://issues.redhat.com/browse/DBZ-8486[DBZ-8486]
+* Oracle gathers and logs object attributes for views unnecessarily https://issues.redhat.com/browse/DBZ-8492[DBZ-8492]
+* ReselectColumnPostProcessor can throw ORA-01003 "no statement parsed" when using fallback non-flashback area query https://issues.redhat.com/browse/DBZ-8493[DBZ-8493]
+* Oracle DDL ALTER TABLE ADD CONSTRAINT fails to be parsed https://issues.redhat.com/browse/DBZ-8494[DBZ-8494]
+* Edit Source/Destination on adding new configuration properties its removing old once https://issues.redhat.com/browse/DBZ-8495[DBZ-8495]
+* Invalid property name in JDBC Schema History https://issues.redhat.com/browse/DBZ-8500[DBZ-8500]
+* Fix the URL in Pipeline log page  https://issues.redhat.com/browse/DBZ-8502[DBZ-8502]
+* Failed to start LogMiner mining session due to "Required Start SCN" error message https://issues.redhat.com/browse/DBZ-8503[DBZ-8503]
+* Oracle data pump TEMPLATE_TABLE clause not supported https://issues.redhat.com/browse/DBZ-8504[DBZ-8504]
+* Postgres alpine images require lang/llvm 19 for build https://issues.redhat.com/browse/DBZ-8505[DBZ-8505]
+* Update Quarkus Outbox Extension to Quarkus 3.17.3 https://issues.redhat.com/browse/DBZ-8506[DBZ-8506]
+* Merge conductor and stage into single platform repository https://issues.redhat.com/browse/DBZ-8508[DBZ-8508]
+* TimezoneConverter include.list should be respected if set https://issues.redhat.com/browse/DBZ-8514[DBZ-8514]
+* Missing log classes debezium-platform-conductor https://issues.redhat.com/browse/DBZ-8515[DBZ-8515]
+* Debezium Server fails to start when using the sink Kinesis https://issues.redhat.com/browse/DBZ-8517[DBZ-8517]
+* Skip GoldenGate REPLICATION MARKER events https://issues.redhat.com/browse/DBZ-8533[DBZ-8533]
+
+A big thank you to all the contributors from the community who worked diligently on this release:
+https://github.com/m8719-github[Andrei Leibovski],
+https://github.com/ani-sha[Anisha Mohanty],
+https://github.com/Naros[Chris Cranford],
+https://github.com/fanyang[Fan Yang],
+https://github.com/kmos[Giovanni Panice],
+https://github.com/gunnarmorling[Gunnar Morling],
+https://github.com/gustavolira[Gustavo Lira],
+https://github.com/jcechace[Jakub Cechacek],
+https://github.com/VJean[Jean Vintache],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/Sgitario[Jose Carvajal Hilario],
+https://github.com/JuanmaBM[Juanma Barea],
+https://github.com/mfvitale[Mario Fiore Vitale],
+https://github.com/martin-walsh[Martin Walsh],
+https://github.com/nathan-smit-1[Nathan Smit],
+https://github.com/omBratteng[Ole-Martin Bratteng],
+https://github.com/roldanbob[Robert Roldan],
+https://github.com/twthorn[Thomas Thornton], and
+https://github.com/vjuranek[Vojtech Juranek]!

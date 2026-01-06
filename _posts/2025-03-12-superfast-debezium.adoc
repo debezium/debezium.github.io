@@ -1,0 +1,719 @@
+---
+layout: post
+title:  Build a Superfast CDC with Debezium, Quarkus and GraalVM
+date:   2025-03-12 10:11:11 +0100
+tags: [ debezium, quarkus, graalvm, performance ]
+author: gpanice
+---
+
+Change Data Capture (CDC) is widely used in various contexts, such as microservices communication, legacy system modernization, and cache invalidation. The core idea of this pattern is to detect and track changes in a data source (e.g., a database) and propagate them to other systems in https://www.reddit.com/r/embedded/comments/1ddbul4/people_always_abuse_the_term_realtime_but_what/[real-time] or near real-time. Debezium is a CDC platform that provides a wide range of connectors for most data sources. Beyond capturing changes, it also offers transformation capabilities through an intuitive UI for defining debezium instances.
+
+[id="introduction"]
+== Introduction
+One way to use Debezium is by embedding it in a web application along with a connector to listen for changes in a data source. What's particularly interesting is that, with some tweaks, it's possible to build a CDC system with ultra-fast startup times and a minimal memory footprint by leveraging Quarkus and GraalVM. We will ingest data from a postgres database into a native Quarkus application with Debezium that apply an easy https://debezium.io/documentation/reference/stable/transformations/applying-transformations-selectively.html[transformation].
+
+[id="why"]
+=== Why
+I'd say, why not? From another perspective, the CDC pattern operates within the realm of distributed systems, which must adhere to principles like scalability, fault tolerance, and high availability. Optimizing resource usage not only lowers costs but also helps reduce your carbon footprint when you are trying to scale the application.
+
+[id="disclaimer"]
+=== Disclaimer
+The tweaks suggested here serve solely as a **proof of concept** to demonstrate Debezium's capabilities. They are not intended for production use but rather to showcase its potential. Debezium and its surrounding third-party libraries are not designed to be fully native for all use cases. Instead, the tweaks presented here focus on a specific **scenario**.
+
+[id="side_effect"]
+=== The side effect
+This guide can also help you understand how to make a Java application native. However, the best and most reliable approach is to use only dependencies provided by Quarkus.
+
+[id="graalvm-considerations"]
+=== Some Considerations about GraalVM
+
+GraalVM compiles Java applications into native binaries using **Ahead-of-Time** (AOT) compilation. This process involves analyzing the entire application to identify all reachable code, including classes, methods, and dependencies. However, one widely used Java feature *—reflection—* introduces dynamic behavior that cannot always be resolved at build time, often leading to **runtime failures** such as `ClassNotFoundException`. Additionally, many libraries rely on **dynamic proxy generation**, which is not supported in AOT compilation. This is where Quarkus comes to the rescue, providing a set of native-ready extensions and libraries to overcome these limitations.
+
+[id="build"]
+== Build the Basic Application
+
+Alright, let’s start building the application! All the proposed code is available on https://github.com/debezium/debezium-examples/tree/main/quarkus-native[GitHub].
+
+[id="prerequisite"]
+=== Prerequisite
+
+- GraalVM installed and configured appropriately (sdkman: 23.0.2-graal)
+- Apache Maven 3.9.9
+- A working container runtime (Docker or Podman)
+- A working C development environment
+
+You can use this link to set up your https://quarkus.io/guides/building-native-image#configuring-c-development[working environment].
+
+We’ll begin by updating your `pom.xml`, adding the necessary Quarkus and Debezium dependencies. Additionally, the Quarkus Maven plugin is required to build the application.
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>io.mosfet</groupId>
+    <artifactId>debezium-native</artifactId>
+    <version>1.0-SNAPSHOT</version>
+
+    <properties>
+        <maven.compiler.release>23</maven.compiler.release>
+        <quarkus.platform.version>3.19.2</quarkus.platform.version>
+        <version.debezium>3.0.8.Final</version.debezium>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>io.quarkus.platform</groupId>
+                <artifactId>quarkus-bom</artifactId>
+                <version>${quarkus.platform.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-arc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.debezium</groupId>
+            <artifactId>debezium-embedded</artifactId>
+            <version>${version.debezium}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.debezium</groupId>
+            <artifactId>debezium-connector-postgres</artifactId>
+            <version>${version.debezium}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.debezium</groupId>
+            <artifactId>debezium-api</artifactId>
+            <version>${version.debezium}</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>${quarkus.platform.group-id}</groupId>
+                <artifactId>quarkus-maven-plugin</artifactId>
+                <version>${quarkus.platform.version}</version>
+                <extensions>true</extensions>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>build</goal>
+                            <goal>generate-code</goal>
+                            <goal>generate-code-tests</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+```
+
+As you can see we added the debezium-connector-postgres to track a table in postgres.
+
+To instrument our application, we need to inject configurations while avoiding pitfalls that GraalVM doesn’t handle well (keeping in mind our initial considerations). Instead, we’ll follow the Quarkus approach by reading configurations from application.properties.
+
+To achieve this, we can create an interface using `@ConfigMapping` and `@StaticInitSafe`, ensuring compatibility with GraalVM.
+
+```java
+@StaticInitSafe
+@ConfigMapping(prefix = "debezium")
+public interface DebeziumConfiguration {
+    Map<String, String> configuration();
+}
+```
+
+The prefix is used to identify all the properties with `debezium` like these one:
+
+```properties
+# Debezium CDC configuration
+debezium.configuration.connector.class=io.debezium.connector.postgresql.PostgresConnector
+debezium.configuration.offset.storage=org.apache.kafka.connect.storage.MemoryOffsetBackingStore
+debezium.configuration.name=native
+debezium.configuration.database.hostname=localhost
+debezium.configuration.database.port=5432
+debezium.configuration.database.user=postgresuser
+debezium.configuration.database.password=postgrespw
+debezium.configuration.database.dbname=postgresuser
+debezium.configuration.topic.prefix=dbserver1
+debezium.configuration.table.include.list=inventory.products
+debezium.configuration.plugin.name=pgoutput
+debezium.configuration.snapshot.mode=never
+```
+
+So now we are able to create our listener `DatabaseChangeEventListener` that tracks events coming from the table `products` inside the `inventory` database:
+
+```java
+@ApplicationScoped
+@Startup
+public class DatabaseChangeEventListener {
+
+    private static final Logger LOG = LoggerFactory.getLogger(DatabaseChangeEventListener.class);
+
+    private DebeziumEngine<?> engine;
+    @Inject
+    private ExecutorService executor;
+
+    @Inject
+    private DebeziumConfiguration debeziumConfiguration;
+
+    @PostConstruct
+    public void startEmbeddedEngine() {
+        LOG.info("Launching Debezium embedded engine");
+
+        final Configuration config = Configuration.empty()
+                .withSystemProperties(Function.identity())
+                .edit()
+                .with(Configuration.from(debeziumConfiguration.configuration()))
+                .build();
+
+        this.engine = DebeziumEngine.create(ChangeEventFormat.of(Connect.class))
+                .using(config.asProperties())
+                .notifying((events, committer) -> {
+                    for (RecordChangeEvent<SourceRecord> record : events) {
+                        handleDbChangeEvent(record.record());
+                        committer.markProcessed(record);
+                    }
+                    committer.markBatchFinished();
+                })
+                .build();
+
+        executor.execute(engine);
+    }
+
+    @PreDestroy
+    public void shutdownEngine() throws Exception {
+        LOG.info("Stopping Debezium embedded engine");
+        engine.close();
+        executor.shutdown();
+    }
+
+    private void handleDbChangeEvent(SourceRecord record) {
+        LOG.info("DB change event {}", record);
+
+        if (record.topic().equals("dbserver1.inventory.products")) {
+            Integer productId = ((Struct) record.key()).getInt32("id");
+            Struct payload = (Struct) record.value();
+            Operation op = Operation.forCode(payload.getString("op"));
+            Long txId = ((Struct) payload.get("source")).getInt64("txId");
+
+            LOG.info("received event with productId: {} op: {} txId: {}", productId, op, txId);
+        }
+    }
+}
+```
+
+We should be able to start our application with:
+
+```shell
+mvn clean compile quarkus:dev
+```
+
+Obviously before start the application, you should start a postgres instance based on the `application.properties`. You can use for simplicity this docker compose configuration:
+
+```yaml
+services:
+  postgres:
+    image: quay.io/debezium/example-postgres:3.0
+    ports:
+     - 5432:5432
+    environment:
+     - POSTGRES_USER=postgresuser
+     - POSTGRES_PASSWORD=postgrespw
+```
+
+Now you should have a working application with debezium that runs inside a jvm.
+
+[id="native"]
+=== Be Native
+
+Ok now let's deep dive into the GraalVM capabilities. You can define a maven profile `native` that can trigger the build:
+
+```xml
+<profiles>
+    <profile>
+        <id>native</id>
+        <activation>
+            <property>
+                <name>native</name>
+            </property>
+        </activation>
+        <properties>
+            <quarkus.native.enabled>true</quarkus.native.enabled>
+            <quarkus.package.jar.enabled>false</quarkus.package.jar.enabled>
+        </properties>
+    </profile>
+</profiles>
+```
+
+We can try to build natively with:
+
+```shell
+mvn clean install -Dnative
+```
+
+as I said, you can try...but you will fail with something like that:
+
+```text
+Fatal error: com.oracle.graal.pointsto.util.AnalysisError$ParsingError: Error encountered while parsing org.glassfish.jersey.server.wadl.WadlFeature.configure(WadlFeature.java:49)
+Parsing context:
+   at root method.(Unknown Source)
+```
+
+Well, I never mentioned glassfish and jersey (`org.glassfish.jersey.server`), so why something like that?
+
+We should analyze the dependency tree to understand what is inside our application. So we can execute:
+
+```shell
+mvn dependency:tree
+```
+
+and see something like:
+
+```text
+[INFO] ---------------------< io.mosfet:debezium-native >----------------------
+[INFO] Building debezium-native 1.0-SNAPSHOT
+[INFO]   from pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO]
+[INFO] --- dependency:3.7.0:tree (default-cli) @ debezium-native ---
+[INFO] io.mosfet:debezium-native:jar:1.0-SNAPSHOT
+[INFO] +- io.quarkus:quarkus-arc:jar:3.19.2:compile
+[INFO] |  +- io.quarkus.arc:arc:jar:3.19.2:compile
+[INFO] |  |  +- jakarta.enterprise:jakarta.enterprise.cdi-api:jar:4.1.0:compile
+[INFO] |  |  |  +- jakarta.enterprise:jakarta.enterprise.lang-model:jar:4.1.0:compile
+[INFO] |  |  |  +- jakarta.el:jakarta.el-api:jar:5.0.1:compile
+[INFO] |  |  |  \- jakarta.interceptor:jakarta.interceptor-api:jar:2.2.0:compile
+[INFO] |  |  +- jakarta.annotation:jakarta.annotation-api:jar:3.0.0:compile
+[INFO] |  |  +- jakarta.transaction:jakarta.transaction-api:jar:2.0.1:compile
+[INFO] |  |  +- io.smallrye.reactive:mutiny:jar:2.8.0:compile
+[INFO] |  |  |  +- io.smallrye.common:smallrye-common-annotation:jar:2.10.0:compile
+[INFO] |  |  |  \- org.jctools:jctools-core:jar:4.0.5:compile
+[INFO] |  |  \- org.jboss.logging:jboss-logging:jar:3.6.1.Final:compile
+[INFO] |  +- io.quarkus:quarkus-core:jar:3.19.2:compile
+[INFO] |  |  +- jakarta.inject:jakarta.inject-api:jar:2.0.1:compile
+[INFO] |  |  +- io.smallrye.common:smallrye-common-os:jar:2.10.0:compile
+[INFO] |  |  +- io.quarkus:quarkus-ide-launcher:jar:3.19.2:compile
+[INFO] |  |  +- io.quarkus:quarkus-development-mode-spi:jar:3.19.2:compile
+[INFO] |  |  +- io.smallrye.config:smallrye-config:jar:3.11.4:compile
+[INFO] |  |  |  \- io.smallrye.config:smallrye-config-core:jar:3.11.4:compile
+[INFO] |  |  |     +- org.eclipse.microprofile.config:microprofile-config-api:jar:3.1:compile
+[INFO] |  |  |     +- io.smallrye.common:smallrye-common-classloader:jar:2.10.0:compile
+[INFO] |  |  |     \- io.smallrye.config:smallrye-config-common:jar:3.11.4:compile
+[INFO] |  |  +- org.jboss.logmanager:jboss-logmanager:jar:3.1.1.Final:compile
+[INFO] |  |  |  +- io.smallrye.common:smallrye-common-constraint:jar:2.10.0:compile
+[INFO] |  |  |  +- io.smallrye.common:smallrye-common-cpu:jar:2.10.0:compile
+[INFO] |  |  |  +- io.smallrye.common:smallrye-common-expression:jar:2.10.0:compile
+[INFO] |  |  |  +- io.smallrye.common:smallrye-common-net:jar:2.10.0:compile
+[INFO] |  |  |  +- io.smallrye.common:smallrye-common-ref:jar:2.10.0:compile
+[INFO] |  |  |  +- jakarta.json:jakarta.json-api:jar:2.1.3:compile
+[INFO] |  |  |  \- org.eclipse.parsson:parsson:jar:1.1.7:compile
+[INFO] |  |  +- org.jboss.logging:jboss-logging-annotations:jar:3.0.4.Final:compile
+[INFO] |  |  +- org.jboss.threads:jboss-threads:jar:3.8.0.Final:compile
+[INFO] |  |  |  \- io.smallrye.common:smallrye-common-function:jar:2.10.0:compile
+[INFO] |  |  +- org.jboss.slf4j:slf4j-jboss-logmanager:jar:2.0.0.Final:compile
+[INFO] |  |  +- org.wildfly.common:wildfly-common:jar:2.0.1:compile
+[INFO] |  |  +- io.quarkus:quarkus-bootstrap-runner:jar:3.19.2:compile
+[INFO] |  |  |  +- io.quarkus:quarkus-classloader-commons:jar:3.19.2:compile
+[INFO] |  |  |  +- io.smallrye.common:smallrye-common-io:jar:2.10.0:compile
+[INFO] |  |  |  \- io.github.crac:org-crac:jar:0.1.3:compile
+[INFO] |  |  \- io.quarkus:quarkus-fs-util:jar:0.0.10:compile
+[INFO] |  \- org.eclipse.microprofile.context-propagation:microprofile-context-propagation-api:jar:1.3:compile
+[INFO] +- io.debezium:debezium-embedded:jar:3.0.8.Final:compile
+[INFO] |  +- io.debezium:debezium-core:jar:3.0.8.Final:compile
+[INFO] |  |  +- com.fasterxml.jackson.core:jackson-core:jar:2.18.2:compile
+[INFO] |  |  +- com.fasterxml.jackson.core:jackson-databind:jar:2.18.2:compile
+[INFO] |  |  \- com.fasterxml.jackson.datatype:jackson-datatype-jsr310:jar:2.18.2:compile
+[INFO] |  +- org.slf4j:slf4j-api:jar:2.0.6:compile
+[INFO] |  +- org.apache.kafka:connect-api:jar:3.9.0:compile
+[INFO] |  |  +- org.apache.kafka:kafka-clients:jar:3.9.0:compile
+[INFO] |  |  |  +- com.github.luben:zstd-jni:jar:1.5.6-4:runtime
+[INFO] |  |  |  +- org.lz4:lz4-java:jar:1.8.0:runtime
+[INFO] |  |  |  \- org.xerial.snappy:snappy-java:jar:1.1.10.5:runtime
+[INFO] |  |  \- javax.ws.rs:javax.ws.rs-api:jar:2.1.1:runtime
+[INFO] |  +- org.apache.kafka:connect-runtime:jar:3.9.0:compile
+[INFO] |  |  +- org.apache.kafka:connect-transforms:jar:3.9.0:compile
+[INFO] |  |  +- ch.qos.reload4j:reload4j:jar:1.2.25:runtime
+[INFO] |  |  +- org.bitbucket.b_c:jose4j:jar:0.9.6:runtime
+[INFO] |  |  +- com.fasterxml.jackson.core:jackson-annotations:jar:2.18.2:compile
+[INFO] |  |  +- com.fasterxml.jackson.jaxrs:jackson-jaxrs-json-provider:jar:2.18.2:runtime
+[INFO] |  |  |  +- com.fasterxml.jackson.jaxrs:jackson-jaxrs-base:jar:2.18.2:runtime
+[INFO] |  |  |  \- com.fasterxml.jackson.module:jackson-module-jaxb-annotations:jar:2.18.2:runtime
+[INFO] |  |  |     \- jakarta.activation:jakarta.activation-api:jar:2.1.3:runtime
+[INFO] |  |  +- org.glassfish.jersey.containers:jersey-container-servlet:jar:2.39.1:runtime
+[INFO] |  |  |  +- org.glassfish.jersey.containers:jersey-container-servlet-core:jar:2.39.1:runtime
+[INFO] |  |  |  |  \- org.glassfish.hk2.external:jakarta.inject:jar:2.6.1:runtime
+[INFO] |  |  |  +- org.glassfish.jersey.core:jersey-common:jar:2.39.1:runtime
+[INFO] |  |  |  |  \- org.glassfish.hk2:osgi-resource-locator:jar:1.0.3:runtime
+[INFO] |  |  |  +- org.glassfish.jersey.core:jersey-server:jar:2.39.1:runtime
+[INFO] |  |  |  |  +- org.glassfish.jersey.core:jersey-client:jar:2.39.1:runtime
+[INFO] |  |  |  |  \- jakarta.validation:jakarta.validation-api:jar:3.0.2:runtime
+[INFO] |  |  |  \- jakarta.ws.rs:jakarta.ws.rs-api:jar:3.1.0:runtime
+[INFO] |  |  +- org.glassfish.jersey.inject:jersey-hk2:jar:2.39.1:runtime
+[INFO] |  |  |  +- org.glassfish.hk2:hk2-locator:jar:2.6.1:runtime
+[INFO] |  |  |  |  +- org.glassfish.hk2.external:aopalliance-repackaged:jar:2.6.1:runtime
+[INFO] |  |  |  |  +- org.glassfish.hk2:hk2-api:jar:2.6.1:runtime
+[INFO] |  |  |  |  \- org.glassfish.hk2:hk2-utils:jar:2.6.1:runtime
+[INFO] |  |  |  \- org.javassist:javassist:jar:3.29.0-GA:runtime
+[INFO] |  |  +- javax.xml.bind:jaxb-api:jar:2.3.1:runtime
+[INFO] |  |  |  \- javax.activation:javax.activation-api:jar:1.2.0:runtime
+[INFO] |  |  +- javax.activation:activation:jar:1.1.1:runtime
+[INFO] |  |  +- org.eclipse.jetty:jetty-server:jar:9.4.56.v20240826:runtime
+[INFO] |  |  |  +- javax.servlet:javax.servlet-api:jar:3.1.0:runtime
+[INFO] |  |  |  +- org.eclipse.jetty:jetty-http:jar:9.4.56.v20240826:runtime
+[INFO] |  |  |  \- org.eclipse.jetty:jetty-io:jar:9.4.56.v20240826:runtime
+[INFO] |  |  +- org.eclipse.jetty:jetty-servlet:jar:9.4.56.v20240826:runtime
+[INFO] |  |  |  +- org.eclipse.jetty:jetty-security:jar:9.4.56.v20240826:runtime
+[INFO] |  |  |  \- org.eclipse.jetty:jetty-util-ajax:jar:9.4.56.v20240826:runtime
+[INFO] |  |  +- org.eclipse.jetty:jetty-servlets:jar:9.4.56.v20240826:runtime
+[INFO] |  |  |  +- org.eclipse.jetty:jetty-continuation:jar:9.4.56.v20240826:runtime
+[INFO] |  |  |  \- org.eclipse.jetty:jetty-util:jar:9.4.56.v20240826:runtime
+[INFO] |  |  +- org.eclipse.jetty:jetty-client:jar:9.4.56.v20240826:runtime
+[INFO] |  |  +- org.reflections:reflections:jar:0.10.2:runtime
+[INFO] |  |  |  \- com.google.code.findbugs:jsr305:jar:3.0.2:runtime
+[INFO] |  |  +- org.apache.maven:maven-artifact:jar:3.9.9:runtime
+[INFO] |  |  |  \- org.codehaus.plexus:plexus-utils:jar:3.5.1:runtime
+[INFO] |  |  \- io.swagger.core.v3:swagger-annotations:jar:2.2.8:runtime
+[INFO] |  +- org.apache.kafka:connect-json:jar:3.9.0:compile
+[INFO] |  |  +- com.fasterxml.jackson.datatype:jackson-datatype-jdk8:jar:2.18.2:compile
+[INFO] |  |  \- com.fasterxml.jackson.module:jackson-module-afterburner:jar:2.18.2:compile
+[INFO] |  \- org.apache.kafka:connect-file:jar:3.9.0:compile
+[INFO] +- io.debezium:debezium-connector-postgres:jar:3.0.8.Final:compile
+[INFO] |  +- org.postgresql:postgresql:jar:42.7.5:compile
+[INFO] |  \- com.google.protobuf:protobuf-java:jar:3.25.5:compile
+[INFO] \- io.debezium:debezium-api:jar:3.0.8.Final:compile
+```
+
+If you take a look inside `kafka:connect-runtime`, you’ll find `Jetty`, `Jersey`, and many other components that GraalVM doesn’t handle well.
+
+Why does `kafka:connect-runtime` include all these dependencies? Well, I assume this library is designed to run a Kafka Connect node, but in our specific case *—Debezium in a Quarkus application—* this is unnecessary (most likely, Debezium only uses certain Kafka classes for data transformation).
+
+To minimize issues with the native build, I recommend excluding all unused dependencies. Additionally, if we dig deeper into the dependency tree, we’ll find other potential troublemakers like `Jackson` and `PostgreSQL` drivers, which could cause further complications. I suggest excluding them as well and replacing them with Quarkus-recommended alternatives.
+
+
+Here’s a cleaned-up `pom.xml` dependencies section:
+
+```xml
+    <dependencies>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-arc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.debezium</groupId>
+            <artifactId>debezium-embedded</artifactId>
+            <version>${version.debezium}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>com.fasterxml.jackson.core</groupId>
+                    <artifactId>jackson-core</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>com.fasterxml.jackson.core</groupId>
+                    <artifactId>jackson-databind</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>com.fasterxml.jackson.datatype</groupId>
+                    <artifactId>jackson-datatype-jsr310</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>com.fasterxml</groupId>
+                    <artifactId>jackson-module-afterburner</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.apache.kafka</groupId>
+                    <artifactId>connect-json</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.apache.kafka</groupId>
+                    <artifactId>connect-runtime</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>io.debezium</groupId>
+            <artifactId>debezium-connector-postgres</artifactId>
+            <version>${version.debezium}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.postgresql</groupId>
+                    <artifactId>postgresql</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>io.debezium</groupId>
+            <artifactId>debezium-api</artifactId>
+            <version>${version.debezium}</version>
+        </dependency>
+
+        <!-- kafka runtime & connect-json (used by debezium engine) excluded
+        of unnecessary or harmful for native build dependencies -->
+        <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>connect-runtime</artifactId>
+            <exclusions>
+                <exclusion>
+                    <groupId>com.fasterxml.jackson.core</groupId>
+                    <artifactId>jackson-annotations</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.bitbucket.b_c</groupId>
+                    <artifactId>jose4j</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>com.fasterxml.jackson.jaxrs</groupId>
+                    <artifactId>jackson-jaxrs-json-provider</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.glassfish.jersey.containers</groupId>
+                    <artifactId>jersey-container-servlet</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.glassfish.jersey.inject</groupId>
+                    <artifactId>jersey-hk2</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>javax.xml.bind</groupId>
+                    <artifactId>jaxb-api</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>javax.activation</groupId>
+                    <artifactId>activation</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.eclipse.jetty</groupId>
+                    <artifactId>jetty-server</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.eclipse.jetty</groupId>
+                    <artifactId>jetty-servlet</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.eclipse.jetty</groupId>
+                    <artifactId>jetty-servlets</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.eclipse.jetty</groupId>
+                    <artifactId>jetty-client</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.eclipse.jetty</groupId>
+                    <artifactId>jetty-client</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.reflections</groupId>
+                    <artifactId>reflections</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.apache.maven</groupId>
+                    <artifactId>maven-artifact</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>connect-json</artifactId>
+            <exclusions>
+                <exclusion>
+                    <groupId>com.fasterxml</groupId>
+                    <artifactId>jackson-module-afterburner</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+
+        <!-- add alternatives for jackson & postgres native friendly -->
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-jackson</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-jdbc-postgresql</artifactId>
+        </dependency>
+
+        <!-- in some cases kafka use jetty-util and connect-transforms -->
+        <dependency>
+            <groupId>org.eclipse.jetty</groupId>
+            <artifactId>jetty-util</artifactId>
+            <version>9.4.56.v20240826</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>connect-transforms</artifactId>
+        </dependency>
+    </dependencies>
+```
+
+The build will be successful (probably...)! So now you can run the native application (supposing that you are using Gnu/Linux or MacOS):
+
+```text
+./target/debezium-native-1.0-SNAPSHOT-runner
+```
+
+but now the things are even worse. You have a runtime error like:
+
+```text
+2025-03-11 20:08:34,408 ERROR [io.qua.run.Application] (main) Failed to start application: java.lang.RuntimeException: Failed to start quarkus
+        at io.quarkus.runner.ApplicationImpl.doStart(Unknown Source)
+        at io.quarkus.runtime.Application.start(Application.java:101)
+        at io.quarkus.runtime.ApplicationLifecycleManager.run(ApplicationLifecycleManager.java:119)
+        at io.quarkus.runtime.Quarkus.run(Quarkus.java:71)
+        at io.quarkus.runtime.Quarkus.run(Quarkus.java:44)
+        at io.quarkus.runtime.Quarkus.run(Quarkus.java:124)
+        at io.quarkus.runner.GeneratedMain.main(Unknown Source)
+Caused by: io.debezium.DebeziumException: No implementation of Debezium engine builder was found
+```
+
+Debezium use some reflection magic in order to instrument the engine. To fix it, we should instrument our application to include `META-INF/services/` adding in the `application.properties`:
+
+```properties
+# Solve the ConvertingEngineBuilderFactory.class in Debezium Engine
+quarkus.native.resources.includes=META-INF/services/*
+```
+
+and registering the `ConvertingEngineBuilderFactory.class` inside the application adding the following class:
+
+```java
+@RegisterForReflection(targets = { ConvertingEngineBuilderFactory.class })
+public class ReflectingConfig { }
+```
+
+If you are still with me, you will have now again an error at build time with something like:
+
+```text
+Fatal error: com.oracle.graal.pointsto.constraints.UnsupportedFeatureException: Detected an instance of Random/SplittableRandom class in the image heap. Instances created during image generation have cached seed values and don't behave as expected. If these objects should not be stored in the image heap, you can use
+
+    '--trace-object-instantiation=java.util.Random'
+```
+
+`Random` and `SplittableRandom` are meant to provide random values and are typically expected to get a fresh seed in each run. Using a native image can open the risk to have cached values breaking the expectation. This `Random` definition is inside kafka libraries in a static way. To fix this kind of issue, we should instrument the application to accept at runtime the `Random` in this way:
+
+```properties
+# Kafka-clients  use Random (SaslClientAuthenticator line 63)
+quarkus.native.additional-build-args=--initialize-at-run-time=org.apache.kafka.common.security.authenticator.SaslClientAuthenticator
+```
+
+The build should be successful but again, you will have an error at runtime. Now the process is the same applied to `ConvertingEngineBuilderFactory.class`: instrument GraalVM to find the classes that are injected by reflection. For the sake of your mental sanity, here a `ReflectingConfig` with all the classes for this use case:
+
+```java
+@RegisterForReflection(targets = { ConvertingEngineBuilderFactory.class,
+        SaslClientAuthenticator.class,
+        JsonConverter.class,
+        PostgresConnector.class,
+        PostgresSourceInfoStructMaker.class,
+        DefaultTransactionMetadataFactory.class,
+        SchemaTopicNamingStrategy.class,
+        OffsetCommitPolicy.class,
+        PostgresConnectorTask.class,
+        SinkNotificationChannel.class,
+        LogNotificationChannel.class,
+        JmxNotificationChannel.class,
+        SnapshotLock.class,
+        NoLockingSupport.class,
+        NoSnapshotLock.class,
+        SharedSnapshotLock.class,
+        SelectAllSnapshotQuery.class,
+        AlwaysSnapshotter.class,
+        InitialSnapshotter.class,
+        InitialOnlySnapshotter.class,
+        NoDataSnapshotter.class,
+        RecoverySnapshotter.class,
+        WhenNeededSnapshotter.class,
+        NeverSnapshotter.class,
+        SchemaOnlySnapshotter.class,
+        SchemaOnlyRecoverySnapshotter.class,
+        ConfigurationBasedSnapshotter.class,
+        SourceSignalChannel.class,
+        KafkaSignalChannel.class,
+        FileSignalChannel.class,
+        JmxSignalChannel.class,
+        InProcessSignalChannel.class,
+        StandardActionProvider.class
+})
+public class ReflectingConfig { }
+```
+
+If you followed the instructions, now the application should work. I didn't have enough time to evaluate performances, but **the memory consumption dropped from 150MB to 50MB**.
+
+[id="transformation"]
+== Adding a Transformation
+A common use case is to apply transformation during the ingestion of the events. If we add the following configuration:
+
+```properties
+# Transformation
+debezium.configuration.transforms.t0.add.fields=op,table
+debezium.configuration.transforms.t0.add.headers=db,table
+debezium.configuration.transforms.t0.negate=false
+debezium.configuration.transforms.t0.predicate=p2
+debezium.configuration.transforms.t0.type=io.debezium.transforms.ExtractNewRecordState
+debezium.configuration.transforms=t0
+debezium.configuration.predicates.p2.pattern=inventory.inventory.products
+debezium.configuration.predicates.p2.type=org.apache.kafka.connect.transforms.predicates.TopicNameMatches
+debezium.configuration.predicates=p2
+```
+
+The application will fail with something like that:
+
+```text
+2025-03-14 10:35:26,159 ERROR [io.qua.run.Application] (main) Failed to start application: java.lang.RuntimeException: Failed to start quarkus
+        at io.quarkus.runner.ApplicationImpl.doStart(Unknown Source)
+        at io.quarkus.runtime.Application.start(Application.java:101)
+        at io.quarkus.runtime.ApplicationLifecycleManager.run(ApplicationLifecycleManager.java:119)
+        at io.quarkus.runtime.Quarkus.run(Quarkus.java:71)
+        at io.quarkus.runtime.Quarkus.run(Quarkus.java:44)
+        at io.quarkus.runtime.Quarkus.run(Quarkus.java:124)
+        at io.quarkus.runner.GeneratedMain.main(Unknown Source)
+Caused by: io.debezium.DebeziumException: Error while instantiating predicate 'p2'
+```
+
+or:
+
+```text
+2025-03-14 10:43:13,230 ERROR [io.qua.run.Application] (main) Failed to start application: java.lang.RuntimeException: Failed to start quarkus
+        at io.quarkus.runner.ApplicationImpl.doStart(Unknown Source)
+        at io.quarkus.runtime.Application.start(Application.java:101)
+        at io.quarkus.runtime.ApplicationLifecycleManager.run(ApplicationLifecycleManager.java:119)
+        at io.quarkus.runtime.Quarkus.run(Quarkus.java:71)
+        at io.quarkus.runtime.Quarkus.run(Quarkus.java:44)
+        at io.quarkus.runtime.Quarkus.run(Quarkus.java:124)
+        at io.quarkus.runner.GeneratedMain.main(Unknown Source)
+Caused by: io.debezium.DebeziumException: Error while instantiating transformation 't0'
+```
+
+Actually is impossible for the application to load the classes defined in the trasformation like `TopicNameMatches` and `ExtractNewRecordState`. It's necessary to instrument the application adding them in the `ReflectingConfig`.
+
+[id="considerations"]
+== Considerations
+This is **not** (and I repeat, **not**) something ready for production use. There is still significant work to be done in two key areas:
+
+1. **Decoupling Debezium from Kafka Libraries**: Kafka and Debezium should share only a standardized method for moving and transforming data. The Kafka runtime used for creating Kafka Connect nodes should not be a dependency that Debezium imports unnecessarily.
+
+2. **Address Reflection in Debezium**: All the classes managed with the `ServiceLoader` should be registered using Quarkus and GraalVM guidelines. Furthermore, additional configurations (like a transformation) that inject classes should https://github.com/debezium/debezium-examples/pull/374#issuecomment-2724221196[take into account the native build].
+
+Addressing these challenges could pave the way for a Quarkus Extension that fully certifies Debezium’s native compatibility.
+
+[id="future"]
+== Future Scenario
+The ability to drastically reduce Debezium's memory footprint is particularly interesting, especially when considering the scenario of running Debezium Server as a native image.
+
+As far as I know (*though not 100% certain*), to ensure scalability and maintain event order, there is typically a 1:1 association between a source (such as a database table) and a Debezium engine. This drop can open many scenarios in which debezium server can be the best choice for CDC.
+
+[id="references"]
+== References
+- https://quarkus.io/guides/building-native-image#configuring-c-development[Building a native executable]
+- https://quarkus.io/guides/native-reference[Quarkus native reference guide]
+- https://quarkus.io/guides/config[Configure a Quarkus application]
+- https://sgitario.github.io/quarkus-mapping-maps/[Bind properties into a map in Quarkus]
+- https://foivos.zakkak.net/tutorials/working-with-randoms-native-images/[Working with Random/SplittableRandom instances in GraalVM and Mandrel native images]
+- https://quarkus.io/extensions/io.quarkus/quarkus-messaging-kafka/[Quarkus extension for kafka]
+- https://quarkus.io/extensions/io.quarkus/quarkus-jdbc-postgresql/[Quarkus extension for JDBC Driver - Postgres]

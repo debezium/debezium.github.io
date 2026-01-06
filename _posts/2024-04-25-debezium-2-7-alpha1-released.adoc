@@ -1,0 +1,192 @@
+---
+layout: post
+title:  Debezium 2.7.0.Alpha1 Released
+date:   2024-04-25
+tags: [ releases, mongodb, mysql, mariadb, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox, spanner, jdbc, informix, ibmi ]
+author: ccranfor
+---
+
+As the temperature for summer continues to rise, I'm please to announce that Debezium has some really cool news, Debezium **2.7.0.Alpha1** is now available for testing.
+This release includes a variety of new changes and improvements across various connectors like MongoDB, MariaDB, MySQL, Oracle, Vitess, and the Kubernetes Operator, to a myriad of subtle fixes and improvements across the entire Debezium portfolio.
+Let's take a moment and dive into some highlights...
+
++++<!-- more -->+++
+
+[id="breaking-changes"]
+== Breaking changes
+
+The team aims to avoid any potential breaking changes between minor releases; however, such changes are sometimes inevitable.
+
+Core::
+
+* It was identified that certain JDBC queries could indefinitely block in the case of certain communication failures.
+To combat this problem, a new configurable timeout option, `query.timeout.ms` is available to set the maximum time that a JDBC query can execute before being terminated (https://issues.redhat.com/browse/DBZ-7616[DBZ-7616]).
+
+SQL Server::
+
+* The SQL Server connector previously processed all transactions captured during a single database round trip.
+This behavior is configurable and is based on `max.iterations.transactions`, which defaults to processing all transactions (value of `0`).
+This could lead to unexpected out of memory conditions if your database has a high volume of transactions. +
+ +
+To address this for these use cases, the default value for `max.iterations.transactions` has changed to `500`, to be more resilient for these deployment use cases out-of-the-box.
+If you want to return to the previous behavior, simply add this configuration option to your connector with a value of `0` (https://issues.redhat.com/browse/DBZ-7750[DBZ-7750]).
+
+[id="new-features-and-improvements"]
+== New features and improvements
+
+Debezium 2.7.0.Alpha1 also introduces many improvements and features, lets take a look at each individually.
+
+=== Install Debezium Operator with Helm Chart
+
+To improve the deployment of the Debezium Operator, it can be installed with a helm chart at https://charts.debezium.io.
+This avoids the overly complicated deployment model of installing the operator into separate namespaces, minimizing the complexities for managing multiple Debezium Server deployments on Kubernetes.
+
+=== Support predicate conditions for MongoDB incremental snapshots
+
+The incremental snapshot process is an instrumental part in various recovery situations to collect whole or part of the data set from a source table or collection.
+Relational connectors have long supported the idea of supplying an `additional-conditions` value on the incremental snapshot signal to restrict the data set, providing for targeted resynchronization of specific rows of data.
+
+We're happy to announce that this is now possible with MongoDB (https://issues.redhat.com/browse/DBZ-7138[DBZ-7138]).
+Unlike relational databases, the `additional-conditions` should be supplied in JSON format.
+It will be applied to the specified collection using the `find` operation to obtain the subset list of documents that are to be incrementally snapshotted.
+
+=== New MariaDB standalone connector
+
+Debezium 2.5 introduced official support for MariaDB as part of the existing MySQL connector.
+The next step in that evolution is here, with a new standalone connector implementation for MariaDB (https://issues.redhat.com/browse/DBZ-7693[DBZ-7693]).
+
+There are few things worth noting here:
+
+* MariaDB and MySQL both have a common shared dependency on a new abstract connector called `debezium-connector-binlog`, which provides the common framework for both binlog-based connectors.
+* Each standalone connector now specifically is tailored only to its target database, so MySQL users should use MySQL and MariaDB users should use MariaDB.
+As a result, the `connection.adapter` configuration option has been removed, and the `jdbc.protocol` configuration option is now only specific to certain MySQL use cases and not used by MariaDB.
+
+The documentation for this connector is still a work-in-progress and will be added in the future.
+For the moment, you can refer to the MySQL connector documentation for most things related to MariaDB.
+
+=== ExtractNewDocumentState includes document id for MongoDB deletes
+
+In prior release of the MongoDB `ExtractNewDocumentState` single message transformation, a delete event did not provide the identifier as part of the payload.
+This reduced the meaningfulness of delete events as consumers were supplied with insufficient data to act on these events.
+This behavior has been improved, and the delete event now includes an `_id` attribute in the payload (https://issues.redhat.com/browse/DBZ-7695[DBZ-7695]).
+
+=== Transaction metadata encoded ordering
+
+In some pipelines, ordering is critical for consuming applications.
+There are certain scenarios that can impact this aspect of your data pipeline, such as when Kafka re-partition occur.
+This leads to problems that can be error-prone trying to reconstruct the ordering after-the-fact.
+
+Now when Transaction Metadata is enabled, these metadata events will also encode their transaction order, so that in the event that a Kafka re-partition or other scenarios occur that alter the ordering semantics, consumers can simply use the new encoded ordering field instead for deterministic ordering of transactions (https://issues.redhat.com/browse/DBZ-7698[DBZ-7698]).
+
+=== Blocking incremental snapshot improvements
+
+There are some use cases where incremental snapshot signals require escaping certain characters in the fully-qualified table name.
+This caused some problems with blocking snapshots because the process to resolve what tables to snapshot used a slightly different mechanism.
+In Debezium 2.7, we've unified this approach, and you can now use escaped table names with blocking snapshots where applicable (https://issues.redhat.com/browse/DBZ-7718[DBZ-7718]).
+
+=== Cassandra performance improvement
+
+The Cassandra connector also saw some changes in Debezium 2.7, specifically to performance optimizations.
+The implementation of the `KafkaRecordEmitter` relied on a thread-synchronization block that reduced the throughput.
+In addition, the implementation also performed some unnecessary flushing which also impacted performance.
+This code has been rewritten to improve both throughput and reduce the unnecessary flush calls (https://issues.redhat.com/browse/DBZ-7722[DBZ-7722]).
+
+=== New Oracle "RawToString" custom converter
+
+While Oracle recommends that users avoid using `RAW`-based columns, these columns are still widely used in standard Oracle tables for backward compatibility reasons.
+But there are also business use cases where it makes sense to continue to use `RAW` columns rather than other data types.
+
+Debezium 2.7 introduces a new custom converter specifically for Oracle called `RawToStringConverter` (https://issues.redhat.com/browse/DBZ-7753[DBZ-7753]).
+This custom converter is designed to allow you to quickly convert the byte-array contents of the `RAW` column to a string-based field using a `STRING` schema type.
+This can be useful for situations where you use a `RAW` column to store character data that doesn't require the collation overhead of `VARCHAR2`, but you still have the need for this field to be sent to consumers as string-based data.
+
+To get started with this custom converter, please see the https://debezium.io/documentation/reference/2.7/connectors/oracle.html#_raw_to_string[documentation] for more details.
+
+=== Improved NLS character-set support for Oracle
+
+When installing the Debezium 2.7 Oracle connector, you may notice a new dependency, `orai18n.jar`.
+This dependency is being automatically distributed to provide extended character-set support for certain dialects (https://issues.redhat.com/browse/DBZ-7761[DBZ-7761]).
+
+=== Improved temporal support in Vitess
+
+Debezium relational connectors rely on a configuration option, `time.precision.mode`, to control how temporal values are added to change events.
+In some cases, you may want to use modes that align with Kafka types, using the `connect` mode.
+In other cases, you may prefer to avoid precision loss by using the default, `adaptive_milliseconds` mode.
+
+The Debezium for Vitess connector has traditionally not followed this model, and instead has emitted temporal values as string-based types.
+While this helps avoid the loss of precision problem when using the `connect` mode, this adds unnecessary overhead on consumers to parse and manipulate these values.
+
+In Debezium 2.7, Vitess aligns this behavior with other relational connectors, using the `time.precision.mode` to control how temporal values are sent (https://issues.redhat.com/browse/DBZ-7773[DBZ-7773]).
+By default, it will use the `adaptive_milliseconds` mode, but you can customize this to use `connect` mode if you prefer.
+The emission of string-based temporal values has been removed.
+
+[id="other-changes"]
+== Other changes
+
+Altogether, https://issues.redhat.com/issues/?jql=project%20%3D%20DBZ%20AND%20fixVersion%20%3D%202.7.0.Alpha1%20ORDER%20BY%20component%20ASC[50 issues] were fixed in this release.
+Here are a list of some additional noteworthy changes:
+
+* Builtin database name filter is incorrectly applied only to collections instead of databases  in snapshot https://issues.redhat.com/browse/DBZ-7485[DBZ-7485]
+* Upgrade Debezium Quarkus Outbox to Quarkus 3.9.2 https://issues.redhat.com/browse/DBZ-7663[DBZ-7663]
+* After the initial deployment of Debezium, if a new table is added to MSSQL, its schema is was captured https://issues.redhat.com/browse/DBZ-7697[DBZ-7697]
+* The test is failing because wrong topics are used https://issues.redhat.com/browse/DBZ-7715[DBZ-7715]
+* Incremental Snapshot: read duplicate data when database has 1000 tables https://issues.redhat.com/browse/DBZ-7716[DBZ-7716]
+* Handle instability in JDBC connector system tests https://issues.redhat.com/browse/DBZ-7726[DBZ-7726]
+* SQLServerConnectorIT.shouldNotStreamWhenUsingSnapshotModeInitialOnly check an old log message https://issues.redhat.com/browse/DBZ-7729[DBZ-7729]
+* Fix MongoDB unwrap SMT test https://issues.redhat.com/browse/DBZ-7731[DBZ-7731]
+* Snapshot fails with an error of invalid lock https://issues.redhat.com/browse/DBZ-7732[DBZ-7732]
+* Column CON_ID queried on V$THREAD is not available in Oracle 11 https://issues.redhat.com/browse/DBZ-7737[DBZ-7737]
+* Redis NOAUTH Authentication Error when DB index is specified https://issues.redhat.com/browse/DBZ-7740[DBZ-7740]
+* Getting oldest transaction in Oracle buffer can cause NoSuchElementException with Infinispan https://issues.redhat.com/browse/DBZ-7741[DBZ-7741]
+* The MySQL Debezium connector is not doing the snapshot after the reset. https://issues.redhat.com/browse/DBZ-7743[DBZ-7743]
+* MongoDb connector doesn't work with Load Balanced cluster https://issues.redhat.com/browse/DBZ-7744[DBZ-7744]
+* Align unwrap tests to respect AT LEAST ONCE delivery https://issues.redhat.com/browse/DBZ-7746[DBZ-7746]
+* Exclude reload4j from Kafka connect dependencies in system testsuite https://issues.redhat.com/browse/DBZ-7748[DBZ-7748]
+* Pod Security Context not set from template https://issues.redhat.com/browse/DBZ-7749[DBZ-7749]
+* Apply MySQL binlog client version 0.29.1 - bugfix: read long value when deserializing gtid transaction's length https://issues.redhat.com/browse/DBZ-7757[DBZ-7757]
+* Change streaming exceptions are swallowed by BufferedChangeStreamCursor https://issues.redhat.com/browse/DBZ-7759[DBZ-7759]
+* Use thread cap only for default value https://issues.redhat.com/browse/DBZ-7763[DBZ-7763]
+* Evaluate cached thread pool as the default option for async embedded engine https://issues.redhat.com/browse/DBZ-7764[DBZ-7764]
+* Sql-Server connector fails after initial start / processed record on subsequent starts https://issues.redhat.com/browse/DBZ-7765[DBZ-7765]
+* Valid resume token is considered invalid which leads to new snapshot with some snapshot modes https://issues.redhat.com/browse/DBZ-7770[DBZ-7770]
+* Improve processing speed of async engine processors which use List#get() https://issues.redhat.com/browse/DBZ-7777[DBZ-7777]
+* NO_DATA snapshot mode validation throw DebeziumException on restarts if snapshot is not completed https://issues.redhat.com/browse/DBZ-7780[DBZ-7780]
+* DDL statement couldn't be parsed https://issues.redhat.com/browse/DBZ-7788[DBZ-7788]
+* Document potential null values in the after field for lookup full update type https://issues.redhat.com/browse/DBZ-7789[DBZ-7789]
+* old class reference in ibmi-connector services https://issues.redhat.com/browse/DBZ-7795[DBZ-7795]
+* Documentation for Debezium Scripting mentions wrong property https://issues.redhat.com/browse/DBZ-7798[DBZ-7798]
+* Fix invalid date/timestamp check & logging level https://issues.redhat.com/browse/DBZ-7811[DBZ-7811]
+
+A huge thank you to all contributors from the community who worked on this release:
+https://github.com/samssh[Amirmohammad Sadat Shokouhi],
+https://github.com/jchipmunk[Andrey Pustovetov],
+https://github.com/ani-sha[Anisha Mohanty],
+https://github.com/Naros[Chris Cranford],
+https://github.com/chrisrecalis[Chris Recalis],
+https://github.com/jcechace[Jakub Cechacek],
+https://github.com/novotnyJiri[Jiri Novotny],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/joschi[Jochen Schalanda],
+https://github.com/methodmissing[Lourens Naudé],
+https://github.com/mfvitale[Mario Fiore Vitale],
+https://github.com/MartinMedek[Martin Medek],
+https://github.com/obabec[Ondrej Babec],
+https://github.com/rajdangwal[Rajendra Dangwal],
+https://github.com/roldanbob[Robert Roldan],
+https://github.com/rmoff[Robin Moffatt],
+https://github.com/rkudryashov[Roman Kudryashov],
+https://github.com/selman-genc-alg[Selman Genç],
+https://github.com/twthorn[Thomas Thornton],
+https://github.com/vjuranek[Vojtech Juranek], and
+https://github.com/ismailsimsek[ismail simsek]!
+
+[id="whats-next"]
+== What's next?
+
+Debezium 2.7 is just getting underway and we have a number of additional changes planned, including a MongoDB sink connector, expanding Oracle 23 support, a new SPI to aid in the memory-footprint of certain multi-tenant schema architectures and more.
+You can find more about what is planned for Debezium 2.7 on our link:/docs/roadmap[road map].
+
+The team is also in the final stages of defining our face-to-face agenda.
+if you have any suggestions or ideas that you would like for us to discuss or would like to see planned in 2.7 or a future release, please feel free to get in touch with us on our https://groups.google.com/forum/#!forum/debezium[mailing list] or in our https://debezium.zulipchat.com/login/#narrow/stream/302529-users[Zulip chat].
+
+Until next time...

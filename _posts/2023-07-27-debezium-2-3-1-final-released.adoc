@@ -1,0 +1,142 @@
+---
+layout: post
+title:  Debezium 2.3.1.Final Released
+date:   2023-07-27
+tags: [ releases, mongodb, mysql, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox, spanner ]
+author: ccranfor
+---
+
+It has been several weeks since we released the first installment of Debezium 2.3, and I'm excited to announce the next iteration of Debezium 2.3 with *2.3.1.Final*.
+As with any micro-release, the focus is on stability and bug fixes, as well as adjustments to our documentation; however there are some changes that are noteworthy that I would like to take a few moments to highlight.
+
++++<!-- more -->+++
+
+* xref:#new-features[New features]
+* xref:#other-changes[Other changes]
+* xref:#whats-next[Outlook and what's neext?]
+
+[id="new-features"]
+== New Features
+
+While micro-releases generally do not include new features, there are situations where it makes sense to backport something that is new, particularly when the change is localized, adequately tested, and we're confident that it will provide a strong benefit for the community utilizing stable releases.
+There are four major new features:
+
+* link:#error-handling-improvements[Error Handling improvements]
+* link:#jdbc-schema-change-warning[JDBC sink should not ingest schema change topics]
+* link:#mongodb-srv-debezium-server[MongoDB SRV support]
+* link:#cassandra-deletes[Cassandra no longer skips batches with DELETE]
+
+[id="error-handling-improvements"]
+=== Error Handling improvements
+
+In earlier releases, a connector configuration property `errors.max.retries` existed only for the SQL Server connector to control error handling behavior on specific connection-released failures.
+In short, this property allowed a connection-based failure to be retried up to the configured number of times before Debezium would hard fault.
+With 2.3.1.Final, we have unified this configuration option and its now available for all connectors.
+
+This setting is useful when using Debezium particularly in non-Kafka Connect environments or where you may have configured Kafka Connect to not allow retry/back-off but you want to have that type of behavior in your Debezium source connector deployments. (https://issues.redhat.com/browse/DBZ-6573[DBZ-6573])
+
+[id="jdbc-schema-change-warning"]
+=== JDBC sink should not ingest schema change topics
+
+The JDBC sink connector was never designed to ingest events from the schema change topic; however, the connector should be resilient and provide you with an adequate message rather than an exception indicating that there may be a misconfiguration.
+
+Starting with this micro-release, the JDBC sink connector will analyze the event in more detail and if we determine that the event is a schema change, the connector will provide a descriptive warning stating the problem and request that the configuration be adjusted to avoid ingesting the schema changes topic.
+We hope this clarity will solve situations where an overlooked configuration error leads to a confusing exception and instead provides a direct remedy. (https://issues.redhat.com/browse/DBZ-6655[DBZ-6655])
+
+[id="mongodb-srv-debezium-server"]
+=== MongoDB SRV support
+
+MongoDB SRV support is a recent addition to the MongoDB connector's feature set; however, as a part of https://issues.redhat.com/browse/DBZ-6701[DBZ-6701], we identified a situation where Debezium Server was unable to handle a MongoDB SRV connection string.
+We identified that the problem is related to the fact that Quarkus disables JNDI by default, and this creates an issue with the MongoDB driver with how it handles SRV connection strings.
+
+With this micro-release, this problem is now resolved in Debezium 2.3.  We specifically enable JNDI when building Debezium Server and this now allows the MongoDB SRV connection strings to work properly.
+A huge thanks to the community for helping diagnose this bug with the team!
+
+[id="cassandra-deletes"]
+=== Cassandra no longer skips batches with DELETE
+
+The Cassandra connector experienced a rather critical regression with batch operations.  Lets assume the following was observed from the Cassandra commit logs:
+
+[source]
+----
+BEGIN BATCH
+DELETE FROM ...
+INSERT INTO ...
+INSERT INTO ...
+APPLY BATCH
+----
+
+The issue (https://issues.redhat.com/brwose/DBZ-6576[DBZ-6576]) was this particular batch was being interpreted incorrectly and as a a result, the two following INSERT operations were being omitted from the connector's event stream.
+Thanks to the work by the community, a patch was applied and included  in Debezium 2.3.1.Final where this is no longer the case and the Debezium change event stream will contain the `DELETE` as well as all other events that follow.
+
+[id="other-changes"]
+== Other changes
+
+Debezium *2.3.1.Final* also includes quite a number of bug fixes and stability improvements, see below:
+
+* Oracle unsupported DDL statement - drop multiple partitions https://issues.redhat.com/browse/DBZ-6585[DBZ-6585]
+* Only Struct objects supported for [Header field insertion], found: null https://issues.redhat.com/browse/DBZ-6588[DBZ-6588]
+* MySQL parser cannot parse CAST AS dec https://issues.redhat.com/browse/DBZ-6590[DBZ-6590]
+* Refactor retry handling in Redis schema history https://issues.redhat.com/browse/DBZ-6594[DBZ-6594]
+* Excessive Log Message 'Marking Processed Record for Topic' https://issues.redhat.com/browse/DBZ-6597[DBZ-6597]
+* Oracle DDL parser does not properly detect end of statement when comments obfuscate the semicolon https://issues.redhat.com/browse/DBZ-6599[DBZ-6599]
+* Fixed DataCollections for table scan completion notificaiton https://issues.redhat.com/browse/DBZ-6605[DBZ-6605]
+* Oracle connector is not recoverable if ORA-01327 is wrapped by another JDBC or Oracle exception https://issues.redhat.com/browse/DBZ-6610[DBZ-6610]
+* Fatal error when parsing Mysql (Percona 5.7.39-42) procedure https://issues.redhat.com/browse/DBZ-6613[DBZ-6613]
+* MySQL ALTER USER with RETAIN CURRENT PASSWORD fails with parsing exception https://issues.redhat.com/browse/DBZ-6622[DBZ-6622]
+* Inaccurate documentation regarding additional-condition https://issues.redhat.com/browse/DBZ-6628[DBZ-6628]
+* Oracle connection SQLRecoverableExceptions are not retried by default https://issues.redhat.com/browse/DBZ-6633[DBZ-6633]
+* When Debezium Mongodb connector encounter authentication or under privilege errors, the connection between debezium and mongodb keeps going up. https://issues.redhat.com/browse/DBZ-6643[DBZ-6643]
+* Cannot delete non-null interval value https://issues.redhat.com/browse/DBZ-6648[DBZ-6648]
+* ConcurrentModificationException thrown in Debezium 2.3 https://issues.redhat.com/browse/DBZ-6650[DBZ-6650]
+* Dbz crashes on parsing Mysql Procedure Code (Statement Labels) https://issues.redhat.com/browse/DBZ-6651[DBZ-6651]
+* Vitess: Connector fails if table name is a mysql reserved word https://issues.redhat.com/browse/DBZ-6656[DBZ-6656]
+* Retriable operations are retried infinitely since error handlers are not reused https://issues.redhat.com/browse/DBZ-6670[DBZ-6670]
+* NotificationIT with Oracle xstream fails randomly https://issues.redhat.com/browse/DBZ-6672[DBZ-6672]
+* Flaky Oracle test: shouldCaptureChangesForTransactionsAcrossSnapshotBoundaryWithoutReemittingDDLChanges https://issues.redhat.com/browse/DBZ-6673[DBZ-6673]
+* Oracle DDL parser does not support column visibility on ALTER TABLE https://issues.redhat.com/browse/DBZ-6677[DBZ-6677]
+* MongoDB SRV protocol not working in Debezium Server https://issues.redhat.com/browse/DBZ-6701[DBZ-6701]
+* Add tzdata-java to UI installation Dockerfile https://issues.redhat.com/browse/DBZ-6713[DBZ-6713]
+
+
+Please refer to the link:/releases/2.3/release-notes#release-2.3.1-final[release notes] to learn more about all fixed bugs, update procedures, etc.
+
+Many thanks to the following individuals from the community who contributed to Debezium 2.3.1.Final:
+https://github.com/isacandrei[Andrei Isac],
+https://github.com/adasari[Anil Dasari],
+https://github.com/ani-sha[Anisha Mohanty],
+https://github.com/maxant[Ant Kutschera],
+https://github.com/Artgyk[Artur Gukasian],
+https://github.com/bdbene[Balint Bene],
+https://github.com/roldanbob[Bob Roldan],
+https://github.com/Naros[Chris Cranford],
+https://github.com/TechIsCool[David Beck],
+https://github.com/harveyyue[Harvey Yue],
+https://github.com/indraraj[Indra Shukla],
+https://github.com/jcechace[Jakub Cechacek],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/kgalieva[Katerina Galieva],
+https://github.com/mfvitale[Mario Fiore Vitale],
+https://github.com/obabec[Ondrej Babec],
+https://github.com/rk3rn3r[René Kerner],
+https://github.com/jaegwonseo[Seo Jae-kwon],
+https://github.com/smiklosovic[Stefan Miklosovic], and
+https://github.com/vjuranek[Vojtech Juranek]!
+
+[id="whats-next"]
+== Outlook and what's next?
+
+Debezium 2.3 will continue to receive maintenance updates throughout this quarter with the next being early/middle August and likely additional follow-ups late August and September, all barring on community feedback on regressions.
+
+Presently the team is actively working on Debezium 2.4 in parallel, and I would expect to see Alpha2 most likely at the early part of August.
+We have lots of new features planned for Debezium 2.4, so I urge you to take a look at our https://debezium.io/roadmap[road map] for more details.
+
+I will be making a formal announcement next week about the new, upcoming Debezium community event.
+This will be hosted by the Debezium team to provide a space where the team, contributors, and community can openly collaborate.
+I'll have more details next week, so be on the look out for this!
+
+And finally, Current 2023 (aka Kafka Summit) is nearing.  The event this year is being hosted in San Jose, California on September 26th and 27th.
+If you're planning to attend, please drop me an email.
+I would enjoy an opportunity to talk with the community and gather your feedback about Debezium and how we can improve moving forward!
+
+Until then...
