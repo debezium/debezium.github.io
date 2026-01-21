@@ -1,0 +1,251 @@
+---
+layout: post
+title:  Debezium 3.5.0.Alpha1 Released
+date:   2026-01-20
+tags: [ releases, mongodb, mysql, mariadb, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox, spanner, jdbc, informix, ibmi, cockroachdb ]
+author: ccranfor
+extraClasses: release-v2
+---
+
+As we begin a new year, the Debezium team is pleased to announce a new release stream for Debezium, **3.5.0.Alpha1**.
+This release includes a variety of first pass improvements and changes across the portfolio, including performance optimizations for Db2, updates to Debezium's Quarkus extensions, Debezium Server and Platform.
+
++++<!-- more -->+++
+
+Let's take a few moments to dive into all the details.
+
+[id="new-features-and-improvements"]
+== New features and improvements
+
+=== Debezium for Db2
+
+==== Control maximum timespan for change query
+
+When reading the changes in a very active database with a large numbers of records, this can trigger query-resource limits such as CPU time.
+This can lead to the query being terminated prematurely, leading to a connector crash.
+
+To address this concern, Debezium's Db2 connector introduces a new `straeming.query.timestamp.seconds` configuration property.
+The default of `0` does not apply any timestamp restriction on the query, so it will continue to operate as it does today.
+So for most users, this is a net-zero change (https://github.com/debezium/dbz/issues/1466[debezium/dbz#1466]).
+
+For environments where query-resource limits are an issue, setting this value to anything greater than `1` specifies the maximum number of seconds for a streaming query to include changes for, noting that a value of `1` is not permitted.
+It's recommended for most environments that require this behavior to start with `120` seconds and adjust as needed.
+
+=== Debezium for MySQL
+
+==== No longer fails for `zero-year` dates
+
+MySQL can be configured to support the storage of dates using zero year format, e.g. `0000-07-15`.
+When such values are stored in the database, the MySQL Binlog Client will fail with an invalid date/time exception, which will block the connector from consuming further changes.
+
+Debezium will now allow zero-year values at the Binlog Client level to be passed to the Debezium MySQL connector without issue (https://github.com/debezium/dbz/issues/1499[debezium/dbz#1499]).
+
+=== Debezium for Oracle
+
+==== Dynamic Archive Destination Support
+
+When an Oracle primary server fails over to a standby server, it's very likely that Debezium has not read all the changes from the transaction logs on the primary when the failover occurs.
+As a result, when the standby is promoted to the primary, it will begin to write changes to a new archive destination.
+
+When Debezium reconnects to the newly promoted primary, Debezium will attempt to locate where it left off, and fail to start.
+This failure to start issue is a result of the fact that the primary changes that were not consumed by Debezium exist in the archive destination specific to the standby system being in standby-mode, not primary-mode.
+
+To solve this issue, the `archive.destination.name` configuration property can be supplied a series of comma-separated archive destination names.
+When multiple names are supplied, Debezium will gather logs across all configured destinations and perform a deduplication pass by redo thread and log sequence pairs.
+This deduplication pass will prefer logs in earlier destinations from logs in later destinations that have the same thread and sequence pair.
+
+With this change, Debezium is significantly more fault-tolerant during a primary to standby failover and recovers without the need for a snapshot, as long as there is no data loss at the transaction log level between the two systems (https://github.com/debezium/dbz/issues/1246[debezium/dbz#1246]).
+
+=== Debezium Quarkus Extensions
+
+==== Extensions relocated
+
+One of the biggest changes in Debezium 3.5 is the relocation of the Debezium Quarkus extensions, which includes both the connector and outbox extensions.
+All of Debezium's Quarkus-related modules are now found in the https://github.com/debezium/debezium-quarkus[Debezium Quarkus] repository.
+
+[IMPORTANT]
+====
+All artifacts previously released in Debezium 3.4 using the `quarkus-debezium-XYZ` naming convention have been renamed.
+Please be sure to update your dependencies to reflect the artifacts named as `debezium-quarkus-XYZ`.
+The dependency `groupId` was unchanged.
+====
+
+[NOTE]
+====
+In a future build, the Debezium Quarkus Extensions will be unbundled from the main Debezium release pipeline, and instead will be released with a similar cadence to the upstream https://quarkus.io[Quarkus] project.
+This will provide an improved parity between extension changes and Quarkus releases.
+====
+
+==== Support for Db2
+
+The Debezium Quarkus extensions also now include an implementation for Debezium's Db2 connector (https://github.com/debezium/dbz/issues/1447[debezium/dbz#1447]).
+In a Quarkus application that uses Db2, developers can now respond to real-time changes by simply including the new Db2 module:
+
+.Debezium Db2 extension maven coordinates
+[source,xml]
+----
+<dependency>
+  <groupId>io.debezium.quarkus</groupId>
+  <artifactId>debezium-quarkus-db2</artifactId>
+  <version>v3.5.0.Alpha1</version>
+</dependency>
+----
+
+==== JBang Support
+
+Debezium introduces JBang support by introducing an easy way to integrate Debezium's Quarkus extensions (https://github.com/debezium/dbz/issues/1464[debezium/dbz#1464]).
+This support requires Java 21 or later, JBang 0.132.1 or later, and a containerized environment for local services.
+
+To get started quickly, the https://github.com/debezium/jbang-catalog[Debezium JBang catalog] needs to be added.
+
+++++
+<script src="https://asciinema.org/a/770262.js" id="asciicast-770262" async="true"></script>
+++++
+
+There are templates available for the following data sources: `postgres`, `mysql`, `mongodb`, `sqlserver`, `mariadb`.
+There will be additional data sources added over time.
+
+=== Debezium Platform
+
+==== Support for HTTPS-based URLs
+
+Users who may be using HTTPS via Traefik, ALB, or similar tooling, the current Helm chart setup lead to a series of errors when using secure connections.
+To provide TLS-based connectivity, the following configuration options were introduced (https://github.com/debezium/dbz/issues/36[debezium/dbz#36]):
+
+.New Helm charts configuration properties
+[cols="30%,70%,20%"]
+|===
+|Property |Description |Default
+
+|`domain.name`
+|Represents the domain used as ingress host
+|`""`
+
+|`ingress.enabled`
+|Enable ingress resource for conductor/stage
+|`true`
+
+|`ingress.className`
+|Optional ingress class name
+|`"""`
+
+|`ingress.annotations`
+|Extra ingress annotations
+|`{}`
+
+|`ingress.tls.enabled`
+|Enable TLS section on ingress
+|`false`
+
+|`ingress.tls.secretName`
+|Secret name used when TLS is enabled
+|`""`
+
+|===
+
+There are also some deprecated configuration properties.
+
+.Deprecated Helm charts configuration properties
+[cols="30%,70%,20%"]
+|===
+|Property |Description |Default
+
+|`domain.url`
+|This was replaced by `domain.name`
+|`""`
+
+|===
+
+=== Debezium Server
+
+==== Jetstream retries on failures
+
+Currently, when Debezium Server publishes to NATS and the queue is full due to some limitations like message or byte limits, Debezium Server currently throws an exception and terminates.
+In order to make integration with NATs more fault tolerant, the following additional configuration options have been introduced, allowing the Jetstream NATS adapter to handle retries natively (https://github.com/debezium/dbz/issues/1494[debezium/dbz#1494]):
+
+.New configuration property for NATS Jetstream adapter
+[cols="30%,70%,20%"]
+|===
+|Property |Description |Default
+
+|`sync.retries`
+|Specifies the number of retries
+|`5`
+
+|`sync.retry.interval.ms`
+|The number of milliseconds to wait between retries.
+|`1000`
+
+|`sync.retry.max.interval.ms`
+|The maximum number of milliseconds to wait between retries.
+|`60000`
+
+|`sync.retry.backoff.multiplier`
+|The back-off multiplier to scale the retry interval over attempts.
+|`2.0`
+
+|===
+
+[NOTE]
+====
+All configuration options should be prefixed with `debezium.sink.nats-jetstream`.
+====
+
+[id="other-changes"]
+== Other changes
+
+* Recovery private redo threads can lead to LogMiner failures https://github.com/debezium/dbz/issues/40[debezium/dbz#40]
+* On adding "Signalling collection name" in the Form editor it should by preserved in the smart editor [DBZ-9080] https://github.com/debezium/dbz/issues/1226[debezium/dbz#1226]
+* Update Debezium Platform doc with recent features [DBZ-9319] https://github.com/debezium/dbz/issues/1381[debezium/dbz#1381]
+* Platform: UI Bugs [DBZ-9559] https://github.com/debezium/dbz/issues/1416[debezium/dbz#1416]
+* Deleting pipeline does not work when pressing enter after typing name [DBZ-9687] https://github.com/debezium/dbz/issues/1436[debezium/dbz#1436]
+* Oracle connector fails when user creates a table with a column named "override" https://github.com/debezium/dbz/issues/1461[debezium/dbz#1461]
+* Debezium-Platform: Fix The grep notification feature in the pipeline logs https://github.com/debezium/dbz/issues/1465[debezium/dbz#1465]
+* remove unnecessary jbang main() https://github.com/debezium/dbz/issues/1467[debezium/dbz#1467]
+* introduce a factory for `io.debezium.runtime.Debezium` https://github.com/debezium/dbz/issues/1469[debezium/dbz#1469]
+* Debezium Server: HTTP sink, JWTAuthenticatorTests fail https://github.com/debezium/dbz/issues/1470[debezium/dbz#1470]
+* Debezium issue on connect to IBMi https://github.com/debezium/dbz/issues/1473[debezium/dbz#1473]
+* Oracle OLR adapter crashes with auto-commit error when encountering unknown tables https://github.com/debezium/dbz/issues/1480[debezium/dbz#1480]
+* Impossible to run docker image for testing purpose with `docker-maven-plugin` and docker API version > `1.44` https://github.com/debezium/dbz/issues/1481[debezium/dbz#1481]
+* Cassandra connector return wrong value for DATE columns https://github.com/debezium/dbz/issues/1486[debezium/dbz#1486]
+* RedisOffsetBackingStore: Race condition causes infinite NullPointerException loop on reconnect leading to unrecoverable state https://github.com/debezium/dbz/issues/1488[debezium/dbz#1488]
+* pg_stat_replication.flush_lsn can move backwards when lsn.flush.mode=connector_and_driver https://github.com/debezium/dbz/issues/1489[debezium/dbz#1489]
+* JDBC Sink Connector fails to insert JSON data into MariaDB https://github.com/debezium/dbz/issues/1492[debezium/dbz#1492]
+* Refactor OracleConnection auto-commit setup as an initial Operation https://github.com/debezium/dbz/issues/1496[debezium/dbz#1496]
+* Connector cannot handle uncompressed transaction payloads beyond 2GB https://github.com/debezium/dbz/issues/1503[debezium/dbz#1503]
+* MySQL: New charset not taken into account https://github.com/debezium/dbz/issues/1504[debezium/dbz#1504]
+* Debezium Platrform: Update the source and destination flow to get the connections details in smart editor. https://github.com/debezium/dbz/issues/1506[debezium/dbz#1506]
+* add `debezium-quarkus` project in `debezium-platform-conductor` pipeline https://github.com/debezium/dbz/issues/1507[debezium/dbz#1507]
+* Add debezium platform conductor into core CI https://github.com/debezium/dbz/issues/1520[debezium/dbz#1520]
+* DCO must be checked only on pull request https://github.com/debezium/dbz/issues/1524[debezium/dbz#1524]
+* ReselectPostProcessor does not account for CustomConverter(s) https://github.com/debezium/dbz/issues/1527[debezium/dbz#1527]
+* Thread-safety issue in MongoDB connector causes incorrect source.collection metadata during parallel snapshot https://github.com/debezium/dbz/issues/1531[debezium/dbz#1531]
+
+== Summary
+
+In total, https://github.com/orgs/debezium/projects/5/views/6?query=sort%3Aupdated-desc+is%3Aopen&filterQuery=status%3AReleased+iteration%3A3.5.0.Alpha1[44 issues] were resolved in Debezium 3.5.0.Alpha1.
+The list of changes can also be found in our https://debezium.io/releases/3.4[release notes].
+
+A big thank you to all the contributors from the community who worked diligently on this release:
+ +
+Anton Repin,
+https://github.com/abusquets[Alexandre Busquets],
+https://github.com/atorik[Atsushi Torikoshi],
+https://github.com/Naros[Chris Cranford],
+https://github.com/cjbooms[Conor Gallagher],
+https://github.com/kmos[Giovanni Panice],
+https://github.com/haydarmiezanie[Haydar],
+https://github.com/haydarmiezanie[Haydar Miezanie Abdul Jamil],
+https://github.com/haydarmiezanie[Haydar] Miezanie Abdul Jamil,
+https://github.com/indraraj[Indra Shukla],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/MV-GH[Maarten Vercruysse],
+https://github.com/mfvitale[Mario Fiore Vitale],
+https://github.com/mrtworo[Mateusz Tworek],
+https://github.com/mhejnas[Matt Hejnas],
+https://github.com/koleo[Nicolas Payart],
+https://github.com/ochedru[Olivier Chédru],
+https://github.com/rophy[Rophy Tsai],
+https://github.com/rudi-bruchez[Rudi Bruchez],
+https://github.com/SreedevT[sreedev],
+https://github.com/vjuranek[Vojtech Juranek]
