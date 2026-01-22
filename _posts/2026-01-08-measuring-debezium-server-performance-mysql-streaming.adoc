@@ -1,0 +1,296 @@
+---
+layout: post
+title:  "Measuring Debezium Server performance when streaming MySQL to Kafka"
+date:   2026-01-08
+tags:   [debezium-server, performance, streaming, mysql, docker]
+author: alvarvg
+---
+
+Performance is a critical concern when implementing Change Data Capture (CDC) solutions in production environments.
+In this post, I am going to share how we have measured Debezium Server performance (deployed in a Docker container)
+while streaming changes from MySQL to Kafka. All of this with the default configurations for Debezium, MySQL and Kafka.
+
++++<!-- more -->+++
+
+This post does not aim to compare Debezium Server with Kafka Connect nor to identify absolute throughput limits. 
+Instead, it focuses on understanding how Debezium Server behaves under realistic workloads using default configurations, 
+and whether it can sustain real-time change data capture in lightweight architectures.
+
+[id=introduction]
+== Introduction
+
+Measuring software performance is important. It directly affects reliability, scalability, cost efficiency and user trust. It is a prerequisite for making informed engineering decisions. 
+Performance measurement transforms software from a black box into an understandable, predictable and optimizable system. It is well known that:
+
+'What is not measured cannot be controlled, predicted or reliably improved'
+
+Going beyond sayings and proverbs, we can make the following assertions about performance.
+
+- Validates that the system meets the requirements
+- Identifies bottlenecks and limiting factors
+- Enables predictable scalability
+- Supports data-driven architectural decisions
+- Reduces operational and infrastructure costs
+- Improves reliability and resilience
+- Builds trust with users and stakeholders
+
+[id=debezium-server]
+== Debezium Server
+
+Apart from performance tests, another great unknown in the CDC community is *Debezium Server*. If you are reading this, you probably know something about Debezium and CDC.
+But let me introduce you to Debezium Server. 
+Debezium Server is a standalone runtime for Change Data Capture that captures database changes using Debezium and delivers them directly to configurable sinks without requiring Kafka or Kafka Connect.
+It addresses a common gap in CDC architectures: situations where Kafka Connect, Kubernetes, or large distributed platforms introduce unnecessary operational complexity. 
+It enables teams to adopt CDC with minimal infrastructure while still benefiting from Debezium’s mature and battle-tested connectors.
+
+[.centered-image.responsive-image]
+====
+++++
+<img src="/assets/images/debezium-server-architecture.png" style="max-width:70%;" class="responsive-image" alt="Debezium Server Architecture">
+++++
+*Debezium Server architecture*
+====
+
+Debezium Server is built on top of the Debezium Engine, packaging it into a production-ready application that can run as a single JVM process.
+It runs as a single process and although Kafka is not required, it preserves the core CDC guarantees: 
+- Exactly-once offset management (per connector)
+- Ordered event delivery per table
+- Snapshotting and streaming of the changes in the database
+- Rich metadata about transactions and schemas
+
+[id=benchmarking]
+== Benchmarking
+
+Now that we are familiar with all the components, let us dive into the technical details. 
+
+Starting with the hardware, we have deployed two EC2 machines in AWS of type "c5a.xlarge". Each instance provides 4 vCPUs and 8 GiB of memory, ensuring sufficient resources for both workload generation and CDC processing.
+We have called them Observed and Observer (in order to separate the monitoring load from the machine where Debezium and MySQL are running). In the Observer instance, we have deployed Prometheus, Grafana and YCSB
+(the software piece generating the load). In the Observed instance, we have a single Kafka container (although it is not really necessary and another software can be used),
+Debezium Server and MySQL. 
+
+[.centered-image.responsive-image]
+====
+++++
+<img src="/assets/images/2026-01-08-measuring-debezium-server-performance-mysql-streaming/benchmark_architecture_blueprint.png" style="max-width:70%;" class="responsive-image" alt="Benchmarking architecture">
+++++
+*Benchmarking architecture*
+====
+
+As described above, we are using some software pieces, most of them are already known, except for YCSB. Yahoo! Cloud Serving Benchmark (YCSB), is a tool created by the Yahoo
+team and released into open source as of 04/23/2010, developed to evaluate the performance of different cloud serving stores. This is the link to their GitHub project: https://ycsb.site[https://ycsb.site].
+
+If you want to reproduce this scenario, it is quite simple. Go to debezium-performance[ADD_REPO_URL_HERE] repo, clone it and cd into the infrastructure-automation folder and then run terraform apply. 
+This will automatically create the EC2 instances, provision them with ansible (copy files and install docker) and start the scenario.
+Logging in Grafana will allow you to see how everything evolves and progresses (inside Grafana you will need to navigate to the MySQL Streaming dashboard).
+
+[.centered-image.responsive-image]
+====
+++++
+<img src="/assets/images/2026-01-08-measuring-debezium-server-performance-mysql-streaming/benchmark_completed_scenario.png" style="max-width:70%;" class="responsive-image" alt="Streaming dashboard from a completed scenario">
+++++
+*Streaming dashboard from a completed scenario*
+====
+
+With the technology stack clearly defined and reproducible, we can now focus on how performance will be measured and which metrics will be considered:
+
+- CPU and RAM Percentage usage: We are monitoring the resource usage from the Debezium Server container.
+- Network Input and Output: We are also taking into account the communications performed by the container.
+- Disk Reads and Writes: To check how much disk space/bandwidth is needed.
+- Throughput: This is the main value we are going to focus on (based on this value, we can estimate the operation latency) and we are comparing this to MySQL throughput. 
+
+For all the given metrics, we are calculating the average over the duration of the test. This way, we provide a stable value, and any possible spikes that may exist do not affect
+the final result and are included in it. These are a few more detailed panels of the dashboard.
+
+[.centered-image.responsive-image]
+====
+++++
+<img src="/assets/images/2026-01-08-measuring-debezium-server-performance-mysql-streaming/cpu_memory_consumption.png" style="max-width:70%;" class="responsive-image" alt="CPU and Memory consumption during one execution">
+++++
+*CPU and Memory consumption during one execution*
+====
+
+In the picture above, you can see a few of the panels related to the resource consumption. The two on top are related to the CPU usage, which is the calculated percentage of usage for a 4 vCPUs instance.
+And the other ones are the memory consumption in MB throughout the execution. The two on the left represent the evolution over time, and the ones on the right are the all-time average. 
+
+[.centered-image.responsive-image]
+====
+++++
+<img src="/assets/images/2026-01-08-measuring-debezium-server-performance-mysql-streaming/throughput_time_evolution.png" style="max-width:70%;" class="responsive-image" alt="Throughput evolution during one execution">
+++++
+*Throughput evolution during one execution*
+====
+
+In another example, we have the Debezium Server throughput during one of the executions. This throughput chart is split into two parts, which comes from YCSB behavior.
+YCSB executions are divided into two phases: an initial load phase that populates the tables, followed by a workload phase that executes the configured mix of operations. This behavior explains the two distinct phases visible in the throughput charts.
+If the first half keeps the throughput at the set level, we consider the execution successful (OK/1), otherwise if something in the process makes it fail we consider it a failed execution (NOK/0).
+
+In the picture below, you can see a detailed view in the second phase of the execution where we are running 300 updates per second and 300 inserts per second. 
+
+[.centered-image.responsive-image]
+====
+++++
+<img src="/assets/images/2026-01-08-measuring-debezium-server-performance-mysql-streaming/throughput_detailed_view.png" style="max-width:70%;" class="responsive-image" alt="Detailed view of the throughput panel">
+++++
+*Detailed view of the throughput panel*
+====
+
+[id=results-analysis]
+== Results and Analysis
+
+Let me now show you the results. By examining these results, it is possible to gain a clear view of how the system behaves under varying levels of load and
+to identify trends that may not be evident from isolated measurements. But before getting into detailed analysis, you can find the raw results here[ADD_REPO_URL_HERE_RESULTS_FILE]. 
+
+[.centered-image.responsive-image]
+====
+++++
+<img src="/assets/images/2026-01-08-measuring-debezium-server-performance-mysql-streaming/debezium_server_streaming_mysql_results.png" style="max-width:70%;" class="responsive-image" alt="Debezium Server streaming results screenshot for MySQL">
+++++
+*Debezium Server streaming results screenshot for MySQL*
+====
+
+With the image above in mind, let's understand what each of the columns means.
+
+- TABLE_RECORDS: Desired table records we are going to work with in the execution. 
+- TABLE_TARGET_OPS: Desired operations per second we are going to perform during the execution.
+- TOTAL_RECORDS: Calculated value, the value of TABLE_RECORDS times the value of TABLES.
+- TOTAL_OPS: Calculated value, the value of TABLE_TARGET_OPS times the value of TABLES.
+- RESULT: Indicates if the execution has ended positively or not. 1 means OK and 0 means NOK.
+- DURATION: Total duration of the execution. This includes both phases of YCSB, as explained above.
+- AVG_*: The average (throughout the execution) of the given resource. Resources: CPU, MEM, NET_IN, NET_OUT, DISK_WRITE and DISK_READ.
+Averaging smooths short-lived spikes and highlights sustained behavior, making it suitable for capacity planning but less precise for analyzing tail latency or transient saturation.
+
+There are still a few hidden columns.
+
+- DATABASE: The database picked to run the test against. In this case it is always MySQL.
+- TABLES: The amount of different tables we are using in this execution.
+- DISTRIBUTION: The distribution selected for the given execution. In all these examples it is always uniform. Go to YCSB options to select your preferred one.
+- COMMENTS: Place to write down any observation done during the execution.
+
+Side note: these are only the values for Debezium Server container. We are not keeping the data for other containers, although we can see them in the dashboard.
+
+Below is the analysis of the results obtained from the performance executions, whose objective is to objectively evaluate the system's behavior under different load
+scenarios and operating conditions. This analysis focuses on identifying trends, bottlenecks and relevant variations in the key metrics presented before.
+Let us look at the charts and analyze the results.
+
+This chart presents the execution time (measured in hours) based on the operations per second and the number of tables involved in the execution.
+This chart does not follow a single uniform growth pattern solely driven by the number of operations. While some table groups exhibit an increase in duration as total operations grow,
+this behavior is not consistent across all tables. Several tables show relatively high execution times even at lower operation counts, whereas others maintain low durations despite handling more operations.
+This indicates that execution time is strongly influenced by table-specific factors rather than by workload size alone.
+
+[.centered-image.responsive-image]
+====
+++++
+<img src="/assets/images/2026-01-08-measuring-debezium-server-performance-mysql-streaming/duration_by_ops_table.png" style="max-width:70%;" class="responsive-image" alt="Duration by operation per second and table amount">
+++++
+*Duration by operation per second and table amount*
+====
+
+This chart shows the average CPU utilization. It does not scale linearly with the number of operations and varies across tables.
+In the initial table groups, CPU increases as the workload grows, reaching peak values at a mid-range operation count, after which it stabilizes or even decreases despite higher numbers of operations. 
+For subsequent tables, CPU usage remains within a relatively narrow range, with only moderate fluctuations, indicating that higher workloads do not necessarily translate into proportionally higher CPU consumption.
+
+CPU utilization is influenced more by table-specific processing characteristics and execution efficiency than by total operation volume alone.
+Other factors - I/O wait, batching or internal optimizations - may play a more significant role in performance at higher workloads. 
+
+[.centered-image.responsive-image]
+====
+++++
+<img src="/assets/images/2026-01-08-measuring-debezium-server-performance-mysql-streaming/cpu_by_ops_table.png" style="max-width:70%;" class="responsive-image" alt="CPU usage by operation per second and table amount">
+++++
+*CPU usage by operation per second and table amount*
+====
+
+The memory consumption remains stable across different operation counts and tables, with no clear relationship to the number of operations executed. Most measurements cluster within a similar range, suggesting a consistent baseline memory footprint largely independent of workload size.
+The chart suggests that memory usage is dominated by structural or configuration-related factors rather than by the volume of operations, and that memory is unlikely to be the primary scaling constraint. 
+
+[.centered-image.responsive-image]
+====
+++++
+<img src="/assets/images/2026-01-08-measuring-debezium-server-performance-mysql-streaming/memory_by_ops_table.png" style="max-width:70%;" class="responsive-image" alt="Memory usage by operation per second and table amount">
+++++
+*Memory usage by operation per second and table amount*
+====
+
+The network usage varies significantly across tables and operations counts, with output traffic consistently higher than input traffic in all cases. In the initial table groups, both input and output volumes increase as the number of operations grows, indicating a clear workload-driven effect on network utilization.
+However, this pattern becomes less consistent in later tables, where network usage remains high or fluctuates despite changes in total operations. This suggests that data transfer is influenced more by table-specific characteristics than by the number of operations.
+
+Overall, this indicates that network utilization is a dominant and variable factor in system behavior, particularly on the output side, and should be considered a potential constraint depending on table structure and data change patterns. 
+
+[.centered-image.responsive-image]
+====
+++++
+<img src="/assets/images/2026-01-08-measuring-debezium-server-performance-mysql-streaming/network_by_ops_table.png" style="max-width:70%;" class="responsive-image" alt="Network usage by operation per second and table amount">
+++++
+*Network usage by operation per second and table amount*
+====
+
+Disk write activity remains relatively stable across most tables and operation counts, indicating a consistent write pattern independent of workload size.
+In contrast, disk read activity is minimal or negligible in the early table groups and becomes more prominent only in later tables, where noticeable spikes appear at specific operation counts.
+One table in particular exhibits a pronounced write peak compared to all others, suggesting an isolated behavior such as increased flushing or checkpointing.
+This behavior is typically observed during log file rotation or log exchanges, where disk activity is driven primarily by the number of log files generated and the overall execution duration, rather than by the volume of operations.
+
+[.centered-image.responsive-image]
+====
+++++
+<img src="/assets/images/2026-01-08-measuring-debezium-server-performance-mysql-streaming/disk_by_ops_table.png" style="max-width:70%;" class="responsive-image" alt="Disk usage by operation per second and table amount">
+++++
+*Disk usage by operation per second and table amount*
+====
+
+
+The maximum throughput achieved varies noticeably across tables, indicating different upper performance limits depending on table characteristics.
+Tables 1 and 2 reach the highest values, demonstrating a greater capacity to sustain higher operation rates, while subsequent tables show a gradual reduction in maximum achievable throughput.
+This decrease is not strictly linear, as some tables outperform others despite their position, but it clearly reflects table-specific constraints such as data structure, indexing or processing complexity.
+
+The chart highlights that maximum operations per second are primarily driven by table design and access patterns rather than by uniform system limits, reinforcing the need for table-level performance evaluation.
+
+[.centered-image.responsive-image]
+====
+++++
+<img src="/assets/images/2026-01-08-measuring-debezium-server-performance-mysql-streaming/max_ops_by_table.png" style="max-width:70%;" class="responsive-image" alt="Maximum operation per second by table amount">
+++++
+*Maximum operation per second by table amount*
+====
+
+But, *what is Debezium Server's observed upper bound in number of operations per second?* 
+
+In this comparison we can see the relationship between MySQL and Debezium Server throughput. The initial peak observed at the start of the execution is the desired value we are targeting for this execution.
+MySQL fails to keep pace at such high values (1500 operations per second in 1 table). On the Debezium side, the throughput closely mirrors MySQL activity. 
+This correlation confirms that the CDC pipeline is processing database changes efficiently and in near real time, with no apparent backlog or loss. 
+Overall throughput behavior is driven by the database write pattern rather than by downstream processing constraints.
+
+[.centered-image.responsive-image]
+====
+++++
+<img src="/assets/images/2026-01-08-measuring-debezium-server-performance-mysql-streaming/mysql_vs_debezium_server_throughput.png" style="max-width:70%;" class="responsive-image" alt="MySQL vs Debezium Server throughput comparison">
+++++
+*MySQL vs Debezium Server throughput comparison*
+====
+
+[id=conclusion-recommendations]
+== Conclusion and recommendations
+
+This study demonstrates that Debezium Server is a mature, production-ready CDC solution and a credible alternative to traditional CDC architectures based on Kafka Connect, Kubernetes or complex distributed setups.
+Throughout all tested scenarios, Debezium Server showed stable behavior, predictable resource usage and reliable change propagation, preserving CDC guarantees.
+The results confirm that Debezium Server is not an experimental or limited runtime, but a well-engineered product built on top of Debezium's proven CDC engines.
+
+One of the strongest takeaways from these measurements is that Debezium Server is particularly well suited for small-to-medium-sized projects, lightweight architectures and environments where Kafka and Kubernetes are either unnecessary or operationally expensive.
+Its single process deployment model, combined with low and stable CPU and memory requirements, makes it an excellent fit for simpler infrastructures, edge deployments and teams seeking to minimize operational overhead without sacrificing correctness or observability.
+In these contexts, Debezium Server significantly lowers the entry barrier to CDC adoption.
+
+From a performance standpoint, the results clearly show that Debezium Server is not the bottleneck in the tested pipelines. Instead, the upper throughput limit is dictated by MySQL's ability to sustain write operations.
+Debezium Server consistently mirrors MySQL throughput in near real time without accumulating lag. This confirms that, for the targeted class of projects, Debezium Server is capable of real-time CDC, with end-to-end performance effectively bounded by the source database rather than by the CDC layer itself.
+
+With these results and conclusions in mind, if I had to make a recommendation to someone who wants to implement CDC in their pipeline, I would say the following:
+
+1. *Start with Debezium Server and default configurations.* For small-to-medium projects, Debezium Server provides an excellent starting point without the operational complexity of Kafka Connect or Kubernetes.
+The results show that default configurations already deliver stable, predictable and near real-time CDC performance, allowing teams to validate their use cases before investing time in advanced tuning or more complex architectures.
+2. *Design tables and schemas with CDC in mind.* Performance is strongly influenced by table-level characteristics rather than raw operations counts. Careful schema design can have a significant impact on CDC throughput and latency.
+Optimizing table structures will often yield greater benefits than tuning Debezium itself.
+3. *Treat the database as the primary throughput limiter.* The benchmark shows that Debezium Server can keep up with MySQL in near real time and that overall throughput is bounded by database's write capacity.
+Performance efforts should therefore focus first on the database before attempting to optimize the CDC layer.
+4. *Scale architecture complexity only when necessary.* Kafka, Kubernetes and distributed CDC topologies are powerful but introduce non-trivial operational overhead. For lightweight or well-bounded workloads, Debezium Server alone is often sufficient and easier to operate.
+More complex architectures should be adopted only when clear scalability, availability or integration requirements justify them. 
+
+In summary, Debezium Server emerges as a simple, efficient and high-performance CDC solution that challenges the assumption that Kafka-centric or Kubernetes-based architectures are always required.
+For lightweight projects and streamlined deployments, it offers a compelling balance of maturity, simplicity and performance, delivering real-time change data capture while keeping infrastructure complexity to a minimum. 
