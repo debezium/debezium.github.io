@@ -1,0 +1,386 @@
+---
+layout: post
+title:  Debezium 3.5.0.Beta1 Released
+date:   2026-02-26
+tags: [ releases, mongodb, mysql, mariadb, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox, spanner, jdbc, informix, ibmi, cockroachdb ]
+author: ccranfor
+extraClasses: release-v2
+---
+
+It's been a few weeks since our first pre-release for Debezium 3.5, and we're pleased to announce that the next installment is now available: **3.5.0.Beta1**.
+With an extended cadence since the first alpha, this release is packed with dozens of new features, improvements, and bug fixes.
+Let's dive into what's new!
+
++++<!--- more -->+++
+
+[id="new-features-and-improvements"]
+== New features and improvements
+
+=== Debezium Core
+
+==== New parallel, multithreaded chunked-based snapshots
+
+A few years ago, Debezium introduced its first iteration of parallel snapshotting.
+We're happy to report that the next evolution of this feature is here.
+The new parallel snapshotting implementation takes the existing solution a step further, allowing you to snapshot a single table across multiple threads using chunking (https://github.com/debezium/dbz/issues/1220[debezium/dbz#1220]).
+
+This feature provides several key guarantees:
+
+* All snapshot threads are fully utilized for the entire duration of the snapshot, maximizing resource utilization.
+* All tables, regardless of row count, can take advantage of parallel snapshotting.
+
+The feature is controlled by the following configuration options:
+
+`snapshot.max.threads`::
+The number of threads used to parallelize the snapshot.
+Defaults to `1`.
+
+`snapshot.max.threads.multiplier`::
+A global multiplier that determines how many chunks to create for each table.
+When set to `1` (the default), Debezium computes _(row count / snapshot max threads)_ to determine the number of chunks.
+For example, a table with 1M rows and 4 snapshot threads produces 4 chunks of 250,000 rows each. +
+ +
+In scenarios where you cannot increase the number of snapshot threads but need more granular chunking, increase this multiplier.
+Using the same 1M-row table with 4 threads and a multiplier of 2, Debezium creates 8 chunks of 125,000 rows each.
+
+`snapshot.max.threads.multiplier.<fully_qualified_table_name>`::
+A table-specific multiplier that overrides the global multiplier.
+This allows individual tables to be scaled differently, using more or fewer chunks to accommodate varying table sizes or resource constraints.
+
+[TIP]
+====
+While both the thread count and multiplier can be tuned, increasing the number of threads is generally the most effective way to improve throughput.
+====
+
+You can also use chunk-based snapshotting without parallelism.
+Simply configure one or both `snapshot.max.threads.multiplier` variants to control the chunk count while keeping a single thread.
+
+For existing users who have not set `snapshot.max.threads` or `snapshot.max.threads.multiplier`, connectors will continue to operate exactly as before, using the sequential single-threaded snapshot mechanism.
+No configuration changes are needed.
+
+For users who previously set `snapshot.max.threads` and prefer the older table-per-thread behavior, set `internal.legacy.snapshot.max.threads` to `true`.
+The legacy parallel snapshot feature will remain available for some time but will eventually be removed in favor of the chunk-based approach.
+
+[IMPORTANT]
+====
+The chunk-based parallel snapshot feature has the following limitations:
+
+* Tables that use snapshot select overrides
+* Tables without a primary key
+
+In these cases, the algorithm assigns a single chunk to these tables, effectively falling back to the table-per-thread strategy.
+====
+
+=== Debezium for MySQL
+
+==== Modify binlog offset position using signals
+
+One of the community's most requested features is the ability to adjust a connector's offset position without directly manipulating the offset topic.
+Debezium 3.5 introduces this capability, starting with MySQL, by allowing users to send a signal that changes the offset position (https://github.com/debezium/dbz/issues/1156[debezium/dbz#1156]).
+
+To use this feature, insert a signal into the signal table as shown below.
+The `<data>` payload varies depending on whether the MySQL source database uses GTIDs.
+
+.Inserting a SQL source signal to change the binlog position
+[source,sql]
+----
+INSERT INTO signal_table values ('test_id', 'set-binlog-position', '<data>');
+----
+
+.Data payload when using GTIDs
+[source,json]
+----
+{
+  "gtid_set": "3E11FA47-71CA-11E1-9E33-C80AA9429562:1-100"
+}
+----
+
+.Data payload when not using GTIDs
+[source,json]
+----
+{
+  "binlog_filename": "mysql-bin.000003",
+  "binlog_position": 1234
+}
+----
+
+Based on community feedback, we plan to roll this feature out to additional connectors in future releases.
+
+=== Debezium for Oracle
+
+==== Oracle memory improvements
+
+The Debezium Oracle connector buffers transaction events due to how its CDC integration with Oracle works.
+This buffer stores column values for each event along with various bookkeeping metadata used for populating the event's `source` information block and managing the buffer lifecycle.
+
+While the buffer's footprint is primarily driven by event column values, we've identified several ways to reduce the bookkeeping overhead — either unconditionally or optionally via configuration (https://github.com/debezium/dbz/issues/1425[debezium/dbz#1425]).
+
+No configuration changes are required for existing users.
+You should see approximately a *50% reduction* in the buffer's bookkeeping footprint, which translates to a lower overall memory footprint for your connector deployment.
+The improvement is especially noticeable in environments with large transactions.
+
+[TIP]
+====
+An additional 8% bookkeeping reduction can be achieved by setting `log.mining.buffer.track.rs_id` to `false`.
+This is only recommended if you do not need `source.rs_id` populated in your change events.
+====
+
+For a deeper look at the impact of these changes, see the https://github.com/debezium/debezium/pull/7065[pull request] description.
+
+==== New LogMiner advancement strategy
+
+Some Oracle environments inevitably have long-running or large transactions that cannot be avoided.
+Due to LogMiner's requirements, Debezium interacts with it in a way that guarantees transaction and data consistency — but this can delay low watermark advancement.
+
+The community has requested more control over when Debezium advances the low watermark, even while long-running or large transactions are in flight.
+Debezium 3.5 introduces a time-based threshold for controlling low watermark advancement (https://github.com/debezium/dbz/issues/1553[debezium/dbz#1553]).
+
+This feature works similarly to transaction retention: rather than discarding the transaction, it is retained, but the low watermark is advanced.
+Enable it by setting `log.mining.window.max.ms` to any value greater than zero.
+
+[WARNING]
+====
+LogMiner has specific requirements to guarantee data consistency.
+Advancing the SCN with this feature introduces risks because those requirements are no longer fully honored.
+This can lead to transactions that fail to commit, events that appear as unsupported operations, or other LogMiner anomalies.
+
+Using this feature acknowledges the above risks.
+Please carefully evaluate the trade-offs before enabling it in any production pipeline.
+====
+
+==== Incremental snapshot performance improvements
+
+Debezium's incremental snapshot process relies heavily on primary key indexes for efficient row lookup between a chunk's lower and upper boundaries.
+As table sizes grow, this efficiency becomes increasingly critical.
+
+A common source of performance degradation with incremental snapshots involves composite keys on very large tables.
+The SQL predicates required to locate rows between boundaries with composite keys are complex, and not every database engine can optimize them to efficiently use the primary key index.
+
+For Oracle, one way to improve performance is to use `ROWID` — a unique byte offset for each row — instead of the primary key index.
+This bypasses the index entirely and operates at the lowest level of the database to isolate the target chunk of rows during incremental snapshots (https://github.com/debezium/dbz/issues/1108[debezium/dbz#1108]).
+
+=== Debezium for SQL Server
+
+==== Managed identity support
+
+The SQL Server connector now supports identity-based authentication via the `driver.authentication` configuration property (https://github.com/debezium/dbz/issues/1153[debezium/dbz#1153]).
+Set this property to `ActiveDirectoryManagedIdentity` or the legacy `ActiveDirectoryMSI` to connect to Azure SQL databases.
+
+==== Improved transaction metadata handling
+
+Debezium has historically lacked a reliable way to identify when SQL Server transactions end.
+As a result, the transaction `END` marker was emitted only after the first event of the next transaction, leading to delayed delivery in low-traffic systems when using `provide.transaction.metadata`.
+
+Debezium 3.5 addresses this by leveraging `dm_cdc_log_scan_sessions` to detect when transactions have completed (https://github.com/debezium/dbz/issues/1604[debezium/dbz#1604]).
+This allows `END` markers to be emitted more promptly, particularly in low-traffic environments.
+
+[NOTE]
+====
+This improvement only applies to connectors deployed with `provide.transaction.metadata` enabled.
+It is fully managed by Debezium — no additional configuration changes are needed.
+====
+
+=== Debezium JDBC sink
+
+==== PostgreSQL unnest support
+
+PostgreSQL's `UNNEST` function expands an array into a set of rows, and the Debezium JDBC sink connector can now leverage it.
+Enable this for `insert` and `upsert` modes by setting `dialect.postgres.unnest.insert.enabled` to `true` (https://github.com/debezium/dbz/issues/1525[debezium/dbz#1525]).
+
+The unnest function allows the JDBC sink connector to write multiple rows in a single JDBC SQL operation, reducing overhead and significantly increasing write throughput.
+
+There are several limitations to be aware of:
+
+* Update and delete operations continue to use the standard JDBC batch mechanism.
+* PostgreSQL imposes an upper limit of 65,535 parameters per statement. For tables with many columns, be mindful of the batch size to avoid exceeding this limit.
+* Batches containing a single row fall back to the standard `INSERT INTO ... ON CONFLICT` syntax, as unnest provides no benefit for single-row operations.
+* Because unnest requires all rows in a batch to share the same schema, any change in a table's column count forces an early flush of the buffer.
+
+For most environments, these limitations won't be encountered, but they're worth keeping in mind.
+
+==== IBMi support
+
+As Debezium's source connector portfolio continues to grow, our goal is to provide comprehensive parity with the JDBC sink to enable full homogeneous replication between the same source and target databases.
+With that in mind, the Debezium JDBC sink connector now supports IBMi target databases (https://github.com/debezium/dbz/issues/1497[debezium/dbz#1497]).
+
+=== Debezium Server
+
+==== NATS JetStream configurable naming
+
+The Debezium Server NATS JetStream stream name can now be configured through the `debezium.sink.nats-jetstream.stream-name` deployment property.
+This property is optional and remains backward compatible — existing deployments continue to use the default `DebeziumStream` (https://github.com/debezium/dbz/issues/1581[debezium/dbz#1581]).
+
+This change enables multiple Debezium Server instances to share the same NATS JetStream.
+
+=== Debezium Platform
+
+==== First-time guided tour
+
+When exploring new software for the first time, a guided tour can be a great way to quickly become familiar with what the solution offers.
+
+Debezium 3.5 continues to invest in the user experience with a new guided walkthrough feature in the Platform UI (https://github.com/debezium/dbz/issues/1244[debezium/dbz#1244]).
+The tour offers two modes: a quick guide for a rapid overview, or an advanced tour that walks you through creating a new pipeline step by step.
+
+++++
+<div class="responsive-video">
+<iframe width="560" height="315" src="https://private-user-images.githubusercontent.com/8264372/551384975-5ef49099-e52b-401b-a407-9cc17063b13d.mov?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3NzIyMTAzMDYsIm5iZiI6MTc3MjIxMDAwNiwicGF0aCI6Ii84MjY0MzcyLzU1MTM4NDk3NS01ZWY0OTA5OS1lNTJiLTQwMWItYTQwNy05Y2MxNzA2M2IxM2QubW92P1gtQW16LUFsZ29yaXRobT1BV1M0LUhNQUMtU0hBMjU2JlgtQW16LUNyZWRlbnRpYWw9QUtJQVZDT0RZTFNBNTNQUUs0WkElMkYyMDI2MDIyNyUyRnVzLWVhc3QtMSUyRnMzJTJGYXdzNF9yZXF1ZXN0JlgtQW16LURhdGU9MjAyNjAyMjdUMTYzMzI2WiZYLUFtei1FeHBpcmVzPTMwMCZYLUFtei1TaWduYXR1cmU9ZTk1MzhhZTFlZjc3ZDA5Mjg0Y2VjMDY0MDY5MDAyMTczMDlhYjA3ZjA4ZDgzZjgwMTExMzU0OGQ3YWYzYmFhOCZYLUFtei1TaWduZWRIZWFkZXJzPWhvc3QifQ.Z0phrxVI4QwmHwzjFu5wst62HJnuXnWYVmFs5My9F5w" frameborder="0" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+</div>
+++++
+
+=== Debezium Quarkus Extensions
+
+==== Support for Oracle
+
+The Debezium Quarkus extensions now include support for the Oracle connector (https://github.com/debezium/dbz/issues/1389[debezium/dbz#1389]).
+In a Quarkus application backed by Oracle, developers can respond to real-time changes by including the new Oracle module:
+
+.Debezium Oracle extension Maven coordinates
+[source,xml]
+----
+<dependency>
+  <groupId>io.debezium.quarkus</groupId>
+  <artifactId>debezium-quarkus-oracle</artifactId>
+  <version>v3.5.0.Beta1</version>
+</dependency>
+----
+
+==== Batch processing handlers
+
+In previous releases, an extension handler typically processed events one at a time using `CaptureEvent`:
+
+.Handling one change event at a time with CaptureEvent
+[source,java]
+----
+@ApplicationScoped
+public class CaptureHandler {
+    @Capturing
+    public void capture(CaptureEvent<SourceEvent, SourceEvent> event) {
+    }
+}
+----
+
+This works well for single-event processing, but doesn't lend itself to scenarios where you need to operate across a batch of events.
+
+Debezium 3.5 introduces the new `CapturingEvents` class for batch processing (https://github.com/debezium/dbz/issues/1484[debezium/dbz#1484]):
+
+.Handling a batch of changes with CapturingEvents
+[source,java]
+----
+@ApplicationScoped
+public class CaptureHandler {
+    @Capturing
+    public void capture(CapturingEvents<BatchEvent> events) {
+        events.records().forEach(event -> event.commit());
+    }
+}
+----
+
+This new contract is ideal for consumers that need to aggregate events or write to a target in bulk for optimal performance.
+
+=== Debezium for CockroachDB
+
+==== Initial snapshot support
+
+The CockroachDB connector now supports `snapshot.mode` (https://github.com/debezium/dbz/issues/1627[debezium/dbz#1627]).
+This allows users to snapshot or backfill historical data from the source database, just like other relational and non-relational connectors.
+The feature builds on the `initial_scan` behavior provided by CockroachDB's change stream technology.
+
+==== Multi-table concurrent streaming
+
+In earlier builds, the CockroachDB connector created one change stream per table.
+While functional, CockroachDB recommends keeping the number of changefeed jobs below 80 per cluster — a limit that can be quickly reached in environments with many tables.
+
+Debezium 3.5 introduces the ability to capture changes from multiple tables using a single changefeed job (https://github.com/debezium/dbz/issues/1628[debezium/dbz#1628]).
+This aligns with CockroachDB's recommended thresholds and improves overall throughput of the event capture process.
+
+=== Debezium for Informix
+
+==== Omit empty transaction metadata events
+
+When `provide.transaction.metadata` is enabled, most consumers are only interested in transactions that contain events matching the connector's include list.
+
+Debezium 3.5 introduces `cdc.return.empty.transactions`, a configuration option that controls whether Informix returns empty transactions (https://github.com/debezium/dbz/issues/1587[debezium/dbz#1587]).
+By default, empty transactions are omitted.
+To restore the previous behavior, set this option to `true`.
+
+=== Debezium for Vitess
+
+==== Improved transaction ordering with epoch
+
+The Vitess connector can provide https://debezium.io/documentation/reference/stable/connectors/vitess.html#vitess-ordered-transaction-metadata[transaction order metadata] to help downstream consumers process change events in the correct order.
+This is particularly important during operations like repartitioning.
+
+In these cases, the epoch value needs to be incremented to ensure downstream consumers rank and order events correctly.
+Debezium 3.5 introduces `vitess.connector.generation`, a configuration property that can be increased when making changes that impact ordering semantics.
+Updating this value triggers an automatic epoch update on connector restart.
+
+[id="other-changes"]
+== Other changes
+
+* Oracle database PDB name in lowercase not collecting DML operation [DBZ-9054] https://github.com/debezium/dbz/issues/1057[debezium/dbz#1057]
+* A rolled back transaction mined in two steps sometimes leads to partial transaction id [DBZ-9686] https://github.com/debezium/dbz/issues/1145[debezium/dbz#1145]
+* Avoid storing irrelevant DDL statement "REPLACE INTO" in schema history topic  [DBZ-9428] https://github.com/debezium/dbz/issues/1396[debezium/dbz#1396]
+* Connector cannot handle uncompressed transaction payloads beyond 2GB https://github.com/debezium/dbz/issues/1503[debezium/dbz#1503]
+* Use platform add Destination has error type https://github.com/debezium/dbz/issues/1505[debezium/dbz#1505]
+* When using default value for event.processing.failure.handling.mode (fail), data conversion exceptions are swallowed and the connector keeps on running https://github.com/debezium/dbz/issues/1508[debezium/dbz#1508]
+* EventDeserializer composition in mysql-binlog-connector-java library should be fixed https://github.com/debezium/dbz/issues/1518[debezium/dbz#1518]
+* Add support for ORIGIN Message in Postgresql Connector https://github.com/debezium/dbz/issues/1528[debezium/dbz#1528]
+* Avoid overfetching of data for multi-tenant use cases https://github.com/debezium/dbz/issues/1534[debezium/dbz#1534]
+* Implement value-based field dependencies in configuration API https://github.com/debezium/dbz/issues/1542[debezium/dbz#1542]
+* Migrate schema generator to produce new descriptor format https://github.com/debezium/dbz/issues/1543[debezium/dbz#1543]
+* Generate configuration descriptors for transforms, predicates, and sinks https://github.com/debezium/dbz/issues/1544[debezium/dbz#1544]
+* Debezium Platform: Update Platform UI dev workflow to target backend URL at compile time https://github.com/debezium/dbz/issues/1549[debezium/dbz#1549]
+* Change XStream outbound server property with adapter prefix https://github.com/debezium/dbz/issues/1559[debezium/dbz#1559]
+* Log mining lower boundary does not update until a log switch https://github.com/debezium/dbz/issues/1560[debezium/dbz#1560]
+* Stuck transaction when using CTE query with Oracle connector https://github.com/debezium/dbz/issues/1564[debezium/dbz#1564]
+* Oracle Create Table DDL fails to parse when using `AUTOMATIC` keyword in partition list https://github.com/debezium/dbz/issues/1566[debezium/dbz#1566]
+* Implicit nullability in DDL (ALTER TABLE ... CHANGE ...) not respected by MySQL connector https://github.com/debezium/dbz/issues/1568[debezium/dbz#1568]
+* "No enum constant io.debezium.connector.postgresql.connection.ReplicationMessage.Operation.NOOP" error when upgrading to Debezium 3.4.0 https://github.com/debezium/dbz/issues/1574[debezium/dbz#1574]
+* ORA-03049 raised when querying archive logs https://github.com/debezium/dbz/issues/1579[debezium/dbz#1579]
+* Move transformations and predicates to a dedicated module https://github.com/debezium/dbz/issues/1583[debezium/dbz#1583]
+* Oracle DDL fails to parse https://github.com/debezium/dbz/issues/1594[debezium/dbz#1594]
+* Debezium platform: Make the password field to mask the user entered text https://github.com/debezium/dbz/issues/1598[debezium/dbz#1598]
+* Update Quarkus Extensions to Quarkus 3.31.3 https://github.com/debezium/dbz/issues/1606[debezium/dbz#1606]
+* Update `mongodb-driver-sync` to 5.6.2 https://github.com/debezium/dbz/issues/1608[debezium/dbz#1608]
+* Add Podman example https://github.com/debezium/dbz/issues/1609[debezium/dbz#1609]
+* Event loss when Kafka producer fails (e.g. delivery.timeout.ms exceeded) https://github.com/debezium/dbz/issues/1610[debezium/dbz#1610]
+* Upgrade Testcontainers to 2.0.3 https://github.com/debezium/dbz/issues/1615[debezium/dbz#1615]
+* Support `NodeSelector` and `tolerations` in K8s CRDs with Debezium Operator https://github.com/debezium/dbz/issues/1621[debezium/dbz#1621]
+* Update Informix JDBC Driver to v4.50.13 https://github.com/debezium/dbz/issues/1623[debezium/dbz#1623]
+* Oracle Alter index Modify Subpartition Shrink DDL fails https://github.com/debezium/dbz/issues/1637[debezium/dbz#1637]
+* Update debezium operator base image https://github.com/debezium/dbz/issues/1645[debezium/dbz#1645]
+
+== Summary
+
+In total, https://github.com/orgs/debezium/projects/5/views/6?query=sort%3Aupdated-desc+is%3Aopen&filterQuery=iteration%3A3.5.0.Beta1[72 issues] were resolved in Debezium 3.5.0.Beta1.
+The list of changes can also be found in our https://debezium.io/releases/3.5/release-notes#release-3.5.0-beta1[release notes].
+
+A big thank you to all the contributors from the community who worked diligently on this release:
+ +
+https://github.com/loveaj-ajbell[Andrew Love],
+https://github.com/aofisherzg[Andrew Ofisher],
+https://github.com/archiedx[archie david],
+https://github.com/archiedx[Archie David],
+https://github.com/kebab-mai-haddi[Aviral Srivastava],
+https://github.com/redboyben[Benoit Audigier],
+https://github.com/chirag-brevo[chirag-brevo],
+https://github.com/Naros[Chris Cranford],
+https://github.com/duncan-prince[Duncan Prince],
+https://github.com/fleski-amzn[Filip Leski],
+https://github.com/gaurav7261[gaurav miglani],
+https://github.com/kmos[Giovanni Panice],
+https://github.com/gunnarmorling[Gunnar Morling],
+https://github.com/ianmuge[Ian Muge],
+https://github.com/IssamElNass[Issam El Nasiri],
+https://github.com/jiangzzhu[Jiang Zhu],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/nrkljo[Lars M. Johansson],
+https://github.com/mfvitale[Mario Fiore Vitale],
+https://github.com/michael2893[Michael Terranova],
+https://github.com/nathan-smit-1[Nathan Smit],
+https://github.com/roldanbob[Robert Roldan],
+https://github.com/shinsj4653[Seongjun Shin],
+https://github.com/shishir2001-yb[Shishir Sharma],
+https://github.com/jw-itq[Shiwanming],
+https://github.com/twthorn[Thomas Thornton],
+https://github.com/viragtripathi[Virag Tripathi]
