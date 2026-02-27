@@ -458,6 +458,12 @@
 <li><a href="#mysql-snapshot-events">Operation type of snapshot events</a></li>
 <li><a href="#connector-custom-snapshot">Custom snapshotter SPI</a></li>
 <li><a href="#mysql-blocking-snapshots">Blocking snapshots</a></li>
+<li><a href="#_setting_the_binlog_position_via_a_signal">Setting the binlog position via a signal</a></li>
+</ul>
+</li>
+<li><a href="#format-of-a-set-binlog-position-signal">Format of a <code>set-binlog-position</code> signal</a></li>
+<li><a href="#proc-setting-binlog-position-via-signal_mysql">Send a signal to reposition the stream</a>
+<ul class="sectlevel2">
 <li><a href="#mysql-topic-names">Topic names</a></li>
 <li><a href="#mysql-transaction-metadata">Transaction metadata</a></li>
 </ul>
@@ -2811,6 +2817,190 @@ The behavior of the property is similar to the behavior of the <code>table.inclu
 <p>A delay might exist between the time that you send the signal to trigger the snapshot, and the time when streaming stops and the snapshot starts.
 As a result of this delay, after the snapshot completes, the connector might emit some event records that duplicate records captured by the snapshot.</p>
 </div>
+</div>
+<div class="sect2">
+<h3 id="_setting_the_binlog_position_via_a_signal"><a class="anchor" href="#_setting_the_binlog_position_via_a_signal"></a>Setting the binlog position via a signal</h3>
+<div class="paragraph">
+<p>In certain situations it can be useful to precisely control the point in the binlog from which the connector begins to capture database changes.
+You can send a Debezium <code>set-binlog-position</code> signal at run time to dynamically specify where the MySQL connector begins reading from the database binlog (binary log).</p>
+</div>
+<div class="admonitionblock important">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-important" title="Important"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>Depending on the position that you specify in the <code>set-binlog-position</code> signal, the connector either excludes events from the log, or sends duplicate events.</p>
+</div>
+<div class="paragraph">
+<p>If you specify a binlog position that is later than the current position, the connector skips change events in the history between the current position and the new position.
+The connector does not capture or stream changes in the skipped range.</p>
+</div>
+<div class="paragraph">
+<p>On the other hand, if the signal directs the connector to resume reading from a point earlier than the current position, the connector replays log entries that it previously sent, emitting duplicate events to the destination topic.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="paragraph">
+<p>You might want to reset the connector&#8217;s binlog position under the following circumstances:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1">Disaster recovery</dt>
+<dd>
+<p>Direct the connector to resume streaming from the last known good position in the log after a system failure.
+Restarting from a specified position helps to maintain data consistency across the pipeline by ensuring that data is not lost or duplicated.</p>
+</dd>
+<dt class="hdlist1">Corrupted data</dt>
+<dd>
+<p>You detect corrupted or incorrect data in the database or in the destination Kafka topics, and want to skip the corrupted data and resume from a known good position.</p>
+</dd>
+<dt class="hdlist1">Avoid replaying old data after a database refresh</dt>
+<dd>
+<p>After you refresh a database from another source, such as a backup, the connector might attempt to replay all historical events from an old binlog position, which can result in duplicate topic data, and lead to heavy resource consumption.
+By resuming streaming from a specific recent point, you skip historical events that you don&#8217;t need, and can help save cost and time.</p>
+</dd>
+<dt class="hdlist1">Partial replication</dt>
+<dd>
+<p>When diverting captured data to a new Kafka topic, you want the connector to process the log from a specific point to exclude the full event history and send only a specific subset of database changes.
+By using this approach, you prevent the connector from processing obsolete, older data so that the connector captures only the relevant recent changes.</p>
+</dd>
+<dt class="hdlist1">Testing</dt>
+<dd>
+<p>Test the connector with a specific subset of data, excluding the full history captured by snapshots.</p>
+</dd>
+</dl>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="format-of-a-set-binlog-position-signal"><a class="anchor" href="#format-of-a-set-binlog-position-signal"></a>Format of a <code>set-binlog-position</code> signal</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>A Debezium <code>set-binlog-position</code> signal message includes the standard <code>id</code>, <code>type</code>, and <code>data</code> properties.
+The exact format of the message depends on which signaling channel you use.
+For more information about the format of Debezium signals, see <a href="#{link-signaling}.adoc#debezium-signaling-overview}" class="xref unresolved">Sending signals to a Debezium connector</a>.</p>
+</div>
+<div class="paragraph">
+<p>To designate the binlog position in a <code>set-binlog-position</code> signal, in the data portion of the signal, you specify either the binlog file and position, or a GTID set, depending on whether GTID (Global Transaction Identifier) mode is enabled.
+You cannot use both formats in the same signal.</p>
+</div>
+<div class="paragraph">
+<p>The following examples illustrate the two formats for specifying the binlog position in a signal:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1">Binlog file and position format</dt>
+<dd>
+<p>When GTID mode is disabled, specify the binlog filename and position in the signal, as in the following example:</p>
+<div class="exampleblock">
+<div class="content">
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{"binlog_filename": "mysql-bin.000003", "binlog_position": 1234}</code></pre>
+</div>
+</div>
+</div>
+</div>
+<div class="paragraph">
+<p>The <code>binlog_filename</code> must match the MySQL binlog naming pattern (for example, <code>mysql-bin.000001</code>).</p>
+</div>
+<div class="paragraph">
+<p>The <code>binlog_position</code> must be a non-negative integer.</p>
+</div>
+</dd>
+<dt class="hdlist1">GTID set format</dt>
+<dd>
+<p>When GTID mode is enabled, specify the GTID set, for example:</p>
+<div class="exampleblock">
+<div class="content">
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{"gtid_set": "3E11FA47-71CA-11E1-9E33-C80AA9429562:23"}</code></pre>
+</div>
+</div>
+</div>
+</div>
+<div class="paragraph">
+<p>The value of the <code>gtid_set</code> attribute must be a valid GTID set string.</p>
+</div>
+</dd>
+</dl>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="proc-setting-binlog-position-via-signal_mysql"><a class="anchor" href="#proc-setting-binlog-position-via-signal_mysql"></a>Send a signal to reposition the stream</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>Send a Debezium <code>set-binlog-position</code> signal at run time to specify the binlog reading position for  the MySQL connector.</p>
+</div>
+<div class="ulist">
+<div class="title">Prerequisites</div>
+<ul>
+<li>
+<p>The connector is configured to use one of the available <a href="../configuration/signalling.html#sending-signals-to-a-debezium-connector" class="xref page">Debezium signaling channels</a>.</p>
+</li>
+<li>
+<p>A <a href="../configuration/signalling.html#debezium-signaling-enabling-source-signaling-channel" class="xref page">signaling data collection</a> exists on the source database.</p>
+</li>
+<li>
+<p>The connector configuration property <code>heartbeat.interval.ms</code> is set to ensure that offset changes are persisted.</p>
+</li>
+</ul>
+</div>
+<div class="olist arabic">
+<div class="title">Procedure</div>
+<ol class="arabic">
+<li>
+<p>Determine the target position in your database history (binlog file and position, or GTID set).</p>
+</li>
+<li>
+<p>Send a <code>set-binlog-position</code> signal that includes the standard <code>id</code>, <code>type</code>, and <code>data</code> properties in the format that is required for your preferred signaling channel.</p>
+<div class="paragraph">
+<p>In the data portion of the signal specify the target position, as determined in step 1.</p>
+</div>
+<div class="paragraph">
+<p>For example, for the source signaling channel, add one of the following SQL commands to the <code>data</code> component of the signal, depending on whether GTID is enabled:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1">SQL to use when GTID is disabled (uses the binlog file and position)</dt>
+<dd>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">INSERT INTO debezium_signal (id, type, data) VALUES (
+  'set-position-001',
+  'set-binlog-position',
+  '{"binlog_filename": "mysql-bin.000003", "binlog_position": 1234}'
+);</code></pre>
+</div>
+</div>
+</dd>
+<dt class="hdlist1">SQL to use when GTID is enabled (specifies GTID set)</dt>
+<dd>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">INSERT INTO debezium_signal (id, type, data) VALUES (
+  'set-gtid-001',
+  'set-binlog-position',
+  '{"gtid_set": "3E11FA47-71CA-11E1-9E33-C80AA9429562:1-100"}'
+);</code></pre>
+</div>
+</div>
+</dd>
+</dl>
+</div>
+</li>
+<li>
+<p>Restart the connector to begin streaming from the new position.</p>
+</li>
+</ol>
 </div>
 <div class="sect2">
 <h3 id="mysql-topic-names"><a class="anchor" href="#mysql-topic-names"></a>Topic names</h3>
@@ -10114,7 +10304,7 @@ If the snapshot is disabled, the connector fails with an error.</p>
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/07212da883fe35ddca8ddddc1feee4556e9dec80">07212da8</a></span>)
+            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/99a7c45716ffb083e04a063a992bb83a42426000">99a7c457</a></span>)
             
         </div>
     </footer>
