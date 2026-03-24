@@ -58,6 +58,8 @@ desc 'Build and preview the site locally in development mode'
 task :preview do
   run_antora
   clone_versions
+  create_context7_files()
+
   system 'bundle install'
   system "#{$use_bundle_exec ? 'bundle exec ' : ''}jekyll serve --host 0.0.0.0 --livereload" or raise "Jekyll build failed"
 end
@@ -70,6 +72,9 @@ task :build, [:environment] do |task, args|
   system 'bundle install'
   system "JEKYLL_ENV=#{args[:environment]} bundle exec jekyll build"
   clone_versions
+
+  create_context7_files()
+
 end
 
 desc 'Clean out generated site and temporary files'
@@ -130,7 +135,33 @@ def clone_versions()
     puts "Unable to find devel version dir"
   end
 end
- 
+
+def create_context7_files()
+  base_path = "_site/documentation/reference"
+  raise ArgumentError, "'#{base_path}' is not a directory" unless Dir.exist?(base_path)
+
+  create_context7_file(base_path, "debezium_io_reference")
+
+  Dir.glob("#{base_path}/*/").each do |subdir|
+    dir_name = File.basename(subdir)
+    slug = "debezium_io_reference_#{dir_name.tr('.','_')}"
+    create_context7_file(subdir, slug)
+  end
+end
+
+def create_context7_file(file_dir, slug)
+  content = <<~JSON
+    {
+      "url": "https://context7.com/websites/#{slug}",
+      "public_key": "pk_4bmn60gBy8u78Juf3Zn1c"
+    }
+  JSON
+
+  filepath = File.join(file_dir, "context7.json")
+  File.write(filepath, content)
+  puts "Created: #{filepath}"
+end
+
 # Execute Antora
 def run_antora()
   puts "Generating Antora documentation using configuration: #{$antora_config}"
