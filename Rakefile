@@ -45,13 +45,13 @@ task :default => :build
 desc 'Install the environment to run Jekyll'
 task :install do
   system 'bundle install'
-  exit 0
+  exit 1 unless $?.success?
 end
 
 desc 'Update the environment to run Jekyll'
 task :update do
   system 'bundle update'
-  exit 0
+  exit 1 unless $?.success?
 end
 
 desc 'Build and preview the site locally in development mode'
@@ -61,7 +61,11 @@ task :preview do
   create_context7_files()
 
   system 'bundle install'
+  exit 1 unless $?.success?
+
   system "#{$use_bundle_exec ? 'bundle exec ' : ''}jekyll serve --host 0.0.0.0 --livereload" or raise "Jekyll build failed"
+  exit 1 unless $?.success?
+
 end
 
 desc 'Build the site for the given environment: development (the default), staging, or production'
@@ -70,7 +74,11 @@ task :build, [:environment] do |task, args|
 
   run_antora
   system 'bundle install'
+  exit 1 unless $?.success?
+
   system "JEKYLL_ENV=#{args[:environment]} bundle exec jekyll build"
+  exit 1 unless $?.success?
+
   clone_versions
 
   create_context7_files()
