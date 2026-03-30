@@ -1,0 +1,84 @@
+---
+layout: post
+title:  Debezium 3.4.3.Final Released
+date:   2026-03-30
+tags:   [ releases, mongodb, mysql, mariadb, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox, spanner, jdbc, informix, ibmi, cockroachdb ]
+author: ccranfor
+extraClasses: release-v2
+---
+
+Debezium **3.4.3.Final** is now available, bringing targeted improvements and important bug fixes, with a focus on the Oracle connector.
+This release delivers a meaningful performance improvement on connector restart, resolves several Oracle-specific parsing and compatibility issues, addresses a multibyte UTF-8 encoding bug in the PostgreSQL connector, and improvements to the Informix connector.
+
++++<!-- more -->+++
+
+In this post, we're going to take a look at the improvements and fixes in Debezium **3.4.3.Final**.
+As always, we recommend you read the link:/releases/3.4/release-notes[release notes] to learn about all the bugs that were fixed, update procedures, and more.
+
+[id="new-features-and-improvements"]
+== New Features and Improvements
+
+=== Debezium for PostgreSQL
+
+==== Support multibyte UTF8 table and column names
+
+Users working with PostgreSQL databases that use non-ASCII table or column names, such as Chinese, Japanese, Arabic, or other multibyte character sets, could encounter silent data corruption during CDC streaming when using the `pgoutput` plugin (https://github.com/debezium/dbz/issues/1682[dbz#1682]).
+
+The root cause was in `PgOutputMessageDecoder` internal `readString` method, which is responsible for reading identifier names (schemas, tables, and columns) out of the replication stream.
+That method read bytes one at a time and cast each directly to `char`, effectively treating the stream as Latin-1 rather than UTF-8.
+This worked fine for ASCII identifiers, but any multibyte UTF8 character would be decoded as a sequence of garbled single-byte characters.
+
+With this fix, `readString` now collects all bytes up to the null terminator and decodes them explicitly as UTF-8, consistent with how column values are already handled.
+This ensures that table and column names containing any Unicode characters are preserved throughout the change event pipeline.
+
+=== Debezium for Oracle
+
+==== Improve LogMiner Read I/O performance
+
+When the Debezium Oracle connector (using LogMiner) starts or restarts, it needs to determine which redo and archive logs to add to the mining session before it can begin processing changes.
+Previously, the connector was overly conservative in this step, appending more logs than were strictly necessary to cover the required SCN range.
+In environments with high transaction volumes or short log rotation intervals, this could result in a large number of logs being registered with LogMiner at startup, increasing I/O overhead and slowing down the time before the connector could begin streaming (https://github.com/debezium/dbz/issues/1279[dbz#1279]).
+
+With this improvement, the connector now computes the lower and upper SCN boundaries of the initial mining window first, and only adds the redo logs that actually fall within that range when using the `online_catalog` or `hybrid` mining strategies.
+This targeted approach significantly reduces the I/O overhead at startup, meaning changes can be mined and processed more quickly.
+It also particularly benefits environments that experience bursts of high activity, where many transaction logs may be generated in a short period of time and would previously all have been registered unnecessarily.
+
+==== Support for XML using text-based storage
+
+Oracle's `XMLType` data type supports three distinct storage models: CLOB (unstructured), object-relational (structured), and binary XML, which has been the default since Oracle 11.2.0.2.
+When Debezium's Oracle connector processes change events via LogMiner, the representation of `XMLType` data differs significantly depending on which storage model the table uses.
+
+Previously, the connector's `XMLType` handling assumed that data was always stored in binary XML format, which is the modern default.
+For tables using the older CLOB or object-relational storage models, which are still common in long-lived databases that pre-date Oracle 11g or that were explicitly created with non-binary storage, the redo log representation looks quite different.
+The connector's parser did not account for these alternative representations, causing it to throw a parser failure when it encountered them.
+
+With this fix, the connector now correctly handles `XMLType` columns backed by non-binary storage models, allowing change events from these tables to be captured and emitted without error (https://github.com/debezium/dbz/issues/1373[dbz#1373]).
+
+=== Debezium for Informix
+
+==== Improved resource cleanup on task shutdown
+
+The Debezium Informix connector builds on top of IBM's Change Data Capture (CDC) API, which uses an explicit watch/unwatch model for table-level change tracking.
+When the connector registers interest in a table's changes, it calls `watchTable` on the CDC engine to start receiving records for it.
+The counterpart, `unwatchTable`, is expected to be called when the connector no longer needs to track a table, for example when a table is removed from the capture configuration or when the connector is shutting down its CDC session.
+
+With this fix, the Informix `unwatchTable` is handled gracefully, ensuring that the connector can shutdown without appearing stuck (https://github.com/debezium/dbz/issues/1704[dbz#1704]).
+
+[id="other-changes"]
+== Other fixes
+
+* Exception ORA-00310 with RAC and archive log only mode [DBZ-6013] (https://github.com/debezium/dbz/issues/745[dbz#745])
+* Improve CI / Jenkins Pipeline for Oracle 23 & 26 (https://github.com/debezium/dbz/issues/1665[dbz#1665])
+* Unable to parse DML for CDC after initial snapshot on a table with ROW ARCHIVAL enabled (https://github.com/debezium/dbz/issues/1676[dbz#1676])
+
+In total, https://github.com/orgs/debezium/projects/5/views/6?query=sort%3Aupdated-desc+is%3Aopen&filterQuery=status%3AReleased+stable-iteration%3A3.4.3.Final[8 issues] were resolved in Debezium 3.4.3.Final.
+The list of changes can also be found in our link:/releases/3.4/release-notes#release-3.4.3-Final[release notes].
+
+A big thank you to all the contributors from the community who worked diligently on this release:
+ +
+https://github.com/AlvarVG[Alvar Viana Gomez],
+https://github.com/Naros[Chris Cranford],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/nrkljo[Lars M. Johansson],
+https://github.com/mly-zju[Lingyang Ma], and
+https://github.com/zahid75[Zahid Iqbal]!
