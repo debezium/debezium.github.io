@@ -1,0 +1,139 @@
+---
+layout: post
+title:  "Overcoming Oracle CDC Replication Lag Through Collaboration"
+date:   2026-03-29
+tags: [debezium, oracle, cdc, performance]
+author: nathan-smit-1
+---
+
+:imagesdir: /assets/images/2026-03-29-oracle-cdc-replication-lag
+
+== Introduction
+
+At Pepkor NexTech, we have been using Debezium (with LogMiner) in our Oracle environments for around 4 years, and we currently maintain 12 Oracle instances.
+
+Ingesting from Oracle with LogMiner creates unique challenges, with trade-offs that differ from other synchronous approaches (like trigger-based replication). We want to share how we resolved the resulting bottlenecks and alleviated persistent lag in our largest environment - an ERP system for a major retailer - by working directly with the source database team and DBAs.
+
+== The Problem
+
+
+During the day, we kept up with the database's churn. However, in the evenings, our Grafana lag metric (`LagFromSourceInMilliseconds`) would spike. On closer inspection, the duration of LogMiner fetch queries during this window increased significantly, sometimes taking over an hour before returning records.
+
+image::grafana_formatted_axis.png[image,caption="Grafana formatted axis",width=604,role=centered-image]
+
+We worked with the maintainers to improve the performance, adjusting Debezium parameters like batch size and query fetch size. Unfortunately, these tweaks didn't yield the necessary gains, and over time, query fetch times had increased to such an extent that we were failing to catch up before the next evening's batch load. It became clear that we were hitting the limits of what a purely configuration-based approach could solve with LogMiner.
+
+'''
+
+== Diagnosing the Root Cause - Log Analysis with LogMiner
+
+To isolate which tables were responsible for the change volume, we executed ad hoc LogMiner queries to help us better understand the cause of the churn. First, we retrieved the archive logs for the window where our replication lag was spiking.
+
+[source,sql]
+----
+-- Identify archived logs generated between 7 PM and 9 PM
+SELECT 
+    name,
+    first_time,
+    next_time
+FROM 
+    v$archived_log
+WHERE 
+    first_time >= TO_DATE('2026-03-01 19:00:00', 'YYYY-MM-DD HH24:MI:SS')
+    AND next_time <= TO_DATE('2026-03-01 21:00:00', 'YYYY-MM-DD HH24:MI:SS')
+    AND name IS NOT NULL
+ORDER BY 
+    first_time;
+----
+For each log file, we would start a logminer session and then do a count of the number of changes in each file grouped by table_name and seg_owner. This query is typically performant as it excludes the sql_redo column.
+
+[source,sql]
+----
+BEGIN
+  DBMS_LOGMNR.ADD_LOGFILE(
+    '+FRA/PROD_DB/ARCHIVELOG/2026_03_01/thread_1_seq_99999',
+    DBMS_LOGMNR.NEW
+  );
+  DBMS_LOGMNR.START_LOGMNR(
+    OPTIONS  => DBMS_LOGMNR.DICT_FROM_ONLINE_CATALOG
+  );
+END;
+
+SELECT
+    TABLE_NAME,
+    SEG_OWNER,
+    COUNT(TABLE_NAME) AS TOTAL_COUNT
+FROM
+    V$LOGMNR_CONTENTS
+WHERE
+    TABLE_NAME IS NOT NULL
+GROUP BY
+    TABLE_NAME, SEG_OWNER
+ORDER BY
+    TOTAL_COUNT DESC;
+----
+
+=== Findings
+
+The query results immediately identified the primary contributors to the redo log volume:
+
+[cols="1,1,2,1", options="header"]
+|===
+| Rank | Schema  | Table Name                   | Total Redo Operations
+| 1    | RETAIL  | TEMP_FORECAST_BRANCH_WEEKLY  | 249,926,931
+| 2    | RETAIL  | FORECAST_BRANCH_WEEKLY       | 226,895,633
+| 3    | RETAIL  | UPLD_FORECAST_WEEKLY_GCP     | 45,284,156
+| 4    | LOOKUP  | SKU_REFERENCE_DATA           | 32,156,748
+| 5    | UTIL    | TRANSACTION_CHANGE_LOG       | 27,483,921
+| 6    | RETAIL  | FORECAST_BRANCH_MONTHLY      | 18,734,567
+| 7    | LOOKUP  | CATEGORY_MAPPING_TABLE       | 16,521,734
+| 8    | UTIL    | EVENT_TRANSACTION_LOG        | 14,892,482
+| 9    | LOOKUP  | SECURITY_REFERENCE_DATA      | 13,457,756
+| 10   | LOOKUP  | ATTRIBUTE_LOOKUP_TABLE       | 12,784,429
+|===
+
+The top two tables — `TEMP_FORECAST_BRANCH_WEEKLY` and `FORECAST_BRANCH_WEEKLY` — collectively accounted for approximately *476.8 million redo operations*, representing the overwhelming majority of log volume within the analysis window. Zooming out, we discovered this represented a sizable percentage of the database's *overall* daily churn. Even though these tables were not in our `table.include.list`, the sheer amount of logging generated required LogMiner to churn through hundreds of millions of events, drastically slowing down our fetch queries.
+
+
+image::redo_log_churn_by_table.png[image,caption="Redo Log Churn Over Time",width=604,role=centered-image]
+
+== Root Cause Analysis
+
+=== The Source Process
+
+The activity was traced to a nightly data refresh job implemented as a Korn shell (`.ksh`) script. The script was originally designed to ingest flat files into the database and populate a set of materialized views for downstream consumption.
+
+=== The Impact of Truncate-and-Load on LogMiner
+
+The script was executing a sequence that efficiently dropped and recreated materialized view data. While this established approach worked well for batch-oriented architectures with trigger-based replication, it inadvertently created a heavy workload for our continuous LogMiner process, which had to sequentially read through and parse all the generated logs.
+
+A full truncate followed by a reload causes every row inserted into the target table to be recorded as a distinct insert event in the redo log, irrespective of whether that row's data actually changed. For a table containing 100 million rows where only 500 rows have genuinely changed, a truncate-and-load still generates 100 million inserts that the LogMiner utility needs to fetch.
+
+== Remediation
+
+=== Collaborating With the Source Team
+
+We reached out to the source development team to better understand the underlying business requirements of the nightly job. 
+
+They were highly receptive, and once we explained the impact on CDC performance, both teams quickly aligned on evolving the ingestion from a truncate-and-load approach to a targeted merge-based pattern.
+
+=== Step 1 — DDL Restructuring
+
+The materialized view was dropped and replaced with a standard permanent table. An Oracle External Table was created, pointed directly at the working directory where the flat files are deposited. This eliminates the intermediate staging load entirely, allowing the database engine to query the source files directly.
+
+=== Step 2 — Merge-Based Ingestion
+
+The shell script logic was replaced with a PL/SQL procedure leveraging a `MERGE INTO` statement. To handle cases where the source flat files contained multiple records for the same key, an analytic deduplication step was applied using `ROW_NUMBER() OVER (PARTITION BY ... ORDER BY last_update_date DESC)` prior to the merge.
+
+With this approach, only rows that have genuinely been inserted or modified generate corresponding redo events.  This reduced log volume to the true delta of changes rather than a full-table reconstruction.
+
+== Outcome
+
+Following the deployment of the merge-based procedure, we saw an immediate and significant improvement in query times. By aligning the generated redo logs with the actual change rate of the underlying data, replication lag was improved and the database's overall compute overhead was substantially reduced.
+
+image::last_duration_fetch_query_overlay.png[image,caption="Last duration of fetch query comparison",width=604,role=centered-image]
+As you can see by overlaying the metrics, there was a drastic reduction of load. Even though there are still some more expensive query cases taking over 10 minutes in the new implementation (peaking at ~12.3 minutes), the maximum duration plummeted from 95 minutes (5,700,000 ms). Furthermore, the average query time during the evening load window (from 7pm onwards) settled around 2.26 minutes (135,615 ms), completely avoiding the massive multi-hour replication lag previously experienced as LogMiner struggled to catch up.
+
+This experience reinforces something often repeated by both the community and the maintainers of Debezium: Logminer performance is directly coupled to the behaviour of the source database, meaning design choices made upstream have real consequences for CDC throughput downstream.
+
+When replication lag persists despite configuration tuning, the next step may be to have a conversation with the source team. The most resilient Oracle CDC environments tend to be those where data engineers and DBAs treat data loading patterns as a shared concern rather than problems that sit on either side of a boundary.
