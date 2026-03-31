@@ -1,0 +1,814 @@
+---
+layout: post
+title:  Debezium 3.5.0.Final Released
+date:   2026-03-31
+tags:   [ releases, mongodb, mysql, mariadb, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox, spanner, jdbc, informix, ibmi, cockroachdb ]
+author: ccranfor
+extraClasses: release-v2
+---
+
+After many months of hard work from the Debezium community, we're incredibly excited to announce the immediate availability of **Debezium 3.5.0.Final**!
+This release delivers a significant set of new features and improvements across the entire portfolio.
+
++++<!-- more -->+++
+
+Let's take a closer look at what's new in Debezium 3.5 and what you should be aware of before making the jump from Debezium 3.4 or earlier.
+
+* link:#breaking-changes[Breaking changes]
+* link:#new-features-and-improvements[New features and improvements]
+* link:#other-changes[Other changes]
+* link:#whats-next[What's next?]
+
+[id="breaking-changes"]
+== Breaking changes
+
+With any new release of software, there are often several breaking changes.
+This release is no exception, so let's discuss the major changes you should be aware of before upgrading to **Debezium 3.5.0.Final**.
+
+=== Debezium Code Reorganization
+
+As the team continues to focus on new features and solutions in the portfolio, sometimes it's inevitable that code may need to be reorganized.
+Contributors and developers may have noticed the removal of `debezium-core` and other modules (https://github.com/debezium/dbz/issues/1616[dbz#1616]).
+
+The `debezium-core` dependency has been split into two independent components:
+
+`debezium-config`::
+Contains all of Debezium's _Configuration_ and _Component_ classes.
+
+`debezium-connector-common`::
+Contains all the remaining classes that were previously in `debezium-core`.
+
+For developers and contributors, be aware that if your code previously directly depended on the following artifacts, they were renamed:
+
+* `debezium-transforms` is now `debezium-connect-plugins`
+* `debezium-common` is now `debezium-util`
+
+[CAUTION]
+====
+For users of Debezium's connectors, be aware that as you upgrade Debezium, be sure that you remove any existing `jar` files from your plugin directory before installing the new version.
+This guarantees that any code reorganization across different versions does not lead to class loader issues.
+====
+
+
+[id="new-features-and-improvements"]
+== New Features and Improvements
+
+The following covers all new features and improvements, grouped by connector or component area.
+
+[cols="25%,23%,28%,24%"]
+|===
+|link:#new-features-and-improvements-debezium-core[Debezium Core]
+|link:#new-features-and-improvements-debezium-db2[Debezium for Db2]
+|link:#new-features-and-improvements-debezium-mysql[Debezium for MySQL]
+|link:#new-features-and-improvements-debezium-oracle[Debezium for Oracle]
+
+|link:#new-features-and-improvements-debezium-sqlserver[Debezium for SQL Server]
+|link:#new-features-and-improvements-debezium-jdbc[Debezium JDBC sink]
+|link:#new-features-and-improvements-debezium-quarkus-extensions[Debezium Quarkus Extensions]
+|link:#new-features-and-improvements-debezium-platform[Debezium Platform]
+
+|link:#new-features-and-improvements-debezium-server[Debezium Server]
+|link:#new-features-and-improvements-debezium-storage[Debezium Storage]
+|link:#new-features-and-improvements-debezium-cassandra[Debezium for Cassandra]
+|link:#new-features-and-improvements-debezium-cockroachdb[Debezium for CockroachDB]
+
+|link:#new-features-and-improvements-debezium-informix[Debezium for Informix]
+|link:#new-features-and-improvements-debezium-vitess[Debezium for Vitess]
+|
+|
+
+|===
+
+[id="new-features-and-improvements-debezium-core"]
+=== Debezium Core
+
+==== New parallel, multithreaded chunked-based snapshots
+
+A few years ago, Debezium introduced its first iteration of parallel snapshotting.
+We're happy to report that the next evolution of this feature is here.
+The new parallel snapshotting implementation takes the existing solution a step further, allowing you to snapshot a single table across multiple threads using chunking (https://github.com/debezium/dbz/issues/1220[debezium/dbz#1220]).
+
+This feature provides several key guarantees:
+
+* All snapshot threads are fully utilized for the entire duration of the snapshot, maximizing resource utilization.
+* All tables, regardless of row count, can take advantage of parallel snapshotting.
+
+The feature is controlled by the following configuration options:
+
+`snapshot.max.threads`::
+The number of threads used to parallelize the snapshot.
+Defaults to `1`.
+
+`snapshot.max.threads.multiplier`::
+A global multiplier that determines how many chunks to create for each table.
+When set to `1` (the default), Debezium computes _(row count / snapshot max threads)_ to determine the number of chunks.
+For example, a table with 1M rows and 4 snapshot threads produces 4 chunks of 250,000 rows each. +
+ +
+In scenarios where you cannot increase the number of snapshot threads but need more granular chunking, increase this multiplier.
+Using the same 1M-row table with 4 threads and a multiplier of 2, Debezium creates 8 chunks of 125,000 rows each.
+
+`snapshot.max.threads.multiplier.<fully_qualified_table_name>`::
+A table-specific multiplier that overrides the global multiplier.
+This allows individual tables to be scaled differently, using more or fewer chunks to accommodate varying table sizes or resource constraints.
+
+[TIP]
+====
+While both the thread count and multiplier can be tuned, increasing the number of threads is generally the most effective way to improve throughput.
+====
+
+You can also use chunk-based snapshotting without parallelism.
+Simply configure one or both `snapshot.max.threads.multiplier` variants to control the chunk count while keeping a single thread.
+
+For existing users who have not set `snapshot.max.threads` or `snapshot.max.threads.multiplier`, connectors will continue to operate exactly as before, using the sequential single-threaded snapshot mechanism.
+No configuration changes are needed.
+
+For users who previously set `snapshot.max.threads` and prefer the older table-per-thread behavior, set `internal.legacy.snapshot.max.threads` to `true`.
+The legacy parallel snapshot feature will remain available for some time but will eventually be removed in favor of the chunk-based approach.
+
+There will be a follow-up post on this feature in the coming days showcasing the performance benefits.
+Stay tuned for that article to understand how the new feature can work best for your environment.
+
+[IMPORTANT]
+====
+The chunk-based parallel snapshot feature has the following limitations:
+
+* Tables that use snapshot select overrides
+* Tables without a primary key
+
+In these cases, the algorithm assigns a single chunk to these tables, effectively falling back to the table-per-thread strategy.
+====
+
+[id="new-features-and-improvements-debezium-db2"]
+=== Debezium for Db2
+
+==== Control maximum timespan for change query
+
+When reading the changes in a very active database with a large numbers of records, this can trigger query-resource limits such as CPU time.
+This can lead to the query being terminated prematurely, leading to a connector crash.
+
+To address this concern, Debezium's Db2 connector introduces a new `straeming.query.timestamp.seconds` configuration property.
+The default of `0` does not apply any timestamp restriction on the query, so it will continue to operate as it does today.
+So for most users, this is a net-zero change (https://github.com/debezium/dbz/issues/1466[debezium/dbz#1466]).
+
+For environments where query-resource limits are an issue, setting this value to anything greater than `1` specifies the maximum number of seconds for a streaming query to include changes for, noting that a value of `1` is not permitted.
+It's recommended for most environments that require this behavior to start with `120` seconds and adjust as needed.
+
+[id="new-features-and-improvements-debezium-mysql"]
+=== Debezium for MySQL
+
+==== Modify binlog offset position using signals
+
+One of the community's most requested features is the ability to adjust a connector's offset position without directly manipulating the offset topic.
+In this release we are starting with MySQL, allowing users to send a signal that changes the offset position (https://github.com/debezium/dbz/issues/1156[debezium/dbz#1156]).
+
+To use this feature, insert a signal into the signal table as shown below.
+The `<data>` payload varies depending on whether the MySQL source database uses GTIDs.
+
+.Inserting a SQL source signal to change the binlog position
+[source,sql]
+----
+INSERT INTO signal_table values ('test_id', 'set-binlog-position', '<data>');
+----
+
+.Data payload when using GTIDs
+[source,json]
+----
+{
+  "gtid_set": "3E11FA47-71CA-11E1-9E33-C80AA9429562:1-100"
+}
+----
+
+.Data payload when not using GTIDs
+[source,json]
+----
+{
+  "binlog_filename": "mysql-bin.000003",
+  "binlog_position": 1234
+}
+----
+
+[NOTE]
+====
+Based on community feedback, we plan to roll this feature out to additional connectors in future releases.
+====
+
+==== Gracefully handle `zero-year` dates
+
+MySQL can be configured to support the storage of dates using zero year format, e.g. `0000-07-15`.
+When such values are stored in the database, the MySQL Binlog Client previous would fail with an invalid date/time exception, which will block the connector from consuming further changes.
+
+The MySQL Binary Log Client will now gracefully handle zero-year values, passing those to Debezium without issues (https://github.com/debezium/dbz/issues/1499[debezium/dbz#1499]).
+
+[id="new-features-and-improvements-debezium-oracle"]
+=== Debezium for Oracle
+
+==== Oracle 26ai compatibility
+
+Debezium is now tested with Oracle 23.26.0.0, and we're pleased to report that the connector is fully runtime compatible (https://github.com/debezium/dbz/issues/1649[debezium/dbz#1649]).
+If you are looking to upgrade your Oracle infrastructure to Oracle 26ai, you can use Debezium as long as you are not relying on any Oracle 26ai-specific features.
+
+[NOTE]
+====
+New features such as BOOLEAN, Property Graphs, Vector data types, and more are not yet supported and will depend on their availability in Oracle LogMiner and XStream.
+====
+
+==== Improved database version resolution
+
+An ongoing concern the community found when moving to Oracle 23ai and 26ai was that the connector failed to resolve the database version.
+This arises because Oracle often changes the database banner with various releases.
+To address this in a more future-proof way, the Oracle connector now will use the JDBC driver's metadata to resolve the database major and minor version (https://github.com/debezium/dbz/issues/1655[dbz#1655]).
+
+==== Oracle memory improvements
+
+The Debezium Oracle connector buffers transaction events due to how its CDC integration with Oracle works.
+This buffer stores column values for each event along with various bookkeeping metadata used for populating the event's `source` information block and managing the buffer lifecycle.
+
+While the buffer's footprint is primarily driven by event column values, we've identified several ways to reduce the bookkeeping overhead — either unconditionally or optionally via configuration (https://github.com/debezium/dbz/issues/1425[debezium/dbz#1425]).
+
+No configuration changes are required for existing users.
+You should see approximately a *50% reduction* in the buffer's bookkeeping footprint, which translates to a lower overall memory footprint for your connector deployment.
+The improvement is especially noticeable in environments with large transactions.
+
+[TIP]
+====
+An additional 8% bookkeeping reduction can be achieved by setting `log.mining.buffer.track.rs_id` to `false`.
+This is only recommended if you do not need `source.rs_id` populated in your change events.
+====
+
+For a deeper look at the impact of these changes, see the https://github.com/debezium/debezium/pull/7065[pull request] description.
+
+==== Log mining performance improvements
+
+When Debezium is stopped, the database continues to write changes to its transaction logs.
+Depending on how long the connector remains offline, a substantial number of transaction logs may accumulate.
+Previously, when the connector restarted, it would append all available logs to the mining session, and depending on log size and volume, catching up could take several minutes or even hours.
+
+Debezium now computes the lower and upper mining boundaries and only appends the logs that fall within this range when using the `online_catalog` and `hybrid` mining strategies (https://github.com/debezium/dbz/issues/1279[debezium/dbz#1279]).
+With well-configured `log.mining.batch.size.*` properties, this significantly reduces the I/O overhead performed by LogMiner, allowing changes to be mined faster and processed more efficiently.
+
+This also benefits scenarios where the database experiences a high burst of activity and generates multiple transaction logs in a short period.
+
+==== New LogMiner advancement strategy
+
+Some Oracle environments inevitably have long-running or large transactions that cannot be avoided.
+Due to LogMiner's requirements, Debezium interacts with it in a way that guarantees transaction and data consistency, but this can delay low watermark advancement.
+
+Debezium introduces a new time-based threshold to control the low watermark advancement (https://github.com/debezium/dbz/issues/1553[debezium/dbz#1553]).
+This feature works similar to transaction retention; however, rather than discarding the transaction, it is retained but the low watermark is advanced.
+Enable this feature by setting `log.mining.window.max.ms` to any value greater than zero.
+
+[WARNING]
+====
+LogMiner has specific requirements to guarantee data consistency.
+Advancing the SCN with this feature introduces risks because the connector no longer operates based on requirements.
+This can lead to transactions that fail to commit, events that appear as unsupported operations, or other LogMiner anomalies.
+
+Using this feature acknowledges the above risks.
+Please carefully evaluate the trade-offs before enabling it in any production pipeline.
+====
+
+==== Incremental snapshot performance improvements
+
+Debezium's incremental snapshot process relies heavily on primary key indexes for efficient row lookup between a chunk's lower and upper boundaries.
+As table sizes grow, this efficiency becomes increasingly critical.
+
+A common source of performance degradation with incremental snapshots involves composite keys on very large tables.
+The SQL predicates required to locate rows between boundaries with composite keys are complex, and not every database engine can optimize them to efficiently use the primary key index.
+
+For Oracle, one way to improve performance is to use `ROWID`, a unique byte offset for each row, instead of the primary key index.
+This bypasses the index entirely and operates at the lowest level of the database to isolate the target chunk of rows during incremental snapshots (https://github.com/debezium/dbz/issues/1108[debezium/dbz#1108]).
+
+==== Dynamic Archive Destination Support
+
+When an Oracle primary server fails over to a standby server, it's very likely that Debezium has not read all the changes from the transaction logs on the primary when the failover occurs.
+As a result, when the standby is promoted to the primary, it will begin to write changes to a new archive destination.
+
+When Debezium reconnects to the newly promoted primary, Debezium will attempt to locate where it left off, and fail to start.
+This failure to start issue is a result of the fact that the primary changes that were not consumed by Debezium exist in the archive destination specific to the standby system being in standby-mode, not primary-mode.
+
+To solve this issue, the `archive.destination.name` configuration property can be supplied a series of comma-separated archive destination names.
+When multiple names are supplied, Debezium will gather logs across all configured destinations and perform a deduplication pass by redo thread and log sequence pairs.
+This deduplication pass will prefer logs in earlier destinations from logs in later destinations that have the same thread and sequence pair.
+
+With this change, Debezium is significantly more fault-tolerant during a primary to standby failover and recovers without the need for a snapshot, as long as there is no data loss at the transaction log level between the two systems (https://github.com/debezium/dbz/issues/1246[debezium/dbz#1246]).
+
+[id="new-features-and-improvements-debezium-sqlserver"]
+=== Debezium for SQL Server
+
+==== Managed identity support
+
+The SQL Server connector now supports identity-based authentication via the `driver.authentication` configuration property (https://github.com/debezium/dbz/issues/1153[debezium/dbz#1153]).
+Set this property to `ActiveDirectoryManagedIdentity` or the legacy `ActiveDirectoryMSI` to connect to Azure SQL databases.
+
+==== Improved transaction metadata handling
+
+Debezium has historically lacked a reliable way to identify when SQL Server transactions end.
+As a result, the transaction `END` marker was emitted only after the first event of the next transaction, leading to delayed delivery in low-traffic systems when using `provide.transaction.metadata`.
+
+Debezium addresses this by using `dm_cdc_log_scan_sessions` to detect when transactions have completed (https://github.com/debezium/dbz/issues/1604[debezium/dbz#1604]).
+This allows `END` markers to be emitted more promptly, particularly in low-traffic environments.
+
+[NOTE]
+====
+This improvement only applies to connectors deployed with `provide.transaction.metadata` enabled.
+It is fully managed by Debezium — no additional configuration changes are needed.
+====
+
+[id="new-features-and-improvements-debezium-jdbc"]
+=== Debezium JDBC sink
+
+==== PostgreSQL unnest support
+
+PostgreSQL's `UNNEST` function expands an array into a set of rows, and the Debezium JDBC sink connector can now leverage it.
+Enable this for `insert` and `upsert` modes by setting `dialect.postgres.unnest.insert.enabled` to `true` (https://github.com/debezium/dbz/issues/1525[debezium/dbz#1525]).
+
+The unnest function allows the JDBC sink connector to write multiple rows in a single JDBC SQL operation, reducing overhead and significantly increasing write throughput.
+
+There are several limitations to be aware of:
+
+* Update and delete operations continue to use the standard JDBC batch mechanism.
+* PostgreSQL imposes an upper limit of 65,535 parameters per statement. For tables with many columns, be mindful of the batch size to avoid exceeding this limit.
+* Batches containing a single row fall back to the standard `INSERT INTO ... ON CONFLICT` syntax, as unnest provides no benefit for single-row operations.
+* Because unnest requires all rows in a batch to share the same schema, any change in a table's column count forces an early flush of the buffer.
+
+For most environments, these limitations won't be encountered, but they're worth keeping in mind.
+
+==== IBMi support
+
+As Debezium's source connector portfolio continues to grow, our goal is to provide comprehensive parity with the JDBC sink to enable full homogeneous replication between the same source and target databases.
+With that in mind, the Debezium JDBC sink connector now supports IBMi target databases (https://github.com/debezium/dbz/issues/1497[debezium/dbz#1497]).
+
+[id="new-features-and-improvements-debezium-quarkus-extensions"]
+=== Debezium Quarkus Extensions
+
+==== Extensions relocated
+
+One of the biggest changes in Debezium 3.5 is the relocation of the Debezium Quarkus extensions, which includes both the connector and outbox extensions.
+All of Debezium's Quarkus-related modules are now found in the https://github.com/debezium/debezium-quarkus[Debezium Quarkus] repository.
+
+[IMPORTANT]
+====
+All artifacts previously released in Debezium 3.4 using the `quarkus-debezium-XYZ` naming convention have been renamed.
+Please be sure to update your dependencies to reflect the artifacts named as `debezium-quarkus-XYZ`.
+The dependency `groupId` was unchanged.
+====
+
+[NOTE]
+====
+In a future build, the Debezium Quarkus Extensions will be unbundled from the main Debezium release pipeline, and instead will be released with a similar cadence to the upstream https://quarkus.io[Quarkus] project.
+This will provide an improved parity between extension changes and Quarkus releases.
+====
+
+==== Support for Db2 and Oracle
+
+The Debezium Quarkus extensions also now include an implementation for Debezium's Db2 connector (https://github.com/debezium/dbz/issues/1447[debezium/dbz#1447]), and Oracle connector (https://github.com/debezium/dbz/issues/1389[debezium/dbz#1389]).
+In a Quarkus application that uses either of these databases, developers can now respond to real-time changes by simply including the new extension module:
+
+.Debezium Db2 extension maven coordinates
+[source,xml]
+----
+<dependency>
+  <groupId>io.debezium.quarkus</groupId>
+  <artifactId>debezium-quarkus-db2</artifactId>
+  <version>v3.5.0.Final</version>
+</dependency>
+----
+
+.Debezium Oracle extension Maven coordinates
+[source,xml]
+----
+<dependency>
+  <groupId>io.debezium.quarkus</groupId>
+  <artifactId>debezium-quarkus-oracle</artifactId>
+  <version>v3.5.0.Final</version>
+</dependency>
+----
+
+==== Batch processing handlers
+
+In previous releases, an extension handler typically processed events one at a time using `CaptureEvent`:
+
+.Handling one change event at a time with CaptureEvent
+[source,java]
+----
+@ApplicationScoped
+public class CaptureHandler {
+    @Capturing
+    public void capture(CaptureEvent<SourceEvent, SourceEvent> event) {
+    }
+}
+----
+
+This approach works well when you want to process single-events, but it does not scale to other scenarios where operating on a batch of events is more efficient.
+A new capturing object class, `CapturingEvents`, can now be used for batch processing (https://github.com/debezium/dbz/issues/1484[debezium/dbz#1484]):
+
+.Handling a batch of changes with CapturingEvents
+[source,java]
+----
+@ApplicationScoped
+public class CaptureHandler {
+    @Capturing
+    public void capture(CapturingEvents<BatchEvent> events) {
+        events.records().forEach(event -> event.commit());
+    }
+}
+----
+
+[TIP]
+====
+This is ideal for consumers/handlers that need to aggregate across a batch of events or where it is more efficient to group multiple events together and write them in bulk.
+====
+
+==== Non-native compatibility for non-implemented Debezium sources
+
+One of the Debezium Quarkus Extension's goals is to provide native build solutions for Debezium's connectors.
+But as we begin to look at moving Debezium Server to be based on the Debezium Quarkus Extension framework, there are a number of source connectors that do not presently have native-build capabilities, and we do not want this to be a limitation.
+
+Debezium introduces a new compatibility layer that allows running Debezium source connectors that are not natively implemented in the extension framework.
+This provides a solid foundation not only for Debezium Server, but to running any Debezium source connector within Quarkus, as long as using non-native builds is acceptable (https://github.com/debezium/dbz/issues/1612[dbz#1612]).
+
+For example, in a Quarkus application to use the Debezium Informix connector, which currently does not have a native build option, you would add the following dependencies:
+
+[source,xml]
+----
+<!-- add the Debezium Quarkus Engine -->
+<dependency>
+    <groupId>io.debezium</groupId>
+    <artifactId>debezium-quarkus-engine</artifactId>
+</dependency>
+
+<!-- add the Debezium-ready Connector for your datasource -->
+<dependency>
+    <groupId>io.debezium</groupId>
+    <artifactId>debezium-connector-informix</artifactId>
+</dependency>
+----
+
+==== Automate Cache Invalidation with Hibernate
+
+A second-level cache, aka (L2C), and search indexes can boost an application's performance, but the information in these data stores can quickly become stale when changes are made to the data outside the scope of Hibernate ORM.
+Debezium can help in this gap by capturing the external changes from the transaction log and trigger a near-real-time eviction of the affected cache entries.
+This is the basis for an older blog post about https://debezium.io/blog/2018/12/05/automating-cache-invalidation-with-change-data-capture/[Automating Cache Invalidation with Change Data Capture].
+
+The new Debezium Quarkus Hibernate Cache module is a Quarkus solution built using Debezium's Quarkus Extensions, capturing change events from a Debezium source connector, and directly interacts with Hibernate's second-level cache to handle eviction seamlessly (https://github.com/debezium/dbz/issues/1522[dbz#1522]).
+
+To get started, add the following dependency to any Quarkus project:
+
+[source,xml]
+----
+<dependency>
+  <groupId>io.debezium</groupId>
+  <artifactId>debezium-quarkus-hibernate-cache</artifactId>
+  <version>3.5.0.CR1</version>
+</dependency>
+----
+
+Inside your Quarkus `application.properties` file simply supply the necessary Quarkus Hibernate configuration for the second-level cache along with your data source information, and as database changes occur for your cached entities, they'll automatically be evicted so that on the next ORM fetch, the cache is refreshed with the latest data.
+
+==== JBang Support
+
+Debezium introduces JBang support as an easy way to integrate Debezium's Quarkus extensions (https://github.com/debezium/dbz/issues/1464[debezium/dbz#1464]).
+This requires Java 21 or later, JBang 0.132.1 or later, and a containerized environment for local services.
+
+To get started quickly, the https://github.com/debezium/jbang-catalog[Debezium JBang catalog] needs to be added.
+
+++++
+<script src="https://asciinema.org/a/770262.js" id="asciicast-770262" async="true"></script>
+++++
+
+There are templates available for the following data sources: `postgres`, `mysql`, `mongodb`, `sqlserver`, `mariadb`.
+There will be additional data sources added over time.
+
+[id="new-features-and-improvements-debezium-platform"]
+=== Debezium Platform
+
+==== First-time guided tour
+
+When exploring new software for the first time, a guided tour can be a great way to quickly become familiar with what the solution offers.
+
+One of our most recent implementations in Debezium's Platform UI is a guided walkthrough (https://github.com/debezium/dbz/issues/1244[debezium/dbz#1244]).
+The tour offers two modes: a quick guide for a rapid overview, or an advanced tour that walks you through creating a new pipeline step by step.
+
+.A demonstration of the guided through in action
+video::https://github.com/user-attachments/assets/5ef49099-e52b-401b-a407-9cc17063b13d[width=100%,align="center"]
+
+==== Support for HTTPS-based URLs
+
+Users who may be using HTTPS via Traefik, ALB, or similar tooling, the current Helm chart setup lead to a series of errors when using secure connections.
+To provide TLS-based connectivity, the following configuration options were introduced (https://github.com/debezium/dbz/issues/36[debezium/dbz#36]):
+
+.New Helm charts configuration properties
+[cols="30%,70%,20%"]
+|===
+|Property |Description |Default
+
+|`domain.name`
+|Represents the domain used as ingress host
+|`""`
+
+|`ingress.enabled`
+|Enable ingress resource for conductor/stage
+|`true`
+
+|`ingress.className`
+|Optional ingress class name
+|`"""`
+
+|`ingress.annotations`
+|Extra ingress annotations
+|`{}`
+
+|`ingress.tls.enabled`
+|Enable TLS section on ingress
+|`false`
+
+|`ingress.tls.secretName`
+|Secret name used when TLS is enabled
+|`""`
+
+|===
+
+There are also some deprecated configuration properties.
+
+.Deprecated Helm charts configuration properties
+[cols="30%,70%,20%"]
+|===
+|Property |Description |Default
+
+|`domain.url`
+|This was replaced by `domain.name`
+|`""`
+
+|===
+
+==== Connection Validation Improvements
+
+There has been a tremendous amount of work by the community lately to introduce a variety of validators for the Debezium Platform.
+These validators are vital to making sure that when setting up a connection, the credentials are valid, saving time by identifying problems before deployment of your connector pipeline.
+
+The following validators have been included in this release:
+
+* Infinispan (https://github.com/debezium/dbz/issues/1089[dbz#1089])
+* NATS Streaming (https://github.com/debezium/dbz/issues/1090[dbz#1090])
+* Pravega (https://github.com/debezium/dbz/issues/1091[dbz#1091])
+* Qdrant (http://github.com/debezium/dbz/issues/1098[dbz#1098])
+* RabbitMQ (https://github.com/debezium/dbz/issues/1093[dbz#1093])
+
+These are just the first wave of validators, and more are already in the pipeline or planned for future releases.
+
+==== Improved database tree view performance
+
+As part of our internal testing of the Debezium Platform, we identified several corner cases where specific databases or specific configurations could lead to performance issues when setting up your include/exclude lists in the user interface.
+
+To address the issue, we've moved to using a new _Virtualized TreeView_ solution that provides significantly better overall performance with large data sets and reduces the memory footprint in the browser (https://github.com/debezium/dbz/issues/1710[dbz#1710]).
+
+[id="new-features-and-improvements-debezium-server"]
+=== Debezium Server
+
+==== NATS JetStream configurable naming
+
+The Debezium Server NATS JetStream stream name can now be configured through the `debezium.sink.nats-jetstream.stream-name` deployment property.
+This property is optional and remains backward compatible — existing deployments continue to use the default `DebeziumStream` (https://github.com/debezium/dbz/issues/1581[debezium/dbz#1581]).
+
+This change enables multiple Debezium Server instances to share the same NATS JetStream.
+
+==== Jetstream retries on failures
+
+Currently, when Debezium Server publishes to NATS and the queue is full due to some limitations like message or byte limits, Debezium Server currently throws an exception and terminates.
+In order to make integration with NATs more fault tolerant, the following additional configuration options have been introduced, allowing the Jetstream NATS adapter to handle retries natively (https://github.com/debezium/dbz/issues/1494[debezium/dbz#1494]):
+
+.New configuration property for NATS Jetstream adapter
+[cols="30%,70%,20%"]
+|===
+|Property |Description |Default
+
+|`sync.retries`
+|Specifies the number of retries
+|`5`
+
+|`sync.retry.interval.ms`
+|The number of milliseconds to wait between retries.
+|`1000`
+
+|`sync.retry.max.interval.ms`
+|The maximum number of milliseconds to wait between retries.
+|`60000`
+
+|`sync.retry.backoff.multiplier`
+|The back-off multiplier to scale the retry interval over attempts.
+|`2.0`
+
+|===
+
+[NOTE]
+====
+All configuration options should be prefixed with `debezium.sink.nats-jetstream`.
+====
+
+[id="new-features-and-improvements-debezium-storage"]
+=== Debezium Storage
+
+==== Sovereign cloud support
+
+The `AzureBlobSchemaHistory` custom storage implementation now supports sovereign clouds.
+This feature can be anebled by configuring `azure.storage.account.blob.endpoint` to reference the appropriate sovereign endpoint (https://github.com/debezium/dbz/issues/1659[debezium/dbz#1659]).
+For example, use `+https://<account>.blob.core.usgovcloudapi.net+` for Azure Government.
+No additional configuration is necessary.
+
+[id="new-features-and-improvements-debezium-cassandra"]
+=== Debezium for Cassandra
+
+==== JMX metric to track commit log size
+
+A new Cassandra streaming JMX metric, `CdcDirectoryTotalBytes`, is now available to track the total bytes of all files in the commit log directory (https://github.com/debezium/dbz/issues/1618[debezium/dbz#1618]).
+
+[id="new-features-and-improvements-debezium-cockroachdb"]
+=== Debezium for CockroachDB
+
+==== Initial snapshot support
+
+The CockroachDB connector now supports `snapshot.mode` (https://github.com/debezium/dbz/issues/1627[debezium/dbz#1627]).
+This allows users to snapshot or backfill historical data from the source database, just like other relational and non-relational connectors.
+The feature builds on the `initial_scan` behavior provided by CockroachDB's change stream technology.
+
+==== Multi-table concurrent streaming
+
+In earlier builds, the CockroachDB connector created one change stream per table.
+While functional, CockroachDB recommends keeping the number of changefeed jobs below 80 per cluster, a limit that can be quickly reached in environments with many tables.
+
+Users can now capture changes from multiple tables using a single changefeed job (https://github.com/debezium/dbz/issues/1628[debezium/dbz#1628]).
+This aligns with CockroachDB's recommended thresholds and improves overall throughput of the event capture process.
+
+==== Schema change support
+
+This release introduces schema change tracking, where the connector maintains a schema history and relational model just like other relational connectors (https://github.com/debezium/dbz/issues/1629[debezium/dbz#1629]).
+As tables are added, modified, or removed, Debezium now tracks those changes as part of its CDC implementation.
+
+==== Emit heartbeats based on database resolved timestamps
+
+Debezium uses heartbeats to handle idle periods with no activity, preventing stale offsets that can lead to issues such as offset commit lag, stale monitoring data, or unavailable offset positions on connector restart.
+CockroachDB handles this natively through the changefeed's resolved timestamp feature (https://github.com/debezium/dbz/issues/1631[debezium/dbz#1631]):
+
+[source,sql]
+----
+CREATE CHANGEFEED FOR ... WITH RESOLVED = '10s';
+----
+
+A resolved timestamp means all changes up to that point have been emitted, which fundamentally acts as a heartbeat.
+To enable this, set `heartbeat.interval.ms` to a positive, non-zero value.
+When the connector observes these resolved timestamp events, rather than discarding them, it extracts the timestamp and constructs a standard Debezium heartbeat event with up-to-date offset details.
+
+==== Incremental snapshot support
+
+The adhoc incremental snapshot feature is now available for the CockroachDB connector (https://github.com/debezium/dbz/issues/1630[dbz#1630]).
+This feature allows for on-demand concurrent snapshots of historical data while actively capturing near real-time changes.
+
+For information on how to use the new feature with the CockroachDB connector, please see the project's https://github.com/debezium/debezium-connector-cockroachdb?tab=readme-ov-file#incremental-snapshots[README.md].
+Formal documentation for the connector is in progress and will be provided in a future update.
+
+[id="new-features-and-improvements-debezium-informix"]
+=== Debezium for Informix
+
+==== Support for Informix driver v15
+
+The Informix JDBC driver has been upgraded to a version that supports Informix 12, 14, and 15.
+This should be a drop-in replacement for Informix environments using any one of the supported Informix versions (https://github.com/debezium/dbz/issues/1622[dbz#1622]).
+
+==== Omit empty transaction metadata events
+
+When `provide.transaction.metadata` is enabled, most consumers are only interested in transactions that contain events matching the connector's include list.
+
+A new configuration option, `cdc.return.empty.transactions`, has been added for Informix to control whether empty transactions should be returned by the connector (https://github.com/debezium/dbz/issues/1587[debezium/dbz#1587]).
+This feature is disabled by default, meaning the Informix transaction metadata topic provides data similar to other Debezium relational connectors.
+
+[NOTE]
+====
+In previous versions, this was enabled by default.
+To restore this behavior to emit empty transactions, this option must be explicitly re-enabled by setting `cdc.return.empty.transactions` to `true`.
+====
+
+[id="new-features-and-improvements-debezium-vitess"]
+=== Debezium for Vitess
+
+==== Improved transaction ordering with epoch
+
+The Vitess connector can provide https://debezium.io/documentation/reference/stable/connectors/vitess.html#vitess-ordered-transaction-metadata[transaction order metadata] to help downstream consumers process change events in the correct order.
+This is particularly important during operations like repartitioning.
+
+In these cases, the epoch value needs to be incremented to ensure downstream consumers rank and order events correctly.
+A new configuration property, `vitess.connector.generation`, can be increased when making changes that impact ordering semantics.
+Updating this value triggers an automatic epoch update on connector restart.
+
+
+[id="other-changes"]
+== Other fixes
+
+Here are several noteworthy additional fixes made in Debezium 3.5:
+
+* Exception ORA-00310 with RAC and archive log only mode (https://github.com/debezium/dbz/issues/745[debezium/dbz#745])
+* A rolled back transaction mined in two steps sometimes leads to partial transaction id (https://github.com/debezium/dbz/issues/1145[debezium/dbz#1145])
+* Savepoint (Partial) rollback not handled correctly for tables with LOB columns (https://github.com/debezium/dbz/issues/1422[debezium/dbz#1422])
+* Cassandra connector return wrong value for DATE columns (https://github.com/debezium/dbz/issues/1486[debezium/dbz#1486])
+* RedisOffsetBackingStore: Race condition causes infinite NullPointerException loop on reconnect leading to unrecoverable state (https://github.com/debezium/dbz/issues/1488[debezium/dbz#1488])
+* pg_stat_replication.flush_lsn can move backwards when lsn.flush.mode=connector_and_driver (https://github.com/debezium/dbz/issues/1489[debezium/dbz#1489])
+* JDBC Sink Connector fails to insert JSON data into MariaDB (https://github.com/debezium/dbz/issues/1492[debezium/dbz#1492])
+* Connector cannot handle uncompressed transaction payloads beyond 2GB (https://github.com/debezium/dbz/issues/1503[debezium/dbz#1503])
+* When using default value for event.processing.failure.handling.mode (fail), data conversion exceptions are swallowed and the connector keeps on running (https://github.com/debezium/dbz/issues/1508[debezium/dbz#1508])
+* ReselectPostProcessor does not account for CustomConverter(s) (https://github.com/debezium/dbz/issues/1527[debezium/dbz#1527])
+* Thread-safety issue in MongoDB connector causes incorrect source.collection metadata during parallel snapshot (https://github.com/debezium/dbz/issues/1531[debezium/dbz#1531])
+* Log mining lower boundary does not update until a log switch (https://github.com/debezium/dbz/issues/1560[debezium/dbz#1560])
+* Implicit nullability in DDL (ALTER TABLE ... CHANGE ...) not respected by MySQL connector (https://github.com/debezium/dbz/issues/1568[debezium/dbz#1568])
+* ORA-03049 raised when querying archive logs (https://github.com/debezium/dbz/issues/1579[debezium/dbz#1579])
+* Event loss when Kafka producer fails (e.g. delivery.timeout.ms exceeded) (https://github.com/debezium/dbz/issues/1610[debezium/dbz#1610])
+* InformixStreamingChangeEventSource can cause NullPointerException (https://github.com/debezium/dbz/issues/1653[debezium/dbz#1653])
+* PostgreSQL pgvector sparsevec parsing fails on empty vectors (e.g., {}/5), incorrectly emitting null (https://github.com/debezium/dbz/issues/1671[debezium/dbz#1671])
+* Unable to parse DML for CDC after initial snapshot on a table with ROW ARCHIVAL enabled (https://github.com/debezium/dbz/issues/1676[debezium/dbz#1676])
+* PgOutputMessageDecoder corrupts multi-byte UTF-8 table/column names during CDC streaming (https://github.com/debezium/dbz/issues/1682[debezium/dbz#1682])
+* Informix connector DELETE does not unwatch properly (https://github.com/debezium/dbz/issues/1704[debezium/dbz#1704])
+* Fix MongoDB connector crash loop when snapshot is interrupted (https://github.com/debezium/dbz/issues/1708[debezium/dbz#1708])
+* SQL Server connector with initial_only snapshot mode gets stuck in infinite retry loop when database name is invalid (https://github.com/debezium/dbz/issues/1717[debezium/dbz#1717])
+* Duplicate END records of a transaction (https://github.com/debezium/dbz/issues/1724[debezium/dbz#1724])
+* MicroTimestamp.java throws NullPointerException on JDK 25 when converting timestamp columns (https://github.com/debezium/dbz/issues/1732[debezium/dbz#1732])
+* A wrong connector class causes Debezium Server startup to loop infinitely (https://github.com/debezium/dbz/issues/1335[debezium/dbz#1335])
+
+In total, https://github.com/orgs/debezium/projects/5/views/6?query=sort%3Aupdated-desc+is%3Aopen&filterQuery=status%3AReleased,Done+iteration%3A3.5.0.Final,3.5.0.CR1,3.5.0.Beta2,3.5.0.Beta1,3.5.0.Alpha1[216 issues] were resolved in Debezium 3.5.
+The list of changes can also be found in our link:/releases/3.5/release-notes[release notes].
+
+A big thank you to all the contributors from the community who worked diligently on this release:
+ +
+https://github.com/abusquets[Alexandre Busquets],
+https://github.com/AlvarVG[Alvar Viana Gomez],
+https://github.com/loveaj-ajbell[Andrew Love],
+https://github.com/aofisherzg[Andrew Ofisher],
+https://github.com/VanKhanhAnny[Anny Dang],
+https://github.com/gmarav05[Aravind],
+https://github.com/archiedx[archie david],
+https://github.com/archiedx[Archie David],
+https://github.com/arturalbov[Artur Albov],
+https://github.com/atorik[Atsushi Torikoshi],
+https://github.com/kebab-mai-haddi[Aviral Srivastava],
+https://github.com/redboyben[Benoit Audigier],
+https://github.com/b-goyal[Bhagyashree Goyal],
+https://github.com/Binayak490-cyber[Binayak Das],
+https://github.com/chirag-brevo[chirag-brevo],
+https://github.com/Naros[Chris Cranford],
+https://github.com/cjbooms[Conor Gallagher],
+https://github.com/div-dev123[Divyansh Agrawal],
+https://github.com/d1vyanshu-kumar[Divyanshu Kumar],
+https://github.com/duncan-prince[Duncan Prince],
+https://github.com/fleski-amzn[Filip Leski],
+https://github.com/gaurav7261[gaurav miglani],
+https://github.com/kmos[Giovanni Panice],
+https://github.com/seanshi007[Guangnan Shi],
+https://github.com/gunnarmorling[Gunnar Morling],
+https://github.com/haydarmiezanie/Haydar[Miezanie Abdul Jamil],
+https://github.com/ianmuge[Ian Muge],
+https://github.com/indraraj[Indra Shukla],
+https://github.com/IssamElNass[Issam El Nasiri],
+https://github.com/JerryGao0805[JerryGao0805],
+https://github.com/Hisoka-X[Jia Fan],
+https://github.com/jiangzzhu[Jiang Zhu],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/kartikangiras[Kartik Angiras],
+https://github.com/nrkljo[Lars M. Johansson],
+https://github.com/mly-zju[Lingyang Ma],
+https://github.com/MV-GH[Maarten Vercruysse],
+https://github.com/mfvitale[Mario Fiore Vitale],
+https://github.com/msillence[Martin Sillence],
+https://github.com/mrtworo[Mateusz Tworek],
+https://github.com/mhejnas[Matt Hejnas],
+https://github.com/michael2893[Michael Terranova],
+https://github.com/KMohnishM[Kodukulla Mohnish Mythreya],
+https://github.com/nathan-smit-1[Nathan Smit],
+https://github.com/koleo[Nicolas Payart],
+https://github.com/nkokitkar[Nikita Kokitkar],
+https://github.com/ochedru[Olivier Chédru],
+https://github.com/Day-dreamer0[Rajender Passi],
+https://github.com/rk3rn3r[René Kerner],
+https://github.com/roldanbob[Robert Roldan],
+https://github.com/rophy[Rophy Tsai],
+https://github.com/rudi-bruchez[Rudi Bruchez],
+https://github.com/sonagaras[Sarthak Sonagara],
+https://github.com/shinsj4653[Seongjun Shin],
+https://github.com/kinolaev[Sergei Nikolaev],
+https://github.com/shishir2001-yb[Shishir Sharma],
+https://github.com/jw-itq[Shiwanming],
+https://github.com/siddhantcvdi[Siddhant Chaturvedi],
+https://github.com/SreedevT[sreedev],
+https://github.com/twthorn[Thomas Thornton],
+https://github.com/vsantonastaso[Vincenzo Santonastaso],
+https://github.com/viragtripathi[Virag Tripathi],
+https://github.com/vjuranek[Vojtech Juranek],
+https://github.com/eisenschmidt[Yannick Eisenschmidt],
+https://github.com/yuanglili[Yuang Li], and
+https://github.com/zahid75[Zahid Iqbal]!
+
+[id="whats-next"]
+== What's next?
+
+The first quarter of 2026 is a perfect reminder of the old idiom "time flies when you're having fun."
+It's hard to believe we're already a quarter of the way through the year, but the maintainers and community have made every moment count, and the love poured into Debezium 3.5 speaks for itself.
+
+Now as we begin to turn our attention to Debezium 3.6, and what lies in store for the end of Q2, we'd like to take a moment and share a sneak peek into what our plans are for that release:
+
+**TBD**
