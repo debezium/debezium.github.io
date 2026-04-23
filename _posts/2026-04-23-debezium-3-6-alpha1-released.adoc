@@ -30,15 +30,19 @@ This release is no exception, so let's discuss the major changes you should be a
 === Debezium for MongoDB
 
 The MongoDB `ExtractNewDocumentState` SMT previously failed with an Avro `SchemaParseException` when collection names started with a digit (for example, `10019_AutoState`), because the generated dotted schema name was validated segment-by-segment by Avro while Debezium's name adjuster only inspected the overall string.
+
 The SMT now derives a schema-level `SchemaNameAdjuster` from the `field.name.adjustment.mode` setting, splits the generated schema name on dots, and sanitizes each segment independently so that invalid leading characters are corrected (e.g., `10019_AutoState` becomes `_10019_AutoState`).
 Because this adjustment only takes effect when `field.name.adjustment.mode` is set to `avro` or `avro_unicode`, users relying on Avro serialization with MongoDB collections whose names contain segments that are not valid Avro identifiers should be aware that emitted schema names will now be altered to conform to Avro rules.
+
 Downstream consumers and schema registry entries may need to be updated accordingly before upgrading (https://github.com/debezium/dbz/issues/305[dbz#305]).
 
 === Debezium for PostgreSQL
 
 The PostgreSQL connector now returns enum values in their logical PostgreSQL sort order rather than their internal storage order, ensuring that the allowed values list in the emitted schema metadata is stable and predictable across connectors and restarts.
+
 Previously, two connectors capturing the same enum type could produce different value orderings, causing Avro schema mismatches for downstream consumers sharing a topic.
 Because the order of enum values in emitted schemas may change after upgrading, users relying on a specific ordering in their schema registry or downstream consumers should review and, if necessary, reconcile their schemas before upgrading ((https://github.com/debezium/dbz/issues/1331[dbz#1331])).
+
 Note that when new values are inserted between existing enum values in PostgreSQL, the resulting allowed values list will reflect that logical position rather than appending to the end.
 
 [id="new-features-and-improvements"]
@@ -76,12 +80,14 @@ The following covers all new features and improvements, grouped by connector com
 ==== Tracking skipped, unchanged events
 
 This release introduces a new streaming metric, `NumberOfUnchangedEventsSkipped`, that tracks how many events were skipped as a result of setting `skip.messages.without.change` to `true`.
+
 Previously, operators had no way to observe the effect of this configuration, making it difficult to reason about filtering behavior or validate expected throughput reductions.
 The metric is exposed consistently across all connectors that support the `skip.messages.without.change` option (https://github.com/debezium/dbz/issues/1026[dbz#1026]).
 
 ==== Docling Transformation
 
 Debezium includes a new single message transformation (SMT) that integrates Docling, allowing selected text fields in change events to be converted into a unified document representation format.
+
 By leveraging Docling's document processing capabilities within the Debezium pipeline, users can normalize and enrich textual content as it streams from source databases to downstream systems.
 This is particularly useful for AI and data integration workflows where consistent, structured document output is required for downstream processing such as indexing, embedding generation, or retrieval-augmented generation ((https://github.com/debezium/dbz/issues/1442[dbz#1442]).
 
@@ -115,6 +121,7 @@ This leads to faster feedback for users and avoids misleading "successful" conne
 
 The MariaDB connector now supports signal-based binlog position adjustment, bringing it on par with the equivalent MySQL capability introduced in https://issues.redhat.com/browse/DBZ-3829[DBZ-3829] (https://github.com/debezium/dbz/issues/1755[dbz#1755]).
 Operators can send a signal to the connector to reposition it to a specific binlog file and offset, or to a particular GTID, allowing events to be re-read from a chosen point in the binlog.
+
 This is particularly useful for recovery scenarios, reprocessing historical changes, or correcting pipelines after downstream issues, without having to resort to manual offset manipulation.
 
 [id="new-features-and-improvements-debezium-mysql"]
@@ -124,6 +131,7 @@ This is particularly useful for recovery scenarios, reprocessing historical chan
 
 The MySQL connector (and MariaDB) now supports a new `gtid.ignore.on.recovery` configuration option that allows the connector to fall back to binlog file/position when GTID-based recovery would otherwise fail (https://github.com/debezium/dbz/issues/1385[dbz#1385]).
 This addresses a common operational pain point where purged or stale GTIDs on the server prevented the connector from resuming, forcing operators to manually reset the stored GTID offset.
+
 When enabled, the flag only affects startup: GTID validation and positioning are skipped, the stale GTID is cleared from the offset, and the connector resumes from the stored binlog coordinates.
 Normal GTID tracking resumes once streaming starts again, so subsequent restarts can rely on fresh GTID state without any further intervention.
 
@@ -134,7 +142,7 @@ Normal GTID tracking resumes once streaming starts again, so subsequent restarts
 
 The Oracle connector's LogMiner batch sizing has been reworked to address long-standing tuning difficulties, particularly in environments with bursty workloads or high-volume activity where the connector could struggle to catch up to near real-time (https://github.com/debezium/dbz/issues/1713[dbz#1713]).
 
-Rather than relying on the hard-to-tune combination of `log.mining.batch.size.*`, `log.mining.sleep.time.*`, and `log.mining.scn.gap.detection.*` properties, the connector now selects mining windows based on log file size and count, providing a more consistent and predictable workload regardless of SCN density.
+Rather than relying on the hard-to-tune combination of `+log.mining.batch.size.*+`, `+log.mining.sleep.time.*+`, and `+log.mining.scn.gap.detection.*+` properties, the connector now selects mining windows based on log file size and count, providing a more consistent and predictable workload regardless of SCN density.
 For the `hybrid` and `online_catalog` mining strategies, a new `log.mining.log.count.min` setting controls the minimum number of logs per redo thread to include in each mining session, while the `redo_log_catalog` strategy continues to read all available logs with a fixed one-second poll interval due to its data dictionary flushing requirements.
 
 [NOTE]
@@ -146,6 +154,7 @@ Users upgrading to this release should review their Oracle connector configurati
 
 The Oracle connector's LogMiner implementation now captures additional metadata for each log file, including its size on disk and the data dictionary start/end markers used by the `redo_log_catalog` strategy (https://github.com/debezium/dbz/issues/1763[dbz#1763]).
 This information is surfaced in the `LogFileCollector` log output alongside the SCN delta range between the first and next boundaries for archive logs, giving users much clearer visibility into which logs are being collected and their characteristics during mining.
+
 In addition, when redo log files are detected as inconsistent, the connector now logs a concise INFO-level message without the full stack trace; the previous behavior including the `DebeziumException` details remains available by enabling DEBUG logging.
 Together these changes make troubleshooting log collection issues significantly easier, especially in environments where the full log files are not readily available for inspection.
 
