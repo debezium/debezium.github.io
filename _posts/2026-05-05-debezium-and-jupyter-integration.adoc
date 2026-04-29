@@ -1,0 +1,349 @@
+---
+layout: post
+title: "Exploring Change Data Capture with Debezium and Jupyter"
+date: 2026-04-29
+tags: [ debezium, jupyter, python, pandas, demo ]
+author: jpechane
+---
+
+:imagesdir: /assets/images/2026-05-05-debezium-and-jupyter-integration
+
+When people think about Debezium integrations, the first idea is usually a production pipeline:
+capture changes from a database, deliver them to Kafka, and route them to downstream services or analytical systems.
+That is, of course, a very common and very good use case.
+But there is another side to change data capture that deserves attention too: exploration.
+
+Sometimes you do not want to start with a full deployment and a chain of consumers.
+Sometimes you want to inspect the events, validate a connector configuration, build a quick proof of concept, or show colleagues what the stream actually looks like.
+In these situations, an interactive environment can be much more effective than a traditional application.
+
+This is where Jupyter notebooks fit surprisingly well.
+
+In this post, we will look at a simple Debezium and Jupyter integration based on the https://github.com/debezium/debezium-examples/tree/main/jupyter[`jupyter` example] in the `debezium-examples` repository.
+The demo runs Debezium Engine from a notebook by using https://github.com/memiiso/pydbzengine[`pydbzengine`], captures changes from PostgreSQL, stores the resulting records in a pandas data frame, and lets you inspect and aggregate them interactively.
+
++++<!-- more -->+++
+
+== Why Jupyter?
+
+Jupyter is usually associated with data science, experimentation, and teaching.
+All three are relevant to CDC as well.
+
+When working with Debezium, there are several recurring tasks for which notebooks can be very convenient:
+
+* exploring the structure of change events without writing a full consumer application,
+* validating connector properties and table filters,
+* demonstrating snapshots and streaming phases during workshops or internal training,
+* performing ad-hoc analysis over captured events with pandas,
+* troubleshooting whether changes are actually emitted for a particular table or primary key.
+
+This does not mean that Jupyter replaces Kafka Connect, Debezium Server, or the embedded engine in a production deployment.
+It does not.
+What it gives you is a very low-friction working environment for understanding your data stream before you decide what should happen with it next.
+
+The interesting part is that the integration is not based on any artificial mock.
+The notebook uses the same Debezium connector logic that you would use elsewhere.
+The only difference is the runtime environment and the consumer implementation.
+
+== The Example
+
+The demo is intentionally small.
+It uses two containers:
+
+* a PostgreSQL instance based on the Debezium tutorial database,
+* a Jupyter Lab container with Python dependencies and a JDK installed.
+
+The complete example is available in https://github.com/debezium/debezium-examples/tree/main/jupyter[`debezium-examples/jupyter`].
+
+The flow is straightforward:
+
+1. PostgreSQL stores the source data.
+2. Debezium Engine runs inside the notebook kernel through `pydbzengine`.
+3. A Python change handler receives Debezium events.
+4. The handler converts the incoming records into Python structures.
+5. pandas is used to inspect and aggregate the captured changes.
+
+This is a good example of a pattern that is often overlooked.
+Debezium is not limited to "database to Kafka" pipelines.
+If you can consume change events in-process, you can place Debezium into developer tools, notebooks, scripts, and exploratory workflows too.
+
+image::overview.svg[image,caption="Figure 1: Architecture of the demo: PostgreSQL emits changes, Debezium Engine captures them inside the notebook through pydbzengine, and pandas exposes the resulting events for interactive analysis.",width=800,role=centered-image]
+
+== Starting the Demo
+
+The example is designed to be easy to run locally.
+From the `jupyter` directory in `debezium-examples`, start it with:
+
+[source,bash]
+----
+docker compose up --build
+----
+
+Once the services are ready, open Jupyter Lab at `http://localhost:8888`.
+The prepared notebook is named `postgres_cdc_pk_change_counts.ipynb`.
+
+The environment is configured via Docker Compose.
+The Jupyter container receives the PostgreSQL connection settings as well as several Debezium properties, for example:
+
+[source,yaml]
+----
+environment:
+  PG_HOST: postgres
+  PG_PORT: "5432"
+  PG_USER: postgres
+  PG_PASSWORD: postgres
+  PG_DBNAME: postgres
+  TABLE_INCLUDE_LIST: inventory.customers
+  SCHEMA_INCLUDE_LIST: inventory
+  TOPIC_PREFIX: dbserver1
+  SLOT_NAME: pydbzengine_slot
+  PLUGIN_NAME: pgoutput
+  SNAPSHOT_MODE: initial
+----
+
+This is already enough to show an important point.
+The notebook is not built around hardcoded sample logic only.
+You can adjust the target table, schema, replication slot, or snapshot behavior and immediately observe the effect.
+For workshops and experiments, that feedback loop is very useful.
+
+image::jupyter-lab-notebook.png[image,caption="Figure 2: The prepared notebook opened in JupyterLab, showing the CDC walkthrough in a single interactive workspace.",width=900,role=centered-image]
+
+== Configuring Debezium in the Notebook
+
+The notebook starts by defining the connector configuration in Python:
+
+[source,python]
+----
+dbz_props = {
+    'name': 'pydbzengine-postgres-to-pandas',
+    'connector.class': 'io.debezium.connector.postgresql.PostgresConnector',
+    'database.hostname': PG_HOST,
+    'database.port': PG_PORT,
+    'database.user': PG_USER,
+    'database.password': PG_PASSWORD,
+    'database.dbname': PG_DBNAME,
+    'topic.prefix': TOPIC_PREFIX,
+    'schema.include.list': SCHEMA_INCLUDE_LIST,
+    'table.include.list': TABLE_INCLUDE_LIST,
+    'slot.name': SLOT_NAME,
+    'plugin.name': PLUGIN_NAME,
+    'publication.autocreate.mode': PUBLICATION_AUTOCREATE_MODE,
+    'include.schema.changes': 'false',
+    'snapshot.mode': SNAPSHOT_MODE,
+    'offset.storage': 'org.apache.kafka.connect.storage.FileOffsetBackingStore',
+    'offset.storage.file.filename': OFFSET_FILE,
+    'offset.flush.interval.ms': '1000'
+}
+----
+
+If you have configured Debezium connectors before, this should look very familiar.
+That is precisely the benefit.
+The notebook approach does not introduce a new conceptual model.
+It reuses the same connector properties and the same source connector implementation.
+
+In other words, the distance between "I am experimenting in a notebook" and "I am configuring a real Debezium deployment" stays small.
+That reduces surprises later.
+
+The example uses PostgreSQL and captures changes from `inventory.customers`.
+For a first notebook-based CDC demo this is a sensible choice, because the table is small, easy to understand, and already known from the tutorial.
+
+== Collecting Records in Python
+
+The core of the integration is a very small Python change handler.
+It receives records from Debezium and stores a normalized representation in memory:
+
+[source,python]
+----
+class DataFrameCollector(BasePythonChangeHandler):
+    def handleJsonBatch(self, records: List[ChangeEvent]):
+        rows = []
+        for record in records:
+            key_raw = _as_python_str(record.key())
+            key_json = json.loads(key_raw if key_raw else '{}')
+            value_raw = _as_python_str(record.value())
+
+            value_json = json.loads(value_raw)
+            payload = value_json.get('payload', {})
+
+            rows.append({
+                'destination': _as_python_str(record.destination()),
+                'pk': json.dumps(key_json, sort_keys = True),
+                'op': payload.get('op'),
+                'ts_ms': payload.get('ts_ms'),
+                'before': payload.get('before'),
+                'after': payload.get('after'),
+            })
+----
+
+This is probably my favorite part of the demo because it shows how little code is needed to become productive.
+
+The handler does not try to solve every possible processing scenario.
+It simply extracts a few useful fields:
+
+* destination,
+* primary key,
+* operation type,
+* event timestamp,
+* before state,
+* after state.
+
+That is enough to inspect snapshots, updates, and deletes, and to build compact summaries on top of them.
+
+The notebook then turns the in-memory list into a pandas data frame.
+From there you can use standard Python data analysis techniques instead of writing custom Java or Kafka consumer logic.
+
+For example, a timestamp column is derived from `ts_ms`, making it easy to sort, filter, or plot events later.
+
+image::captured-records-dataframe.png[image,caption="Figure 3: Real notebook output after running the demo, with snapshot rows and subsequent update events materialized as a pandas DataFrame.",width=900,role=centered-image]
+
+== Running the Engine Interactively
+
+Debezium Engine is a blocking process, so the notebook starts it in a background thread.
+Again, the implementation is intentionally minimal:
+
+[source,python]
+----
+def start_engine():
+    global engine, engine_thread
+    engine = DebeziumJsonEngine(properties = dbz_props, handler = DataFrameCollector())
+    engine_thread = threading.Thread(target = engine.run, daemon = True)
+    engine_thread.start()
+    print('Engine started in background.')
+
+def stop_engine():
+    global engine, engine_thread
+    engine.close()
+    if engine_thread is not None:
+        engine_thread.join(timeout = 10)
+    print('Engine stopped.')
+----
+
+This is one of the areas where Jupyter provides a noticeably better experience than a standalone command-line example.
+You can start the engine, leave it running, execute SQL changes, inspect captured events, run another batch of SQL statements, and continue analysis in the same session.
+
+The demo adds `ipywidgets` buttons on top of these functions:
+
+* `Start Engine`
+* `Run Sample SQL`
+* `Stop Engine`
+
+That makes the notebook suitable not only for developers, but also for demos and technical presentations.
+Instead of switching among several terminals, you keep the setup, execution, and analysis in a single view.
+
+== Generating and Inspecting Changes
+
+To produce a stream of updates, the notebook contains a helper function that modifies records in the source table:
+
+[source,python]
+----
+def run_sample_changes(pk: int = SAMPLE_PK):
+    sql_statements = [
+        'SET search_path TO inventory',
+        f'UPDATE customers SET first_name = first_name || \'-x\' WHERE id = {pk}'
+    ]
+----
+
+This is intentionally simple, but very effective for demonstration purposes.
+After you start the engine and execute the sample SQL, you can refresh the data frame cell and immediately see additional change events.
+
+The notebook also makes the distinction between snapshot and streaming events visible.
+Debezium operation codes are preserved, so you can decide whether snapshot reads (`r`) should be counted together with actual changes (`c`, `u`, `d`) or filtered out.
+
+That is something many people struggle with when they first start consuming Debezium events.
+Seeing it in a notebook helps a lot.
+
+For example, the aggregation cell counts changes per primary key:
+
+[source,python]
+----
+ops = ['c', 'u', 'd']
+working_df = records_dataframe()
+
+change_counts = (
+    working_df[working_df['op'].fillna('').astype(str).isin(ops)]
+    .groupby('pk', as_index = False)
+    .size()
+    .rename(columns = {'size': 'change_count'})
+    .sort_values('change_count', ascending = False)
+)
+----
+
+This is exactly the kind of analysis that would be cumbersome if you only inspected raw JSON in logs.
+With pandas, it becomes trivial.
+
+image::change-counts-per-primary-key.png[image,caption="Figure 4: Aggregated change counts per primary key after executing sample updates against the source table.",width=700,role=centered-image]
+
+And once the data is in a data frame, you can naturally extend the notebook further:
+
+* compare activity across keys,
+* inspect change velocity over time,
+* identify hot rows,
+* validate whether a filter includes the expected tables,
+* experiment with delete handling and snapshots.
+
+== Why This Matters
+
+At first glance, a notebook may seem like a toy compared to a full CDC pipeline.
+I do not think that is the right way to look at it.
+
+Interactive environments are often the fastest route to clarity.
+When a team evaluates CDC for a new use case, the first obstacle is usually not throughput or deployment topology.
+It is understanding the shape and semantics of the emitted events.
+
+Questions tend to be very basic:
+
+* What does the key look like?
+* What is in `before` and `after`?
+* How do snapshot records differ from streaming updates?
+* Did my table filter work?
+* Are deletes represented the way my downstream processing expects?
+
+You can answer all these questions in a notebook in minutes.
+
+There is also a broader Python angle here.
+A lot of analytical and data engineering work today happens in Python-first environments.
+By using `pydbzengine`, Debezium becomes accessible in that ecosystem without forcing users to abandon the tools they already know.
+
+This does not replace the Java APIs, Kafka-based deployments, or Debezium Server.
+It complements them.
+In practice, that means:
+
+* analysts can explore CDC interactively,
+* data engineers can prototype consumers quickly,
+* platform teams can validate source behavior before provisioning infrastructure,
+* educators can explain Debezium concepts with immediate feedback.
+
+== Where to Go Next
+
+The provided demo intentionally keeps the scope narrow.
+It focuses on one table, one notebook, and one simple aggregation.
+That is the right choice for a first example, but it should also give you ideas for extensions.
+
+For instance, you could:
+
+* capture multiple tables and analyze them together,
+* flatten events before analysis,
+* persist the captured records into Parquet or DuckDB,
+* visualize event rates with matplotlib,
+* connect the notebook to a machine learning workflow,
+* compare snapshot and streaming latency under different connector settings.
+
+If this sounds familiar, it should.
+We already saw in earlier Debezium examples that notebooks can be useful for machine learning scenarios too.
+The difference here is that the new Jupyter example is much more direct: it focuses on CDC exploration itself instead of using the notebook only as a UI on top of another pipeline.
+
+That makes it a good building block for many other demos.
+
+== Final Thoughts
+
+Debezium is often introduced through large-scale streaming architectures, and rightly so.
+But one of its strengths is that the same CDC foundation can be applied at very different scales and in very different runtimes.
+
+The Jupyter integration shows that Debezium can be just as useful in an interactive notebook as it is in a production data pipeline.
+You can configure a real connector, capture real change events, and analyze them with familiar Python tools in a matter of minutes.
+
+If you are evaluating Debezium, teaching CDC concepts, or simply trying to understand the behavior of a source table, this is a very practical place to start.
+And if you already use Debezium in production, a notebook like this can become a handy addition to your toolbox for experimentation, validation, and troubleshooting.
+
+You can find the full demo in the https://github.com/debezium/debezium-examples/tree/main/jupyter[`debezium-examples` repository].
+If you build on top of it, let us know what kind of notebook-based CDC workflows you find useful.
