@@ -1,0 +1,196 @@
+---
+layout: post
+title:  What Most "Debezium Alternatives" Articles Get Wrong
+date:   2026-05-06 00:00:00
+tags: [ community, news ]
+author: ccranfor
+---
+
+If you've ever searched for Change Data Capture (CDC) solutions recently, you've almost certainly landed on an article with a title like "_Top Debezium Alternatives in 2026_" or "_Why We Moved Away from Debezium_.".
+These articles follow a familiar pattern: they list the same handful of criticisms, present their alternative solution, and move on.
+
+We're not here to dismiss those articles entirely.
+Some of the concerns they raise were real at some point, but many of them are based on outdated or an incomplete picture of what Debezium actually is today.
+If you're evaluating CDC tooling and making decisions based on that picture, you deserve an accurate one.
+
+So let's go through the claims, one by one.
+
++++<!-- more -->+++
+
+### Claim: Debezium Requires Kafka
+
+This is one of the most common criticisms, and it's one of the most in need of correction.
+
+**This claim hasn't been true for years**.
+
+Debezium is a Change Data Capture (CDC) platform.
+Apache Kafka Connect is _one way to deploy Debezium_, and for teams that already run Kafka, it remains an excellent choice.
+But it's far from the only option.
+
+https://debezium.io/documentation/reference/stable/operations/debezium-server.html[Debezium Server] is a standalone, ready-to-run application that does not require Kafka at all.
+It uses the same battle-tested and trusted Debezium source connectors to read changes from your database's transaction logs and streams them directly to a wide range of target systems: Amazon Kinesis, Google Cloud Pub/Sub, Apache Pulsar, Redis Streams, RabbitMQ, HTTP webhooks, and more.
+One process.
+No Zookeeper.
+No Kafka brokers.
+No Kafka Connect cluster setup.
+
+https://debezium.io/documentation/reference/stable/platform/index.html[Debezium Platform] takes this further, providing an operator-based deployment model that manages the full lifecycle of Debezium connectors, including configuration, scaling, and health management.
+And again, all without requiring any Kafka ecosystem components.
+
+The "_Debezium requires Kafka_" narrative persists in part because Debezium's architecture is Kafka-aware.
+Many tutorials and articles were written during a period long before these new options were introduced, and are still indexed and widely shared.
+However, it is not an accurate description of Debezium today.
+
+If you elect to choose an alternative tool specifically to avoid a Kafka dependency, it's worth asking whether you evaluate Debezium Server and Platform first.
+
+### Claim: "Setup is complex and takes days"
+
+Some articles claim that getting Debezium running in production takes days, or even weeks, and requires configuring multiple components before data starting moving through your pipeline.
+
+Let's look at what a basic Debezium Server setup actually involves.
+
+A minimal `docker-compose.yml` for capturing changes from PostgreSQL and emitting them to a sink of your choice looks like this:
+[source,yaml]
+----
+services:
+  debezium:
+    image: quay.io/debezium/server:3.5
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./conf:/debezium/conf
+    environment:
+      - DEBEZIUM_SOURCE_CONNECTOR_CLASS=io.debezium.connector.postgresql.PostgresConnector
+      - DEBEZIUM_SOURCE_DATABASE_HOSTNAME=your-db-host
+      - DEBEZIUM_SOURCE_DATABASE_PORT=5432
+      - DEBEZIUM_SOURCE_DATABASE_USER=debezium
+      - DEBEZIUM_SOURCE_DATABASE_PASSWORD=secret
+      - DEBEZIUM_SOURCE_DATABASE_DBNAME=mydb
+      - DEBEZIUM_SINK_TYPE=kinesis
+      - DEBEZIUM_SINK_KINESIS_REGION=us-east-1
+----
+
+That is the entire infrastructure.
+One container.
+Configure your source connection and your sink destination, and you have a complete CDC pipeline.
+
+The honest caveat: configuring your _database_ correctly, enabling logical replication on PostgreSQL, configuring the correct `binlog_format` on MySQL, or setting up the LogMiner permissions on Oracle does require careful attention.
+These steps are not unique to Debezium; any CDC tool that reads from transaction logs requires these exact same setups.
+Debezium's documentation covers each database thoroughly.
+
+The complexity argument conflates the inherent requirements of CDC (which any tool must address) with the operational overhead of Debezium specifically (which has been substantially reduced).
+Those are different things.
+
+There is also a deployment path that alternative articles almost never mention at all.
+
+#### For Java developers: the Debezium Quarkus Extensions
+
+If you are already building Java applications, there is a fourth option that sidesteps the infrastructure question entirely: the **Debezium Quarkus Extensions**.
+These let you embed Debezium directly inside any Quarkus-based application, running CDC as part of your existing service rather than as a separate piece of infrastructure.
+
+For Java developers, this is arguably the most natural entry point into Debezium that exists.
+Quarkus is already a familiar runtime with a rich ecosystem: dependency injection, configuration management, live reload in dev mode, native compilation with GraalVM if you need it.
+Adding CDC to a Quarkus application is as straightforward as adding any other extension:
+
+[source,xml]
+----
+<dependency>
+  <groupId>io.debezium.quarkus</groupId>
+  <artifactId>quarkus-debezium-mysql</artifactId>
+</dependency>
+----
+
+From there, Debezium participates in the standard Quarkus application lifecycle.
+Configuration lives in `application.properties`, alongside the rest of your application's configuration.
+Change events are consumed as CDI events.
+The entire Quarkus developer experience, including dev services that spin up databases automatically for local development, is available.
+
+This matters for the "complexity" argument in particular.
+The setup burden looks very different when Debezium is just another dependency in a project your team already knows how to build, test, and deploy.
+There is no separate process to operate, no separate configuration format to learn, and no context switch between your application and your CDC pipeline.
+
+For teams building microservices in Java, especially those implementing the outbox pattern for reliable event publishing, the Quarkus extensions deserve serious consideration before reaching for a separate CDC tool.
+
+### Claim: "Debezium provides limited transformations"
+
+This specific claim requires some nuance, because it's not quite what it seems and is tongue-in-cheek at best.
+
+Debezium is deliberately designed as a CDC solution, not a transformation engine.
+This is an architectural choice, not an oversight.
+The philosophy is: do one thing extremely well, and compose cleanly with tools and abstractions that handle the next stage.
+
+For transformation needs, Debezium's https://debezium.io/documentation/reference/stable/transformations/index.html[Single Message Transforms (SMTs)] cover a lot of ground out of the box:
+
+* Routing events to different topics based on content
+* Extracting only the "after" state of a record (flattening the event envelope)
+* Filtering events by table or operation type
+* Masking or replacing sensitive column values
+* Converting data types
+* Adding metadata fields to events
+
+For teams that need heavier in-flight processing, such as complex joins, aggregations, conditional routing across multiple topic streams, the right answer is integrating Debezium with a stream processor like **Apache Flink** or **Kafka Streams**.
+This is not a weakness; it's what these tools are built for, and Debezium's Kafka-native deployment makes that integration natural.
+
+The alternative articles that cite this as a criticism are, in effect, saying "Debezium doesn't try to replace a stream processing framework."
+That is correct, and it's not meant to.
+It's meant to complement those solutions.
+
+### Claim: "There is no built-in monitoring"
+
+There is no built-in web user interface for monitoring Debezium connectors. That part is true.
+
+What _does exist_ is comprehensive metrics exposure.
+Debezium exposes a rich set of JMX metrics covering connector status, transaction log position, event counts, processing rates, and lag.
+When paired with **Prometheus JMX Exporter** and **Grafana**, you get production-grade observability with dashboards the community has built and shared.
+
+This is a real setup step, and we will not pretend otherwise.
+But the framing of "no monitoring" versus "requires a standard observability stack" matters.
+The Prometheus and Grafana combination is the industry standard for monitoring Java-based distributed systems, and Debezium slots into that ecosystem naturally.
+
+For teams running Debezium on Kubernetes, the **Debezium Operator** integrates with standard Kubernetes observability tooling, and connector health is surfaced through standard resource status fields.
+
+And this is an area where the project is actively investing.
+Debezium Platform is gaining native metrics and monitoring support, built in, not bolted on, so that operators will have first-class observability with the ability for Debezium to provide the entire stack for you.
+That work is in progress, and it reflects the project taking this feedback seriously.
+
+"Flying blind" is not an accurate description of what users have available today.
+
+### When the criticisms _do_ apply
+
+We want to be direct about this, because credibility matters more than winning any argument.
+
+If your situation looks like any of the following, the alternative articles may be pointing you in a reasonable direction:
+
+**You need a fully managed service with no operational responsibility**.
+Debezium is self-hosted.
+You run it, you monitor it, you upgrade it.
+If you want to hand all that to a vendor, Debezium may not be the right fit, not because it's complex, but because that is not what it is.
+
+**Your team has no existing JVM or distributed systems operational experience**.
+Debezium runs on the Java Virtual Machine (JVM).
+If your operations team has no familiarity with that ecosystem, there will be a learning curve.
+
+Choosing the right tool for your specific use case is the most important decision.
+We'd rather you make an informed decision than default to Debezium, or default away from it based on information that's no longer accurate or misleading.
+
+### The bottom line
+
+The "Debezium is complex, requires Kafka, and is hard to monitor" narrative was written about a version of the project that has meaningfully evolved.
+Debezium Server provides a Kafka-free deployment path that can be up and running in minutes.
+The container-based quickstart is genuinely quick.
+Single message transformations (SMTs) handle a wide range of transformation needs, and you can use any existing Kafka ecosystem transformations even in Debezium Server without Kafka!
+And the standard JVM observability tooling provides deep operational insight.
+
+Whether you deploy via Kafka Connect, Debezium Server, Debezium Platform, or embedding with the Quarkus extensions, Debezium meets you where you are.
+
+If you read one of these alternative articles and came here to verify the claims, we hope this has helped inform your decision.
+If you'd like to try Debezium Server yourself, the https://debezium.io/documentation/reference/stable/operations/debezium-server.html[quickstart] guide is the fastest way to see what it actually looks like.
+
+The source is open.
+The community is active.
+And the architecture is significantly more flexible than what you may have realized.
+
+---
+
+_Have questions or corrections?
+Join the conversation in the https://debezium.io/community/[Debezium community]._
