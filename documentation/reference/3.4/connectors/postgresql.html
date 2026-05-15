@@ -498,16 +498,18 @@
 <li><a href="#custom-postgres-connector-converters">Custom converters</a></li>
 <li><a href="#setting-up-postgresql">Setting up PostgreSQL</a>
 <ul class="sectlevel2">
+<li><a href="#_configuring_replication_slot">Configuring replication slot</a></li>
 <li><a href="#postgresql-in-the-cloud">PostgreSQL in the Cloud</a></li>
 <li><a href="#installing-postgresql-output-plugin">Installing the logical decoding output plug-in</a></li>
 <li><a href="#postgresql-differences-between-plugins">Plug-in differences</a></li>
+<li><a href="#debezium-postgresql-connector-specify-the-plugin-name">Specify the Debezium <code>plugin.name</code></a></li>
+<li><a href="#debezium-postgresql-connector-create-a-replication-user">Create a replication user</a></li>
 <li><a href="#postgresql-server-configuration">Configuring the PostgreSQL server</a></li>
-<li><a href="#postgresql-permissions">Setting up permissions</a></li>
 <li><a href="#postgresql-replication-user-privileges">Setting privileges to enable Debezium to create PostgreSQL publications when you use <code>pgoutput</code></a></li>
 <li><a href="#postgresql-host-replication-permissions">Configuring PostgreSQL to allow replication with the Debezium connector host</a></li>
 <li><a href="#supported-postgresql-topologies">Supported PostgreSQL topologies</a></li>
 <li><a href="#postgresql-wal-disk-space">WAL disk space consumption</a></li>
-<li><a href="#postgresql-deploying-multiple-connectors">Setting up multiple connectors for same database server</a></li>
+<li><a href="#postgresql-deploying-multiple-connectors">Setting up multiple connectors for the same database server</a></li>
 <li><a href="#upgrading-postgresql">Upgrading PostgreSQL</a></li>
 </ul>
 </li>
@@ -5025,10 +5027,70 @@ The default <code>false</code> setting causes the custom converter to always ret
 <div class="sectionbody">
 <div class="paragraph">
 <p>Before using the PostgreSQL connector to monitor the changes committed on a PostgreSQL server, decide which logical decoding plug-in you intend to use.
-If you plan <strong>not</strong> to use the native <code>pgoutput</code> logical replication stream support, then you must install the logical decoding plug-in into the PostgreSQL server. Afterward, enable a replication slot, and configure a user with sufficient privileges to perform the replication.</p>
+If you plan <strong>not</strong> to use the native <code>pgoutput</code> logical replication stream support, then you must install the logical decoding plug-in into the PostgreSQL server.
+Afterward, enable a replication slot, and configure a user with sufficient privileges to perform the replication.</p>
 </div>
 <div class="paragraph">
 <p>If your database is hosted by a service such as <a href="https://www.heroku.com/postgres">Heroku Postgres</a> you might be unable to install the plug-in. If so, and if you are using PostgreSQL 10+, you can use the <code>pgoutput</code> decoder support to capture changes in your database. If that is not an option, you are unable to use Debezium with your database.</p>
+</div>
+<div class="sect2">
+<h3 id="_configuring_replication_slot"><a class="anchor" href="#_configuring_replication_slot"></a>Configuring replication slot</h3>
+<div class="paragraph">
+<p>PostgreSQL&#8217;s logical decoding uses replication slots. To configure a replication slot, specify the following in the <code>postgresql.conf</code> file:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-none hljs">wal_level=logical
+max_wal_senders=1
+max_replication_slots=1</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>These settings instruct the PostgreSQL server as follows:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p><code>wal_level</code> - Use logical decoding with the write-ahead log.</p>
+</li>
+<li>
+<p><code>max_wal_senders</code> - Use a maximum of one separate process for processing WAL changes.</p>
+</li>
+<li>
+<p><code>max_replication_slots</code> - Allow a maximum of one replication slot to be created for streaming WAL changes.</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>Replication slots are guaranteed to retain all WAL entries that are required for Debezium even during Debezium outages. Consequently, it is important to closely monitor replication slots to avoid:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>Too much disk consumption</p>
+</li>
+<li>
+<p>Any conditions, such as catalog bloat, that can happen if a replication slot stays unused for too long</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>For more information, see the <a href="https://www.postgresql.org/docs/current/warm-standby.html#STREAMING-REPLICATION-SLOTS">PostgreSQL documentation for replication slots</a>.</p>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>Familiarity with the mechanics and <a href="https://www.postgresql.org/docs/current/static/wal-configuration.html">configuration of the PostgreSQL write-ahead log</a> is helpful for using the Debezium PostgreSQL connector.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
 </div>
 <div class="sect2">
 <h3 id="postgresql-in-the-cloud"><a class="anchor" href="#postgresql-in-the-cloud"></a>PostgreSQL in the Cloud</h3>
@@ -5113,51 +5175,13 @@ After you set the flag, it automatically adjusts the <code>wal_level</code> conf
 <pre>SHOW wal_level;</pre>
 </div>
 </div>
-<div class="paragraph">
-<div class="title">Creating a replication user</div>
-<p>To use logical decoding features, you must create a PostgreSQL user with the <code>REPLICATION</code> attribute, or grant this attribute to an existing user.</p>
-</div>
-<div class="dlist">
-<dl>
-<dt class="hdlist1">To create a user with the <code>REPLICATION</code> attribute</dt>
-<dd>
-<p>Log in as the <code>postgres</code> user, or as a member of the <code>cloudsqlsuperuser</code> user group, and run the following command:</p>
-<div class="listingblock">
-<div class="content">
-<pre>CREATE USER replication_user WITH REPLICATION IN ROLE cloudsqlsuperuser LOGIN PASSWORD 'secret';</pre>
-</div>
-</div>
-</dd>
-<dt class="hdlist1">To set the <code>REPLICATION</code> attribute on an existing user</dt>
-<dd>
-<p>Log in as the <code>postgres</code> user, or as a member of the <code>cloudsqlsuperuser</code> user group, and run the following command:</p>
-<div class="listingblock">
-<div class="content">
-<pre>ALTER USER existing_user WITH REPLICATION;</pre>
-</div>
-</div>
-</dd>
-</dl>
-</div>
-<div class="paragraph">
-<div class="title">Specifying the Debezium <code>plugin.name</code></div>
-<p>In the Debezium connector configuration, set the value of the <code>plugin.name</code> property to <code>pgoutput</code>, as in the following example:</p>
-</div>
-<div class="listingblock">
-<div class="content">
-<pre>{
-      ..
-      "plugin.name": "pgoutput",
-      ..
-      ..
-}</pre>
-</div>
-</div>
 </div>
 <div class="sect3">
 <h4 id="postgresql-on-crunchybridge"><a class="anchor" href="#postgresql-on-crunchybridge"></a>PostgreSQL on CrunchyBridge</h4>
 <div class="paragraph">
-<p>It is possible to use Debezium with <a href="https://crunchybridge.com/">CrunchyBridge</a>; logical replication is already turned on. The <code>pgoutput</code> plugin is available. You will have to create a replication user and provide correct privileges.</p>
+<p>It is possible to use Debezium with <a href="https://crunchybridge.com/">CrunchyBridge</a>; logical replication is already turned on.
+The <code>pgoutput</code> plugin is available.
+You will have to create a replication user and provide correct privileges.</p>
 </div>
 <div class="admonitionblock important">
 <table>
@@ -5167,7 +5191,8 @@ After you set the flag, it automatically adjusts the <code>wal_level</code> conf
 </td>
 <td class="content">
 <div class="paragraph">
-<p>While using the <code>pgoutput</code> plug-in, it is recommended that you configure <code>filtered</code> as the <a href="#postgresql-publication-autocreate-mode"><code>publication.autocreate.mode</code></a>. If you use <code>all_tables</code>, which is the default value for <code>publication.autocreate.mode</code>, and the publication is not found, the connector tries to create one by using <code>CREATE PUBLICATION &lt;publication_name&gt; FOR ALL TABLES;</code>, but this fails due to lack of permissions.</p>
+<p>While using the <code>pgoutput</code> plug-in, it is recommended that you configure <code>filtered</code> as the <a href="#postgresql-publication-autocreate-mode"><code>publication.autocreate.mode</code></a>.
+If you use <code>all_tables</code>, which is the default value for <code>publication.autocreate.mode</code>, and the publication is not found, the connector tries to create one by using <code>CREATE PUBLICATION &lt;publication_name&gt; FOR ALL TABLES;</code>, but this fails due to lack of permissions.</p>
 </div>
 </td>
 </tr>
@@ -5210,7 +5235,8 @@ For more details on using Protobuf via the <code>decoderbufs</code> plug-in, see
 </td>
 <td class="content">
 <div class="paragraph">
-<p>The Debezium logical decoding plug-ins have been installed and tested on only Linux machines. For Windows and other operating systems, different installation steps might be required.</p>
+<p>The Debezium logical decoding plug-ins have been installed and tested on only Linux machines.
+For Windows and other operating systems, different installation steps might be required.</p>
 </div>
 </td>
 </tr>
@@ -5232,6 +5258,66 @@ These differences have been identified:</p>
 </div>
 <div class="paragraph">
 <p>All up-to-date differences are tracked in a test suite <a href="https://github.com/debezium/debezium/blob/main/debezium-connector-postgres/src/test/java/io/debezium/connector/postgresql/DecoderDifferences.java">Java class</a>.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="debezium-postgresql-connector-specify-the-plugin-name"><a class="anchor" href="#debezium-postgresql-connector-specify-the-plugin-name"></a>Specify the Debezium <code>plugin.name</code></h3>
+<div class="paragraph">
+<p>In environments that require the connector to use the <code>pgoutput</code> logical decoding plug-in, such as Google Cloud SQL for PostgreSQL or PostgreSQL on Amazon RDS, you must explicitly set the value of the connector&#8217;s <code>plugin.name</code> property to <code>pgoutput</code>.</p>
+</div>
+<div class="ulist">
+<div class="title">Procedure</div>
+<ul>
+<li>
+<p>In the Debezium connector configuration, set the value of the <code>plugin.name</code> property to <code>pgoutput</code>, as in the following example:</p>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
+      ..
+      "plugin.name": "pgoutput",
+      ..
+      ..
+}</code></pre>
+</div>
+</div>
+</li>
+</ul>
+</div>
+</div>
+<div class="sect2">
+<h3 id="debezium-postgresql-connector-create-a-replication-user"><a class="anchor" href="#debezium-postgresql-connector-create-a-replication-user"></a>Create a replication user</h3>
+<div class="paragraph">
+<p>To use logical decoding features, you must create a PostgreSQL user with the <code>REPLICATION</code> attribute, or grant this attribute to an existing user.</p>
+</div>
+<div class="ulist">
+<div class="title">Procedure</div>
+<ul>
+<li>
+<p>Complete one of the following steps:</p>
+<div class="dlist">
+<dl>
+<dt class="hdlist1">Create a user with the <code>REPLICATION</code> attribute</dt>
+<dd>
+<p>Log in as the <code>postgres</code> user, or as a member of the <code>cloudsqlsuperuser</code> user group, and run the following command:</p>
+<div class="listingblock">
+<div class="content">
+<pre>CREATE USER replication_user WITH REPLICATION IN ROLE cloudsqlsuperuser LOGIN PASSWORD 'secret';</pre>
+</div>
+</div>
+</dd>
+<dt class="hdlist1">Set the <code>REPLICATION</code> attribute for an existing user</dt>
+<dd>
+<p>Log in as the <code>postgres</code> user, or as a member of the <code>cloudsqlsuperuser</code> user group, and run the following command:</p>
+<div class="listingblock">
+<div class="content">
+<pre>ALTER USER existing_user WITH REPLICATION;</pre>
+</div>
+</div>
+</dd>
+</dl>
+</div>
+</li>
+</ul>
 </div>
 </div>
 <div class="sect2">
@@ -5267,28 +5353,22 @@ wal_level = logical</code></pre>
 </li>
 </ol>
 </div>
+<div class="sect3">
+<h4 id="debezium-postgresql-connector-replication-parameters-and-performance-considerations"><a class="anchor" href="#debezium-postgresql-connector-replication-parameters-and-performance-considerations"></a>Replication parameters and performance considerations</h4>
 <div class="paragraph">
-<p>Depending on your requirements, you may have to set other PostgreSQL streaming replication parameters when using Debezium.
-Examples include <code>max_wal_senders</code> and <code>max_replication_slots</code> for increasing the number of connectors that can access the sending server concurrently, and <code>wal_keep_size</code> for limiting the maximum WAL size which a replication slot will retain.
-For more information about configuring streaming replication, see the <a href="https://www.postgresql.org/docs/current/runtime-config-replication.html#RUNTIME-CONFIG-REPLICATION-SENDER">PostgreSQL documentation</a>.</p>
+<p>Depending on your requirements, you can set other PostgreSQL streaming replication parameters to customize performance in a Debezium environment.
+For example, you can increase the number of connectors that can access the sending server concurrently by setting the <code>max_wal_senders</code> and <code>max_replication_slots</code> parameters.
+Or you can set <code>wal_keep_size</code> to limit the maximum WAL size of a replication slot.</p>
 </div>
 <div class="paragraph">
 <p>Debezium uses PostgreSQL&#8217;s logical decoding, which uses replication slots.
-Replication slots are guaranteed to retain all WAL segments required for Debezium even during Debezium outages. For this reason, it is important to closely monitor replication slots to avoid too much disk consumption and other conditions that can happen such as catalog bloat if a replication slot stays unused for too long.
-For more information, see the <a href="https://www.postgresql.org/docs/current/warm-standby.html#STREAMING-REPLICATION-SLOTS">PostgreSQL streaming replication documentation</a>.</p>
+Logical decoding extracts data changes from the PostgreSQL write-ahead log (WAL) and converts them to a format that Debezium can consume.
+Replication slots are guaranteed to retain all WAL segments required for Debezium even during Debezium outages.
+For this reason, it is important to closely monitor replication slots to avoid excess disk consumption and conditions such as catalog bloat that can result if a replication slot is unused for too long.</p>
 </div>
 <div class="paragraph">
-<p>When connecting to a Postgres primary (i.e. not a read replica) and the version of Postgres is 17 or later,
-Debezium will create a replication slot enabled for <a href="https://www.postgresql.org/docs/current/logical-replication-failover.html">failover</a>.
-This means Debezium can continue to read changes from a replica promoted to primary in case of a failure,
-without missing any events.
-This requires the state of the slot to be synchronized from primary to replica server;
-refer to the Postgres documentation for the details.</p>
-</div>
-<div class="paragraph">
-<p>If you are working with a <code>synchronous_commit</code> setting other than <code>on</code>,
-the recommendation is to set <code>wal_writer_delay</code> to a value such as 10 milliseconds to achieve a low latency of change events.
-Otherwise, its default value is applied, which adds a latency of about 200 milliseconds.</p>
+<p>To minimize the latency of change events when the PostgreSQL <code>synchronous_commit</code> parameter is set to values other than <code>on</code>, set the <code>wal_writer_delay</code> for the cluster to a value such as 10 milliseconds
+If the property does not specify an explicit value, Debezium applies the default value of 200 milliseconds, which increase latency.</p>
 </div>
 <div class="admonitionblock tip">
 <table>
@@ -5304,9 +5384,103 @@ Otherwise, its default value is applied, which adds a latency of about 200 milli
 </tr>
 </table>
 </div>
+<div class="ulist">
+<div class="title">Additional resources</div>
+<ul>
+<li>
+<p><a href="https://www.postgresql.org/docs/current/runtime-config-replication.html#RUNTIME-CONFIG-REPLICATION-SENDER" target="_blank" rel="noopener">Configuring PostgreSQL streaming replication (PostgreSQL documentation)</a>.</p>
+</li>
+<li>
+<p><a href="https://www.postgresql.org/docs/current/warm-standby.html#STREAMING-REPLICATION-SLOTS" target="_blank" rel="noopener">PostgreSQL streaming replication (PostgreSQL documentation)</a>.</p>
+</li>
+</ul>
 </div>
-<div class="sect2">
-<h3 id="postgresql-permissions"><a class="anchor" href="#postgresql-permissions"></a>Setting up permissions</h3>
+</div>
+<div class="sect3">
+<h4 id="enabling-postgresql-failover-slots"><a class="anchor" href="#enabling-postgresql-failover-slots"></a>Enable failover slots for the PostgreSQL connector</h4>
+<div class="paragraph">
+<p>When Debezium connects to a PostgreSQL primary server that runs PostgreSQL 17 or later, you can configure the connector to create replication slots that support failover.
+Failover-enabled replication slots enable Debezium to continue reading changes from a new primary server after a failover event, without losing events.</p>
+</div>
+<div class="ulist">
+<div class="title">Prerequisites</div>
+<ul>
+<li>
+<p>Debezium connects to a primary server that runs PostgreSQL 17 or later.</p>
+</li>
+<li>
+<p>You have administrative access to configure PostgreSQL server parameters.</p>
+</li>
+<li>
+<p>You have configured the Debezium connector properties.</p>
+</li>
+</ul>
+</div>
+<div class="olist arabic">
+<div class="title">Procedure</div>
+<ol class="arabic">
+<li>
+<p>In the Debezium connector configuration, set the <a href="#postgresql-property-slot-failover"><code>slot.failover</code></a> property to <code>true</code>.</p>
+<div class="paragraph">
+<p>This setting enables the connector to create failover-enabled replication slots.</p>
+</div>
+</li>
+<li>
+<p>On the PostgreSQL primary server, configure the <code>synchronized_standby_slots</code> parameter to include the name of the replication slot that the connector uses.</p>
+<div class="paragraph">
+<p>The primary server uses this parameter to synchronize the replication slot state with standby servers.</p>
+</div>
+<div class="paragraph">
+<p>For example, if your replication slot is named <code>debezium</code>, add the following configuration to the <code>postgresql.conf</code> file:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-properties hljs" data-lang="properties">synchronized_standby_slots = 'debezium'</code></pre>
+</div>
+</div>
+</li>
+<li>
+<p>Restart the PostgreSQL server to apply the configuration changes.</p>
+</li>
+<li>
+<p>Verify that the failover slot is created and synchronized.</p>
+<div class="paragraph">
+<p>You can query the <code>pg_replication_slots</code> view to confirm that the slot exists and that the <code>failover</code> column is set to <code>true</code>:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-sql hljs" data-lang="sql">SELECT slot_name, failover, synced
+FROM pg_replication_slots
+WHERE slot_name = 'debezium';</code></pre>
+</div>
+</div>
+</li>
+</ol>
+</div>
+<div class="paragraph">
+<div class="title">Results</div>
+<p>When the <code>slot.failover</code> property is enabled and the slot is listed in <code>synchronized_standby_slots</code>, if the primary server fails and a standby replica is promoted to primary, Debezium continues to read changes from the specified failover slot on the new primary.</p>
+</div>
+<div class="ulist">
+<div class="title">Additional resources</div>
+<ul>
+<li>
+<p><a href="https://www.postgresql.org/docs/current/logical-replication-failover.html" target="_blank" rel="noopener">PostgreSQL failover slot behavior (PostgreSQL documentation)</a>.</p>
+</li>
+<li>
+<p><a href="https://www.postgresql.org/docs/current/warm-standby.html#STREAMING-REPLICATION-SLOTS" target="_blank" rel="noopener">PostgreSQL streaming replication slots (PostgreSQL documentation)</a>.</p>
+</li>
+<li>
+<p><a href="#postgresql-property-slot-failover"><code>slot.failover</code> connector property</a></p>
+</li>
+<li>
+<p><a href="#postgresql-cluster-failures-recovering-from-failures-pg17-cluster">Recovering from failures in a PostgreSQL 17 cluster</a>.</p>
+</li>
+</ul>
+</div>
+</div>
+<div class="sect3">
+<h4 id="postgresql-permissions"><a class="anchor" href="#postgresql-permissions"></a>Setting up permissions</h4>
 <div class="paragraph">
 <p>Setting up a PostgreSQL server to run a Debezium connector requires a database user that can perform replications.
 Replication can be performed only by a database user that has appropriate permissions and only for a configured number of hosts.</p>
@@ -5336,6 +5510,7 @@ For example:</p>
 </div>
 </li>
 </ol>
+</div>
 </div>
 </div>
 <div class="sect2">
@@ -5469,9 +5644,6 @@ host    replication     &lt;youruser&gt;  ::1/128                 trust   <i cla
 </tr>
 </tbody>
 </table>
-</li>
-</ul>
-</div>
 <div class="admonitionblock note">
 <table>
 <tr>
@@ -5480,11 +5652,14 @@ host    replication     &lt;youruser&gt;  ::1/128                 trust   <i cla
 </td>
 <td class="content">
 <div class="paragraph">
-<p>For more information about network masks, see <a href="https://www.postgresql.org/docs/current/static/datatype-net-types.html">the PostgreSQL documentation</a>.</p>
+<p>For more information about network masks (netmasks), see <a href="https://www.postgresql.org/docs/current/static/datatype-net-types.html">Network address types (PostgreSQL documentation)</a>.</p>
 </div>
 </td>
 </tr>
 </table>
+</div>
+</li>
+</ul>
 </div>
 </div>
 <div class="sect2">
@@ -5603,18 +5778,62 @@ Again, regularly emitting events solves the problem.</p>
 </div>
 </div>
 <div class="sect2">
-<h3 id="postgresql-deploying-multiple-connectors"><a class="anchor" href="#postgresql-deploying-multiple-connectors"></a>Setting up multiple connectors for same database server</h3>
+<h3 id="postgresql-deploying-multiple-connectors"><a class="anchor" href="#postgresql-deploying-multiple-connectors"></a>Setting up multiple connectors for the same database server</h3>
 <div class="paragraph">
-<p>Debezium uses replication slots to stream changes from a database. These replication slots maintain the current position in form of a LSN (Log Sequence Number) which is pointer to a location in the WAL being consumed by the Debezium connector. This helps PostgreSQL keep the WAL available until it is processed by Debezium. A single replication slot can exist only for a single consumer or process - as different consumer might have different state and may need data from different position.</p>
+<p>When you deploy multiple Debezium connectors to capture changes from the same PostgreSQL database server, each connector requires a unique replication slot and publication.
+This configuration prevents data loss and ensures that each connector independently tracks its position in the database transaction log.</p>
 </div>
 <div class="paragraph">
-<p>Since a replication slot can only be used by a single connector, it is essential to create a unique replication slot for each Debezium connector. Although when a connector is not active, Postgres may allow other connector to consume the replication slot - which could be dangerous as it may lead to data loss as a slot will emit each change just once [<a href="https://www.postgresql.org/docs/10/logicaldecoding-explanation.html#LOGICALDECODING-REPLICATION-SLOTS">See More</a>].</p>
+<p>Debezium uses replication slots to stream changes from a database.
+Replication slots use a log sequence number (LSN) as a persistent pointer to track the last position in the write-ahead Log (WAL) that the connector has processed.
+This tracking mechanism enables PostgreSQL to retain WAL segments until Debezium processes them.</p>
 </div>
 <div class="paragraph">
-<p>In addition to replication slot, Debezium uses publication to stream events when using the <code>pgoutput</code> plugin. Similar to replication slot, publication is at database level and is defined for a set of tables. Thus, you&#8217;ll need a unique publication for each connector, unless the connectors work on same set of tables. For more information about the options for enabling Debezium to create publications, see <a href="#postgresql-publication-autocreate-mode"><code>publication.autocreate.mode</code></a></p>
+<p>Because each replication slot maintains a single LSN pointer, it can track only one consumer&#8217;s position in the WAL.
+When multiple connectors attempt to share a replication slot, they compete for the same position marker, resulting in unpredictable behavior and potential data loss.</p>
+</div>
+<div class="admonitionblock warning">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-warning" title="Warning"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>If you permit multiple connectors to capture from a replication slot, you risk data loss, because a replication slot can emit each change only once.
+When multiple connectors share a slot, PostgreSQL delivers each change event to only one of the competing consumers.
+The other connectors never receive those events, resulting in incomplete data capture.
+PostgreSQL provides no warnings when this misconfiguration occurs, making the data loss silent and difficult to detect.</p>
+</div>
+</td>
+</tr>
+</table>
 </div>
 <div class="paragraph">
-<p>See <a href="#postgresql-property-slot-name"><code>slot.name</code></a> and <a href="#postgresql-property-publication-name"><code>publication.name</code></a> on how to set a unique replication slot name and publication name for each connector.</p>
+<p>In addition to replication slots, when the Debezium connector uses the <code>pgoutput</code> plugin, it uses publications to stream events.
+Publications exist at the database level and define the set of tables from which the connector captures changes.
+Like replication slots, publications should be unique to each connector to ensure proper isolation and independent configuration.</p>
+</div>
+<div class="paragraph">
+<p>While multiple connectors can technically share a publication if they capture changes from the same set of tables, this configuration still requires unique replication slots for each connector.
+Sharing publications is appropriate only when you intentionally want multiple connectors to monitor identical table sets, such as when distributing processing load across multiple pipelines.</p>
+</div>
+<div class="ulist">
+<div class="title">Additional resources</div>
+<ul>
+<li>
+<p><a href="https://www.postgresql.org/docs/18/logicaldecoding-explanation.html#LOGICALDECODING-REPLICATION-SLOTS" target="_blank" rel="noopener">PostgreSQL replication slot details and resource implications. (PostgreSQL documentation)</a>.</p>
+</li>
+<li>
+<p><a href="#postgresql-publication-autocreate-mode">Description of the <code>publication.autocreate.mode</code> property for specifying how Debezium creates publication to control table inclusion</a>.</p>
+</li>
+<li>
+<p><a href="#postgresql-property-slot-name">Description of the <code>slot.name</code> property for specifying a unique replication slot name for each connector</a>.</p>
+</li>
+<li>
+<p><a href="#postgresql-property-publication-name">Description of the <code>publication.name</code> property for specifying a unique publication name for each connector</a>.</p>
+</li>
+</ul>
 </div>
 </div>
 <div class="sect2">
@@ -5623,7 +5842,7 @@ Again, regularly emitting events solves the problem.</p>
 <p>When you upgrade the PostgreSQL database that Debezium uses, you must take specific steps to protect against data loss and to ensure that Debezium continues to operate.
 In general, Debezium is resilient to interruptions caused by network failures and other outages.
 For example, when a database server that a connector monitors stops or crashes, after the connector re-establishes communication with the PostgreSQL server, it continues to read from the last position recorded by the log sequence number (LSN) offset.
-The connector retrieves information about the last recorded offset from the Kafka Connect offsets topic, and queries the configured PostgreSQL replication slot for a log sequence number (LSN) with the same value.</p>
+The connector retrieves information about the last recorded offset from the Kafka Connect offsets topic, and queries the configured PostgreSQL replication slot for an LSN with the same value.</p>
 </div>
 <div class="paragraph">
 <p>For the connector to start and to capture change events from a PostgreSQL database, a replication slot must be present.
@@ -9490,7 +9709,7 @@ For example, verify that the configuration includes the correct values for the f
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/d00e0a6688d96ba8d952d68bd855791deef699fb">d00e0a66</a></span>)
+            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/791a47c9268d9f3faaa805c4c34d612e68b97048">791a47c9</a></span>)
             
         </div>
     </footer>
