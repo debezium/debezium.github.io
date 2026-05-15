@@ -1,0 +1,283 @@
+---
+layout: post
+title:  "No More Tuning: Oracle Log Mining Simplified in Debezium 3.6"
+date:   2026-05-15
+tags: [ debezium, oracle, performance, cdc, logminer ]
+author: ccranfor
+---
+
+:imagesdir: /assets/images/2026-05-15-oracle-logminer-no-more-tuning
+
+If you have ever deployed the Debezium Oracle connector in an environment with bursty workloads, you have probably spent more time than you would like tuning the `+log.mining.batch.size.*+`, `+log.mining.sleep.time.*+`, and `+log.mining.scn.gap.detection.*+` properties.
+Getting the balance right between peak and quiet periods was, frankly, a losing battle -- what worked for your nightly ETL window would over-read during the day, and what worked during the day would fall hopelessly behind at night.
+
+In Debezium 3.6, we replaced this entire mechanism.
+The connector now selects mining windows based on log file count rather than SCN ranges, controlled by a single new property: `log.mining.log.count.min`.
+This post explains why the old approach was so hard to tune, how the new approach works, and what you need to know to migrate.
+
++++<!-- more -->+++
+
+* link:#the-problem[The problem with SCN-based batching]
+** link:#how-the-old-algorithm-worked[How the old algorithm worked]
+** link:#why-scn-density-made-this-unpredictable[Why SCN density made this unpredictable]
+* link:#the-new-approach[The new approach: log-count-based mining]
+** link:#how-log-count-mining-works[How log-count mining works]
+** link:#tuning-the-log-count[Tuning the log count]
+** link:#strategy-compatibility[Strategy compatibility]
+* link:#configuration-migration[Configuration migration]
+** link:#properties-to-remove[Properties to remove]
+** link:#before-and-after[Before and after]
+* link:#key-benefits[Key benefits]
+* link:#wrapping-up[Wrapping up]
+
+'''
+
+[id="the-problem"]
+== The problem with SCN-based batching
+
+[id="how-the-old-algorithm-worked"]
+=== How the old algorithm worked
+
+Prior to Debezium 3.6, the Oracle connector used an adaptive batch sizing algorithm to determine the number of rows fetched per LogMiner database call.
+The algorithm was controlled by a combination of properties that interacted with one another:
+
+`log.mining.batch.size.default`::
+The initial number of rows fetched per database call.
+Default: `20000`.
+
+`log.mining.batch.size.min`::
+The minimum number of rows fetched per database call.
+The algorithm would never shrink the batch size below this threshold.
+Default: `1000`.
+
+`log.mining.batch.size.max`::
+The maximum number of rows fetched per database call.
+The algorithm would never grow the batch size above this threshold.
+Default: `100000`.
+
+`log.mining.sleep.time.default.ms`::
+The default sleep time between LogMiner polling cycles.
+Default: `1000`.
+
+`log.mining.sleep.time.min.ms`::
+The minimum sleep time between polling cycles.
+Default: `0`.
+
+`log.mining.sleep.time.max.ms`::
+The maximum sleep time between polling cycles.
+Default: `3000`.
+
+`log.mining.sleep.time.increment.ms`::
+The amount by which the sleep time increased or decreased as the connector adapted.
+Default: `200`.
+
+`log.mining.scn.gap.detection.gap.size.min`::
+The minimum SCN gap size that would trigger gap detection logic.
+Default: `1000000`.
+
+`log.mining.scn.gap.detection.time.interval.max.ms`::
+The maximum time interval used when evaluating SCN gap detection.
+Default: `20000`.
+
+The idea was straightforward: when the connector fell behind, the algorithm would increase the batch size and reduce sleep time so it could process more data per cycle.
+When the connector caught up to near real-time, it would shrink the batch size and increase sleep time to conserve resources.
+In theory, this gave the connector the ability to read more data and reduce network latency when it had fallen behind, at the expense of consuming more SGA and JVM memory temporarily, and then use less memory when it was caught up.
+
+In practice, the interaction between these nine properties created a combinatorial tuning problem.
+
+[id="why-scn-density-made-this-unpredictable"]
+=== Why SCN density made this unpredictable
+
+The fundamental issue was that SCN ranges do not correspond to a predictable amount of work.
+
+During a nightly batch ETL job, a 1,000,000-SCN window might span dozens of redo log files containing millions of redo entries.
+The connector would be forced to churn through enormous amounts of log data in each mining pass, overwhelming both LogMiner and the connector's JVM heap.
+
+During a quiet Sunday afternoon, that same 1,000,000-SCN window might cover a single, partially written redo log with only a handful of changes.
+The connector would over-read, polling ranges that contained almost no data.
+
+image::scn-batching-problem.svg[SCN-based batching during peak vs. quiet periods,800,role=centered-image]
+
+This meant:
+
+* *Tuning for peak volumes* (larger batch sizes, shorter sleep times) caused excessive read I/O during quiet periods because the connector would read far more log data than necessary.
+* *Tuning for quiet periods* (smaller batch sizes, longer sleep times) meant the connector could never catch up during burst peaks because the mining window was too narrow.
+* *The interaction between batch size, sleep time, and SCN gap detection* made it nearly impossible to find settings that worked well across both scenarios. Adjusting one property often required compensating changes to the others.
+
+This is not a theoretical problem.
+In a recent post, Nathan Smit from Pepkor NexTech link:/blog/2026/04/20/oracle-cdc-replication-lag/[described exactly this scenario] -- replication lag that persisted despite extensive configuration tuning, ultimately requiring changes to the source database's loading patterns to reduce redo volume.
+
+[id="the-new-approach"]
+== The new approach: log-count-based mining
+
+[id="how-log-count-mining-works"]
+=== How log-count mining works
+
+In Debezium 3.6, we replaced the SCN-range-based algorithm with one that selects mining windows based on the number of log files per redo thread (https://github.com/debezium/dbz/issues/1713[dbz#1713]).
+The new property that controls this behavior is:
+
+`log.mining.log.count.min`::
+The minimum number of logs per redo thread to include in each mining session.
+Default: `2`.
+
+Instead of defining a mining window by "fetch the next N SCNs worth of changes", the connector now says "mine at least N log files per redo thread".
+This is a fundamentally different unit of work, and it adapts naturally to the database's actual activity.
+
+An important detail: the minimum log count only applies when the connector is mining archive logs.
+Once the connector has caught up and is mining only online redo logs, it always mines from the current read position to the last flushed event in the logs, enabling near real-time event dispatch.
+
+During high-volume periods, redo logs rotate rapidly and archive logs accumulate.
+The connector reads at least the minimum number of archive logs per redo thread in each pass, which reduces the total number of I/O operations because each pass covers more ground.
+There is no need to artificially widen an SCN range and risk overwhelming the JVM -- log file boundaries define the mining window naturally.
+
+During quiet periods when the connector has caught up to the online redo logs, it mines from its current position to the last flushed event.
+There is no wasted I/O on empty SCN ranges, no unnecessary polling cycles, and changes are dispatched as soon as they are available.
+
+The key insight is that log file boundaries are a direct reflection of database activity volume.
+Rapidly rotating archive logs mean the database is busy and the connector is behind -- so it batches work by log count.
+When the connector catches up to the online redo logs, it switches to streaming changes in near real-time.
+This two-mode behavior adapts to the workload without any manual tuning.
+
+image::log-count-solution.svg[Log-count-based mining adapts naturally to workload,800,role=centered-image]
+
+[source,json]
+----
+{
+    "log.mining.log.count.min": "2"
+}
+----
+
+[id="tuning-the-log-count"]
+=== Tuning the log count
+
+In most environments, the default value of `2` is a good starting point.
+
+When the connector is mining archive logs, the total amount of data read per pass per redo thread is:
+
+----
+log.mining.log.count.min  x  redo log file size  =  bytes read per pass per thread
+----
+
+For example, if your redo log files are 500 MB and `log.mining.log.count.min` is set to `2`, the connector will read approximately 1 GB of log data per redo thread per mining pass.
+If your database has 2 redo threads, that is roughly 2 GB of read I/O per pass.
+
+This makes the property straightforward to reason about:
+
+* *Increase the value* if your redo log files are small and rotate frequently.
+  A higher count lets the connector process more logs per session, reducing the overhead of repeated LogMiner start/stop cycles.
+* *Decrease the value* (down to `1`) if your redo log files are very large and you want to limit the amount of data read per pass to reduce peak I/O pressure.
+* *Leave the default* if your redo log file sizes are moderate.
+  The connector will read a bounded, predictable amount of data per pass and naturally keep pace with the archive log backlog.
+
+Because the redo log file size is fixed by the DBA at the database level, this property gives you a single, predictable lever to control how aggressively the connector works through an archive log backlog -- without the cascading side effects of the old batch size, sleep time, and gap detection interactions.
+
+[id="strategy-compatibility"]
+=== Strategy compatibility
+
+The new log-count-based mining behavior applies to the `hybrid` and `online_catalog` mining strategies.
+The `redo_log_catalog` strategy is unchanged.
+
+[cols="1,3", options="header"]
+|===
+| Mining Strategy   | Behavior
+
+| `hybrid`
+| Uses log-count-based mining with `log.mining.log.count.min`.
+
+| `online_catalog`
+| Uses log-count-based mining with `log.mining.log.count.min`.
+
+| `redo_log_catalog`
+| Unchanged.
+  Continues to read all available logs with a fixed one-second poll interval due to its data dictionary flushing requirements.
+|===
+
+[id="configuration-migration"]
+== Configuration migration
+
+[id="properties-to-remove"]
+=== Properties to remove
+
+The following properties are now obsolete and should be removed from your connector configuration when upgrading to Debezium 3.6:
+
+* `log.mining.batch.size.default`
+* `log.mining.batch.size.min`
+* `log.mining.batch.size.max`
+* `log.mining.sleep.time.default.ms`
+* `log.mining.sleep.time.min.ms`
+* `log.mining.sleep.time.max.ms`
+* `log.mining.sleep.time.increment.ms`
+* `log.mining.scn.gap.detection.gap.size.min`
+* `log.mining.scn.gap.detection.time.interval.max.ms`
+
+[NOTE]
+====
+If any of these properties remain in your connector configuration after upgrading, they will be ignored.
+We recommend removing them to keep your configuration clean and to avoid confusion during future troubleshooting.
+====
+
+[id="before-and-after"]
+=== Before and after
+
+Here is what a typical connector configuration looked like before, with properties tuned for a high-volume environment:
+
+[source,json]
+----
+{
+    "log.mining.batch.size.default": "50000",
+    "log.mining.batch.size.min": "5000",
+    "log.mining.batch.size.max": "200000",
+    "log.mining.sleep.time.default.ms": "500",
+    "log.mining.sleep.time.min.ms": "0",
+    "log.mining.sleep.time.max.ms": "5000",
+    "log.mining.sleep.time.increment.ms": "300",
+    "log.mining.scn.gap.detection.gap.size.min": "500000",
+    "log.mining.scn.gap.detection.time.interval.max.ms": "30000"
+}
+----
+
+And here is the equivalent in Debezium 3.6:
+
+[source,json]
+----
+{
+    "log.mining.log.count.min": "2"
+}
+----
+
+Nine interdependent properties reduced to one.
+
+image::config-comparison.svg[Configuration complexity old vs new,700,role=centered-image]
+
+[id="key-benefits"]
+== Key benefits
+
+Reduced read I/O during burst peaks::
+Reading multiple logs per pass in bounded batches means fewer mining sessions, fewer LogMiner start/stop cycles, and less repeated reading of overlapping log regions.
+When the database is churning through redo logs during a batch ETL window, the connector keeps pace by processing logs in predictable batches rather than slicing them into arbitrary SCN ranges.
+
+Natural adaptation to workload::
+The algorithm does not need manual tuning because log file count is an inherent signal of database activity volume.
+Large, rapidly rotating logs mean high activity; small, slowly rotating logs mean low activity.
+The connector responds to this signal automatically.
+
+Simpler configuration::
+Approximately nine interdependent properties have been replaced by a single, intuitive setting that most users will not need to change from its default value.
+This dramatically reduces the time spent on initial configuration and ongoing tuning.
+
+More predictable behavior::
+Mining throughput is no longer subject to the unpredictable relationship between SCN ranges and actual data volume.
+A mining session that processes one or more log files will do a consistent, bounded amount of work regardless of how many SCNs those logs happen to span.
+
+[id="wrapping-up"]
+== Wrapping up
+
+The log mining batch sizing algorithm has been one of the most difficult aspects of the Oracle connector to configure correctly.
+By moving from SCN-range-based batching to log-file-count-based mining, Debezium 3.6 eliminates the need for the complex, environment-specific tuning that users have struggled with for years.
+
+The full details of this change can be found in https://github.com/debezium/dbz/issues/1713[dbz#1713].
+If you are upgrading from an earlier version, review your connector configuration and remove the obsolete `batch.size`, `sleep.time`, and `scn.gap.detection` properties as described in the link:#configuration-migration[migration section] above.
+
+We would love to hear about your experience with this change.
+If you have questions or feedback, please reach out on the https://groups.google.com/g/debezium[mailing list] or https://debezium.zulipchat.com/[Zulip chat].
+You can also find details about everything else in Debezium 3.6 in the link:/releases/3.6/[release notes].
