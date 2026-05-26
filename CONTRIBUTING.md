@@ -135,13 +135,15 @@ This branch exists locally and it is where you should make all of your proposed 
 
 Feel free to commit your changes locally as often as you'd like, though we generally prefer that each commit represent a complete and atomic change to the code. Committing is as simple as:
 
-    $ git commit .
+    $ git commit . -s
 
 which should then pop up an editor of your choice in which you should place a good commit message. _*We do expect that all commit messages begin with a line starting with the GitHub issue and ending with a short phrase that summarizes what changed in the commit.*_ For example:
 
     dbz#1234 Corrected typo on community page.
 
 Make sure you didn't break any other part of the website. 
+
+NOTE: The Debezium project enforces a Developer Certificate of Origin (DCO) check on all code submissions. More information can be found about the DCO [here](https://github.com/debezium/debezium.github.io/blob/develop/dco.txt).
 
 #### Rebasing
 
