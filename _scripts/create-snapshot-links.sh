@@ -6,7 +6,7 @@ MAVEN_REPO="https://central.sonatype.com/repository/maven-snapshots"
 GROUP_ID="io/debezium"
 FILE_EXT="tar.gz"
 ANTORA_FILE="playbook.yml"
-CONNECTORS=(mysql mongodb postgres sqlserver oracle db2 jdbc spanner vitess informix ibmi mariadb cassandra-3 cassandra-4 cassandra-5 cockroachdb)
+CONNECTORS=(mysql mongodb postgres sqlserver oracle db2 jdbc spanner vitess informix ibmi mariadb cassandra-3 cassandra-4 cassandra-5 cockroachdb yashandb)
 
 # Fetch the latest Debezium snapshot version
 DEBEZIUM_VERSION=$(curl --silent -fSL $MAVEN_REPO/$GROUP_ID/debezium-bom/maven-metadata.xml | sed -n 's/.*<version>\([^<]*\)<\/version>.*/\1/p' | tail -1)
