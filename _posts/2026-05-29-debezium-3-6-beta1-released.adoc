@@ -1,0 +1,311 @@
+---
+layout: post
+title:  Debezium 3.6.0.Beta1 Released
+date:   2026-05-29
+tags:   [ releases, mongodb, mysql, mariadb, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox, spanner, jdbc, informix, ibmi, cockroachdb ]
+author: ccranfor
+extraClasses: release-v2
+---
+
+We're excited to announce the release of **Debezium 3.6.0.Beta1**, which brings a wealth of new features and improvements to the Debezium ecosystem.
+
+This release upgrades to Apache Kafka 4.3, introduces an incubating Apache Fluss sink adapter for Debezium Server, adds an incubating YashanDB source connector, and deprecates the `redo_log_catalog` Oracle mining strategy.
+On the operations side, the Debezium Operator now supports OpenTelemetry configuration and configurable image pull policies.
+Additional highlights include PostgreSQL publication-level skipped operations propagation, a new message-size-aware column truncation feature for Vitess, and a compatibility fix for MongoDB 8.0+ containers on recent Linux kernels.
+
++++<!-- more -->+++
+
+* link:#breaking-changes[Breaking changes]
+* link:#new-features-and-improvements[New features and improvements]
+* link:#other-changes[Other changes]
+
+[id="breaking-changes"]
+== Breaking changes
+
+With any new release of software, there can be breaking changes.
+This release is no exception, so let's discuss the major changes you should be aware of before upgrading to **Debezium 3.6.0.Beta1**
+
+=== Debezium for Oracle
+
+==== Deprecation of the "redo_log_catalog" mining strategy
+
+The `redo_log_catalog` mining strategy is now deprecated and will be removed in a future major release.
+
+This strategy relied on Oracle's redo log for catalog and dictionary information rather than the online catalog, leading to increased complexity, higher memory consumption, slower session startup, and increased redo log generation rates, that are often not sustainable in large enterprise systems.
+
+Users still using the `redo_log_catalog` mining strategy should plan to migrate to the `online_catalog` or `hybrid` strategies, which provides better performance and more consistent behavior.
+(https://github.com/debezium/dbz/issues/1693[dbz#1693])
+
+=== Debezium for SQL Server
+
+==== Unavailable value placeholder support for large column types
+
+When an UPDATE occurs on a table with `VARBINARY(MAX)`, `VARCHAR(MAX)`, or `NVARCHAR(MAX)` columns, SQL Server CDC assigns NULL to columns whose values were not changed.
+
+The connector now uses the `unavailable.value.placeholder` for these unchanged large-column values, aligning the behavior with how PostgreSQL TOAST columns and Oracle BLOB/CLOB columns are handled.
+This allows consumers to distinguish between a column that was explicitly set to NULL and one that simply was not modified.
+(https://github.com/debezium/dbz/issues/1164[dbz#1164])
+
+Users who are capturing such column types should verify consumer ingestion of placeholder values.
+
+[id="new-features-and-improvements"]
+== New Features and Improvements
+
+The following covers all new features and improvements, grouped by connector component area.
+
+[cols="25%,25%,25%,25%"]
+|===
+
+|link:#new-features-and-improvements-debezium-core[Debezium Core]
+|link:#new-features-and-improvements-debezium-oracle[Debezium for Oracle]
+|link:#new-features-and-improvements-debezium-postgresql[Debezium for PostgreSQL]
+|link:#new-features-and-improvements-debezium-sqlserver[Debezium for SQL Server]
+
+|link:#new-features-and-improvements-debezium-operator[Debezium Operator]
+|link:#new-features-and-improvements-debezium-platform[Debezium Platform]
+|link:#new-features-and-improvements-debezium-server[Debezium Server]
+|link:#new-features-and-improvements-debezium-cockroachdb[Debezium for CockroachDB]
+
+|link:#new-features-and-improvements-debezium-vitess[Debezium for Vitess]
+|link:#new-features-and-improvements-debezium-yashandb[Debezium for YashanDB]
+|link:#new-features-and-improvements-container-images[Container Images]
+|link:#new-features-and-improvements-build-infrastructure[Build Infrastructure]
+
+|link:#new-features-and-improvements-testcontainers[Testcontainers]
+|
+|
+|
+
+|===
+
+[id="new-features-and-improvements-debezium-core"]
+=== Debezium Core
+
+==== Upgrade to Apache Kafka 4.3
+
+Debezium now builds against and ships with Apache Kafka 4.3.0.
+This upgrade brings the latest Kafka improvements and ensures compatibility with the newest Kafka runtime for users running the latest broker versions.
+(https://github.com/debezium/dbz/issues/1987[dbz#1987])
+
+[id="new-features-and-improvements-debezium-oracle"]
+=== Debezium for Oracle
+
+==== Optional removal of non-critical LogMiner metadata columns
+
+The Oracle connector now allows non-critical metadata columns such as `CLIENT_ID`, `USERNAME`, `COMMIT_TIMESTAMP`, and `START_TIMESTAMP` to be excluded from LogMiner queries.
+
+Removing these columns can improve query performance and reduces the overall memory footprint of the connector.
+Evaluate whether these fields are needed for downstream consumers before excluding them from the query.
+(https://github.com/debezium/dbz/issues/1663[dbz#1663])
+
+[id="new-features-and-improvements-debezium-postgresql"]
+=== Debezium for PostgreSQL
+
+==== Propagation of skipped operations to PostgreSQL publications
+
+The PostgreSQL connector now propagates the `skipped.operations` configuration into the publication definition when creating or updating publications.
+
+Previously, publications always published all operation types regardless of the connector's skip configuration, resulting in potentially unnecessary WAL entries for operations that Debezium would later discard.
+With this change, the publication's `publish` option is set to match the connector configuration, reducing replication traffic and processing overhead at the PostgreSQL level.
+(https://github.com/debezium/dbz/issues/1970[dbz#1970])
+
+[id="new-features-and-improvements-debezium-sqlserver"]
+=== Debezium for SQL Server
+
+==== New `when_needed_no_data` snapshot mode
+
+A new `when_needed_no_data` snapshot mode is now available for the SQL Server connector.
+
+This mode combines the automatic recovery behavior of `when_needed` with the lightweight approach of `no_data`, performing a schema-only snapshot without emitting row-level data when the connector detects that its offsets are no longer available on the server.
+This eliminates the need to manually delete offsets or persistent volumes when LSN positions expire.
+(https://github.com/debezium/dbz/issues/1513[dbz#1513])
+
+==== Set-based LSN-to-timestamp resolution for improved query performance
+
+The SQL Server connector now uses a `LEFT JOIN` on the `cdc.lsn_time_mapping` table instead of calling the `fn_cdc_map_lsn_to_time()` scalar function per row.
+
+This set-based approach resolves timestamps in a single operation rather than row-by-row, significantly improving CDC query performance on high-volume tables.
+The change only affects the `FUNCTION` data query mode and produces identical output.
+(https://github.com/debezium/dbz/issues/1915[dbz#1915])
+
+[id="new-features-and-improvements-debezium-operator"]
+=== Debezium Operator
+
+==== Configurable image pull policy in the DebeziumServer CRD
+
+The Debezium Operator now supports specifying an `ImagePullPolicy` in the `DebeziumServer` custom resource definition via `spec.runtime.templates.container.imagePullPolicy`.
+This allows users to control when container images are pulled, avoiding unnecessary pulls from the registry on every pod creation and reducing startup latency in environments where images are already cached locally.
+(https://github.com/debezium/dbz/issues/1591[dbz#1591])
+
+==== OpenTelemetry monitoring support
+
+The Debezium Operator now supports configuring the OpenTelemetry Java Agent on Debezium Server instances through the `DebeziumServer` custom resource.
+
+Users can enable OpenTelemetry-based monitoring via `spec.runtime.metrics.opentelemetry`, specifying the collector endpoint and enabling automatic injection of environment variables and resource attributes such as service name and connector type.
+This provides a modern alternative to the existing JMX Exporter configuration for observability.
+(https://github.com/debezium/dbz/issues/1896[dbz#1896])
+
+[id="new-features-and-improvements-debezium-platform"]
+=== Debezium Platform
+
+==== MongoDB source connector support
+
+The Debezium Platform now supports validating and creating MongoDB source connections.
+Users can configure MongoDB as a source directly through the platform UI, expanding the set of supported database types beyond relational databases and bringing MongoDB CDC management into the unified platform experience.
+(https://github.com/debezium/dbz/issues/1871[dbz#1871])
+
+==== Dynamic catalog API integration for connector listing
+
+The Debezium Platform UI now uses the catalog API to dynamically list available connectors instead of relying on a static file.
+This ensures that newly registered connector types are automatically discovered and displayed, keeping the platform interface consistent with the actual set of available connectors.
+(https://github.com/debezium/dbz/issues/1920[dbz#1920])
+
+==== Schema descriptor-driven destination connector forms
+
+Destination connectors in the Debezium Platform now render their configuration forms using schema descriptors instead of free-text fields.
+This provides a more structured and user-friendly configuration experience with proper field types, validation, and documentation directly in the UI.
+(https://github.com/debezium/dbz/issues/1921[dbz#1921])
+
+==== Simplified signal verification payload
+
+The signal verification request payload in the Debezium Platform has been updated to accept a `connectionId` instead of the full connection properties.
+This simplifies the API contract by referencing an existing connection rather than requiring all connection details to be re-specified in each verification request.
+(https://github.com/debezium/dbz/issues/1937[dbz#1937])
+
+[id="new-features-and-improvements-debezium-server"]
+=== Debezium Server
+
+==== Incubating Apache Fluss sink adapter
+
+https://fluss.apache.org/[Apache Fluss] is a streaming storage system designed for real-time analytics and AI workloads in Lakehouse architectures.
+
+An incubating sink adapter for Apache Fluss is now available in Debezium Server.
+This integration enables a Kafka-less CDC pipeline from source databases directly into Fluss, simplifying the architecture and reducing operational overhead for users who want to feed both real-time and batch analytics from a single pipeline.
+(https://github.com/debezium/dbz/issues/1840[dbz#1840])
+
+[id="new-features-and-improvements-debezium-cockroachdb"]
+=== Debezium for CockroachDB
+
+==== BeanRegistry integration
+
+The CockroachDB connector now registers its key components—such as the configuration class, JDBC connection, schema, and value converters—in the `BeanRegistry`, aligning it with the pattern used by other Debezium connectors.
+This ensures the connector properly uses the core `QueueServiceProvider` and other default registered services, enabling a more consistent and extensible architecture.
+(https://github.com/debezium/dbz/issues/1983[dbz#1983])
+
+[id="new-features-and-improvements-debezium-vitess"]
+=== Debezium for Vitess
+
+==== Automatic column truncation based on maximum message size
+
+The Vitess connector now supports automatic column truncation to ensure produced messages stay within a configurable maximum size.
+
+This eliminates the manual effort of resizing and updating truncation settings as schemas evolve, preventing message size violations on downstream systems such as Kafka.
+The connector dynamically calculates truncation thresholds and applies them across all applicable columns.
+(https://github.com/debezium/dbz/issues/1879[dbz#1879])
+
+[id="new-features-and-improvements-debezium-yashandb"]
+=== Debezium for YashanDB
+
+==== New incubating YashanDB source connector
+
+Debezium now includes an incubating source connector for https://www.yashandb.com/[YashanDB], a relational database that provides an XStream-like CDC interface called YStream.
+
+The connector supports full snapshots via JDBC with concurrent table splitting by ROWID for improved performance, and incremental streaming via YStream's logical log parsing.
+This contribution from the YashanDB team enables seamless data connectivity between YashanDB and the broader Debezium ecosystem.
+(https://github.com/debezium/dbz/issues/1850[dbz#1850])
+
+[id="new-features-and-improvements-container-images"]
+=== Container Images
+
+==== Oracle Query Tool added to the tooling image
+
+The Debezium tooling container image now includes the https://github.com/Naros/debezium-oracle-query-tool[Debezium Oracle Query Tool], a CLI utility for fetching LogMiner data from Oracle systems.
+This tool joins the existing set of utilities such as `kcctl` and `pgcli` already shipped in the tooling image, providing a convenient way to inspect and debug Oracle LogMiner queries directly from the container.
+(https://github.com/debezium/dbz/issues/1952[dbz#1952])
+
+[id="new-features-and-improvements-build-infrastructure"]
+=== Build Infrastructure
+
+==== ArchUnit enforcement for component descriptor interfaces
+
+An ArchUnit rule now verifies that all configurable components implement the required `ConfigDescriptor` interface.
+This build-time enforcement prevents components from being inadvertently omitted from the generated descriptor catalog, and the rule is reusable by any repository that depends on `debezium-parent`.
+(https://github.com/debezium/dbz/issues/1979[dbz#1979])
+
+[id="new-features-and-improvements-testcontainers"]
+=== Testcontainers
+
+==== Compatibility fix for MongoDB 8.0+ with Linux kernel 6.19+
+
+An update to Linux kernel 6.19 and later introduced a compatibility issue that could prevent MongoDB 8.0+ containers from starting correctly.
+The test container images now include the `GLIBC_TUNABLES=glibc.pthread.rseq=1` environment variable workaround, ensuring reliable MongoDB container startup on hosts running recent Linux kernels.
+(https://github.com/debezium/dbz/issues/1945[dbz#1945])
+
+[id="other-changes"]
+== Other fixes
+
+// [Debezium Core]
+* Connector context MDC tag is missing in logs produced in the ChangeEventSourceCoordinator thread (https://github.com/debezium/dbz/issues/1933[dbz#1933])
+// [Debezium Core]
+* NullPointerException in ApproximateStructSizeCalculator when finished-partition cleanup dispatches a null-offset heartbeat (https://github.com/debezium/dbz/issues/1944[dbz#1944])
+// [Debezium for MySQL]
+* MySQL connector fails to parse DDL when SRID follows NULL/NOT NULL (https://github.com/debezium/dbz/issues/1510[dbz#1510])
+// [Debezium for Oracle]
+* Full database snapshot occurs when snapshot mode is `when_needed` (https://github.com/debezium/dbz/issues/1942[dbz#1942])
+// [Debezium for PostgreSQL]
+* Incorrect `pg_stat_replication.reply_time` calculation (https://github.com/debezium/dbz/issues/1950[dbz#1950])
+// [Debezium for MariaDB]
+* Snapshot fails at step 7 with "Cannot execute without committing" (https://github.com/debezium/dbz/issues/1976[dbz#1976])
+// [Debezium for MariaDB]
+* Snapshot fails with "Failed reading CURRENT_TIMESTAMP" when connections go stale during stage 6 (https://github.com/debezium/dbz/issues/1977[dbz#1977])
+// [Debezium JDBC sink]
+* JDBC sink connector errors when `-infinity` is provided for a timestamptz column that is not the first row in a batch (https://github.com/debezium/dbz/issues/1658[dbz#1658])
+// [Debezium JDBC sink]
+* Debezium Server JDBC sink descriptors are not generated (https://github.com/debezium/dbz/issues/1961[dbz#1961])
+// [Debezium Quarkus Extensions]
+* Fix artifactId in the Quarkus Extensions documentation (https://github.com/debezium/dbz/issues/1972[dbz#1972])
+// [Debezium Platform]
+* Unintended scroll in the card UI for unusually long names in catalog listing (https://github.com/debezium/dbz/issues/1967[dbz#1967])
+// [Debezium Platform]
+* Pipeline creation fails on Debezium Platform (https://github.com/debezium/dbz/issues/1990[dbz#1990])
+// [Debezium Server]
+* Build of Debezium Server fails (https://github.com/debezium/dbz/issues/1962[dbz#1962])
+// [Debezium for CockroachDB]
+* Table discovery only scans `cockroachdb.schema.name` and ignores `schema.include.list` (https://github.com/debezium/dbz/issues/1973[dbz#1973])
+// [Debezium for CockroachDB]
+* Typed column DEFAULT values rejected because DefaultValueConverter is null (https://github.com/debezium/dbz/issues/1975[dbz#1975])
+// [Documentation]
+* Document uppercase schema and table name behavior causing topic creation failures for Oracle (https://github.com/debezium/dbz/issues/1892[dbz#1892])
+// [Documentation]
+* Update documentation with quantile metrics (https://github.com/debezium/dbz/issues/1903[dbz#1903])
+// [Test Infrastructure]
+* Use the default storage class in testing persistent volume claims (https://github.com/debezium/dbz/issues/1971[dbz#1971])
+
+In total, https://github.com/orgs/debezium/projects/5/views/6?query=sort%3Aupdated-desc+is%3Aopen&filterQuery=status%3AReleased+iteration%3A3.6.0.Beta1[50 issues] were resolved in Debezium 3.6.0.Beta1.
+The list of changes can also be found in our link:/releases/3.6/release-notes#release-3.6.0-beta1[release notes].
+
+A big thank you to all the contributors from the community who worked diligently on this release:
+ +
+https://github.com/AlvarVG[Alvar Viana Gomez],
+https://github.com/atorik[Atsushi Torikoshi],
+https://github.com/caobahuong[Cao Ba Huong],
+https://github.com/Naros[Chris Cranford],
+https://github.com/DanieleVar[Daniele Licini],
+https://github.com/rigadon[Davyd Eliosidze],
+https://github.com/kmos[Giovanni Panice],
+https://github.com/indraraj[Indra Shukla],
+https://github.com/jakubmalek[Jakub Małek],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/nrkljo[Lars M. Johansson],
+https://github.com/mfvitale[Mario Fiore Vitale],
+https://github.com/Matei-Gatin[Matei Alexandru Gatin],
+https://github.com/aqhil07[Mohammad Akhil],
+https://github.com/KMohnishM[Mohnish],
+https://github.com/nathan-smit-1[Nathan Smit],
+https://github.com/pxcamus[Philippe Camus],
+https://github.com/twthorn[Thomas Thornton],
+https://github.com/laughingman7743[Tomoyuki Nakamura],
+https://github.com/ptqa[Tony Nyurkin],
+https://github.com/vsantonastaso[Vincenzo Santonastaso],
+https://github.com/viragtripathi[Virag Tripathi], and
+https://github.com/vjuranek[Vojtech Juranek]!
