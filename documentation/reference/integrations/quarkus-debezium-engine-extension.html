@@ -449,7 +449,15 @@
 <li><a href="#_configuring_debezium_connector">Configuring Debezium Connector</a></li>
 <li><a href="#_capturing_events_from_debezium">Capturing events from Debezium</a>
 <ul class="sectlevel2">
-<li><a href="#_filtering_change_data_capture_events">Filtering Change Data Capture Events</a></li>
+<li><a href="#_filtering_change_data_capture_events">Filtering Change Data Capture Events</a>
+<ul class="sectlevel3">
+<li><a href="#_by_destination">By destination</a></li>
+<li><a href="#_by_custom_filter_strategy">By custom filter strategy</a></li>
+<li><a href="#_by_field_changes">By field changes</a></li>
+<li><a href="#_batch_event_filtering">Batch event filtering</a></li>
+<li><a href="#_fallback_chain">Fallback chain</a></li>
+</ul>
+</li>
 <li><a href="#_deserializer_via_jackson">Deserializer via Jackson</a></li>
 </ul>
 </li>
@@ -714,6 +722,8 @@ public class ProductHandler {
 </div>
 <div class="sect2">
 <h3 id="_filtering_change_data_capture_events"><a class="anchor" href="#_filtering_change_data_capture_events"></a>Filtering Change Data Capture Events</h3>
+<div class="sect3">
+<h4 id="_by_destination"><a class="anchor" href="#_by_destination"></a>By destination</h4>
 <div class="paragraph">
 <p>It&#8217;s possible to filter events by <code>destination</code>:</p>
 </div>
@@ -728,6 +738,139 @@ public class ProductHandler {
 <div class="paragraph">
 <p>The default behavior is that a Debezium connector <code>destination</code> is formed from the name of the <code>prefix</code> defined in the configuration with the database name and the name of the table in which the change was made.
 In some cases the <code>destination</code> is redefined using an <a href="https://debezium.io/documentation/reference/stable/transformations/topic-routing.html">SMT</a>.</p>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_by_custom_filter_strategy"><a class="anchor" href="#_by_custom_filter_strategy"></a>By custom filter strategy</h4>
+<div class="paragraph">
+<p>For advanced filtering, you can provide a custom <code>CapturingFilterStrategy</code> that receives the full event and decides whether to capture it:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-java hljs" data-lang="java">@ApplicationScoped
+public class ProductsOnlyFilter implements CapturingFilterStrategy {
+    @Override
+    public boolean shouldCapture(CapturingEvent&lt;SourceRecord, SourceRecord&gt; event) {
+        return "native.inventory.products".equals(event.destination());
+    }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Then reference it in the annotation:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-java hljs" data-lang="java">    @Capturing(filter = ProductsOnlyFilter.class)
+    public void capture(CapturingEvent&lt;SourceRecord, SourceRecord&gt; event) {
+        // only receives events accepted by the filter
+    }</code></pre>
+</div>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>The <code>filter</code> attribute is mutually exclusive with <code>destination</code> and <code>engine</code>, validated at build time.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_by_field_changes"><a class="anchor" href="#_by_field_changes"></a>By field changes</h4>
+<div class="paragraph">
+<p>A built-in <code>CapturingFieldsFilterStrategy</code> can filter events based on the state of specific watched fields, where that state depends on the event type:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p><strong>Create / Read</strong>: captured if any watched field exists in the record schema</p>
+</li>
+<li>
+<p><strong>Update</strong>: captured only if at least one watched field value changed between before and after</p>
+</li>
+<li>
+<p><strong>Delete</strong>: captured if any watched field exists in the before schema</p>
+</li>
+<li>
+<p><strong>Truncate / Message</strong>: not captured (no field-level data)</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>Extend it and pass the field names to watch:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-java hljs" data-lang="java">@ApplicationScoped
+public class PriceChangeFilter extends CapturingFieldsFilterStrategy {
+    public PriceChangeFilter() {
+        super(Set.of("name", "price"));
+    }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Then use it:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-java hljs" data-lang="java">    @Capturing(filter = PriceChangeFilter.class)
+    public void capture(CapturingEvent&lt;SourceRecord, SourceRecord&gt; event) {
+        // only receives events where 'name' or 'price' are impacted
+    }</code></pre>
+</div>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_batch_event_filtering"><a class="anchor" href="#_batch_event_filtering"></a>Batch event filtering</h4>
+<div class="paragraph">
+<p>The filter strategy also works with batch event processing (<code>CapturingEvents&lt;BatchEvent&gt;</code>):</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-java hljs" data-lang="java">    @Capturing(filter = PriceChangeFilter.class)
+    public void onBatch(CapturingEvents&lt;BatchEvent&gt; events) {
+        // only receives batch events where at least one record impacts 'name' or 'price'
+    }</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>For batch events, each record in the batch is individually evaluated by <code>shouldCapture</code> and only matching records are delivered to the filter handler.</p>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_fallback_chain"><a class="anchor" href="#_fallback_chain"></a>Fallback chain</h4>
+<div class="paragraph">
+<p>When multiple <code>@Capturing</code> methods are defined, events are dispatched through a fallback chain:</p>
+</div>
+<div class="olist arabic">
+<ol class="arabic">
+<li>
+<p>Methods with <code>filter</code> are checked first. The filter&#8217;s <code>shouldCapture</code> decides.</p>
+</li>
+<li>
+<p>Methods with a registered deserializer for the destination (single event only).</p>
+</li>
+<li>
+<p>Methods with <code>destination</code> (exact match, then wildcard <code>*</code> fallback).</p>
+</li>
+</ol>
+</div>
+<div class="paragraph">
+<p>First match wins.
+A <code>@Capturing()</code> with no destination acts as a wildcard and catches any event not matched by the previous levels.
+If no wildcard is defined, unmatched events are skipped.</p>
+</div>
+<div class="paragraph">
+<p>The same fallback chain applies to both single event and batch event processing.</p>
+</div>
 </div>
 </div>
 <div class="sect2">
@@ -1118,7 +1261,7 @@ The Extension is already equipped with a dev service with an image configured fo
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/b332125656f9bf68d3ed75b1e0b6424de1aae1eb">b3321256</a></span>)
+            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/65a6d120380dcb3bc3701a05f7710f281a91b0b2">65a6d120</a></span>)
             
         </div>
     </footer>
