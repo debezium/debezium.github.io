@@ -1,0 +1,179 @@
+---
+layout: post
+title:  "TDB"
+date:   2026-06-22
+tags: [debezium-server, debezium-platform, replication, migration]
+author: mfvitale
+---
+
+There is a recurring narrative that Debezium requires Kafka; this was true at a very early stage of the project,
+but is no longer the case today, as deeply explained, together other myths about Debezium, in our recent article https://debezium.io/blog/2026/05/22/what-nobody-explains-about-debezium-2026/["What Nobody Explains About Debezium in 2026 (But Should)"].
+
+In this article, we'll demonstrate this further, showing how we recently added the support for JDBC sink in Debezium Server (DS) and Debezium Management Platform (DMP),
+opening up Kafka-less data replication/migration scenarios.
+
+
++++<!-- more -->+++
+
+Data integration, intended as migrating (one shot) and or replicating (continuously) data between databases, is one of the basic use cases Debezium supports.
+Debezium's focus has always been the CDC part, taking data out your database transforming them in a change event stream.
+In the past, users needed to develop their own "consumer" to store this stream into another database.
+This is why we decided to provide our https://debezium.io/documentation/reference/stable/connectors/jdbc.html[JDBC Sink Connector] in `2.2.0.Beta1` release in 2023,
+enabling end-to-end replication out of the box.
+
+Now this is also possible with https://debezium.io/documentation/reference/stable/operations/debezium-server.html#_jdbc[DS JDBC sink] and within the https://debezium.io/documentation/reference/stable/operations/debezium-platform.html[DMP].
+This is not meant as a replacement for Kafka Connect (KC) connectors, but just as an alternative for those do not have KC cluster or do not need high scalability and availability,
+with the only need to move data between two different databases, DS or DMP, could be a choice now.
+
+== Data Integration with Debezium Server
+
+Let’s see how simple it is to run a data migration pipeline with a few commands.
+
+The requirement is to have the source and the destination database up and running, so we can easily start them up with the following `Docker Compose` file:
+
+.infrastructure-compose.yaml
+[source,yaml]
+----
+services:
+  postgres:
+    image: quay.io/debezium/example-postgres:3.6
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    networks:
+      - backend
+
+  mysql:
+    image: mysql:9.1
+    ports:
+      - "3306:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=debezium
+      - MYSQL_DATABASE=target_db
+    networks:
+      - backend
+
+networks:
+  backend:
+    name: debezium-jdbc-backend
+----
+
+running the Docker Compose command below:
+
+[source, shell]
+-----
+docker compose -f infrastructure-compose.yaml up -d
+-----
+
+Once you have this, you can start replicating your data with the following command:
+
+[source, shell]
+-----
+ docker run --name inventory-pipeline -d \
+    -v $(pwd)/application.properties:/debezium/conf/application.properties:z \
+    -p 8080:8080 \
+    --network debezium-jdbc-backend \
+    quay.io/debezium/server:nightly
+-----
+
+The configuration used is the following
+
+.application.properties
+[source,properties]
+----
+debezium.sink.type=jdbc
+debezium.sink.jdbc.connection.url=jdbc:mysql://mysql:3306/target_db
+debezium.sink.jdbc.connection.username=root
+debezium.sink.jdbc.connection.password=debezium
+debezium.sink.jdbc.insert.mode=upsert
+debezium.sink.jdbc.primary.key.mode=record_key
+debezium.sink.jdbc.schema.evolution=basic
+debezium.sink.jdbc.delete.enabled=true
+debezium.source.connector.class=io.debezium.connector.postgresql.PostgresConnector
+debezium.source.offset.storage.file.filename=data/offsets.dat
+debezium.source.offset.flush.interval.ms=0
+debezium.source.database.hostname=postgres
+debezium.source.database.port=5432
+debezium.source.database.user=postgres
+debezium.source.database.password=postgres
+debezium.source.database.dbname=postgres
+debezium.source.topic.prefix=migration
+debezium.source.schema.include.list=inventory
+quarkus.log.console.json=false
+----
+
+Now, let’s check that the data has been correctly migrated to the MySQL database.
+
+[source, shell]
+----
+docker exec -it mysql mysql -uroot -pdebezium target_db -e "SELECT * FROM migration_inventory_customers;"
+docker exec -it mysql mysql -uroot -pdebezium target_db -e "SELECT * FROM migration_inventory_products;"
+docker exec -it mysql mysql -uroot -pdebezium target_db -e "SELECT * FROM migration_inventory_orders;"
+docker exec -it mysql mysql -uroot -pdebezium target_db -e "SELECT * FROM migration_inventory_products_on_hand;"
+----
+
+Then let’s add a new customer.
+
+[source, shell]
+----
+docker exec -it postgres psql -U postgres -d postgres -c \
+"INSERT INTO inventory.customers (first_name, last_name, email) VALUES ('John', 'Doe', 'john.doe@example.com');"
+----
+
+and verify that it is replicated on the destination
+
+[source, shell]
+----
+docker exec -it mysql mysql -uroot -pdebezium target_db -e "SELECT * FROM migration_inventory_customers;"
+----
+
+There we go! You have now a data replication pipeline migrating data from PostgreSQL to MySQL, in real time, just running a single container!
+
+[NOTE]
+====
+I strongly suggest to keep an eye on https://github.com/debezium/dbz/issues/1731[DBZ#1731-Migration of Debezium Server to the Debezium Quarkus Extensions],
+that will permit to have a native build of DS sever so you could have the same data migration pipeline with just a single native executable.
+====
+
+Also, for those who are on board on Kubernetes, you can run the same pipeline through the https://debezium.io/documentation/reference/stable/operations/debezium-operator.html[Debezium Operator]
+
+.DebeziumServer custom resource
+[source, yaml]
+----
+  apiVersion: debezium.io/v1alpha1
+  kind: DebeziumServer
+  metadata:
+    name: jdbc-sink-example
+    namespace: debezium
+  spec:
+    image: quay.io/debezium/server:latest
+    sink:
+      type: jdbc
+      config:
+        connection.url: jdbc:mysql://mysql:3306/target_db
+        connection.username: root
+        connection.password: debezium
+        insert.mode: upsert
+        primary.key.mode: record_key
+        schema.evolution: basic
+        delete.enabled: "true"
+    source:
+      class: io.debezium.connector.postgresql.PostgresConnector
+      config:
+        database.hostname: postgres
+        database.port: "5432"
+        database.user: postgres
+        database.password: postgres
+        database.dbname: postgres
+        topic.prefix: migration
+        schema.include.list: inventory
+        table.include.list: inventory.customers,inventory.products,inventory.products_on_hand,inventory.orders
+    quarkus:
+      config:
+        log.console.json: "false"
+----
+
+== Data Integration with Debezium Management Platform
+
