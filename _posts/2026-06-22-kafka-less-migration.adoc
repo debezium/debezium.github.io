@@ -1,29 +1,37 @@
 ---
 layout: post
-title:  "TDB"
-date:   2026-06-22
+title:  "Building Kafka-Less Data Integration Pipelines with Debezium"
+date:   2026-06-17
 tags: [debezium-server, debezium-platform, replication, migration]
 author: mfvitale
 ---
 
-There is a recurring narrative that Debezium requires Kafka; this was true at a very early stage of the project,
-but is no longer the case today, as deeply explained, together other myths about Debezium, in our recent article https://debezium.io/blog/2026/05/22/what-nobody-explains-about-debezium-2026/["What Nobody Explains About Debezium in 2026 (But Should)"].
+There is a recurring narrative that Debezium requires Kafka.
+While this was true in the project's early days, it is no longer the case, as we explained in detail,
+together with several other common misconceptions, in our recent article, https://debezium.io/blog/2026/05/22/what-nobody-explains-about-debezium-2026/["What Nobody Explains About Debezium in 2026 (But Should)"].
 
-In this article, we'll demonstrate this further, showing how we recently added the support for JDBC sink in Debezium Server (DS) and Debezium Management Platform (DMP),
-opening up Kafka-less data replication/migration scenarios.
+In this article, we’ll build on that discussion by showing the recently added JDBC sink support in Debezium Server (DS) and the Debezium Management Platform (DMP),
+which opens up Kafka-less data replication and migration scenarios.
 
 
 +++<!-- more -->+++
 
-Data integration, intended as migrating (one shot) and or replicating (continuously) data between databases, is one of the basic use cases Debezium supports.
-Debezium's focus has always been the CDC part, taking data out your database transforming them in a change event stream.
-In the past, users needed to develop their own "consumer" to store this stream into another database.
-This is why we decided to provide our https://debezium.io/documentation/reference/stable/connectors/jdbc.html[JDBC Sink Connector] in `2.2.0.Beta1` release in 2023,
+Data integration, whether for one-shot migrations or continuous replication between databases, is one of the core use cases Debezium supports.
+Debezium has always focused on the CDC side of the problem: capturing changes from a database and turning them into a stream of change events.
+In the past, users had to develop their own consumer to write those events into a target database.
+To address this, we introduced the https://debezium.io/documentation/reference/stable/connectors/jdbc.html[JDBC Sink Connector] in the `2.2.0.Beta1` release in 2023,
 enabling end-to-end replication out of the box.
 
-Now this is also possible with https://debezium.io/documentation/reference/stable/operations/debezium-server.html#_jdbc[DS JDBC sink] and within the https://debezium.io/documentation/reference/stable/operations/debezium-platform.html[DMP].
-This is not meant as a replacement for Kafka Connect (KC) connectors, but just as an alternative for those do not have KC cluster or do not need high scalability and availability,
-with the only need to move data between two different databases, DS or DMP, could be a choice now.
+Today, the same capability is available through the https://debezium.io/documentation/reference/stable/operations/debezium-server.html#_jdbc[DS JDBC sink] and within the https://debezium.io/documentation/reference/stable/operations/debezium-platform.html[DMP].
+This is not intended to replace Kafka Connect (KC) connectors.
+Instead, it provides an alternative for users who do not have a KC cluster, or who do not need the scalability and high availability that KC offers,
+and simply want to move data between two databases.
+In those cases, DS or DMP can now be an attractive option.
+
+[NOTE]
+====
+All the examples shown in this article are available in the https://github.com/debezium/debezium-examples/tree/main/data-replication[debezium-examples] repository.
+====
 
 == Data Integration with Debezium Server
 
@@ -36,6 +44,7 @@ The requirement is to have the source and the destination database up and runnin
 ----
 services:
   postgres:
+    container_name: postgres
     image: quay.io/debezium/example-postgres:3.6
     ports:
       - "5432:5432"
@@ -46,6 +55,7 @@ services:
       - backend
 
   mysql:
+    container_name: mysql
     image: mysql:9.1
     ports:
       - "3306:3306"
@@ -72,7 +82,7 @@ Once you have this, you can start replicating your data with the following comma
 [source, shell]
 -----
  docker run --name inventory-pipeline -d \
-    -v $(pwd)/application.properties:/debezium/conf/application.properties:z \
+    -v $(pwd)/application.properties:/debezium/config/application.properties:z \
     -p 8080:8080 \
     --network debezium-jdbc-backend \
     quay.io/debezium/server:nightly
@@ -114,6 +124,53 @@ docker exec -it mysql mysql -uroot -pdebezium target_db -e "SELECT * FROM migrat
 docker exec -it mysql mysql -uroot -pdebezium target_db -e "SELECT * FROM migration_inventory_products_on_hand;"
 ----
 
+You should see something like the following
+
+[source,shell]
+----
++------+------------+-----------+-----------------------+
+| id   | first_name | last_name | email                 |
++------+------------+-----------+-----------------------+
+| 1001 | Sally      | Thomas    | sally.thomas@acme.com |
+| 1002 | George     | Bailey    | gbailey@foobar.com    |
+| 1003 | Edward     | Walker    | ed@walker.com         |
+| 1004 | Anne       | Kretchmar | annek@noanswer.org    |
++------+------------+-----------+-----------------------+
++-----+--------------------+---------------------------------------------------------+--------+
+| id  | name               | description                                             | weight |
++-----+--------------------+---------------------------------------------------------+--------+
+| 101 | scooter            | Small 2-wheel scooter                                   |   3.14 |
+| 102 | car battery        | 12V car battery                                         |    8.1 |
+| 103 | 12-pack drill bits | 12-pack of drill bits with sizes ranging from #40 to #3 |    0.8 |
+| 104 | hammer             | 12oz carpenter's hammer                                 |   0.75 |
+| 105 | hammer             | 14oz carpenter's hammer                                 |  0.875 |
+| 106 | hammer             | 16oz carpenter's hammer                                 |      1 |
+| 107 | rocks              | box of assorted rocks                                   |    5.3 |
+| 108 | jacket             | water resistent black wind breaker                      |    0.1 |
+| 109 | spare tire         | 24 inch spare tire                                      |   22.2 |
++-----+--------------------+---------------------------------------------------------+--------+
++-------+------------+-----------+----------+------------+
+| id    | order_date | purchaser | quantity | product_id |
++-------+------------+-----------+----------+------------+
+| 10001 | 2016-01-16 |      1001 |        1 |        102 |
+| 10002 | 2016-01-17 |      1002 |        2 |        105 |
+| 10003 | 2016-02-19 |      1002 |        2 |        106 |
+| 10004 | 2016-02-21 |      1003 |        1 |        107 |
++-------+------------+-----------+----------+------------+
++------------+----------+
+| product_id | quantity |
++------------+----------+
+|        101 |        3 |
+|        102 |        8 |
+|        103 |       18 |
+|        104 |        4 |
+|        105 |        5 |
+|        106 |        0 |
+|        107 |       44 |
+|        108 |        2 |
+|        109 |        5 |
++------------+----------+
+----
 Then let’s add a new customer.
 
 [source, shell]
@@ -131,13 +188,27 @@ docker exec -it mysql mysql -uroot -pdebezium target_db -e "SELECT * FROM migrat
 
 There we go! You have now a data replication pipeline migrating data from PostgreSQL to MySQL, in real time, just running a single container!
 
+[source, shell]
+----
++------+------------+-----------+-----------------------+
+| id   | first_name | last_name | email                 |
++------+------------+-----------+-----------------------+
+| 1001 | Sally      | Thomas    | sally.thomas@acme.com |
+| 1002 | George     | Bailey    | gbailey@foobar.com    |
+| 1003 | Edward     | Walker    | ed@walker.com         |
+| 1004 | Anne       | Kretchmar | annek@noanswer.org    |
+| 1005 | John       | Doe       | john.doe@example.com  |
++------+------------+-----------+-----------------------+
+----
+
 [NOTE]
 ====
 I strongly suggest to keep an eye on https://github.com/debezium/dbz/issues/1731[DBZ#1731-Migration of Debezium Server to the Debezium Quarkus Extensions],
 that will permit to have a native build of DS sever so you could have the same data migration pipeline with just a single native executable.
 ====
 
-Also, for those who are on board on Kubernetes, you can run the same pipeline through the https://debezium.io/documentation/reference/stable/operations/debezium-operator.html[Debezium Operator]
+Also, for those who are on board on Kubernetes, you can run the same pipeline through the https://debezium.io/documentation/reference/stable/operations/debezium-operator.html[Debezium Operator].
+After having the Operator installed on you cluster you can just create the following CRD
 
 .DebeziumServer custom resource
 [source, yaml]
@@ -177,3 +248,266 @@ Also, for those who are on board on Kubernetes, you can run the same pipeline th
 
 == Data Integration with Debezium Management Platform
 
+Debezium Platform lets you manage your pipeline with a modern UI focusing on its design without worry about the deployment.
+Once you have https://debezium.io/documentation/reference/stable/operations/debezium-platform.html#_installation[installed] it on you Kubernetes cluster in `debezium-platform` namespace, you can create your data replication pipeline with easy
+
+[NOTE]
+====
+Through the https://summerofcode.withgoogle.com/[Google Summer of code initiative] we have a contributor working to support host based deploy on the Debezium Platform.
+This means that in future you could deploy pipeline also on VMs, on-prem machine and cloud.
+Keep an eye on https://github.com/debezium/dbz/issues/2085
+====
+
+You can create the following resources to create the source and destination databases
+
+.Source PostgreSQL (CDC-enabled, example postgresql database):
+[source, shell]
+----
+  apiVersion: v1
+  kind: Secret
+  metadata:
+    name: postgresql-credentials
+    namespace: debezium-platform
+  type: Opaque
+  stringData:
+    POSTGRES_USER: debezium
+    POSTGRES_PASSWORD: debezium
+    POSTGRES_DB: debezium
+  ---
+  apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: postgresql
+  spec:
+    replicas: 1
+    selector:
+      matchLabels:
+        app: postgresql
+    template:
+      metadata:
+        labels:
+          app: postgresql
+      spec:
+        containers:
+          - name: postgresql
+            image: quay.io/debezium/example-postgres:latest
+            ports:
+              - containerPort: 5432
+            envFrom:
+              - secretRef:
+                  name: postgresql-credentials
+  ---
+  apiVersion: v1
+  kind: Service
+  metadata:
+    name: postgresql
+    namespace: debezium-platform
+  spec:
+    selector:
+      app: postgresql
+    ports:
+      - port: 5432
+        targetPort: 5432
+----
+
+.Destination PostgreSQL (vanilla, JDBC sink target):
+[source, shell]
+----
+  apiVersion: v1
+  kind: Secret
+  metadata:
+    name: postgresql-dest-credentials
+    namespace: debezium-platform
+  type: Opaque
+  stringData:
+    POSTGRES_USER: debezium
+    POSTGRES_PASSWORD: debezium
+  ---
+  apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: postgresql-dest
+    namespace: debezium-platform
+  spec:
+    replicas: 1
+    selector:
+      matchLabels:
+        app: postgresql-dest
+    template:
+      metadata:
+        labels:
+          app: postgresql-dest
+      spec:
+        containers:
+          - name: postgresql
+            image: postgres:16-alpine
+            ports:
+              - containerPort: 5432
+            envFrom:
+              - secretRef:
+                  name: postgresql-dest-credentials
+  ---
+  apiVersion: v1
+  kind: Service
+  metadata:
+    name: postgresql-dest
+    namespace: debezium-platform
+  spec:
+    selector:
+      app: postgresql-dest
+    ports:
+      - port: 5432
+        targetPort: 5432
+----
+
+Let's now create the connection to the source and the destination database
+
+*Create the connection to the source database*
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-06-22-kafka-less-migration/create-source-connection.png" style="max-width:100%;" class="responsive-image" alt="Create the connection to the source database">
+</div>
+++++
+
+*Create the connection to the destination database*
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-06-22-kafka-less-migration/create-destination-connection.png" style="max-width:100%;" class="responsive-image" alt="Create the connection to the destination database">
+</div>
+++++
+
+Then create the source and the destination
+
+*Create the source*
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-06-22-kafka-less-migration/create-source.png" style="max-width:100%;" class="responsive-image" alt="Create the source">
+</div>
+++++
+
+*Create the destination*
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-06-22-kafka-less-migration/create-destination.png" style="max-width:100%;" class="responsive-image" alt="Create the destination">
+</div>
+++++
+
+Once you have all the pieces ready, you can design the pipeline that will replicate data from the source to the destination database
+
+*Design the pipeline*
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-06-22-kafka-less-migration/design-pipeline.png" style="max-width:100%;" class="responsive-image" alt="Pipeline design">
+</div>
+++++
+
+and the finally create it
+
+*Create the pipeline*
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-06-22-kafka-less-migration/create-pipeline.png" style="max-width:100%;" class="responsive-image" alt="Create pipeline">
+</div>
+++++
+
+It is worth to mention that you can do the same thing via the REST API with the following
+
+.Create source connection:
+[source, shell]
+----
+curl -X POST http://platform.debezium.io/api/connections \
+-H 'Content-Type: application/json' \
+-d '{
+"type": "POSTGRESQL",
+"name": "source-postgresql",
+"config": {
+"hostname": "postgresql",
+"port": 5432,
+"username": "debezium",
+"password": "debezium",
+"database": "debezium"
+}
+}'
+----
+
+.Create destination connection:
+[source, shell]
+----
+curl -X POST http://platform.debezium.io/api/connections \
+-H 'Content-Type: application/json' \
+-d '{
+"type": "JDBC",
+"name": "dest-postgresql-jdbc",
+"config": {
+"url": "jdbc:postgresql://postgresql-dest.debezium-platform.svc.cluster.local:5432/debezium",
+"username": "debezium",
+"password": "debezium"
+}
+}'
+----
+
+.Create source (use the connection id from step 1):
+[source, shell]
+----
+curl -X POST http://platform.debezium.io/api/sources \
+-H 'Content-Type: application/json' \
+-d '{
+"name": "pg-source",
+"type": "io.debezium.connector.postgresql.PostgresConnector",
+"schema": "dummy",
+"connection": { "id": 1 },
+"config": {
+"schema.include.list": "inventory",
+"table.exclude.list": "inventory.geom,inventory.spatial_ref_sys",
+"topic.prefix": "inventory"
+}
+}'
+----
+
+.Create destination (use the connection id from step 2):
+[source, shell]
+----
+curl -X POST http://platform.debezium.io/api/destinations \
+-H 'Content-Type: application/json' \
+-d '{
+"name": "jdbc-destination",
+"type": "jdbc",
+"schema": "dummy",
+"connection": { "id": 2 },
+"config": {
+"insert.mode": "upsert",
+"primary.key.mode": "record_key",
+"schema.evolution": "basic"
+}
+}'
+----
+
+.Create pipeline (use the source and destination ids from steps 3 and 4):
+[source, shell]
+----
+curl -X POST http://platform.debezium.io/api/pipelines \
+-H 'Content-Type: application/json' \
+-d '{
+"name": "database-migration",
+"source": { "id": 1 },
+"destination": { "id": 1 },
+"logLevel": "INFO"
+}'
+----
+
+== Conclusion
+We have seen how simple it is to build a data migration pipeline without requiring a Kafka cluster.
+
+There are still some limitations in the current DS JDBC sink implementation.
+For example, while Kafka Connect (KC) allows processing to be parallelized by configuring `tasks.max`, this capability is not yet available in DS.
+
+Similarly, if you want to process records from only a specific set of tables, there is no direct equivalent to the KC topics configuration.
+Instead, you need to filter records at the source, using the `table.include.list` configuration, or apply a transformation to select the desired events.
+
+These are known limitations, and addressing them is already on our radar for future releases.
