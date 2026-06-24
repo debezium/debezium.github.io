@@ -6,11 +6,10 @@ tags: [debezium-server, debezium-platform, replication, migration]
 author: mfvitale
 ---
 
-There is a recurring narrative that Debezium requires Kafka.
-While this was true in the project's early days, it is no longer the case, as we explained in detail,
-together with several other common misconceptions, in our recent article, https://debezium.io/blog/2026/05/22/what-nobody-explains-about-debezium-2026/["What Nobody Explains About Debezium in 2026 (But Should)"].
+Debezium is often associated with Kafka, and while this was true in the project's early days, it is no longer the case.
+We explained in detail, together with several other common misconceptions, in our recent article, https://debezium.io/blog/2026/05/22/what-nobody-explains-about-debezium-2026/["What Nobody Explains About Debezium in 2026 (But Should)"].
 
-In this article, we’ll build on that discussion by showing the recently added JDBC sink support in Debezium Server (DS) and the Debezium Management Platform (DMP),
+In this article, we’ll build on that discussion by showing the recently added JDBC sink support in https://debezium.io/documentation/reference/stable/operations/debezium-server.html[Debezium Server (DS)] and the https://debezium.io/documentation/reference/stable/operations/debezium-platform.html[Debezium Management Platform (DMP)],
 which opens up Kafka-less data replication and migration scenarios.
 
 
@@ -21,10 +20,12 @@ Debezium has always focused on the CDC side of the problem: capturing changes fr
 In the past, users had to develop their own consumer to write those events into a target database.
 To address this, we introduced the https://debezium.io/documentation/reference/stable/connectors/jdbc.html[JDBC Sink Connector] in the `2.2.0.Beta1` release in 2023,
 enabling end-to-end replication out of the box.
+The primary goal was not just to provide another database sink, but to provide full end-to-end support for Debezium's native change event format, including source metadata and change semantics, without requiring event transformation or loss of context.
+At the time, this level of support for Debezium's native events was not available in traditional relational database consumers.
 
-Today, the same capability is available through the https://debezium.io/documentation/reference/stable/operations/debezium-server.html#_jdbc[DS JDBC sink] and within the https://debezium.io/documentation/reference/stable/operations/debezium-platform.html[DMP].
+Today, the same capability is available through the https://debezium.io/documentation/reference/stable/operations/debezium-server.html#_jdbc[DS JDBC sink] and within the DMP.
 This is not intended to replace Kafka Connect (KC) connectors.
-Instead, it provides an alternative for users who do not have a KC cluster, or who do not need the scalability and high availability that KC offers,
+Instead, it provides an alternative for the users who do not have a KC cluster, or who do not need the scalability and high availability that KC offers,
 and simply want to move data between two databases.
 In those cases, DS or DMP can now be an attractive option, and with the upcoming https://github.com/debezium/dbz/issues/2107[native build support], DS will be able to run as a single native executable with minimal resource footprint.
 
@@ -113,6 +114,17 @@ debezium.source.topic.prefix=migration
 debezium.source.schema.include.list=inventory
 quarkus.log.console.json=false
 ----
+
+While most of the configuration is standard Debezium source connector setup, a few properties are worth highlighting because they define how changes are applied to the target database.
+
+The sink is configured to use the JDBC connector (`debezium.sink.type=jdbc`) and write changes to the MySQL instance specified by `debezium.sink.jdbc.connection.url`.
+The `insert.mode=upsert` setting instructs the connector to either insert new rows or update existing ones when a matching primary key is found.
+To determine the primary key, the connector uses the event key (`primary.key.mode=record_key`), which is derived from the source table's primary key.
+
+Another important setting is `schema.evolution=basic`, which enables the connector to automatically create or evolve destination tables as the source schema changes.
+Finally, `delete.enabled=true` ensures that delete operations captured from PostgreSQL are propagated to MySQL, keeping both databases synchronized.
+
+The remaining properties configure the PostgreSQL source connector, specifying the database connection details and restricting change capture to the `inventory` schema.
 
 Now, let’s check that the data has been correctly migrated to the MySQL database.
 
@@ -203,13 +215,15 @@ There we go! You have now a data replication pipeline migrating data from Postgr
 
 [NOTE]
 ====
-I strongly suggest to keep an eye on https://github.com/debezium/dbz/issues/1731[DBZ#1731-Migration of Debezium Server to the Debezium Quarkus Extensions]
+We recommend keeping an eye on https://github.com/debezium/dbz/issues/1731[DBZ#1731-Migration of Debezium Server to the Debezium Quarkus Extensions]
 and https://github.com/debezium/dbz/issues/2107[DBZ#2108-Debezium Server Native],
-that will permit to have a native build of DS sever so you could have the same data migration pipeline with just a single native executable.
+that will enable native build support for DS using the same data migration pipeline with a single native executable.
 ====
 
-Also, for those who are on board on Kubernetes, you can run the same pipeline through the https://debezium.io/documentation/reference/stable/operations/debezium-operator.html[Debezium Operator].
-After having the Operator installed on you cluster you can just create the following CRD
+If you are deploying Debezium on Kubernetes using the https://debezium.io/documentation/reference/stable/operations/debezium-operator.html[Debezium Operator], the same configuration can be expressed using a `DebeziumServer` custom resource.
+The operator abstracts much of the operational complexity by translating the custom resource definition into a fully configured DS deployment, allowing you to manage CDC pipelines using Kubernetes-native resources.
+The spec closely mirrors the underlying DS configuration, so the source and sink settings shown earlier can be mapped almost directly into the custom resource.
+After installing the Operator on your cluster, you can create the following Custom Resource Definition (CRD).
 
 .DebeziumServer custom resource
 [source, yaml]
@@ -247,19 +261,24 @@ After having the Operator installed on you cluster you can just create the follo
         log.console.json: "false"
 ----
 
+Notice how the `source` and `sink` sections correspond directly to the equivalent DS properties.
+This one-to-one mapping makes it straightforward to transition from a standalone DS deployment to an operator-managed deployment.
+For a complete description of the DS resource and all available configuration options, refer to the https://debezium.io/documentation/reference/stable/operations/debezium-operator.html#_debeziumserver_specification[Debezium Server Specification documentation].
+
 == Data Integration with Debezium Management Platform
 
-Debezium Platform lets you manage your pipeline with a modern UI focusing on its design without worry about the deployment.
-Once you have https://debezium.io/documentation/reference/stable/operations/debezium-platform.html#_installation[installed] it on you Kubernetes cluster in `debezium-platform` namespace, you can create your data replication pipeline with easy
+Debezium Platform lets you manage your pipeline with a modern UI, while Debezium orchestrates the entire deployment automatically.
+Once the platform is https://debezium.io/documentation/reference/stable/operations/debezium-platform.html#_installation[installed] on your Kubernetes cluster in the `debezium-platform` namespace, you can create your data replication pipeline ease.
 
 [NOTE]
 ====
 Through the https://summerofcode.withgoogle.com/[Google Summer of code initiative] we have a contributor working to support host based deploy on the Debezium Platform.
-This means that in future you could deploy pipeline also on VMs, on-prem machine and cloud.
+This means that in the future, you could also deploy the pipeline on VMs, on-prem machines, and the cloud.
 Keep an eye on https://github.com/debezium/dbz/issues/2085
 ====
 
-You can create the following resources to create the source and destination databases
+You can use the following resources to create the source and destination databases.
+Once applied, a PostgreSQL database acting as the source will be available as `postgresql`, and another PostgreSQL database acting as the destination will be available as `postgresql-dest`.
 
 .Source PostgreSQL (CDC-enabled, example postgresql database):
 [source, shell]
@@ -417,7 +436,7 @@ and the finally create it
 </div>
 ++++
 
-It is worth to mention that you can do the same thing via the REST API with the following
+It is worth mentioning that you can do the same thing via the REST API with the following
 
 .Create source connection:
 [source, shell]
@@ -442,14 +461,15 @@ curl -X POST http://platform.debezium.io/api/connections \
 ----
 curl -X POST http://platform.debezium.io/api/connections \
 -H 'Content-Type: application/json' \
--d '{
-"type": "JDBC",
-"name": "dest-postgresql-jdbc",
-"config": {
-"url": "jdbc:postgresql://postgresql-dest.debezium-platform.svc.cluster.local:5432/debezium",
-"username": "debezium",
-"password": "debezium"
-}
+-d '
+{
+    "type": "JDBC",
+    "name": "dest-postgresql-jdbc",
+    "config": {
+      "url": "jdbc:postgresql://postgresql-dest.debezium-platform.svc.cluster.local:5432/debezium",
+      "username": "debezium",
+      "password": "debezium"
+    }
 }'
 ----
 
@@ -458,16 +478,17 @@ curl -X POST http://platform.debezium.io/api/connections \
 ----
 curl -X POST http://platform.debezium.io/api/sources \
 -H 'Content-Type: application/json' \
--d '{
-"name": "pg-source",
-"type": "io.debezium.connector.postgresql.PostgresConnector",
-"schema": "dummy",
-"connection": { "id": 1 },
-"config": {
-"schema.include.list": "inventory",
-"table.exclude.list": "inventory.geom,inventory.spatial_ref_sys",
-"topic.prefix": "inventory"
-}
+-d '
+{
+    "name": "pg-source",
+    "type": "io.debezium.connector.postgresql.PostgresConnector",
+    "schema": "dummy",
+    "connection": { "id": 1 },
+    "config": {
+      "schema.include.list": "inventory",
+      "table.exclude.list": "inventory.geom,inventory.spatial_ref_sys",
+      "topic.prefix": "inventory"
+    }
 }'
 ----
 
@@ -476,16 +497,17 @@ curl -X POST http://platform.debezium.io/api/sources \
 ----
 curl -X POST http://platform.debezium.io/api/destinations \
 -H 'Content-Type: application/json' \
--d '{
-"name": "jdbc-destination",
-"type": "jdbc",
-"schema": "dummy",
-"connection": { "id": 2 },
-"config": {
-"insert.mode": "upsert",
-"primary.key.mode": "record_key",
-"schema.evolution": "basic"
-}
+-d '
+{
+    "name": "jdbc-destination",
+    "type": "jdbc",
+    "schema": "dummy",
+    "connection": { "id": 2 },
+    "config": {
+      "insert.mode": "upsert",
+      "primary.key.mode": "record_key",
+      "schema.evolution": "basic"
+    }
 }'
 ----
 
@@ -494,24 +516,27 @@ curl -X POST http://platform.debezium.io/api/destinations \
 ----
 curl -X POST http://platform.debezium.io/api/pipelines \
 -H 'Content-Type: application/json' \
--d '{
-"name": "database-migration",
-"source": { "id": 1 },
-"destination": { "id": 1 },
-"logLevel": "INFO"
+-d '
+{
+    "name": "database-migration",
+    "source": { "id": 1 },
+    "destination": { "id": 1 },
+    "logLevel": "INFO"
 }'
 ----
 
 == Conclusion
-We have seen how simple it is to build a data migration pipeline without requiring a Kafka cluster.
+We have seen how simple it is to build a data migration pipeline without requiring Kafka.
 
-There are still some limitations in the current DS JDBC sink implementation.
-For example, while Kafka Connect (KC) allows processing to be parallelized by configuring `tasks.max`, this capability is not yet available in DS.
+There are still some limitations/differences in the current DS JDBC sink implementation.
+For example, while Kafka Connect (KC) allows processing to be parallelized by configuring `tasks.max` with a value greater than `1`, this capability is not yet available in DS.
 
-Similarly, if you want to process records from only a specific set of tables, there is no direct equivalent to the KC topics configuration.
-Instead, you need to filter records at the source, using the `table.include.list` configuration, or apply a transformation to select the desired events.
+Similarly, if you want to process records from only a specific set of tables, the approach differs from Kafka Connect.
+Because Kafka provides a durable layer between producers and consumers, consumers can selectively subscribe to specific topics.
+Debezium Server follows a more direct point-to-point model, where filtering is generally performed at the source rather than the sink.
+In practice, this means using source connector options such as `table.include.list` or applying transformations to select the desired events.
 
-These are known limitations, and addressing them is already on our radar for future releases.
 
 If you have specific requirements or feature requests for Debezium Server or the Debezium Management Platform, we'd love to hear from you.
 Your feedback helps us prioritize what matters most to the community, so feel free to reach out via the https://groups.google.com/g/debezium[mailing list] or https://debezium.zulipchat.com/[Zulip chat].
+For bug reports, feature requests, and enhancement proposals, we encourage you to open an issue in the https://github.com/debezium/dbz/issues[Debezium issue tracker].
