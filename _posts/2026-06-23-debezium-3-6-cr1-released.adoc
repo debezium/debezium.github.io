@@ -1,0 +1,224 @@
+---
+layout: post
+title:  Debezium 3.6.0.CR1 Released
+date:   2026-06-24
+tags:   [ releases, mongodb, mysql, mariadb, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox, spanner, jdbc, informix, ibmi, cockroachdb, yashandb ]
+author: ccranfor
+extraClasses: release-v2
+---
+
+As we approach the final stages of the Debezium 3.6 release cycle, we're excited to announce the release of **Debezium 3.6.0.CR1**, the first candidate release for this milestone.
+
+This release delivers several notable enhancements, including Spanner Omni compatibility, a monitoring REST API and multi-panel dashboard in Debezium Platform, JDBC sink support in Platform, off-heap memory management for table history and schemas using RocksDB, and performance improvements that significantly reduce allocation and CPU overhead in the MySQL connector's poll path.
+On the bug-fix front, this release resolves a KafkaSchemaHistory recovery race condition, PostgreSQL varbit column handling, Vitess timestamp processing, NanoTimestamp overflow for extreme dates, and CockroachDB temporal type alignment.
+
+Read on for all the details!
+
++++<!-- more -->+++
+
+* link:#new-features-and-improvements[New features and improvements]
+* link:#other-changes[Other changes]
+
+[id="new-features-and-improvements"]
+== New Features and Improvements
+
+The following covers all new features and improvements, grouped by connector component area.
+
+[cols="25%,25%,25%,25%"]
+|===
+|link:#new-features-and-improvements-debezium-core[Debezium Core]
+|link:#new-features-and-improvements-debezium-mysql[Debezium for MySQL]
+|link:#new-features-and-improvements-debezium-oracle[Debezium for Oracle]
+|link:#new-features-and-improvements-debezium-platform[Debezium Platform]
+
+|link:#new-features-and-improvements-debezium-spanner[Debezium for Spanner]
+|
+|
+|
+
+|===
+
+[id="new-features-and-improvements-debezium-core"]
+=== Debezium Core
+
+==== Off-heap memory management for table history and schemas
+
+Internal schema history and table mappings can consume a significant amount of heap memory, especially for connectors tracking many tables.
+This release introduces a new pluggable interface for externalizing table mapping storage, along with a RocksDB-based implementation that stores table history and schema mappings on disk rather than in heap memory.
+This allows connectors to manage large schema histories without excessive memory pressure, improving stability in environments with many captured tables.
+(https://github.com/debezium/dbz/issues/2015[dbz#2015])
+
+[id="new-features-and-improvements-debezium-mysql"]
+=== Debezium for MySQL
+
+==== Reduced allocation and CPU overhead in poll batch conversion
+
+The MySQL connector's `doPoll()` method is called repeatedly by Kafka Connect and previously used a stream/collector pipeline to unwrap `DataChangeEvent` objects into `SourceRecord` instances.
+This release replaces that with a pre-sized `ArrayList` and a direct loop, reducing memory allocation by approximately 75% and CPU overhead by 31–42% on this hot path.
+For the default `max.batch.size` of 2048, per-operation allocation drops from roughly 34 KB to 8 KB, meaningfully reducing garbage collection pressure under sustained load.
+(https://github.com/debezium/dbz/issues/2113[dbz#2113])
+
+[id="new-features-and-improvements-debezium-oracle"]
+=== Debezium for Oracle
+
+==== Improved diagnostics for missing archive logs
+
+During the log gathering process, when all fetch retries are exhausted, Debezium previously threw a generic `LogFileNotFoundException` stating that none of the log files contain the specified SCN.
+Now, Debezium performs an additional check against `V$ARCHIVED_LOG` to determine whether the required log has been purged, providing a clearer and more actionable error message when a log has been deleted rather than simply missing.
+(https://github.com/debezium/dbz/issues/1532[dbz#1532])
+
+==== Unified Oracle JDBC driver version
+
+The Oracle connector previously maintained two separate JDBC driver versions: 21.15 for Oracle 19/21 and 23.3.x for Oracle 23/26.
+This release consolidates to a single latest Oracle 23.26.x driver across all supported database versions, simplifying dependency management and ensuring consistent behavior.
+The driver is fully backward-compatible with Oracle 19 and 21 databases.
+(https://github.com/debezium/dbz/issues/1837[dbz#1837])
+
+==== Exponential back-off for XStream attach retries
+
+When the XStream adapter fails to attach to the Outbound Server, it retries up to 10 times.
+Previously these retries occurred in rapid succession over approximately 10–20 seconds, often failing because the previous process had not fully detached.
+An exponential back-off delay strategy is now applied between retries, providing sufficient time for prior connections to release cleanly and significantly improving reattach reliability.
+(https://github.com/debezium/dbz/issues/2031[dbz#2031])
+
+==== Deferred transaction creation until first DML
+
+A new deferred transaction start mode allows the connector to delay creating a transaction in the buffer until the first DML event occurs, while still preserving `user_name` and `client_id` metadata from the transaction START event.
+This reduces the number of tracked transactions by excluding "stub" transactions that contain only a START and eventual COMMIT or ROLLBACK with no DML, which are common in environments with frontend applications and SQL developer tools.
+(https://github.com/debezium/dbz/issues/2046[dbz#2046])
+
+[NOTE]
+====
+This mode also changes how the mining session window advances.
+Rather than pinning the lower watermark to the oldest in-flight transaction, the mining window slides forward block-by-block, which is similar to how the connector behaved prior to Debezium 3.2.
+
+While this prevents long-running or idle transactions from holding the mining window open, it reintroduces the same trade-offs from that earlier behavior: because the mining boundaries are no longer anchored to the oldest transaction, there is a risk that parts of a transaction may not be fully re-mined if an event spans a window boundary.
+
+Users should evaluate whether the reduced memory footprint and narrower mining window are appropriate for their workload before enabling this option.
+====
+
+==== Filtering of PRIVATE redo thread logs in RAC environments
+
+In Oracle RAC deployments, when a node is shut down and its redo thread becomes PRIVATE, archive logs from that thread were still collected and fed to LogMiner.
+This could unnecessarily extend the SCN mining window and cause `LogFileNotFoundException` if archive log gaps existed on other threads.
+The connector now filters out logs belonging to threads not present in the current `RedoThreadState`, preventing PRIVATE and DISABLED thread logs from being collected.
+(https://github.com/debezium/dbz/issues/2049[dbz#2049])
+
+[WARNING]
+====
+Scenarios where a DBA reuses a redo thread that transitions from PUBLIC to PRIVATE are not supported.
+If Debezium has not fully consumed all changes from a thread before it is marked PRIVATE, those unconsumed changes will be skipped, which can lead to data loss.
+====
+
+[id="new-features-and-improvements-debezium-platform"]
+=== Debezium Platform
+
+==== Monitoring REST API in Conductor
+
+A new monitoring REST API has been added to Conductor to serve pipeline metrics to the Stage UI.
+The API queries Prometheus for time-series data, transforms responses into a compact array format that reduces JSON payload size by approximately 53%, and implements efficient caching.
+Two endpoints are provided: one to list available monitoring panels and another to query panel data for specific pipelines, with support for configurable time ranges and step intervals.
+(https://github.com/debezium/dbz/issues/1898[dbz#1898])
+
+==== Improved connection edit flow UX
+
+The connection edit flow in the Stage UI has been updated to match the page styling and design patterns used in the source and destination creation flows, providing a more consistent and polished user experience when modifying existing connections.
+(https://github.com/debezium/dbz/issues/1978[dbz#1978])
+
+==== Multi-panel monitoring dashboard
+
+A new monitoring tab has been added to the pipeline overview with a grid layout for multiple metric panels.
+The dashboard uses React Query for shared caching across panels, supports global controls for time range and refresh rate selection, and renders visualizations with PatternFly charts.
+Partial failure handling ensures that if one panel fails, the others continue to display data, and refresh is automatically paused when the tab is inactive.
+(https://github.com/debezium/dbz/issues/2025[dbz#2025])
+
+video::https://github.com/user-attachments/assets/90a3960f-e4a5-4a9d-9357-ec9cbfc7b8a4[width=100%,align="center"]
+
+==== JDBC sink support
+
+Debezium Platform now supports creating sink pipelines using the Debezium JDBC sink connector, enabling database migration and replication scenarios directly through the Platform UI.
+This allows users to configure end-to-end change data capture pipelines with a JDBC-based destination without leaving the Platform interface.
+(https://github.com/debezium/dbz/issues/2079[dbz#2079])
+
+[id="new-features-and-improvements-debezium-spanner"]
+=== Debezium for Spanner
+
+==== Spanner Omni compatibility
+
+The Spanner connector is now compatible with https://docs.cloud.google.com/spanner-omni/quickstart[Spanner Omni], extending Debezium's change data capture capabilities to Spanner deployments running outside of Google Cloud.
+This enables users running Spanner Omni on other cloud providers or on-premises to leverage the same connector for streaming changes.
+(https://github.com/debezium/dbz/issues/1858[dbz#1858])
+
+[id="other-changes"]
+== Other fixes
+
+// [Debezium Core]
+* KafkaSchemaHistory recovery race between subscribe and assign (https://github.com/debezium/dbz/issues/2032[dbz#2032])
+// [ai-python]
+* Project skeleton, event models, and ingestion handlers for PyDebeziumAI (https://github.com/debezium/dbz/issues/2003[dbz#2003])
+// [Debezium Platform]
+* Platform client foundation and pipeline management commands for CLI (https://github.com/debezium/dbz/issues/2019[dbz#2019])
+// [Debezium Platform]
+* Platform watcher may lead to unbounded WAL (https://github.com/debezium/dbz/issues/2027[dbz#2027])
+// [Debezium for PostgreSQL]
+* Original value of varbit(1) column becomes null in the Kafka topic (https://github.com/debezium/dbz/issues/2045[dbz#2045])
+// [Debezium for PostgreSQL]
+* Read-only incremental snapshot may not resume after restart (https://github.com/debezium/dbz/issues/2055[dbz#2055])
+// [Debezium for Vitess]
+* Connector ignores time.precision.mode=connect for TIMESTAMP columns (https://github.com/debezium/dbz/issues/2060[dbz#2060])
+// [Debezium for Spanner]
+* Convert CommittedRecord class to Java record (https://github.com/debezium/dbz/issues/2062[dbz#2062])
+// [Debezium for Vitess]
+* Connector emits raw MySQL datetime strings under the ZonedTimestamp schema for TIMESTAMP columns (https://github.com/debezium/dbz/issues/2063[dbz#2063])
+// [Debezium Quarkus Extensions]
+* Add engine.factory option for batch processing (https://github.com/debezium/dbz/issues/2067[dbz#2067])
+// [Debezium for Oracle]
+* Incorrect parsing of single-quoted values in LogMiner (https://github.com/debezium/dbz/issues/2070[dbz#2070])
+// [Debezium for PostgreSQL]
+* NanoTimestamp silently overflows for dates outside 1677-09-21 to 2262-04-11 when time.precision.mode=nanoseconds (https://github.com/debezium/dbz/issues/2075[dbz#2075])
+// [Debezium Platform]
+* Remove the table search query field from the filter section in the destination flow (https://github.com/debezium/dbz/issues/2081[dbz#2081])
+// [Debezium Quarkus Extensions]
+* Compatibility mode should avoid overriding connector.class for multiple connectors (https://github.com/debezium/dbz/issues/2082[dbz#2082])
+// [Debezium for CockroachDB]
+* TIMESTAMP without time zone emitted as null; align temporal types with logical types (https://github.com/debezium/dbz/issues/2083[dbz#2083])
+// [Debezium CLI]
+* CLI native build with quarkus-picocli (https://github.com/debezium/dbz/issues/2096[dbz#2096])
+// [Debezium for PostgreSQL]
+* JDBC sink truncates fractional seconds when binding MicroDuration to PostgreSQL interval (https://github.com/debezium/dbz/issues/2097[dbz#2097])
+// [Debezium JDBC sink]
+* JDBC sink corrupts or fails PostgreSQL BIT and VARBIT values with multi-byte Bits payloads (https://github.com/debezium/dbz/issues/2099[dbz#2099])
+// [Debezium Platform]
+* Unable to update a pipeline (https://github.com/debezium/dbz/issues/2111[dbz#2111])
+// [Debezium Platform]
+* Unable to add transformations to a pipeline (https://github.com/debezium/dbz/issues/2112[dbz#2112])
+// [Debezium Platform]
+* Unable to delete a transform that cannot be applied (https://github.com/debezium/dbz/issues/2114[dbz#2114])
+// [Debezium for Oracle]
+* InterruptedException not handled properly for off-heap Oracle buffers (https://github.com/debezium/dbz/issues/2117[dbz#2117])
+// [dependencies]
+* Upgrade Vitess connector Java protobuf version (https://github.com/debezium/dbz/issues/2126[dbz#2126])
+
+In total, https://github.com/orgs/debezium/projects/5/views/6?query=sort%3Aupdated-desc+is%3Aopen&filterQuery=status%3ADone+iteration%3A3.6.0.CR1[44 issues] were resolved in Debezium 3.6.0.CR1.
+The list of changes can also be found in our link:/releases/3.6/release-notes#release-3.6.0-cr1[release notes].
+
+A big thank you to all the contributors from the community who worked diligently on this release:
+ +
+https://github.com/Naros[Chris Cranford],
+https://github.com/kmos[Giovanni Panice],
+https://github.com/henryxparker[Henry Parker],
+https://github.com/indraraj[Indra Shukla],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/mfvitale[Mario Fiore Vitale],
+https://github.com/mcrauwel[Matthias Crauwels],
+https://github.com/minleejae[Minjae Lee],
+https://github.com/nathan-smit-1[Nathan Smit],
+https://github.com/roldanbob[Robert Roldan],
+https://github.com/Roshr2211[Roshni R],
+https://github.com/sagnghos[Sagnik Ghosh],
+https://github.com/sauravkumarrr[Saurav Kumar],
+https://github.com/kinolaev[Sergei Nikolaev],
+https://github.com/twthorn[Thomas Thornton],
+https://github.com/vsantonastaso[Vincenzo Santonastaso],
+https://github.com/viragtripathi[Virag Tripathi], and
+https://github.com/vjuranek[Vojtech Juranek]!
