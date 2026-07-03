@@ -457,6 +457,7 @@
 <li><a href="#oracle-transaction-metadata">Transaction Metadata</a></li>
 <li><a href="#oracle-logminer-mining-strategies">LogMiner Mining Strategies</a></li>
 <li><a href="#oracle-logminer-private-redo-threads">LogMiner and Private Redo Threads</a></li>
+<li><a href="#oracle-downstream-mining-database">Using a downstream mining database</a></li>
 <li><a href="#oracle-logminer-query-modes">Query Modes</a></li>
 <li><a href="#oracle-event-buffering">Event buffering</a></li>
 <li><a href="#low-change-frequency-offset-management">Low change frequency offset management</a></li>
@@ -3238,6 +3239,126 @@ Transitioning a thread from <code>PRIVATE</code> to <code>PUBLIC</code> can lead
 </td>
 </tr>
 </table>
+</div>
+</div>
+<div class="sect2">
+<h3 id="oracle-downstream-mining-database"><a class="anchor" href="#oracle-downstream-mining-database"></a>Using a downstream mining database</h3>
+<div class="paragraph">
+<p>You can use the Debezium Oracle connector to capture changes from a real-time Oracle downstream mining database.
+Log mining operations consume system resources and increase the load on a database, which can result in decreased performance.
+Configuring the connector to perform change data capture processing on a secondary mining database, can reduce the load on the primary database.</p>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>This feature is in an incubating state. This means that exact semantics, configuration options, and other details may change in future revisions based on feedback.
+Please let us know your specific requirements or if you encounter any problems while using this feature.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="ulist">
+<div class="title">Prerequisites</div>
+<ul>
+<li>
+<p>An Oracle downstream mining database is configured as <code>STANDBY SNAPSHOT</code> to use real-time synchronization with the primary instance. The using of a flat-file extract dictionary file is not supported, as this mode requires the explicit use of <code>redo_log_catalog</code> to function.</p>
+</li>
+<li>
+<p>The use of a <code>PRIMARY</code> with <code>NOREGISTER</code> for Oracle RFS is not supported.</p>
+</li>
+<li>
+<p>All transaction logs should be automatically registered with the downstream mining database using Oracle RFS for real-time data capture.</p>
+</li>
+<li>
+<p>Database administrators should seed the downstream mining database with its first data dictionary build using the <code>DBMS_LOGMNR_D.BUILD</code> PL/SQL package before deploying Debezium.</p>
+</li>
+<li>
+<p>The Debezium connector must be deployed using XStream, LogMiner is not currently supported.</p>
+</li>
+</ul>
+</div>
+<div class="admonitionblock important">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-important" title="Important"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>The Oracle downstream database must be configured as a <code>STANDBY SNAPSHOT</code> with auto-registered transaction logs.
+Using a <code>PRIMARY</code> downstream database is known as an archive-log-mode downstream database and is not supported.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="paragraph">
+<p>The connector configuration includes following key properties:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>capture.mode</code></dt>
+<dd>
+<p>Specifies the capture mode, which should be set to <code>downstream</code> to activate downstream mining.</p>
+</dd>
+<dt class="hdlist1"><code>secondary.dbname</code></dt>
+<dd>
+<p>Specifies the database name of the downstream mining database instance.</p>
+</dd>
+<dt class="hdlist1"><code>secondary.hostname</code></dt>
+<dd>
+<p>Specifies the hostname of the downstream mining database instance.</p>
+</dd>
+<dt class="hdlist1"><code>secondary.port</code></dt>
+<dd>
+<p>Specifies the port of the downstream mining database instance.</p>
+</dd>
+<dt class="hdlist1"><code>secondary.url</code></dt>
+<dd>
+<p>Specifies the full JDBC connection string to the downstream mining database. Use this as an alternative to <code>secondary.hostname</code>, <code>secondary.port</code>, and <code>secondary.dbname</code>.</p>
+</dd>
+</dl>
+</div>
+<div class="sect3">
+<h4 id="_how_this_works"><a class="anchor" href="#_how_this_works"></a>How this works</h4>
+<div class="paragraph">
+<p>When Debezium Oracle connector is configured to capture changes from a downstream mining database, the connector operates as follows:</p>
+</div>
+<div class="olist arabic">
+<ol class="arabic">
+<li>
+<p>Periodically, the primary Oracle instance will be asked to extract its data dictionary to the online redo logs.</p>
+</li>
+<li>
+<p>The connector connects to the primary to perform the snapshot and/or any write operations required for signals.</p>
+</li>
+<li>
+<p>The connector connects to the downstream mining database to read the transaction logs.</p>
+</li>
+<li>
+<p>Changes are captured with minimal impact to the primary database performance.</p>
+</li>
+</ol>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_important_considerations"><a class="anchor" href="#_important_considerations"></a>Important considerations</h4>
+<div class="ulist">
+<ul>
+<li>
+<p>All transaction logs must be registered with the Oracle downstream database. When Oracle RFS replicates changes, this should happen automatically when using a real-time downstream mining configuration. Debezium does not perform any log registration.</p>
+</li>
+<li>
+<p>When a log fails to register and a gap in log sequences occurs, the Debezium connector will pause the capture. A database administrator will be required to review the registered logs and register any missing logs to close the gap. In an ideal deployment, this should only be necessary during the initial set up and synchronization with the primary.</p>
+</li>
+</ul>
+</div>
 </div>
 </div>
 <div class="sect2">
@@ -8232,6 +8353,10 @@ Required when <code>log.mining.strategy</code> is set to <code>dictionary_from_f
 <dd>
 <p>Captures and streams changes from a physical standby instance.</p>
 </dd>
+<dt class="hdlist1"><code>downstream</code></dt>
+<dd>
+<p>Captures and streams changes from a downstream mining database.</p>
+</dd>
 </dl>
 </div></div></td>
 </tr>
@@ -12810,7 +12935,7 @@ The XStream outbound server is a container root database (<code>CDB$ROOT</code>)
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/30205b61a2ec97319a0349ff63ea265bf13d4341">30205b61</a></span>)
+            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/d864b562c6a14fccc06c0a53e70a7af172809afd">d864b562</a></span>)
             
         </div>
     </footer>
