@@ -1,0 +1,320 @@
+---
+layout: post
+title:  "Running the Debezium Platform on AWS: PostgreSQL to Amazon Kinesis"
+date:   2026-07-15
+tags: [debezium-platform, aws, kinesis, postgresql, cdc, kubernetes]
+author: pxcamus
+---
+
+:imagesdir: /assets/images/2026-07-15-debezium-platform-on-aws-postgres-to-kinesis
+
+In his recent link:/blog/2026/07/10/debezium-platform-status-update/[mid-year update], Mario highlighted the incredible work he and his team have done to make the Platform operational on Kubernetes.
+So let us take it somewhere concrete: **Amazon Web Services**.
+
+This post stands the Platform up on a single-node k3s cluster on an EC2 instance and builds a real change-data-capture pipeline from **Amazon RDS for PostgreSQL** to **Amazon Kinesis**.
+The deployment itself is done through a couple of simple commands via a companion project that does the heavy lifting, so the focus is the AWS-specific friction that documentation is thin on: IAM for the Kinesis sink, Kinesis stream naming, RDS logical replication, and reading a change event back out of the stream to prove it all works.
+
++++<!-- more -->+++
+
+* link:#the-setup[The setup: the Platform on k3s on EC2]
+* link:#the-source[The source: PostgreSQL on RDS]
+* link:#the-destination[The destination: an IAM-first Kinesis sink]
+* link:#the-pipeline[Building and running the pipeline]
+* link:#the-proof[The proof: a change event out of Kinesis]
+* link:#wrapping-up[Wrapping up]
+
+'''
+
+[id="the-setup"]
+== The setup: the Platform on any VM, in a handful of commands
+
+The Platform runs on Kubernetes, and https://k3s.io/[k3s] is a good fit for a single cloud box: one binary, a built-in Traefik ingress controller, and a `local-path` storage provisioner -- everything the Platform's Helm releases expect, without the weight of a full cluster.
+
+You do not have to wire that up by hand.
+A companion project, https://github.com/pxcamus/debezium-platform-lab[debezium-platform-lab], automates the whole deployment with https://magefile.org/[mage] targets orchestrating https://helmfile.readthedocs.io/[helmfile] releases.
+`mage` is a task runner whose targets are plain Go functions; each one here invokes `helmfile`, which installs an entire set of Helm releases -- their versions, values, and dependency order -- from one declarative file, collapsing a multi-chart deployment into a single command.
+It targets any VM you can reach over SSH -- an EC2 instance here, but equally a bare-metal box or a VM on your desk.
+
+Clone it, copy the example environment file, and set a handful of variables:
+
+[source,bash]
+----
+git clone https://github.com/pxcamus/debezium-platform-lab
+cd debezium-platform-lab
+cp .env.example .env
+----
+
+The variables that matter for a remote VM:
+
+[source,properties]
+----
+DBZ_VERSION=3.6.0          # Debezium Platform Helm chart version
+CLUSTER_TYPE=k3s           # provision k3s on a remote host over SSH
+DBZ_ENV=aws                # selects deploy/values/<component>/aws.yaml
+DBZ_DOMAIN=aws.example.io  # base DNS zone; the UI is served at dmp.<DBZ_DOMAIN>
+
+K3S_HOST=<vm-ip-or-ssh-alias>
+K3S_SSH_USER=ec2-user      # ubuntu, admin, ... depending on the AMI
+K3S_SSH_KEY=~/.ssh/your-key.pem
+K3S_LOCAL_KUBECONFIG=~/.kube/config_aws  # where cluster:recreate writes the kubeconfig
+----
+
+Then two phases. First, provision the cluster -- this SSHes into the VM, installs k3s, and pulls back a kubeconfig pointed at the box:
+
+[source,bash]
+----
+mage cluster:recreate
+----
+
+Second, deploy the stack, ordered by dependency -- the OpenTelemetry-based monitoring, the Debezium Operator, and the Platform itself:
+
+[source,bash]
+----
+mage helm:monitoring     # kube-prometheus-stack + OpenTelemetry operator
+mage helm:platform       # Conductor + Stage (the Platform UI)
+----
+
+That is the whole deployment.
+`mage -l` lists every target, and `mage helm:all` brings up the batteries-included CDC stack (Kafka, in-cluster databases, and all) if you want it -- that fuller stack and its `local-path` volumes need more disk than a default EBS root, so size the instance accordingly (40 GB was comfortable here).
+
+Beyond the deploy, you have full cluster access: `mage cluster:recreate` already fetched a kubeconfig pointed at the box -- the `mage helm:*` targets use it automatically, and you can too.
+Point `kubectl` or https://k9scli.io/[k9s] at it, and you are connected to your cluster :
+
+[source,bash]
+----
+KUBECONFIG=~/.kube/config_aws k9s
+----
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-07-15-debezium-platform-on-aws-postgres-to-kinesis/k9s-aws-dmp-pods.png" style="max-width:100%;" class="responsive-image" alt="k9s showing the dmp namespace pods running on the EC2 node">
+</div>
+++++
+
+[NOTE]
+====
+The UI and Grafana are reached by hostname through Traefik, so in a demo without real DNS you need those names to resolve to the instance.
+Point them at the EC2 public IP in your `/etc/hosts`:
+
+[source]
+----
+<ec2-public-ip>  dmp.aws.example.io grafana.aws.example.io
+----
+====
+
+In all, the demo needs just three inbound ports open to your IP -- `22` for SSH (which `mage` drives the cluster over), `6443` for `kubectl` and k9s, and `80` for the Platform UI -- with nothing exposed to the wider internet:
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-07-15-debezium-platform-on-aws-postgres-to-kinesis/sg-inbound-rules.png" style="max-width:100%;" class="responsive-image" alt="Security group inbound rules: ports 22, 6443, and 80, each scoped to a single IP">
+</div>
+++++
+
+The `Source` in that screenshot (`79.116.219.5/32`) is my own workstation's IP -- use yours.
+
+A completed deploy leaves you with two things to look at.
+The Platform's UI, served through Traefik at `dmp.<DBZ_DOMAIN>`:
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-07-15-debezium-platform-on-aws-postgres-to-kinesis/dmp-ui-aws-connection-catalog.png" style="max-width:100%;" class="responsive-image" alt="The Debezium Platform UI running on AWS">
+</div>
+++++
+
+And a https://grafana.com/[Grafana] instance from the bundled `kube-prometheus-stack`, for cluster-level metrics -- distinct from the Platform's own pipeline dashboard we will use later:
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-07-15-debezium-platform-on-aws-postgres-to-kinesis/grafana-aws-dmp-namespace-pods.png" style="max-width:100%;" class="responsive-image" alt="Grafana from the bundled kube-prometheus-stack showing the Platform pods">
+</div>
+++++
+
+[NOTE]
+====
+Running it locally instead? Set `CLUSTER_TYPE=kind` and `DBZ_ENV=local`, and the same `mage` targets deploy the Platform onto a local https://kind.sigs.k8s.io/[Kind] cluster -- no VM required.
+The tooling is the same; only the two environment variables change.
+====
+
+Two AWS-flavoured adjustments the `aws` values handle for you: there is no cert-manager, so the OpenTelemetry operator's admission webhook uses a self-signed certificate and the UI is served over plain HTTP through Traefik.
+And because pods reach AWS services over the VPC's private network, the connector talks to RDS privately, never over the public internet.
+
+[TIP]
+====
+The Platform's integrated monitoring -- the OpenTelemetry-based dashboard Mario described -- works unchanged on AWS.
+Once the pipeline is running you get event throughput, replication lag, queue utilisation, and snapshot progress out of the box, which is exactly how we will confirm the pipeline later.
+====
+
+With the Platform reachable, the interesting work begins: the two ends of the pipeline.
+
+[id="the-source"]
+== The source: PostgreSQL on RDS
+
+PostgreSQL is not the point of this post -- the Platform is -- and the connector is already thoroughly https://debezium.io/documentation/reference/3.6/connectors/postgresql.html[documented], so we keep the source deliberately light.
+For the demo we ran a `db.t4g.micro` instance: cheap, Free-Tier-eligible, and plenty for a handful of tables.
+
+Just one thing is genuinely RDS-specific. Logical replication is not a `postgresql.conf` edit, and the default parameter group is read-only, so create a custom one (**Aurora and RDS -> Parameter groups -> Create**, family `postgres18`), set `rds.logical_replication = 1`, assign it to the instance (**Databases -> _your instance_ -> Modify**), and **reboot** -- the parameter is static. Confirm with `SHOW wal_level;` -- you want `logical`.
+
+Everything else is two small scripts, run through the SSH tunnel to the private instance -- a local port-forward via the k3s box -- as the RDS master user. Both live in https://gist.github.com/pxcamus/faf5508fdbca28695e7a432d9b9c3ee7[this gist].
+
+**`setup.sql`** takes the good-practice path rather than the quickest one: it does not reuse the admin user for change data capture.
+It creates an `app_owner` that owns the `ecommerce` database and its schema -- standing in for a real application -- a dedicated, read-only `debezium` user for capture, the tables, and a little seed data.
+Two lines in it are the RDS catch worth knowing: replication is granted through the managed `rds_replication` role (`WITH REPLICATION` is superuser-only on RDS), and the publication is created up front by the table owner -- the non-superuser `debezium` user cannot autocreate it, which otherwise leaves you with a replication *slot* but no publication.
+
+[source,bash]
+----
+ssh -N -L 5432:<rds-endpoint>:5432 dmp-demo                          # terminal 1
+psql -h localhost -p 5432 -U <master-user> -d postgres -f setup.sql  # terminal 2
+----
+
+**`generate_products.sql`** tops up the `products` table with synthetic rows through the same tunnel -- a simple, painless way to generate change events once the pipeline is live:
+
+[source,bash]
+----
+psql -h localhost -p 5432 -U <master-user> -d ecommerce -f generate_products.sql
+----
+
+The handful of settings the connector then needs -- plugin (`pgoutput`), slot, publication (`dbz_ecommerce`), and auto-create mode (`disabled`, since `setup.sql` already created it) -- are set right in the Platform's configuration UI, under **Connection Advanced Replication**, with no digging through documentation for property names:
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-07-15-debezium-platform-on-aws-postgres-to-kinesis/dmp-postgres-source-config.png" style="max-width:100%;" class="responsive-image" alt="The PostgreSQL source configuration in the Debezium Platform UI">
+</div>
+++++
+
+The Platform validates the connection on save; a green result means it can reach RDS, authenticate, and use the slot and publication.
+The source is real.
+
+[id="the-destination"]
+== The destination: an IAM-first Kinesis sink
+
+Creating a Kinesis stream is trivial; `on-demand` mode avoids shard-capacity planning:
+
+[source,bash]
+----
+aws kinesis create-stream --stream-name aws-demo.public.products \
+  --stream-mode-details StreamMode=ON_DEMAND --region eu-south-2
+----
+
+Two things about a Kinesis sink are less obvious.
+
+**Stream names must match topic names.** The Debezium Server Kinesis sink writes each change event to a stream *named after the event's topic*, which for a PostgreSQL source is `<topic-prefix>.<schema>.<table>`. So capturing three tables means three streams -- `aws-demo.public.products`, `aws-demo.public.orders`, and so on -- each named after its topic. A single stream named after the prefix alone receives nothing, and events fail with `ResourceNotFoundException`.
+
+**Credentials belong on the instance, not in the cluster.** This is the part worth doing carefully.
+The sink authenticates through the AWS SDK's default credential chain.
+On a plain EC2 k3s cluster there is no IRSA, so the right answer is an **IAM role attached to the EC2 instance**: the SDK pulls temporary, auto-rotated credentials from the instance metadata service, and no static keys ever touch Kubernetes.
+Give that role a least-privilege policy scoped to your stream ARNs:
+
+[source,json]
+----
+{
+  "Effect": "Allow",
+  "Action": ["kinesis:PutRecord", "kinesis:PutRecords", "kinesis:DescribeStream"],
+  "Resource": "arn:aws:kinesis:eu-south-2:<account-id>:stream/aws-demo.public.*"
+}
+----
+
+Create the role under **IAM -> Roles -> Create role**, choosing **AWS service -> EC2** as the trusted entity and attaching the policy above; AWS creates a matching instance profile for you.
+Then bind it to the box under **EC2 -> Instances -> _select your instance_ -> Actions -> Security -> Modify IAM role**.
+
+With that identity living on the instance, the Platform's Kinesis destination connection needs almost nothing.
+The sink resolves its credentials from the instance role at runtime, so the connection form has a single configuration property -- the **region**:
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-07-15-debezium-platform-on-aws-postgres-to-kinesis/dmp-kinesis-dest-config.png" style="max-width:100%;" class="responsive-image" alt="The Kinesis destination connection in the Debezium Platform -- its only property is the region">
+</div>
+++++
+
+That near-empty form is the payoff of doing the IAM properly: the sensitive part -- who is allowed to write to the stream -- lives in a role attached to the instance, not as an access key pasted into, and then stored by, the Platform.
+
+[id="the-pipeline"]
+== Building and running the pipeline
+
+With both ends ready, the pipeline is a source, an optional transform, and a destination:
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-07-15-debezium-platform-on-aws-postgres-to-kinesis/dmp-pipeline-flow.png" style="max-width:100%;" class="responsive-image" alt="The pipeline: PostgreSQL source, transform, Kinesis destination">
+</div>
+++++
+
+The transform stays empty here on purpose.
+Because we created one Kinesis stream per table, the topic names Debezium emits already match real stream names.
+If you preferred a single shared stream, this is where a `RegexRouter` transform would collapse every topic onto one name.
+
+Start the pipeline, and the Platform's monitoring dashboard confirms it end to end -- connection status, snapshot progress, and replication lag, all without setting up your own observability stack:
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-07-15-debezium-platform-on-aws-postgres-to-kinesis/dmp-pipeline-monitoring.png" style="max-width:100%;" class="responsive-image" alt="The pipeline monitoring dashboard: connected, snapshot completed, low source lag">
+</div>
+++++
+
+`Connected`, snapshot `Completed`, sub-millisecond source lag, zero errors.
+But a healthy dashboard only proves the source side is happy.
+To prove data reached Kinesis, read it back.
+
+[id="the-proof"]
+== The proof: a change event out of Kinesis
+
+Pull the oldest record straight from the shard and decode it:
+
+[source,bash]
+----
+SHARD=$(aws kinesis get-shard-iterator --stream-name aws-demo.public.products \
+  --shard-id shardId-000000000000 --shard-iterator-type TRIM_HORIZON \
+  --region eu-south-2 --query ShardIterator --output text)
+
+aws kinesis get-records --shard-iterator "$SHARD" --region eu-south-2 \
+  --query 'Records[0].Data' --output text | base64 --decode | jq .payload
+----
+
+Out comes a familiar Debezium envelope:
+
+[source,json]
+----
+{
+  "before": null,
+  "after": {
+    "id": "prod-005",
+    "name": "Designing Data-Intensive Applications",
+    "price": "FXw=",
+    "stock_quantity": 60
+  },
+  "source": { "connector": "postgresql", "db": "ecommerce", "table": "products",
+              "snapshot": "true", "lsn": 1543504240 },
+  "op": "r"
+}
+----
+
+`op: "r"` is a *read* -- a row seen during the initial snapshot. A live `UPDATE` arrives as `op: "u"` with `before` and `after` populated, an insert as `"c"`, a delete as `"d"`.
+It is the same envelope Debezium produces everywhere; the only AWS-specific detail is that it arrived as a base64-encoded Kinesis `Data` blob.
+
+Which brings us to the one field that makes everyone think something is broken: `"price": "FXw="`.
+
+[NOTE]
+====
+That is not corruption.
+PostgreSQL `NUMERIC`/`DECIMAL` columns are serialised by default with `decimal.handling.mode = precise`: the unscaled integer in two's-complement bytes, base64-encoded, with the scale carried in the schema.
+Decode it and it resolves:
+
+[source,console]
+----
+$ printf 'FXw=' | base64 -d | xxd
+00000000: 157c                                     .|
+# 0x157C = 5500, scale 2  ->  55.00
+----
+
+`55.00` -- exact and lossless, but not human-readable.
+If your consumers would rather have a plain value, set `decimal.handling.mode` to `string` (`"55.00"`, no precision loss) or `double` (readable, but floating point -- not for currency).
+====
+
+The Debezium documentation covers this https://debezium.io/documentation/reference/3.6/connectors/postgresql.html#postgresql-data-types[thoroughly].
+
+[id="wrapping-up"]
+== Wrapping up
+
+That is a complete, observable PostgreSQL-to-Kinesis CDC pipeline on AWS: change events leaving RDS, crossing a least-privilege IAM boundary, and landing in a Kinesis stream you can read. The same pipeline shape extends naturally to other cloud sources.
+A follow-up post will swap PostgreSQL for **Amazon DocumentDB**, where the one new variable is TLS: the connector must trust DocumentDB's certificate authority, which means mounting a truststore into the deployment -- exactly what recent Platform Helm chart work enables.
+
+Hopefully this post helps you enjoy the amazing work the Debezium team has done to greatly reduce the operational workload of running a CDC pipeline.
