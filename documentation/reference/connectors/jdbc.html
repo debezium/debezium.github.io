@@ -448,6 +448,7 @@
 <li><a href="#how-the-jdbc-connector-works">How the JDBC connector works</a>
 <ul class="sectlevel2">
 <li><a href="#jdbc-singlestore-targets">SingleStore sink targets</a></li>
+<li><a href="#jdbc-starrocks-targets">StarRocks sink targets</a></li>
 <li><a href="#jdbc-consume-complex-debezium-events">Consuming complex Debezium change events</a></li>
 <li><a href="#jdbc-at-least-once-delivery">At-least-once delivery</a></li>
 <li><a href="#jdbc-multiple-tasks">Multiple tasks</a></li>
@@ -501,7 +502,7 @@
 <div class="sectionbody">
 <div class="paragraph">
 <p>The Debezium JDBC connector is a Kafka Connect sink connector implementation that can consume events from multiple source topics, and then write those events to a relational database by using a JDBC driver.
-This connector supports a wide variety of database dialects, including CockroachDB, Db2, MySQL, Oracle, PostgreSQL, SingleStore, and SQL Server.</p>
+This connector supports a wide variety of database dialects, including CockroachDB, Db2, MySQL, Oracle, PostgreSQL, SingleStore, SQL Server, and StarRocks.</p>
 </div>
 </div>
 </div>
@@ -546,6 +547,9 @@ The connector supports idempotent write operations by using upsert semantics and
 <p><a href="#jdbc-singlestore-targets">SingleStore sink targets</a></p>
 </li>
 <li>
+<p><a href="#jdbc-starrocks-targets">StarRocks sink targets</a></p>
+</li>
+<li>
 <p><a href="#jdbc-quoting-case-sensitivity">JDBC quoting and case-sensitivity</a></p>
 </li>
 <li>
@@ -573,6 +577,43 @@ If the target table requires explicit shard keys, sort keys, or other SingleStor
 The connector maps Debezium <code>io.debezium.data.geometry.Geometry</code> and <code>io.debezium.data.geometry.Geography</code> logical values to the SingleStore <code>GEOGRAPHY</code> column type, and <code>io.debezium.data.geometry.Point</code> logical values to the SingleStore <code>GEOGRAPHYPOINT</code> column type.
 SingleStore supports a subset of WKT geospatial values.
 The connector writes <code>POINT</code>, <code>LINESTRING</code>, and <code>POLYGON</code> WKB values to SingleStore as WKT strings.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="jdbc-starrocks-targets"><a class="anchor" href="#jdbc-starrocks-targets"></a>StarRocks sink targets</h3>
+<div class="paragraph">
+<p>To write to StarRocks, configure <a href="#jdbc-property-connection-url"><code>connection.url</code></a> with a StarRocks JDBC URL, for example, <code>jdbc:starrocks://&lt;_host_&gt;:9030/&lt;_database_&gt;</code>.
+The StarRocks JDBC driver is included in the Debezium JDBC connector archive, so Kafka Connect deployments that use the connector archive do not require an additional StarRocks driver JAR.
+The connector automatically detects a StarRocks target from the driver, so no dialect configuration is required.
+To write to a database in a catalog other than <code>default_catalog</code>, specify a fully qualified <code>&lt;_catalog_&gt;.&lt;_database_&gt;</code> path in the connection URL, or set the <a href="#jdbc-property-dialect-starrocks-catalog-name"><code>dialect.starrocks.catalog.name</code></a> property.</p>
+</div>
+<div class="paragraph">
+<p>StarRocks targets support idempotent writes through the same <a href="#jdbc-property-insert-mode"><code>insert.mode=upsert</code></a> setting that the connector uses for other databases.
+StarRocks executes <code>INSERT</code> statements against PRIMARY KEY tables as upserts, so the connector generates plain <code>INSERT</code> statements; <code>INSERT &#8230;&#8203; ON DUPLICATE KEY UPDATE &#8230;&#8203;</code> is not supported by StarRocks.
+Upsert and delete operations require the destination table to be a StarRocks PRIMARY KEY table.
+Tables that the connector creates automatically from events with key fields are always PRIMARY KEY tables.</p>
+</div>
+<div class="paragraph">
+<p>If <a href="#jdbc-property-schema-evolution"><code>schema.evolution</code></a> is set to <code>basic</code>, the connector can create or alter destination tables from event schemas.
+Tables that the connector creates use <code>PRIMARY KEY (&#8230;&#8203;) DISTRIBUTED BY HASH (&#8230;&#8203;)</code> clauses based on the record key fields.
+StarRocks limits the encoded size of all primary key column values of a PRIMARY KEY table to 128 bytes and does not permit <code>FLOAT</code>, <code>DOUBLE</code>, or <code>DECIMAL</code> key columns.
+Automatic table creation does not expose StarRocks-specific distribution, partitioning, or other table option settings.
+If the target table requires explicit table options, create the destination table in StarRocks before the connector writes to it.
+StarRocks applies <code>ALTER TABLE</code> schema changes asynchronously; writes that arrive while a schema change is still running can fail transiently and are retried by the connector.</p>
+</div>
+<div class="paragraph">
+<p>StarRocks has no <code>TIME</code> data type.
+The connector writes Debezium <code>io.debezium.time.Time</code>, <code>io.debezium.time.MicroTime</code>, and <code>io.debezium.time.NanoTime</code> logical values, and Kafka Connect <code>Time</code> values, to <code>VARCHAR</code> columns as <code>HH:mm:ss.ffffff</code> formatted strings.
+MySQL <code>TIME</code> values outside of the 24-hour clock range retain the MySQL <code>[-]HHH:mm:ss.ffffff</code> notation, and <code>io.debezium.time.ZonedTime</code> values are stored verbatim with their original offset.
+<code>io.debezium.time.ZonedTimestamp</code> values are normalized to the database time zone and written to <code>DATETIME</code> columns; the original offset is not preserved.
+StarRocks <code>DATETIME</code> columns do not accept a precision argument; StarRocks retains fractional seconds up to microsecond precision.
+Note that the StarRocks JDBC driver reports <code>DATETIME</code> columns without fractional second precision, so although values are stored with microsecond precision, reading them through the JDBC driver truncates the fraction unless the value is explicitly cast, for example, to <code>VARCHAR</code>.
+StarRocks <code>VARCHAR</code> lengths are byte lengths rather than character lengths, so the connector multiplies propagated character lengths by four, up to the maximum length of 1048576; <code>CHAR</code> columns whose scaled length exceeds the 255 byte <code>CHAR</code> maximum are promoted to <code>VARCHAR</code>.
+<code>BYTES</code> values are written to <code>VARBINARY</code> columns, which are limited to the same 1048576 byte maximum.
+<code>DECIMAL</code> columns support a maximum precision of 38; the connector caps larger propagated precisions at 38, and values that exceed the capped precision fail on write.
+When column type propagation is enabled, <code>BIGINT UNSIGNED</code> source columns map to <code>LARGEINT</code> columns, preserving the full unsigned 64-bit range.
+Debezium <code>io.debezium.data.Json</code> logical values and Kafka Connect <code>MAP</code> schema values map to the StarRocks <code>JSON</code> column type, <code>ENUM</code> and <code>SET</code> values map to <code>STRING</code> columns, and <code>YEAR</code> values map to <code>INT</code> columns.
+The StarRocks dialect does not support geospatial or vector logical types, and Kafka Connect <code>ARRAY</code> and <code>STRUCT</code> schema types are not mapped to the StarRocks <code>ARRAY</code> and <code>STRUCT</code> column types.</p>
 </div>
 </div>
 <div class="sect2">
@@ -824,6 +865,10 @@ The following table shows the <code>upsert</code> DML syntax for the database di
 <td class="tableblock halign-left valign-top"><p class="tableblock">SQL Server</p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock"><code>MERGE &#8230;&#8203;</code></p></td>
 </tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">StarRocks</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>INSERT &#8230;&#8203;</code> (PRIMARY KEY tables execute inserts as upserts)</p></td>
+</tr>
 </tbody>
 </table>
 </div>
@@ -876,6 +921,10 @@ To adjust nullability settings or default values, you can introduce a custom sin
 <div class="paragraph">
 <p>For SingleStore targets, automatic table creation does not configure SingleStore-specific shard keys, sort keys, or other table options.
 For more information, see <a href="#jdbc-singlestore-targets">SingleStore sink targets</a>.</p>
+</div>
+<div class="paragraph">
+<p>For StarRocks targets, automatic table creation creates PRIMARY KEY tables from the record key fields, and does not configure StarRocks-specific distribution, partitioning, or other table options.
+For more information, see <a href="#jdbc-starrocks-targets">StarRocks sink targets</a>.</p>
 </div>
 <div class="paragraph">
 <p>A field&#8217;s data type is resolved based on a predefined set of mappings.
@@ -1252,6 +1301,30 @@ As a workaround, if you need a BOOLEAN data type for an Oracle 23 sink, add the 
 <td class="tableblock halign-left valign-top"><p class="tableblock">Types.TIMESTAMP_WITH_TIMEZONE</p></td>
 </tr>
 <tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">io.debezium.time.StructuredDate</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Types.DATE</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">io.debezium.time.StructuredTime</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Types.TIME</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">io.debezium.time.StructuredTimestamp</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Types.TIMESTAMP</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">io.debezium.time.StructuredZonedTime</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Types.TIME_WITH_TIMEZONE</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">io.debezium.time.StructuredZonedTimestamp</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Types.TIMESTAMP_WITH_TIMEZONE</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">io.debezium.time.StructuredDuration</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Types.VARCHAR</p></td>
+</tr>
+<tr>
 <td class="tableblock halign-left valign-top"><p class="tableblock">io.debezium.data.VariableScaleDecimal</p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock">Types.DOUBLE</p></td>
 </tr>
@@ -1287,7 +1360,7 @@ As a workaround, if you need a BOOLEAN data type for an Oracle 23 sink, add the 
 <thead>
 <tr>
 <th class="tableblock halign-left valign-top">Logical type</th>
-<th class="tableblock halign-left valign-top">Db2 type</th>
+<th class="tableblock halign-left valign-top">Db2 and Db2 iSeries type</th>
 <th class="tableblock halign-left valign-top">MySQL type</th>
 <th class="tableblock halign-left valign-top">PostgreSQL type</th>
 <th class="tableblock halign-left valign-top">Oracle type</th>
@@ -1343,6 +1416,15 @@ As a workaround, if you need a BOOLEAN data type for an Oracle 23 sink, add the 
 <td class="tableblock halign-left valign-top"><p class="tableblock"><code>int8</code></p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock"><code>number</code></p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock"><code>bigint</code></p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">io.debezium.time.StructuredDuration</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>varchar(128)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>time</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>interval</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>interval year to month</code><br>
+<code>interval day to second</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>varchar(128)</code></p></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><p class="tableblock">io.debezium.data.Ltree</p></td>
@@ -1432,6 +1514,9 @@ SingleStore maps Debezium <code>io.debezium.data.Json</code> logical values to <
 Kafka Connect <code>MAP</code> schema values are also written to SingleStore <code>json</code> columns.
 Debezium <code>io.debezium.data.geometry.Geometry</code> and <code>io.debezium.data.geometry.Geography</code> logical values are written to SingleStore <code>geography</code> columns, and <code>io.debezium.data.geometry.Point</code> logical values are written to SingleStore <code>geographypoint</code> columns.
 The SingleStore dialect writes supported <code>POINT</code>, <code>LINESTRING</code>, and <code>POLYGON</code> WKB values as WKT strings.</p>
+</div>
+<div class="paragraph">
+<p>For StarRocks targets, see <a href="#jdbc-starrocks-targets">StarRocks sink targets</a> for the dialect-specific type mappings, including the string-based representation that the dialect uses for time types.</p>
 </div>
 </div>
 <div class="sect2">
@@ -2660,6 +2745,20 @@ When the default setting (<code>false</code>) is in effect, an <code>INSERT</cod
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="jdbc-property-dialect-starrocks-catalog-name"></a><a href="#jdbc-property-dialect-starrocks-catalog-name"><code>dialect.starrocks.catalog.name</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies the name of the StarRocks catalog that the connector writes into.
+When this property is set, the connector executes <code>SET CATALOG &lt;_name_&gt;</code> on every new connection before any session work.
+The value must be a valid StarRocks catalog name, that is, it may contain only letters, digits, and underscores, and must not start with a digit; other values are rejected during configuration validation.
+The StarRocks JDBC driver also supports specifying the catalog directly in the connection URL, for example, <code>jdbc:starrocks://&lt;_host_&gt;:9030/&lt;_catalog_&gt;.&lt;_database_&gt;</code>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><a id="jdbc-property-batch-size"></a><a href="#jdbc-property-batch-size"><code>batch.size</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -2907,7 +3006,7 @@ Quoting behavior is dialect-specific, and varies among different types of databa
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/8efd07793ec9443cdd6007e43ca6a2815e60bae4">8efd0779</a></span>)
+            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/61872ab9164ae4cc1f7f9d8981421e3373063883">61872ab9</a></span>)
             
         </div>
     </footer>
