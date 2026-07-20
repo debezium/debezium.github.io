@@ -8,7 +8,7 @@ author: pxcamus
 
 :imagesdir: /assets/images/2026-07-13-debezium-platform-on-aws-postgres-to-kinesis
 
-In his recent link:/blog/2026/07/10/debezium-platform-status-update/[mid-year update], Mario highlighted the incredible work he and his team have done to make the Platform operational on Kubernetes.
+In his recent link:/blog/2026/07/10/debezium-platform-status-update/[mid-year update], Mario highlighted the incredible work he and his team have done to make the https://debezium.io/documentation/reference/stable/operations/debezium-platform.html[Debezium Platform] operational on Kubernetes.
 So let us take it somewhere concrete: **Amazon Web Services**.
 
 This post stands the Platform up on a single-node k3s cluster on an EC2 instance and builds a real change-data-capture pipeline from **Amazon RDS for PostgreSQL** to **Amazon Kinesis**.
@@ -58,6 +58,12 @@ K3S_SSH_USER=ec2-user      # ubuntu, admin, ... depending on the AMI
 K3S_SSH_KEY=~/.ssh/your-key.pem
 K3S_LOCAL_KUBECONFIG=~/.kube/config_aws  # where cluster:recreate writes the kubeconfig
 ----
+
+[NOTE]
+====
+Running it locally instead? Set `CLUSTER_TYPE=kind` and `DBZ_ENV=local`, and the same `mage` targets deploy the Platform onto a local https://kind.sigs.k8s.io/[Kind] cluster -- no VM required.
+The tooling is the same; only the two environment variables change.
+====
 
 Then two phases. First, provision the cluster -- it will SSH into the VM, installs k3s, and pulls back a kubeconfig pointed at the box:
 
@@ -128,12 +134,6 @@ And a https://grafana.com/[Grafana] instance from the bundled `kube-prometheus-s
     <img src="/assets/images/2026-07-13-debezium-platform-on-aws-postgres-to-kinesis/grafana-aws-dmp-namespace-pods.png" style="max-width:100%;" class="responsive-image" alt="Grafana from the bundled kube-prometheus-stack showing the Platform pods">
 </div>
 ++++
-
-[NOTE]
-====
-Running it locally instead? Set `CLUSTER_TYPE=kind` and `DBZ_ENV=local`, and the same `mage` targets deploy the Platform onto a local https://kind.sigs.k8s.io/[Kind] cluster -- no VM required.
-The tooling is the same; only the two environment variables change.
-====
 
 Two AWS-flavoured adjustments the `aws` values handle for you: there is no cert-manager, so the OpenTelemetry operator's admission webhook uses a self-signed certificate and the UI is served over plain HTTP through Traefik.
 And because pods reach AWS services over the VPC's private network, the connector talks to RDS privately, never over the public internet.
@@ -240,7 +240,11 @@ With both ends ready, the pipeline is a source, an optional transform, and a des
 
 The transform stays empty here on purpose.
 Because we created one Kinesis stream per table, the topic names Debezium emits already match real stream names.
-If you preferred a single shared stream, this is where a `RegexRouter` transform would collapse every topic onto one name.
+If you preferred a single shared stream, this is where https://debezium.io/documentation/reference/3.6/transformations/topic-routing.html[`io.debezium.transforms.ByLogicalTableRouter`] would collapse every topic onto one name: `topic.regex` matches the topics to re-route, `topic.replacement` names the single destination they all land on.
+
+Worth noting what is *not* in that picture.
+Single message transforms are a Kafka Connect concept, and every SMT in the Platform's picker carries a Kafka Connect class name -- but there is no Kafka and no Kafka Connect anywhere in this deployment.
+The Platform runs connectors on the https://debezium.io/documentation/reference/3.6/development/engine.html[Debezium engine], which applies the same `transforms` chain in-process before handing each record to the sink.
 
 Start the pipeline, and the Platform's monitoring dashboard confirms it end to end -- connection status, snapshot progress, and replication lag, all without setting up your own observability stack:
 
@@ -292,8 +296,6 @@ It is the same envelope Debezium produces everywhere; the only AWS-specific deta
 
 Which brings us to the one field that makes everyone think something is broken: `"price": "FXw="`.
 
-[NOTE]
-====
 That is not corruption.
 PostgreSQL `NUMERIC`/`DECIMAL` columns are serialised by default with `decimal.handling.mode = precise`: the unscaled integer in two's-complement bytes, base64-encoded, with the scale carried in the schema.
 Decode it and it resolves:
@@ -307,7 +309,6 @@ $ printf 'FXw=' | base64 -d | xxd
 
 `55.00` -- exact and lossless, but not human-readable.
 If your consumers would rather have a plain value, set `decimal.handling.mode` to `string` (`"55.00"`, no precision loss) or `double` (readable, but floating point -- not for currency).
-====
 
 The Debezium documentation covers this https://debezium.io/documentation/reference/3.6/connectors/postgresql.html#postgresql-data-types[thoroughly].
 
