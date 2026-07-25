@@ -451,6 +451,7 @@
 <li><a href="#how-the-cockroachdb-connector-works">How the connector works</a>
 <ul class="sectlevel2">
 <li><a href="#cockroachdb-architecture">Architecture</a></li>
+<li><a href="#cockroachdb-changefeed-delivery-modes">Changefeed delivery modes</a></li>
 <li><a href="#cockroachdb-snapshots">Snapshots</a></li>
 <li><a href="#cockroachdb-streaming-changes">Streaming changes</a></li>
 <li><a href="#cockroachdb-reusing-an-existing-changefeed">Reusing an existing changefeed</a></li>
@@ -572,11 +573,47 @@ The enriched format includes both schema metadata and the full before and after 
 </ol>
 </div>
 <div class="paragraph">
-<p>By using this architecture the connector can leverage the native, highly-available changefeed infrastructure of CockroachDB to reliably capture data and provide it to downstream consumers in the standard Debezium event format.
+<p>By using this architecture the connector can use the native, highly-available changefeed infrastructure of CockroachDB to reliably capture data and provide it to downstream consumers in the standard Debezium event format.
+The two-stage architecture that is described in the preceding paragraphs applies to the default <code>kafka</code> delivery mode.
+As an alternative, you can configure the connector to stream the changefeed over the connector&#8217;s SQL connection.
+For more information, see <a href="#cockroachdb-changefeed-delivery-modes">Changefeed delivery modes</a>.
 By default, the connector consolidates all configured tables into a single changefeed.
 By consolidating data in a single changefeed job, the connector conforms to the <a href="https://www.cockroachlabs.com/docs/stable/create-and-configure-changefeeds#recommendations">recommended limit</a> on the number of changefeeds per CockroachDB cluster (approximately 80 at the time of writing).
 To improve throughput and prevent performance coupling, CockroachDB <a href="https://www.cockroachlabs.com/docs/stable/changefeed-best-practices">best practices</a> advise against using a single changefeed to monitor a large number of tables.
 In environments with large table counts, consider setting <a href="#cockroachdb-property-max-tables-per-changefeed"><code>cockroachdb.changefeed.max.tables.per.changefeed</code></a> to split the tables across several changefeeds, or running multiple connector instances so that each connector captures a related subset of the tables.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="cockroachdb-changefeed-delivery-modes"><a class="anchor" href="#cockroachdb-changefeed-delivery-modes"></a>Changefeed delivery modes</h3>
+<div class="paragraph">
+<p>By default, the CockroachDB connector uses a two-stage flow in which CockroachDB first writes changefeed events to an intermediate Kafka cluster.
+The connector then consumes those events, converts them to the standard Debezium envelope, and republishes them to the final Kafka topics.
+As an alternative to this standard flow, you can set the connector&#8217;s <a href="#cockroachdb-property-sink-type"><code>cockroachdb.changefeed.sink.type</code></a> property to <code>sinkless</code> so that the connector ingests change events directly  from the database via a dedicated SQL connection.
+It then emits the change event records to the configured Kafka topics as in the default flow.
+The following descriptions provide details about the available <code>cockroachdb.changefeed.sink.type</code> settings:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>kafka</code> (default)</dt>
+<dd>
+<p>The connector creates a changefeed with an <code>INTO 'kafka://&#8230;&#8203;'</code> clause, and CockroachDB pushes change events to per-table topics on an intermediate Kafka cluster.
+The connector runs its own consumer to read the events back.
+Intermediate topics store change events independently of the connector.
+As a result, the connector can remain offline for an extended period and then resume processing from the stored events when it reconnects.
+To use this property, you must set the <a href="#cockroachdb-property-sink-uri">cockroachdb.changefeed.sink.uri</a> property.</p>
+</dd>
+<dt class="hdlist1"><code>sinkless</code></dt>
+<dd>
+<p>The connector creates a <a href="https://www.cockroachlabs.com/docs/stable/changefeed-examples#create-a-sinkless-changefeed">sinkless changefeed</a> with no <code>INTO</code> clause, and streams change events directly from the database over a dedicated SQL connection.
+There is no intermediate Kafka cluster, no changefeed job, and no separate changefeed consumer to secure.
+The <code>cockroachdb.changefeed.sink.uri</code> property is not used.
+Because there is no intermediate buffer, resuming after connector downtime depends on the CockroachDB <a href="https://www.cockroachlabs.com/docs/stable/configure-replication-zones#gc-ttlseconds">garbage collection window (<code>gc.ttlseconds</code>)</a>.
+If the connector is offline for longer than the garbage collection window, a new snapshot is required.</p>
+</dd>
+</dl>
+</div>
+<div class="paragraph">
+<p>The change events that the connector produces are identical in both modes; only the ingestion path differs.</p>
 </div>
 </div>
 <div class="sect2">
@@ -1092,7 +1129,7 @@ The following JSON represents this key structure:</p>
     "fields": [
       {
         "type": "string",
-        "optional": false,
+        "optional": true,
         "field": "id"
       }
     ]
@@ -3003,7 +3040,8 @@ Only alphanumeric characters, hyphens, dots, and underscores must be used in the
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>The URI for the intermediate Kafka cluster where CockroachDB publishes changefeed events.
 Format: <code>kafka://host:port</code>.
-This is a required property.</p>
+This property is required when <code>cockroachdb.changefeed.sink.type</code> is set to <code>kafka</code>.
+It is not used when the delivery mode is <code>sinkless</code>.</p>
 </div></div></td>
 </tr>
 </tbody>
@@ -3267,8 +3305,26 @@ When the connector restarts from a stored offset, it uses the stored resolved ti
 <p><code>kafka</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The type of sink for changefeed events.
-Currently supported: <code>kafka</code>.</p>
+<p>The changefeed delivery mode.
+Set one of the following options:
+<code>kafka</code>:: CockroachDB pushes changefeed events to an intermediate Kafka cluster that the connector consumes.
+<code>sinkless</code>:: The connector streams changefeed events directly from the database over a dedicated SQL connection, with no intermediate Kafka cluster.</p>
+</div>
+<div class="paragraph">
+<p>For more information, see <a href="#cockroachdb-changefeed-delivery-modes">Changefeed delivery modes</a>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="cockroachdb-property-kafka-sink-config"></a><a href="#cockroachdb-property-kafka-sink-config"><code>cockroachdb.changefeed.kafka.sink.config</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>A JSON value for the CockroachDB <code>kafka_sink_config</code> changefeed option, which tunes how the changefeed batches and flushes writes to the intermediate Kafka sink.
+For example, <code>{"Flush": {"Messages": 100, "Frequency": "500ms"}}</code> bounds delivery latency to 500 milliseconds.
+The connector validates the value as JSON and applies it only when <code>cockroachdb.changefeed.sink.type</code> is set to <code>kafka</code>.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -3639,7 +3695,22 @@ If the entire cluster becomes unavailable, the changefeed stops producing events
 After the cluster recovers, the connector resumes processing from the last stored offset.</p>
 </div>
 <div class="paragraph">
-<p>The connector includes retry logic with configurable parameters (<code>connection.max.retries</code>, <code>connection.retry.delay.ms</code>) for handling transient connection failures, including CockroachDB-specific errors like serialization failures (SQL state 40001) and connection errors (SQL state 08xxx).</p>
+<p>The connector automatically retries transient connection failures.
+The <a href="#cockroachdb-property-connection-max-retries"><code>connection.max.retries</code></a> and <a href="#cockroachdb-property-connection-retry-delay"><code>connection.retry.delay.ms</code></a> properties control the number of retry attempts and the delay interval between attempts.
+The connector treats the following SQL states as transient, retriable errors:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>Connection exceptions (SQL state class <code>08xxx</code>), including <code>08001</code> errors that occur when a connection is refused or a host is unreachable.</p>
+</li>
+<li>
+<p>Node shutdown conditions (SQL state <code>57P01</code>) that occur while CockroachDB drains a node during a rolling restart.</p>
+</li>
+<li>
+<p>Retriable transaction conditions, including serialization failures (<code>40001</code>), statement completion unknown conditions (<code>40003</code>), and deadlocks (<code>40P01</code>).</p>
+</li>
+</ul>
 </div>
 </div>
 <div class="sect2">
@@ -3784,9 +3855,11 @@ log4j.logger.io.debezium.connector.cockroachdb.CockroachDBStreamingChangeEventSo
 <div class="sectionbody">
 <div class="dlist">
 <dl>
-<dt class="hdlist1">Kafka sink only</dt>
+<dt class="hdlist1">Changefeed sink types</dt>
 <dd>
-<p>The connector currently only supports Kafka as the intermediate changefeed sink.
+<p>The connector supports two changefeed delivery modes.
+Configure the connector to use the default <code>kafka</code> mode if you want CockroachDB to push changefeed events to an intermediate Kafka sink and have the connector consume events from that sink.
+Or configure the <code>sinkless</code> mode if you want the database to stream change events directly to Debezium over the connector&#8217;s SQL connection.
 Support for webhook, Pub/Sub, and cloud storage sinks is planned (see <a href="https://github.com/debezium/dbz/issues/1632">debezium/dbz#1632</a>).</p>
 </dd>
 <dt class="hdlist1">Before state in updates</dt>
@@ -3806,7 +3879,7 @@ To include the <code>before</code> field in update events, set <code>cockroachdb
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/4d46da6039ce2adb88fe997e0957fcab3b8ff00c">4d46da60</a></span>)
+            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/a0fd78a46cb2cee322b598c4c5b5224d298bb4e4">a0fd78a4</a></span>)
             
         </div>
     </footer>
