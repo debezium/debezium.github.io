@@ -470,6 +470,7 @@
 <li><a href="#jdbc-schema-evolution">Schema evolution</a></li>
 <li><a href="#jdbc-quoting-case-sensitivity">Quoting and case sensitivity</a></li>
 <li><a href="#jdbc-connection-idle-timeouts">Connection Idle Timeouts</a></li>
+<li><a href="#jdbc-error-handling-and-dead-letter-queues">Error handling and dead letter queues</a></li>
 <li><a href="#jdbc-changing-how-table-names-are-resolved">Changing how table names are resolved</a></li>
 </ul>
 </li>
@@ -1083,6 +1084,56 @@ For example:</p>
 You can customize the Agroal connection pool by setting properties in the <code>hibernate.agroal.*</code> configuration namespace.
 In the preceding example, the setting of the hibernate.agroal.idleValidation property configures the connection pool to perform idle timeout tests every 300 seconds.
 After you apply the configuration, the connection pool begins to assess unused connections every five minutes.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="jdbc-error-handling-and-dead-letter-queues"><a class="anchor" href="#jdbc-error-handling-and-dead-letter-queues"></a>Error handling and dead letter queues</h3>
+<div class="paragraph">
+<p>When the connector fails to write a record to the target database for a reason that is not transient, for example, because the record violates a constraint, by default the failure stops the connector task.</p>
+</div>
+<div class="paragraph">
+<p>When the shared change event sink framework is enabled (<code>internal.enable.sces</code> is set to <code>true</code>), the connector can instead route the failing records to the errant record reporter that the Kafka Connect runtime provides (<a href="https://cwiki.apache.org/confluence/display/KAFKA/KIP-610%3A+Error+Reporting+in+Sink+Connectors">KIP-610</a>).
+When a batch fails with a non-transient error, the connector retries the records in the batch one at a time to isolate the failing records, routes only those records to the reporter, and continues to process the remaining records.
+Transient failures, such as failures that result from communication problems with the database, are not routed to the reporter; the connector retries them, based on the values of the <a href="#jdbc-property-flush-max-retries"><code>flush.max.retries</code></a> and <a href="#jdbc-property-flush-retry-delay-ms"><code>flush.retry.delay.ms</code></a> properties.</p>
+</div>
+<div class="paragraph">
+<p>Whether a failing record stops the task or is routed to a dead letter queue is controlled entirely by the standard Kafka Connect error handling options of the sink connector configuration:</p>
+</div>
+<div class="listingblock">
+<div class="title">Example dead letter queue configuration</div>
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
+  "errors.tolerance": "all",
+  "errors.deadletterqueue.topic.name": "dlq-topic",
+  "errors.deadletterqueue.context.headers.enable": "true"
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>When <code>errors.tolerance</code> is set to <code>none</code> (the default), or when no dead letter queue topic is configured, failing records stop the connector task, and the behavior of the connector is unchanged.</p>
+</div>
+<div class="paragraph">
+<p>Because a dead letter queue topic can never receive records while <code>errors.tolerance</code> is set to <code>none</code>, the connector rejects that combination and fails to start with a message that describes how to correct the configuration.</p>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>When <code>errors.tolerance</code> is set to <code>all</code>, every non-transient write failure is routed to the reporter, including failures that are caused by the environment rather than by the record itself, for example, a schema evolution statement that fails because the connector lacks the required database privileges.
+Monitor the dead letter queue so that systemic failures do not silently divert large numbers of records.</p>
+</div>
+<div class="paragraph">
+<p>Because the connector provides at-least-once delivery, records that were already written can be delivered again after a restart.
+In <code>insert</code> mode, redelivered records fail with constraint violations, and the connector routes them to the dead letter queue.
+To avoid this, prefer the idempotent <code>upsert</code> mode when you enable a dead letter queue.</p>
+</div>
+</td>
+</tr>
+</table>
 </div>
 </div>
 <div class="sect2">
@@ -2291,6 +2342,18 @@ For non-delete records, the connector increments the insert, update, or upsert m
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>TotalNumberOfErrantRecords</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>long</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The total number of records that the connector routed to the errant record reporter (dead letter queue) instead of writing them to the target database.
+For more information, see <a href="#jdbc-error-handling-and-dead-letter-queues">Error handling and dead letter queues</a>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><code>TotalNumberOfTablesCreated</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -3105,7 +3168,7 @@ Quoting behavior is dialect-specific, and varies among different types of databa
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/e793e35e436dc3b10beb726363ac461da675d91f">e793e35e</a></span>)
+            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/465dc2e34d58d34e4d334ac8721b0ba28e392dc9">465dc2e3</a></span>)
             
         </div>
     </footer>
