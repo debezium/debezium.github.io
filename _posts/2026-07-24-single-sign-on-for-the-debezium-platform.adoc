@@ -1,0 +1,732 @@
+---
+layout: post
+title:  "Single Sign-On for the Debezium Platform"
+date:   2026-07-24
+tags: [debezium-platform, sso, keycloak, oauth2-proxy, entra-id, oidc, kubernetes]
+author: pxcamus
+---
+
+:imagesdir: /assets/images/2026-07-24-single-sign-on-for-the-debezium-platform
+
+Identity and Access Management is a highly anticipated feature for the Debezium Platform, slatted for Q4.
+
+Until then, we can explore what is currently possible: Single Sign-on, OpenID Connect, and even brokering Entra ID.
+In this first post, I will walk you through putting a Debezium Platform deployment on Kubernetes behind a single sign-on (SSO) login with Keycloak as an Identity Provider.
+
+The scenario throughout the bog series is **Contoso Retail**, a fictional company on the domain `contoso.com`, running the Platform on a Kubernetes cluster
+and wanting its own staff list to govern access to it. Contoso Retail uses Entra ID as its corporate directory.
+
++++<!-- more -->+++
+
+This works thanks to a https://github.com/debezium/debezium-platform/pull/472[PR] I authored.
+But as is often the case with OSS contributions, my work rests on the shoulders of giants: the conductor, the Platform's API, is a Java Quarkus application, and Quarkus has excellent https://quarkus.io/guides/security-oidc-bearer-token-authentication[support for OIDC] -- most of the hard part was already done.
+
+As I will show, the Debezium Platform doesn't care if your organization uses Entra ID, Amazon Cognito, Okta, etc.
+An OAuth2 proxy intercepts the request to the Platform and hands you to Keycloak, whose login page carries an SSO button
+for the third-party identity provider (Entra ID, for example,) with all its capabilities -- 2FA, geolocation, and other conditional-access policies.
+Keycloak then brokers that corporate directory information: it mints ID and access tokens compliant with OIDC by mapping the identity and authorization information it receives.
+
+Getting there takes three steps, one per post:
+
+* **This post -- a working login.** The Kubernetes deployment, with oauth2-proxy in front and Keycloak as the identity provider behind it -- no brokering to Entra ID yet.
+* **The second -- a real corporate directory.** Replacing the hand-made Keycloak users by brokering to Microsoft Entra ID, so that user lifecycle and group membership live where the
+organization already manages them.
+* **The third -- laying the groundwork for RBAC.** The difference between an ID token and an access token, and how to get roles into the correct token.
+
+[NOTE]
+.A word on scope
+====
+In his link:/blog/2026/07/10/debezium-platform-status-update/[mid-year update post], Mario highlights the exciting coming features for the platform,
+including Identity and Access Management (IAM).
+
+This series of posts is an experiment that precedes the final architecture. It focuses on Single Sign-On (SSO) using the OpenID Connect (OIDC) protocol.
+Two tokens will be issued by Keycloak, the _platform's_ identity provider (IdP): an ID token (who are you -- authentication) and an access token (what claims are you entitled to -- authorization).
+At the time of writing, the Debezium Platform does not enforce roles defined in the access token.
+
+Role-Based Access Control (RBAC) and other critical points of the security architecture are currently being worked on.
+I encourage readers to subscribe to the link:/blog/[Debezium blog] for exciting announcements on the IAM implementation progress.
+====
+
+All the host names in this post are Contoso's, but the lab behind them ran on a domain I own, `1int.io` -- which is what the screenshots and decoded tokens actually show: `demo.1int.io` where the text says `demo.contoso.com`.
+Nothing about that domain is special.
+Anyone with a domain name of their own can reproduce all of it.
+
+Two things are genuinely required:
+
+* **A machine with a public IPv4 address, and a domain whose DNS you can point at it.** Two A records under a sub-zone of your own choosing, which is where link:#dns[section 2] starts. The posts rely on valid TLS certificates, and a Let's Encrypt DNS-01 challenge proves you own the zone by writing a record into it -- so the name has to be genuinely yours.
+* **A Microsoft Entra ID account** -- for the next post in this series, so it can wait a short while. An Azure free trial or a pay-as-you-go subscription both produce a usable tenant, and everything that post does -- app registrations, app roles, users, groups -- is Entra ID Free, so the lab itself costs nothing to run.
+
+[NOTE]
+.Why not a self-signed certificate?
+====
+Because the browser is not the only client, and it is the only one with a "proceed anyway" button.
+
+A self-signed certificate is still HTTPS, and you can click through the browser's warning.
+However, two of the exchanges in this post never involve a browser at all: oauth2-proxy resolves OIDC discovery against Keycloak at startup
+and trades the authorization code for tokens on every login, and the conductor fetches the realm's public keys to validate every bearer it is handed.
+Those clients are a Go binary and a JVM.
+Neither has a warning to click through; both just fail the handshake.
+
+Entra ID arrives in the second post with a rule of its own -- a redirect URI must never be plain HTTP -- but a self-signed certificate satisfies that one.
+It is the two calls above that rule it out, and they are already here in this post.
+
+Working around it means installing your CA into each trust store independently: the JVM's for the conductor, the container's bundle for oauth2-proxy, and every browser and operating system that will ever open the UI.
+That is more work than the DNS-01 challenge it replaces, and it has to be repeated for every component you add.
+====
+
+* link:#lab-repo[1. Getting started]
+* link:#dns[2. DNS first, because everything else waits on it]
+* link:#proxy-config[3. The proxy config, and how it relates to the IdP]
+* link:#what-deploys[4. The actual Kubernetes deployment for the Debezium Platform]
+* link:#proxy-clients[5. One proxy, two clients]
+
+'''
+
+[id="lab-repo"]
+== 1. Getting started
+
+Deploying the Debezium platform is simple and https://debezium.io/documentation/reference/stable/operations/debezium-platform.html[well-documented].
+Deploying it with support for SSO becomes substantially more complicated. Every piece of the deployment is an ordinary Helm chart, and you are welcome to install them by hand.
+But there are over 10 of them, and they have to go in a particular order.
+To ensure the platform I am demonstrating is quality-controlled by a CI and thoroughly exercised, I am using https://github.com/pxcamus/debezium-platform-lab[debezium-platform-lab], a companion repository that stands the whole stack up.
+
+It is there purely as a convenience, and nothing in this post depends on it. Feel free to use it as a reference guide by checking out
+the https://lab.1int.io/[docs]. And if you want to reproduce the exact setup I used for this blog, read https://lab.1int.io/guides/hetzner/[the Hetzner guide].
+
+[NOTE]
+====
+It is a community project.
+Not affiliated with, or endorsed by, the Debezium project or Red Hat.
+
+This post was written against https://github.com/pxcamus/debezium-platform-lab/tree/v0.3.0[`v0.3.0`].
+If `main` has since moved on, that tag is the state described here.
+====
+
+=== What you need
+
+Whether using the companion repo or doing it yourself, you need five things.
+
+* **A Kubernetes cluster.** 8 GB of RAM comfortably covers what this post deploys -- the Platform, monitoring, and the identity chain of Keycloak, its database and oauth2-proxy, of which only Keycloak is a JVM.
+Nodes must be **amd64** -- the Platform release images have no other architecture, `nightly` aside.
+* **The https://debezium.io/documentation/reference/stable/operations/debezium-platform.html[Debezium Platform]** -- stage, its UI, and the conductor, its API.
+* **https://oauth2-proxy.github.io/oauth2-proxy/[oauth2-proxy]** -- the reverse proxy that fronts the platform host and holds the session.
+* **https://www.keycloak.org/documentation[Keycloak]** -- the identity provider that issues the tokens, and later brokers to Entra ID.
+* **Tooling, on your workstation rather than the cluster**: https://just.systems/[just], https://helmfile.readthedocs.io/[helmfile] with https://helm.sh/[helm], and https://kubernetes.io/docs/tasks/tools/[kubectl]. The repository's https://lab.1int.io/getting-started/prerequisites/[prerequisites] page lists them with install links. https://k9scli.io/[k9s] is optional and worth having.
+
+[WARNING]
+.Ports 80 and 443 must be reachable from anywhere
+====
+Not merely from your own address.
+An OIDC redirect comes back through whatever browser the user is sitting at, and a cloud firewall defaulting to "my IP only" is the usual thing that breaks it.
+====
+
+The rest of this post reads `kubectl` output, `helm list` and k9s constantly.
+
+In my case, the lab is running on a Hetzner Cloud VM running k3s, with DNS at Gandi.
+To re-enforce the case: it does not matter.
+Any machine with a public IPv4 address works -- EC2, a droplet, bare metal in a cupboard -- and any registrar with an API works for the DNS.
+
+Where a command below is provider-specific it is called out, along with what the equivalent looks like elsewhere.
+
+'''
+
+[id="dns"]
+== 2. DNS first, because everything else waits on it
+
+Take the public IPv4 address of the machine you provisioned and point a name at it.
+The zone has to exist and be yours before cert-manager can do anything: a Let's Encrypt DNS-01 challenge proves ownership by writing a TXT record into it,
+so you will need to obtain API credential from whoever hosts your DNS -- in my case a PAT token from Gandi.
+The A records are what make the platform reachable once the certificate exists.
+
+I recommend giving the lab **a sub-zone of its own**. Two advantages: no risk of collision if `contoso.com` already does something, and everything is nicely scoped under `demo.*`.
+
+[source]
+----
+demo.contoso.com      A   <public-ip>
+*.demo.contoso.com    A   <public-ip>
+----
+
+If following the guide in the companion repo, set `DPL_DOMAIN=demo.contoso.com`, and the platform publishes `auth.demo.contoso.com` and `dmp.demo.contoso.com`.
+Two records, one throwaway branch of your zone, and nothing that already works stops working.
+
+=== One naming trap
+
+For those following the guide, do not make the sub-zone `dmp.`.
+The platform publishes its UI at `+dmp.${DPL_DOMAIN}+`, so `DPL_DOMAIN=dmp.contoso.com` gets you `dmp.dmp.contoso.com`.
+Pick a label that names the environment -- `demo`, `lab2`, `sso` -- not one that names a component.
+
+=== At Gandi
+
+Their DNS product is LiveDNS, and records are named **relative to the zone**.
+The zone is still `contoso.com`; the two record names are `demo` and `*.demo`.
+
+In the web console: **Domain -> DNS Records -> Add record**, type `A`, name `demo`, then again with name `*.demo`.
+
+=== Everywhere else
+
+The concept ports exactly; only the tool changes.
+
+[cols="1,2", options="header"]
+|===
+| Provider | Equivalent
+
+| **Route 53**
+| `aws route53 change-resource-record-sets` with an `UPSERT` batch, or the console
+
+| **Cloudflare**
+| `POST /zones/<id>/dns_records`, or `flarectl dns create`
+
+| **Google Cloud DNS**
+| `gcloud dns record-sets update <name> --type=A --rrdatas=<ip>`
+
+| **Anything else**
+| Two A records under a sub-zone. Every registrar can do this.
+|===
+
+For the certificate step later, the only thing that matters is whether cert-manager has a DNS-01 solver for your provider.
+It ships built-in solvers for Route 53, Cloud DNS, Cloudflare and a handful of others; Gandi is not among them, which is why that part of the lab runs an out-of-tree webhook.
+If your DNS lives at one of the built-ins, that section gets simpler rather than harder. Just remember to use the shortest TTL possible for the records, so the propagation is as fast as possible.
+
+=== Check it before moving on
+
+[source,console]
+----
+$ dig +short demo.contoso.com
+203.0.113.10  # should be your IPv4 public address
+$ dig +short auth.demo.contoso.com
+203.0.113.10
+----
+
+The second one is the one that matters -- it is answered by the wildcard, and it is what every component host depends on.
+You can also run `dig +short anything.contoso.com` to make sure everything is contained to `demo` or whatever you chose. It should return nothing.
+
+[NOTE]
+.Why not sslip.io
+====
+Wildcard DNS services like `sslip.io` and `nip.io` resolve `203-0-113-10.sslip.io` to `203.0.113.10` with no configuration at all, but they are useless here.
+Let's Encrypt will not issue for them, and DNS-01 needs a zone you can write to.
+
+And downstream of both: Entra ID rejects any redirect URI that is not HTTPS, with only `localhost` exempt.
+So the whole single-sign-on path depends on a real certificate, which depends on a real zone.
+This is the step that decides whether the rest of the post is possible -- which is why it comes first.
+====
+But enough about DNS, on to the actual SSO setup.
+
+'''
+
+[id="proxy-config"]
+== 3. The proxy config, and how it relates to the IdP
+
+Everything that follows rests on one file: the configuration of the `oauth2-proxy` instance that fronts the platform host.
+It is short but well worth reading closely because most of its values are critical to a secured OIDC flow and depend on Keycloak's settings.
+
+[NOTE]
+====
+An important concept related to Keycloak is that of a `realm`. It will be mentioned several times going forward.
+A Keycloak realm is a self-contained identity domain — its own users, roles, clients and
+signing keys — so an account in one realm does not exist as far as another is concerned.
+====
+
+Below is the file as I configured it in the companion repo, with its comments stripped.
+
+[source,yaml]
+----
+config:
+  existingSecret: oauth2-proxy-secret
+  configFile: |-
+    provider = "oidc"
+    oidc_issuer_url = "https://auth.demo.contoso.com/realms/dmp"
+    redirect_url = "https://dmp.demo.contoso.com/oauth2/callback"
+    email_domains = ["*"]
+    insecure_oidc_allow_unverified_email = true
+    cookie_domains = [".demo.contoso.com"]
+    cookie_secure = true
+    cookie_refresh = "4m"
+    cookie_expire = "10h"
+    whitelist_domains = [".demo.contoso.com"]
+    reverse_proxy = true
+    pass_authorization_header = true
+    pass_access_token = true
+    skip_provider_button = true
+    upstreams = [
+      "http://conductor.dmp.svc.cluster.local:8080/api/",
+      "http://stage.dmp.svc.cluster.local:3000/"
+    ]
+
+extraArgs:
+  code-challenge-method: S256
+
+ingress:
+  enabled: true
+  className: traefik
+  path: /
+  pathType: Prefix
+  hosts:
+    - dmp.demo.contoso.com
+  tls:
+    - secretName: wildcard-demo-contoso-com-tls
+      hosts:
+        - dmp.demo.contoso.com
+----
+
+The upstreams are the interesting structural part.
+`/api/` goes to the conductor and everything else to stage, which is what makes this a reverse proxy rather than an authentication side-car.
+Note the **trailing slash** on `/api/`: it makes the match a subtree.
+Without it the match is exact, `/api/pipelines` falls through to the `/` upstream, and the stage UI answers an API call with HTML.
+
+`skip_provider_button` removes the "Sign in with…" since there is exactly one provider: Keycloak.
+
+=== The realm is the source of truth
+
+The values that govern _time_ are not free variables.
+Keycloak decides them, and the proxy either agrees or behaves incoherently.
+**Realm settings -> Sessions**:
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-07-24-single-sign-on-for-the-debezium-platform/keycloak-realm-sessions.png" style="max-width:100%;" class="responsive-image" alt="Keycloak realm Sessions tab for the dmp realm: SSO Session Idle 30 minutes, SSO Session Max 10 hours, client and offline session settings, login timeout 30 minutes">
+</div>
+++++
+
+and **Realm settings -> Tokens**:
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-07-24-single-sign-on-for-the-debezium-platform/keycloak-realm-tokens.png" style="max-width:100%;" class="responsive-image" alt="Keycloak realm Tokens tab: default signature algorithm RS256, Revoke Refresh Token disabled, Access Token Lifespan 5 minutes with a note recommending it be shorter than the SSO session idle timeout of 30 minutes">
+</div>
+++++
+
+Four numbers on those two screens determine how the proxy has to be configured to avoid a slew of 401 errors while still appearing to have a browser session:
+
+[cols="1,1,2", options="header"]
+|===
+| Keycloak realm setting | Value | What it forces
+
+| **Access Token Lifespan**
+| 5 minutes
+| The proxy must renew its access token more often than this
+
+| **SSO Session Idle**
+| 30 minutes
+| After 30 minutes of inactivity the refresh token is dead and the user logs in again
+
+| **SSO Session Max**
+| 10 hours
+| A hard ceiling: no proxy session should outlive it
+
+| **Revoke Refresh Token**
+| Disabled
+| A refresh token can be used multiple times
+|===
+
+Keycloak even states the relationship on screen -- _"It is recommended for this value to be shorter than the SSO session idle timeout: 30 minutes"_.
+
+=== Correct OIDC behavior
+
+An oauth2-proxy session holds the access token it received at login.
+It does not renew that token unless told to, and the setting that tells it is `cookie_refresh` -- **disabled by default**.
+So with a 5-minute access token, the proxy hands the conductor a token that is valid for five minutes and then indefinitely stale, and the conductor rejects it.
+The user sees a UI that loads perfectly while every API call fails, because the stage SPA component is unaware of any OIDC setup -- remember, the proxy fronts it.
+
+The other half is `cookie_expire`, which defaults to **168 hours**.
+Against an SSO Session Max of 10 hours, that is a proxy session widely outliving the identity session it was derived from.
+
+Which is where the two lines already in the config above come from:
+
+[source,toml]
+----
+# Renew before the 5-minute access token expires.
+cookie_refresh = "4m"
+# Do not outlive SSO Session Max.
+cookie_expire = "10h"
+----
+
+This is worth remembering: **the identity provider owns the various TTLs**.
+
+[id="what-deploys"]
+== 4. The actual Kubernetes deployment for the Debezium Platform
+
+The platform deploys on Kubernetes, so let's briefly discuss some important information pertaining to it.
+
+As indicated before, you can install the entire setup yourself -- though not everything in that list is required for just an SSO login.
+The companion repo provides a `just` recipe that resolves the whole `helmfile` and prints the release list without touching the cluster:
+
+[source,console]
+----
+$ just platform-sso-releases
+just releases --state-values-file examples/k3s/platform-sso/components.yaml
+cert-manager
+cert-manager-webhook-gandi
+dns01-gandi
+cnpg-operator
+debezium-platform
+keycloak
+keycloak-db
+keycloak-operator
+oauth2-proxy
+kafka-cluster
+strimzi-cluster-operator
+kube-prometheus-stack
+opentelemetry-operator
+----
+
+`just apply` and it deploys correctly, respecting ordering and dependencies -- more on that later.
+
+[NOTE]
+.A reality check
+====
+Single sign-on here covers the Debezium Platform and nothing else: one host, behind one proxy.
+Everything else in the list is left as an exercise for the reader.
+
+Orchestrating single sign-on across an entire stack is that same work repeated per component: a client registration and a redirect URI for each, a proxy in front of anything that cannot speak OIDC itself, and a decision about the ones that can do neither.
+Single sign-on is not a component you install, it is a property that only holds where every component in scope has been made to agree.
+====
+
+Also worth noting is that I am running the platform on `k3s`, so there is no ingress controller in the release since k3s bundles Traefik.
+
+=== That list is alphabetical, but the order is not
+
+Each release declares what it needs:
+
+[source,yaml]
+----
+  - name: keycloak
+    namespace: identity
+    needs:
+      - identity/keycloak-operator
+      - identity/keycloak-db
+----
+
+Helmfile takes every one of those edges, builds a DAG, and runs each layer concurrently.
+So the real answer to "in what order" is **four waves**:
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-07-24-single-sign-on-for-the-debezium-platform/helmfile-waves.svg" style="max-width:100%;" class="responsive-image" alt="The helmfile dependency graph as four waves: wave 1 has cert-manager, cnpg-operator, strimzi-cluster-operator, keycloak-operator and kube-prometheus-stack; wave 2 has cert-manager-webhook-gandi, opentelemetry-operator, kafka-cluster and keycloak-db; wave 3 has dns01-gandi, keycloak and debezium-platform; wave 4 has oauth2-proxy">
+</div>
+++++
+
+Read left to right, three independent chains run side by side and only converge at the end:
+
+* **Certificates** -- `cert-manager`, then the `letsencrypt-prod` `ClusterIssuer` that dispatches to it.
+* **Kafka** -- the Strimzi operator, then the `Kafka` custom resource it reconciles. Not strictly required, but what is the fun of deploying an empty Debezium platform?
+* **Identity** -- the Keycloak operator and a CloudNativePG database in parallel, both required before Keycloak itself.
+
+=== The last wave is the one that fails
+
+Wave 4 is `oauth2-proxy`, and on a first run it will not deploy.
+It needs an OIDC client secret from a Keycloak realm that does not exist until wave 3 has finished, and we log in Keycloak and start configuring SSO.
+
+Here is the `identity` namespace at the end of the first pass:
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-07-24-single-sign-on-for-the-debezium-platform/k9s-identity-first-pass.png" style="max-width:100%;" class="responsive-image" alt="k9s showing the identity namespace after the first apply: the keycloak, keycloak-db and keycloak-operator pods all 1/1 Running beside a completed job pod, and oauth2-proxy at 0/1 in CreateContainerConfigError with 0 restarts">
+</div>
+++++
+
+That is the graph doing its job, and the red line is worth reading closely rather than skipping past.
+
+Everything the proxy depends on is up: Keycloak, its CloudNativePG database, and the operator that reconciled them, all `1/1 Running`.
+Only the last wave is red -- and the status is specific.
+`CreateContainerConfigError` is not a crash and not a failed health check: it narrows the issue to a referenced ConfigMap or Secret missing, or to missing required values inside them.
+The container was never started at all, because kubelet could not assemble its environment: the Secret holding the OIDC client ID does not exist yet.
+Note the restart count, still `0`.
+Nothing is looping, nothing is burning CPU retrying, and there are no application logs to go and read, because no application ever ran. So the helm release is a success:
+
+[source,console]
+----
+$ helm list -A
+NAME                        NAMESPACE      STATUS            CHART
+cert-manager                cert-manager   deployed          cert-manager-v1.21.1
+cert-manager-webhook-gandi  cert-manager   deployed          cert-manager-webhook-gandi-v0.6.0
+cnpg-operator               databases      deployed          cloudnative-pg-0.29.0
+debezium-platform           dmp            deployed          debezium-platform-0.0.1
+dns01-gandi                 cert-manager   deployed          dns01-gandi-0.1.0
+kafka-cluster               kafka          deployed          kafka-cluster-0.1.0
+keycloak                    identity       deployed          keycloak-0.1.0
+keycloak-db                 identity       deployed          keycloak-db-0.1.0
+keycloak-operator           identity       deployed          keycloak-operator-0.1.0
+kube-prometheus-stack       monitoring     deployed          kube-prometheus-stack-87.10.1
+oauth2-proxy                identity       failed            oauth2-proxy-10.7.0
+opentelemetry-operator      monitoring     deployed          opentelemetry-operator-0.118.0
+strimzi-cluster-operator    kafka          deployed          strimzi-kafka-operator-1.1.0
+traefik                     kube-system    deployed          traefik-40.1.4+up40.1.0
+traefik-crd                 kube-system    deployed          traefik-crd-40.1.4+up40.1.0
+----
+
+(`REVISION`, `UPDATED` and `APP VERSION` elided for width.)
+
+'''
+
+[id="proxy-clients"]
+== 5. One proxy, two clients
+
+Here is every Secret in the `identity` namespace after the first pass:
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-07-24-single-sign-on-for-the-debezium-platform/k9s-identity-secrets.png" style="max-width:100%;" class="responsive-image" alt="k9s listing the Secrets in the identity namespace: the keycloak-db family, keycloak-dmp-realm, keycloak-initial-admin of type kubernetes.io/basic-auth, the sh.helm.release.v1 entries, and wildcard-demo-1int-io-tls -- and no oauth2-proxy-secret">
+</div>
+++++
+
+No `oauth2-proxy-secret` yet.
+Nothing is going to create it: it is the one part of this deployment that cannot be generated, because its contents do not exist until a human has registered a client in Keycloak.
+
+=== Hands on Keycloak... finally
+
+Of the entries that are there `keycloak-initial-admin` contains the first admin account credentials generated by the Keycloak operator. To read it, use your
+favorite Kubernetes admin tool, or simply in a terminal, one command for the username, once for the password:
+
+[source,bash]
+----
+kubectl -n identity get secret keycloak-initial-admin \
+  -o jsonpath='{.data.password}' | base64 -d
+----
+
+[source,bash]
+----
+kubectl -n identity get secret keycloak-initial-admin \
+  -o jsonpath='{.data.username}' | base64 -d
+----
+
+Log in at `https://auth.demo.contoso.com` with those credentials.
+
+=== First, a permanent admin
+
+The account you just pulled out of that Secret is a bootstrap credential.
+Keycloak calls it a _temporary_ admin and logs a warning about it on every startup; the operator generates it so that there is some way in on a fresh install, not so that you keep using it.
+Replace it before doing anything else.
+
+It lives in **`master`** -- Keycloak's own realm, the one that administers the server itself.
+The permanent admin belongs in `master` as well, so stay where you are rather than switching realms for this.
+
+**Users -> Add user.** Username, email, first and last name.
+
+**Credentials -> Set password**, and turn **Temporary** to **Off**.
+
+That toggle defaults to On, which marks the password as already expired and forces a change at next login.
+
+**Role mapping -> Assign role -> Realm Roles -> `admin`.**
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-07-24-single-sign-on-for-the-debezium-platform/keycloak-master-admin-role-mapping.png" style="max-width:100%;" class="responsive-image" alt="The Role mapping tab for the new Admin user in Keycloak's master realm, listing two directly assigned roles — default-roles-master and admin — with Hide inherited roles ticked">
+</div>
+++++
+
+`default-roles-master` comes with every new account; `admin` is the one that matters, and with **Hide inherited roles** ticked you can see it was granted directly rather than picked up from a group.
+
+Sign out of the console from the user menu in the top right, then sign back in at the same URL as the new account rather than the bootstrap one:
+
+[source]
+----
+https://auth.demo.contoso.com/admin/master/console/
+----
+
+Once that works, the bootstrap account has done its job and can go: **Users -> temp-admin -> Delete**.
+The startup warning goes with it.
+
+The next step is to create a realm for the Debezium Platform.  **Manage realms -> Create realm** name it `dmp`.
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-07-24-single-sign-on-for-the-debezium-platform/keycloak-manage-realms.png" style="max-width:100%;" class="responsive-image" alt="Keycloak's Manage realms screen listing two realms: dmp, with the display name Debezium Platform (dmp), and master, tagged Current realm, with the display name Keycloak">
+</div>
+++++
+
+Since everything the platform authenticates against lives in `dmp`, click on it so you can start configuring it.
+
+=== Configuring our first Keycloak client
+
+Authorization code flow with Proof Key for Code Exchange (PKCE) is a mouthful.
+I will leave it as an exercise for the reader to learn more about it https://oauth.net/2/pkce/[here]. There are many good tutorials out there as well.
+
+In summary: `oauth2-proxy` sends you to Keycloak to log in, Keycloak sends you back carrying
+a one-time ticket (the code) and `oauth2-proxy` redeems that ticket for your tokens in a
+direct conversation the browser never sees.
+
+PKCE adds one guarantee on top: before sending you off, the application (`oauth2-proxy`) invents a secret and hands over only a fingerprint of it.
+Redeeming the ticket requires producing the original. So a ticket stolen in transit is worthless to whoever took it.
+Since https://datatracker.ietf.org/doc/html/rfc9700[RFC 9700] (OAuth 2.0 Security Best Current Practice) it's recommended for all clients using the authorization code flow.
+
+The second post in this series adds one hop: Keycloak stops checking the password itself and
+forwards you to Entra ID, then brokers what comes back.
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-07-24-single-sign-on-for-the-debezium-platform/oauth2-proxy-login-flow.svg" style="max-width:100%;" class="responsive-image" alt="Sequence diagram of the login flow: the browser requests the platform host, oauth2-proxy returns a 302 to Keycloak carrying a redirect_uri, Keycloak checks whether that redirect_uri is registered on the client and rejects it if not, then redirects back with a code, the proxy exchanges the code and client_secret for an id_token and access_token, and finally sets a cookie and proxies to the upstream">
+</div>
+++++
+
+=== Creating it
+
+A Keycloak client is a registration bound to a set of **valid redirect URIs**, and that binding is the load-bearing security control in the whole flow.
+
+**Clients -> Create client**, then:
+
+* **Client ID**: `oauth2-proxy` -- the proxy sends it as `client_id`, so a typo here surfaces later as `invalid_client`.
+* **Client authentication: On.** This makes it a _confidential_ client, which is what generates the secret the proxy needs. Left off, the client is public, there is no Credentials tab, and there is nothing to put in the Kubernetes Secret.
+* **Standard flow** enabled. That is authorization-code, the flow in the diagram above.
+* **Valid redirect URIs**: `https://dmp.demo.contoso.com/oauth2/callback`
+
+Then **Credentials -> Client secret -> copy**.
+That value goes into Kubernetes next, and Keycloak will show it again later, so there is no need to be precious about it.
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-07-24-single-sign-on-for-the-debezium-platform/keycloak-oauth2-proxy-client-settings.png" style="max-width:100%;" class="responsive-image" alt="The finished oauth2-proxy client in the dmp realm: Client ID oauth2-proxy, name Debezium Platform OAuth2 Proxy, one valid redirect URI at https://dmp.demo.1int.io/oauth2/callback, Client authentication On, Authorization Off, Standard flow ticked with every other authentication flow unchecked, Require PKCE On and PKCE Method S256">
+</div>
+++++
+
+**Require PKCE is On, with PKCE Method `S256`.**
+That is the Keycloak half of the `code-challenge-method: S256` line in the values file from link:#proxy-config[section 3], and the two halves have to agree.
+Turn it on here while the proxy is not sending a challenge and every login dies at the authorization request with `invalid_request: Missing parameter: code_challenge_method` -- so set the proxy side first if you are enabling it on a running deployment.
+
+=== The second client, which nobody redirects to
+
+The conductor expects a client named `conductor` as well.
+It never appears in the flow above, because it never logs anybody in -- it _validates_ tokens rather than issuing them, running as a Quarkus OIDC resource server.
+No redirect URI, no callback, no browser involvement. It is strictly needed by the conductor (a resource server in OIDC parlance) as its own entry in the `dmp` realm,
+and will carry the RBAC configuration -- out of scope for now.
+
+=== Handing the credentials back to Kubernetes
+
+Feed the secret you copied from Keycloak above to Kubernetes:
+
+[source,bash]
+----
+kubectl -n identity create secret generic oauth2-proxy-secret \
+  --from-literal=client-id=oauth2-proxy \
+  --from-literal=client-secret='<from Keycloak>' \
+  --from-literal=cookie-secret="$(openssl rand -base64 24)"
+----
+
+The `cookie-secret` has nothing to do with Keycloak.
+It is the key the proxy uses to encrypt its own session cookie, so it is generated locally and never leaves the cluster.
+
+=== Pass two
+
+If using the companion repo `just platform-sso`, otherwise re-apply the `oauth2-proxy` Helm release.
+
+The proxy finds its Secret, starts, resolves OIDC discovery against `https://auth.demo.contoso.com/realms/dmp`, and goes Ready:
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-07-24-single-sign-on-for-the-debezium-platform/k9s-identity-pass-two.png" style="max-width:100%;" class="responsive-image" alt="k9s showing the identity namespace after the second apply: the keycloak, keycloak-db and keycloak-operator pods and oauth2-proxy all 1/1 Running with 0 restarts, beside a completed job pod">
+</div>
+++++
+
+=== A user to log in with
+
+Everything is running, and nobody can log in.
+
+The administrator from earlier lives in `master`.
+The proxy authenticates against `/realms/dmp`, so that account is not merely unprivileged at the platform's login form -- it is _invisible_ to it.
+Keycloak will not find it because it is not looking in that realm.
+
+This is the realm boundary paying off exactly as advertised a few paragraphs ago.
+Nobody had to remember to withhold platform access from the administrator.
+The two populations are separate because they live in different realms, and the proxy only ever asks about one of them.
+
+Let's add our first user to the `dmp` realm:
+
+**Users -> Add user**, in `dmp`:
+
+* **Fill in all four fields: username, email, first name, last name.**
++
+The **email** is what oauth2-proxy uses to build a session.
+`email_domains = ["*"]` accepts any domain, but not a missing one -- so a user without an email authenticates against Keycloak perfectly and is then rejected by the proxy.
++
+**First and last name** are required by the realm's user profile -- though Keycloak would prompt you for that information upon your first login attempt.
+* **Email verified** on or off. The proxy sets `insecure_oidc_allow_unverified_email = true` anyway.
+* **Credentials -> Set password -> Temporary: Off**, exactly as before.
+* **No role mappings**: RBAC is out-of-scope for now, so any authenticated user in the `dmp` realm has full access to the Debezium platform.
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-07-24-single-sign-on-for-the-debezium-platform/keycloak-dmp-user-alice.png" style="max-width:100%;" class="responsive-image" alt="The user details screen for alice in the dmp realm: Enabled, no required user actions, Email verified On, and the four General fields filled in — username alice, email alice@1int.io, first name Alice, last name Doe">
+</div>
+++++
+
+=== The first login
+
+Finally, the reward for all our efforts!
+
+[source]
+----
+https://dmp.demo.contoso.com
+----
+
+No `/login` path -- the proxy owns the entire host, so any URL under it starts the flow.
+The round trip is the one from the diagram earlier: a 302 to Keycloak, the realm's sign-in form, back to `/oauth2/callback` with a code, a code-for-tokens exchange the browser never sees, a session cookie scoped to `dmp.demo.contoso.com`, and then:
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-07-24-single-sign-on-for-the-debezium-platform/dmp-stage-behind-sso.png" style="max-width:100%;" class="responsive-image" alt="The Debezium Platform stage UI at dmp.demo.1int.io, showing the Welcome to Stage empty state with the Sources / Transforms / Destinations pipeline diagram and a Create your first pipeline button">
+</div>
+++++
+
+Look at the address bar first: `dmp.demo.contoso.com`, clean.
+No `?code=`, no `/oauth2/callback`.
+The proxy consumed the callback, exchanged the code, set its cookie and sent the browser on to the path originally asked for.
+The entire round trip leaves no trace in the URL, which is exactly what you want.
+
+Missing in the stage interface: a user menu, an account name, a sign-out button.
+At the time of this writing, stage does not know it is behind an identity provider.
+As far as it is concerned, every request has simply arrived, exactly as it did before any of this existed.
+The goal is stage speaking OIDC natively, at which point this front door stops being necessary.
+
+=== OIDC in action behind the scenes
+
+That "Welcome to Stage" screen is doing more work than it looks like.
+
+A rendered page, on its own, proves only that the proxy let the request through -- the SPA shell is served by stage and would render regardless.
+What makes this screen evidence is that stage immediately calls the conductor at `/api/`, and the conductor is an OIDC **resource server**: it validates the bearer token on every request against the realm's JWKS.
+
+* oauth2-proxy matched `/api/` as a subtree and routed it to `conductor:8080`, while everything else went to `stage:3000`.
+* `pass_authorization_header` injected `Authorization: Bearer <access_token>` into the _upstream_ request -- not the auth response, which is the distinction that makes reverse-proxy mode work where forward-auth would not.
+* The conductor fetched the realm's JWKS from `https://auth.demo.contoso.com` -- a server-to-server call, with no browser to click a warning through -- and validated the signature.
+* It answered `200` with an empty pipeline list, which is what the welcome screen _is_.
+
+"No pipelines yet" is a successful API response.
+Had any link in that chain broken, the page would have loaded and then failed: a spinner, an error panel, or a blank frame where the pipeline list should be.
+Which is precisely why the empty state, and not the page loading, is the proof.
+
+=== Where the session actually lives
+
+Worth noting that the proxy holds a cookie of its own, scoped to the zone the platform lives in, encrypted with its own cookie secret -- seen here in a browser developer console:
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-07-24-single-sign-on-for-the-debezium-platform/oauth2-proxy-session-cookie.png" style="max-width:100%;" class="responsive-image" alt="Browser developer tools, Application tab, cookies for https://dmp.demo.1int.io: the _oauth2_proxy cookie holding an opaque 3569-byte value, scoped to domain .demo.1int.io on path /, flagged HttpOnly and Secure, alongside a small i18next session cookie">
+</div>
+++++
+
+What that cookie is _derived from_ sits one layer up: **Keycloak's own session**, held as a cookie on `auth.demo.contoso.com`.
+When the proxy redirected there, Keycloak decided whether the user was already authenticated, and returned an authorization code without asking again if they were.
+The proxy then ran its own code exchange and minted its own independent cookie.
+
+The private window is the control that proves it.
+Same URL, same proxy, same everything except a browser profile carrying no Keycloak cookie -- and the login form appears.
+Nothing about the platform changed; the only thing missing was the session at the identity provider.
+
+Two things follow, and they are the reason to build it this way:
+
+* **Revocation works.** End the session in Keycloak and access is gone at the next redirect. A cookie the application minted for itself would keep working until it expired.
+* **It scales past one host.** Putting a second UI behind its own proxy means registering a second client, not widening a cookie's reach -- and that second host inherits the same Keycloak session, so the user is not asked to log in twice.
+
+The sign-on is single.
+The sessions, deliberately, are not.
+
+== What is next
+
+You have a login, and that is genuinely the hard half of the plumbing. However, we still need to address two shortcomings.
+
+The users live in Keycloak, typed in by hand, and no organization wants to maintain a second staff list there.
+The next post fixes that, brokering Keycloak to Microsoft Entra ID so that accounts, group
+membership and offboarding stay where they already are.
+
+Any account in the realm reaches everything.
+The last post lays that groundwork -- the two tokens Keycloak issues and what each is for,
+then the client roles, groups and claim path that any future enforcement will rest on.
