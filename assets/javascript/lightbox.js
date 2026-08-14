@@ -40,10 +40,23 @@ document.addEventListener('DOMContentLoaded', function() {
        modalImage.style.cursor = 'zoom-in';  // reset cursor on zoom reset
    }
 
-    // Add click event to all responsive images
-    var images = document.querySelectorAll('.responsive-image');
+    // Add click event to all responsive images.
+    //
+    // Note the `img` in the selector. Posts commonly set the role on the
+    // AsciiDoc block as well as on the image itself, e.g.
+    //
+    //     [.exampleblock.centered-image.responsive-image]
+    //
+    // which puts the class on a wrapping <div> too. Binding to the bare class
+    // therefore attached the handler to both, and a click on the image ran the
+    // <img> handler first and then bubbled to the <div>, whose handler set
+    // modalImage.src from an element that has no src - blanking the image that
+    // had just been set correctly. Restricting to images fixes it without
+    // requiring every post to be re-tagged.
+    var images = document.querySelectorAll('img.responsive-image');
     for (var i = 0; i < images.length; i++) {
         images[i].addEventListener('click', function() {
+            if (!this.src) { return; }
             modal.style.display = 'block';
             modalImage.src = this.src;
             modalCaption.textContent = this.alt;
