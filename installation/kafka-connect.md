@@ -1,7 +1,7 @@
 ---
 # Detail comes from _data/installation_detail.yml under the `kafka-connect` key.
-layout: installation-detail
-installation: kafka-connect
+layout: option-detail
+option: kafka-connect
 title: Kafka Connect
 permalink: /installation/kafka-connect/
 description: >-
