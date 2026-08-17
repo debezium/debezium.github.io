@@ -27,7 +27,7 @@
     // Keep the browser UI (address bar on mobile) in step with the page.
     var meta = document.querySelector('meta[name="theme-color"]');
     if (meta) {
-      meta.setAttribute('content', theme === 'dark' ? '#01123A' : '#FFFFFF');
+      meta.setAttribute('content', theme === 'dark' ? '#090F1B' : '#FFFFFF');
     }
 
     Array.prototype.forEach.call(
