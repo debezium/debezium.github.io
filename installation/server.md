@@ -1,7 +1,7 @@
 ---
 # Detail comes from _data/installation_detail.yml under the `server` key.
-layout: installation-detail
-installation: server
+layout: option-detail
+option: server
 title: Debezium Server
 permalink: /installation/server/
 description: >-
