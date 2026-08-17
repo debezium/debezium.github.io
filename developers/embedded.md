@@ -1,7 +1,8 @@
 ---
-# Detail comes from _data/installation_detail.yml under the `embedded` key.
-layout: installation-detail
-installation: embedded
+# Detail comes from _data/developers_detail.yml under the `embedded` key.
+layout: option-detail
+option: embedded
+option_data: developers_detail
 title: Embedded Engine
 permalink: /developers/embedded/
 description: >-

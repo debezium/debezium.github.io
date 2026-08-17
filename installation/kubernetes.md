@@ -1,7 +1,7 @@
 ---
 # Detail comes from _data/installation_detail.yml under the `kubernetes` key.
-layout: installation-detail
-installation: kubernetes
+layout: option-detail
+option: kubernetes
 title: Kubernetes
 permalink: /installation/kubernetes/
 description: >-
