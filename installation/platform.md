@@ -1,7 +1,7 @@
 ---
 # Detail comes from _data/installation_detail.yml under the `platform` key.
-layout: installation-detail
-installation: platform
+layout: option-detail
+option: platform
 title: Debezium Platform
 permalink: /installation/platform/
 description: >-
