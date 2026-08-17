@@ -376,7 +376,7 @@ def generate_antora_nav()
 
   # -------------------------------------------------------------- right side
   out << '    <div class="dbz-nav__controls">'
-  out << %(      <a class="dbz-iconbtn dbz-nav__github" href="https://github.com/debezium/debezium" target="_blank" rel="noopener" aria-label="Debezium on GitHub">#{antora_nav_icon('github', 'dbz-icon')}</a>)
+  out << %(      <a class="dbz-iconbtn dbz-nav__github" href="https://github.com/debezium" target="_blank" rel="noopener" aria-label="Debezium on GitHub">#{antora_nav_icon('github', 'dbz-icon')}</a>)
   out << '      <button type="button" class="dbz-iconbtn" data-dbz-theme-toggle aria-pressed="true" aria-label="Switch to light theme">'
   out << %(        <span class="dbz-theme-toggle__sun">#{antora_nav_icon('sun', 'dbz-icon')}</span>)
   out << %(        <span class="dbz-theme-toggle__moon">#{antora_nav_icon('moon', 'dbz-icon')}</span>)
