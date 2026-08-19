@@ -453,6 +453,7 @@
 <li><a href="#jdbc-primary-key-handling">Primary key handling</a></li>
 <li><a href="#jdbc-delete-mode">Delete mode</a></li>
 <li><a href="#jdbc-idempotent-writes">Idempotent writes</a></li>
+<li><a href="#sink-connector-secondary-unique-constraints">Secondary unique constraints in sink connectors</a></li>
 <li><a href="#jdbc-schema-evolution">Schema evolution</a></li>
 <li><a href="#jdbc-quoting-case-sensitivity">Quoting and case sensitivity</a></li>
 <li><a href="#jdbc-connection-idle-timeouts">Connection Idle Timeouts</a></li>
@@ -755,9 +756,84 @@ If the specified primary key value doesn&#8217;t exist, an <code>insert</code> a
 </div>
 <div class="paragraph">
 <p>Each database dialect handles idempotent writes differently, because there is no SQL standard for <em>upsert</em> operations.
-The following table shows the <code>upsert</code> DML syntax for the database dialects that Debezium supports:</p>
+The following table shows, for each database dialect that Debezium supports, the upsert DML syntax and the constraints that trigger an update action during an upsert operation.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 33.3333%;">
+<col style="width: 33.3333%;">
+<col style="width: 33.3334%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Dialect</th>
+<th class="tableblock halign-left valign-top">Upsert Syntax</th>
+<th class="tableblock halign-left valign-top">Constraint that triggers the update action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Db2</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>MERGE &#8230;&#8203;</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Configured primary key only</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">MariaDB</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>INSERT &#8230;&#8203; ON DUPLICATE KEY UPDATE &#8230;&#8203;</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Any unique index</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">MySQL</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>INSERT &#8230;&#8203; ON DUPLICATE KEY UPDATE &#8230;&#8203;</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Any unique index</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Oracle</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>MERGE &#8230;&#8203;</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Configured primary key only</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">PostgreSQL</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>INSERT &#8230;&#8203; ON CONFLICT &#8230;&#8203; DO UPDATE SET &#8230;&#8203;</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Configured primary key only</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">SQL Server</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>MERGE &#8230;&#8203;</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Configured primary key only</p></td>
+</tr>
+</tbody>
+</table>
+<div class="admonitionblock warning">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-warning" title="Warning"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>Secondary unique constraints can create ordering dependencies.
+For more information about their use, see <a href="#sink-connector-secondary-unique-constraints">secondary unique constraints</a>.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+</div>
+<div class="sect2">
+<h3 id="sink-connector-secondary-unique-constraints"><a class="anchor" href="#sink-connector-secondary-unique-constraints"></a>Secondary unique constraints in sink connectors</h3>
+<div class="paragraph">
+<p>Secondary unique constraints can create ordering dependencies between records that have different primary keys.
+Kafka guarantees record order only within a partition, and the connector batches and reduces events based only on the configured primary key.
+For these reasons, you should avoid defining secondary unique constraints or secondary unique indexes on destination tables.
+If a uniqueness rule is required, enforce the rule in the source database, and omit the constraint from the destination table.</p>
+</div>
+<div class="paragraph">
+<p>If dependent records are routed to different partitions, the sink connector might apply records out of source order, which can lead to inconsistent results.
+The following table shows how different database dialects handle conflicts involving secondary unique constraints:</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 1. Dialect-specific behavior when secondary unique constraint conflicts occur</caption>
 <colgroup>
 <col style="width: 50%;">
 <col style="width: 50%;">
@@ -765,32 +841,50 @@ The following table shows the <code>upsert</code> DML syntax for the database di
 <thead>
 <tr>
 <th class="tableblock halign-left valign-top">Dialect</th>
-<th class="tableblock halign-left valign-top">Upsert Syntax</th>
+<th class="tableblock halign-left valign-top">Behavior</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td class="tableblock halign-left valign-top"><p class="tableblock">Db2</p></td>
-<td class="tableblock halign-left valign-top"><p class="tableblock"><code>MERGE &#8230;&#8203;</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Dialects that use <code>INSERT &#8230;&#8203; ON DUPLICATE KEY UPDATE</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Consider conflicts on any unique index, not only the configured primary key.
+A conflict involving a secondary unique constraint can therefore update an existing row whose primary key differs from the incoming record, causing silent data inconsistency.</p></td>
 </tr>
 <tr>
-<td class="tableblock halign-left valign-top"><p class="tableblock">MySQL</p></td>
-<td class="tableblock halign-left valign-top"><p class="tableblock"><code>INSERT &#8230;&#8203; ON DUPLICATE KEY UPDATE &#8230;&#8203;</code></p></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><p class="tableblock">Oracle</p></td>
-<td class="tableblock halign-left valign-top"><p class="tableblock"><code>MERGE &#8230;&#8203;</code></p></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><p class="tableblock">PostgreSQL</p></td>
-<td class="tableblock halign-left valign-top"><p class="tableblock"><code>INSERT &#8230;&#8203; ON CONFLICT &#8230;&#8203; DO UPDATE SET &#8230;&#8203;</code></p></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><p class="tableblock">SQL Server</p></td>
-<td class="tableblock halign-left valign-top"><p class="tableblock"><code>MERGE &#8230;&#8203;</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Dialects that use <code>INSERT &#8230;&#8203; ON CONFLICT</code> or <code>MERGE</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Consider conflicts only on the configured primary key.
+A conflict involving a secondary unique constraint causes the write operation to fail with a constraint violation error rather than updating a different row.</p></td>
 </tr>
 </tbody>
 </table>
+<div class="paragraph">
+<p>To prevent data inconsistencies when a destination table includes a secondary unique constraint, the data pipeline must meet all of the following requirements:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1">Dependent events routed through the same partition</dt>
+<dd>
+<p>Route all dependent events through the same Kafka partition, and preserve the source event order.
+For a table with dependencies between arbitrary rows, use a single partition for its Kafka topic.
+Setting <code>tasks.max=1</code> is not sufficient to restore ordering between records that are already in different partitions.</p>
+</dd>
+<dt class="hdlist1">Reduction buffering disabled</dt>
+<dd>
+<p>Retain the default value (<code>false</code>) of the <a href="#jdbc-property-use-reduction-buffer"><code>use.reduction.buffer</code></a> property.
+Reduction by primary key can remove intermediate row states that are required to satisfy secondary unique constraints.</p>
+</dd>
+<dt class="hdlist1">Batch size set to <code>1</code></dt>
+<dd>
+<p>Set the value of the <a href="#jdbc-property-batch-size"><code>batch.size</code></a> property to <code>1</code> if any batches might contain multiple events for a primary key that is not defined in the destination table.</p>
+<div class="paragraph">
+<p>Some dialects and driver configurations process a batch in a single pass, rather than validating each row against the effects of the preceding rows in the same batch.
+For example, <code>MERGE</code>-based dialects can attempt two <code>INSERT</code> operations for the same primary key instead of an <code>INSERT</code> followed by an <code>UPDATE</code>.
+Similarly, when <a href="#jdbc-property-dialect-postgres-unnest-insert-enabled"><code>dialect.postgres.unnest.insert.enabled</code></a> is set to <code>true</code>, PostgreSQL combines a batch into a single multi-row statement.
+In each of these cases, the batch fails.</p>
+</div>
+</dd>
+</dl>
+</div>
 </div>
 <div class="sect2">
 <h3 id="jdbc-schema-evolution"><a class="anchor" href="#jdbc-schema-evolution"></a>Schema evolution</h3>
@@ -1067,7 +1161,7 @@ The actual final column type varies with for each database type.</p>
 <p>The following table maps each Kafka Connect primitive type to its corresponding JDBC SQL type, which the Debezium JDBC sink connector uses when creating or altering columns in the destination database.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 1. Mappings between Kafka Connect primitive data types and column data types</caption>
+<caption class="title">Table 2. Mappings between Kafka Connect primitive data types and column data types</caption>
 <colgroup>
 <col style="width: 50%;">
 <col style="width: 50%;">
@@ -1141,7 +1235,7 @@ As a workaround, if you need a BOOLEAN data type for an Oracle 23 sink, add the 
 <p>The following table maps each Kafka Connect logical type to its corresponding JDBC SQL type, which the Debezium JDBC sink connector uses when writing structured data such as dates, times, and decimals to the destination database.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 2. Mappings between Kafka Connect logical data types and column data types</caption>
+<caption class="title">Table 3. Mappings between Kafka Connect logical data types and column data types</caption>
 <colgroup>
 <col style="width: 50%;">
 <col style="width: 50%;">
@@ -1178,7 +1272,7 @@ As a workaround, if you need a BOOLEAN data type for an Oracle 23 sink, add the 
 <p>The following table maps Debezium logical types to their corresponding JDBC SQL types, which the connector uses when writing Debezium change event fields — such as timestamps, durations, and variable-scale decimals — to the destination database.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 3. Mappings between Debezium logical types and column data types</caption>
+<caption class="title">Table 4. Mappings between Debezium logical types and column data types</caption>
 <colgroup>
 <col style="width: 50%;">
 <col style="width: 50%;">
@@ -1253,7 +1347,7 @@ As a workaround, if you need a BOOLEAN data type for an Oracle 23 sink, add the 
 <p>The following table maps Debezium logical types to dialect-specific column types for each supported database, which you can use to understand how the connector resolves fields such as JSON, geospatial data, and bit strings when targeting a specific database dialect.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 4. Mappings between Debezium dialect-specific logical types and column data types</caption>
+<caption class="title">Table 5. Mappings between Debezium dialect-specific logical types and column data types</caption>
 <colgroup>
 <col style="width: 16.6666%;">
 <col style="width: 16.6666%;">
@@ -1440,7 +1534,7 @@ Sink databases must meet the following requirements to support direct mapping of
 <p>Earlier versions of MariaDB or MySQL, and PostgreSQL without pgvector, do not support special vector types.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 5. Mappings between Debezium Vector Types and Column Data Types</caption>
+<caption class="title">Table 6. Mappings between Debezium Vector Types and Column Data Types</caption>
 <colgroup>
 <col style="width: 16.6666%;">
 <col style="width: 16.6666%;">
@@ -2498,7 +2592,9 @@ You can also configure the connector’s underlying consumer’s <code><em>max.p
 <dd>
 <p>The connector uses the reduction buffer to reduce change events before it writes them to the sink database.
 That is, if multiple events refer to the same primary key, the connector consolidates the SQL queries and writes only a single logical SQL change, based on the row state that is reported in the most recent offset record.
-Choose this option to reduce the SQL load on the target database.</p>
+Choose this option to reduce the SQL load on the target database.
+Do not enable the reduction buffer if destination constraints create dependencies between records with different primary keys.
+Reduction by primary key can remove intermediate row states that are required to satisfy secondary unique constraints.</p>
 </dd>
 </dl>
 </div>
@@ -2704,7 +2800,7 @@ Quoting behavior is dialect-specific, and varies among different types of databa
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/83b44a6c0eb526258880dc87221bdcf330d80796">83b44a6c</a></span>)
+            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/9b939a5099a45b5c108fff39871c98fe4976cb07">9b939a50</a></span>)
             
         </div>
     </footer>
