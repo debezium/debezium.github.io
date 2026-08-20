@@ -1,0 +1,205 @@
+---
+layout: post
+title:  "Introducing PyDebeziumAI: Real-Time CDC for LangChain and LangGraph"
+date:   2026-08-20
+author: kmohnishm
+tags: [ python, ai, rag, cdc, langchain, embedded, debezium ]
+---
+
+ifdef::env-github[]
+:imagesdir: ../assets/images/2026-08-20-introducing-pydebeziumai
+endif::[]
+ifndef::env-github[]
+:imagesdir: /assets/images/2026-08-20-introducing-pydebeziumai
+endif::[]
+
+Retrieval-Augmented Generation (RAG) has become a central pattern in AI application development.
+The idea is simple: rather than relying solely on an LLM's pre-trained knowledge, you give it fresh context by retrieving relevant documents from a vector store at query time.
+
+But there is a catch that most tutorials skip over entirely. *Where does that vector data come from, and how do you keep it current?*
+
+Today, most teams answer that question with a cron job, a nightly batch reload, or a manual re-embedding script.
+That approach works until the database changes faster than the schedule runs, and your AI starts answering questions based on data that no longer exists or doesn't reflect a new record committed five minutes ago.
+
+This is the problem that link:https://github.com/debezium/debezium-ai-python/[*PyDebeziumAI*] solves. It is an open-source Python library, developed as part of Google Summer of Code 2026 under the Debezium project, that wires Debezium's Change Data Capture engine directly into LangChain and LangGraph pipelines, ensuring your vector store updates the moment the database does.
+
++++<!-- more -->+++
+
+== The infrastructure problem hiding in every RAG pipeline
+
+A conventional, Kafka-based CDC-to-vector pipeline requires managing multiple distributed components (Kafka Connect, Brokers, Schema Registry, and consumers) before a single document reaches your retriever. For a Python developer building an AI application, this complexity is a significant barrier to entry.
+
+PyDebeziumAI takes a different approach by running the Debezium embedded engine directly inside your Python process using https://jpype.readthedocs.io[JPype] JVM bindings. This eliminates the Kafka broker and Connect overhead entirely, simplifying the architecture significantly.
+
+++++
+<div class="imageblock centered-image">
+<img src="/assets/images/2026-08-20-introducing-pydebeziumai/pydebeziumai-pipeline-comparison.png" class="responsive-image" alt="Pipeline Comparison: Traditional vs PyDebeziumAI">
+</div>
+++++
+
+Every database `INSERT`, `UPDATE`, or `DELETE` flows through a Python callback, gets transformed into a LangChain `Document`, and is upserted or deleted from the vector store, all within the same Python runtime.
+
+== Architecture walkthrough
+
+PyDebeziumAI is built in three clean, composable layers.
+
+++++
+<div class="imageblock centered-image">
+<img src="/assets/images/2026-08-20-introducing-pydebeziumai/pydebeziumai-architecture.png" class="responsive-image" alt="PyDebeziumAI Architecture">
+</div>
+++++
+
+
+=== Ingestion Layer
+
+The ingestion layer bridges the embedded Java engine and Python.
+`ConnectRecordIngestionHandler` and `JsonIngestionHandler` receive raw change records from the Debezium engine callback, convert them into typed Python `DebeziumEventModel` objects (backed by Pydantic), and route them downstream.
+This layer also handles all logical type conversions, mapping Debezium's internal `Date`, `MicroTimestamp`, and `Decimal` types to Python-native `float`, `datetime`, and `Decimal` representations.
+
+=== Transformation & Mapping Layer
+
+Once a raw change event is a Python object, the transformation layer converts it into a LangChain `Document` ready for embedding.
+
+- **`DocumentBuilder`** orchestrates the conversion from a `DebeziumEventModel` to a `Document`.
+- **`ProjectionPolicy`** controls *what* goes into the document's page content and metadata using a content template string. For example, `Product: $name\nCategory: $category` renders as the text embedded in the document.
+- **`IdStrategy`** ensures that an update to row `id=42` in the database maps to the same document UUID in the vector store every time — making upserts and deletes deterministic and idempotent.
+
+=== Synchronization & Compaction Layer
+
+The `SyncManager` sits at the top of the pipeline.
+It reads the CDC operation code (`c`, `u`, `d`, `r`) from each event and calls `upsert` or `delete` on the vector store adapter accordingly.
+
+When processing batches under high write load, multiple mutations to the same primary key can arrive in a single flush window.
+Rather than blindly writing all of them, PyDebeziumAI runs a **batch compaction** pass before flushing.
+This collapses redundant sequences:
+
+- `INSERT` + `UPDATE` → single `Upsert`
+- `UPDATE` + `DELETE` → single `Delete`
+- `INSERT` + `DELETE` → skip entirely (the row never needs to reach the vector store)
+
+For embedding generation, the library uses a `ThreadPoolExecutor` to parallelize calls to the embedding model across documents in a batch.
+
+== Quickstart: MySQL to Milvus in under 30 lines
+
+Here is a complete, working example.
+Given a MySQL `inventory.products` table, this pipeline will keep a Milvus collection synchronized in real time.
+
+[source,python]
+----
+from langchain_openai import OpenAIEmbeddings
+from pydebeziumai.adapters.milvus import MilvusAdapter
+from pydebeziumai.transformation.document_builder import DocumentBuilder
+from pydebeziumai.transformation.projection_policy import ProjectionPolicy, TableProjectionPolicy
+from pydebeziumai.transformation.id_strategy import TablePkIdStrategy
+from pydebeziumai.sync.manager import SyncManager
+from pydebeziumai.ingestion.json_handler import JsonIngestionHandler
+
+# 1. Define how database rows map to document text and metadata
+policy = ProjectionPolicy(
+    default=TableProjectionPolicy(
+        content_template="Product: $name\nCategory: $category\nDescription: $description",
+        metadata_fields=["id", "category", "price"]
+    )
+)
+builder = DocumentBuilder(
+    id_strategy=TablePkIdStrategy(pk_fields=["id"]),
+    projection_policy=policy
+)
+
+# 2. Connect to a Milvus collection
+adapter = MilvusAdapter(
+    collection_name="products",
+    embeddings=OpenAIEmbeddings(),
+    connection_uri="./local.db"  # or a remote Milvus URI
+)
+
+# 3. Wire up the sync manager and ingestion handler
+handler = JsonIngestionHandler(
+    sync_manager=SyncManager(vector_store_adapter=adapter, document_builder=builder)
+)
+
+# 4. Configure and build the embedded engine
+config = {
+    "connector.class": "io.debezium.connector.mysql.MySqlConnector",
+    "database.hostname": "localhost",
+    "database.port": "3306",
+    "database.user": "debezium",
+    "database.password": "dbz",
+    "database.server.id": "184054",
+    "database.server.name": "dbserver",
+    "table.include.list": "inventory.products"
+}
+
+engine = handler.build_engine(config)
+engine.run()  # Start the replication loop (blocking call)
+----
+
+Any `INSERT`, `UPDATE`, or `DELETE` on `inventory.products` will now trigger a corresponding upsert or delete against the Milvus collection, without polling, without Kafka, and without any additional infrastructure.
+
+== Pluggable vector store adapters
+
+PyDebeziumAI ships with three production-ready adapters, each supporting bulk operations and metadata filtering:
+
+[cols="1,3"]
+|===
+| Adapter | Best for
+
+| `ChromaAdapter`
+| Local development, in-memory prototyping
+
+| `MilvusAdapter`
+| Large-scale deployments using Milvus Lite or a Milvus server
+
+| `PGVectorAdapter`
+| Teams already running PostgreSQL who want vector search in the same database
+|===
+
+All adapters expose the same interface, so switching between them is a one-line change.
+
+== LangGraph integration
+
+PyDebeziumAI exposes retriever wrappers that plug directly into LangChain's retriever protocol.
+This means you can use a continuously-synchronized Milvus or Chroma collection as the retriever in any LangChain chain or LangGraph agent, with no adapter shim or custom plumbing needed.
+
+The repository includes two working demonstration agents:
+
+- link:https://github.com/debezium/debezium-ai-python/tree/main/examples/rag_chatbot[RAG chatbot] (`examples/rag_chatbot/`) - a conversational agent answering questions about a live MySQL product catalog.
+- link:https://github.com/debezium/debezium-ai-python/tree/main/examples/reactive_agent[Reactive LangGraph agent] (`examples/reactive_agent/`) - an agent that reacts to incoming CDC events and triggers downstream actions.
+
+== Seeing it live: the Streamlit dashboard
+
+To make the zero-lag claim tangible, the library ships with an interactive three-panel Streamlit dashboard (`examples/streamlit_dashboard/`):
+
+1. **Mutation Console** - a form-based UI for inserting, updating, and deleting rows in a MySQL database directly.
+2. **WAL Activity Stream** - a live-updating feed of raw Debezium change records appearing within milliseconds of each commit.
+3. **Semantic Search** - a vector search interface querying Milvus in real time, confirming that changes are immediately reflected in retrieval results.
+
+++++
+<div class="imageblock centered-image">
+<img src="/assets/images/2026-08-20-introducing-pydebeziumai/Streamlit_dashboard.png" class="responsive-image" alt="PyDebeziumAI Streamlit Live Dashboard">
+</div>
+++++
+
+Local benchmarks show the in-process pipeline replicating changes with an end-to-end latency (from database commit to indexed embedding) in the low hundreds of milliseconds.
+
+== Getting started
+
+Currently, the library must be installed directly from the GitHub repository until the initial PyPI release is available.
+
+[source,bash]
+----
+pip install git+https://github.com/debezium/debezium-ai-python.git
+----
+
+To download the required Debezium connector JARs, run the setup tool:
+
+[source,bash]
+----
+python -m pydebeziumai.tools.setup_jars --connector mysql
+----
+
+Full documentation, including the quickstart guide, API reference, and architecture overview, is available at https://debezium-ai-python.readthedocs.io.
+
+The source code and examples are on GitHub: https://github.com/debezium/debezium-ai-python.
+
+We would love to hear how you are using it — feel free to open an issue, start a discussion, or reach out on the https://debezium.zulipchat.com[Debezium Zulip chat].
