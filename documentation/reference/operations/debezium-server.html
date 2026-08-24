@@ -494,6 +494,7 @@
 <li><a href="#_instructlab">InstructLab</a></li>
 <li><a href="#_jdbc">JDBC</a></li>
 <li><a href="#_apache_iceberg">Apache Iceberg</a></li>
+<li><a href="#_databricks_zerobus_ingest">Databricks Zerobus Ingest</a></li>
 </ul>
 </li>
 </ul>
@@ -543,7 +544,7 @@ For streaming change events to Apache Kafka, it is recommended to deploy the Deb
 <div class="ulist">
 <ul>
 <li>
-<p><a href="https://central.sonatype.com/repository/maven-snapshots/io/debezium/debezium-server-dist/3.7.0-SNAPSHOT/debezium-server-dist-3.7.0-20260824.010905-114.tar.gz">Debezium Server distribution</a></p>
+<p><a href="https://central.sonatype.com/repository/maven-snapshots/io/debezium/debezium-server-dist/3.7.0-SNAPSHOT/debezium-server-dist-3.7.0-20260824.132905-115.tar.gz">Debezium Server distribution</a></p>
 </li>
 </ul>
 </div>
@@ -5576,6 +5577,1485 @@ This allows for direct replication of a Database (Change Data Capture events) to
 </tbody>
 </table>
 </div>
+<div class="sect3">
+<h4 id="_databricks_zerobus_ingest"><a class="anchor" href="#_databricks_zerobus_ingest"></a>Databricks Zerobus Ingest</h4>
+<div class="paragraph">
+<p>The Debezium <a href="https://docs.databricks.com/aws/en/ingestion/zerobus">Databricks Zerobus Ingest</a> is a serverless, push-based ingestion service that writes change event records directly into Unity Catalog Delta tables.
+The service does not require an intermediate message broker.
+The sink uses OAuth to authenticate with a Databricks service principal and streams each event record to the Delta table that corresponds to the event destination.</p>
+</div>
+<div class="paragraph">
+<p>The sink uses one of the following routes to deliver event records, as specified by the <a href="#zerobus-type"><code>debezium.sink.type</code></a> property:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>zerobus</code></dt>
+<dd>
+<p>(recommended) Uses the Databricks Zerobus Java SDK over gRPC.</p>
+</dd>
+<dt class="hdlist1"><code>zerobus-rest</code></dt>
+<dd>
+<p>Uses the Zerobus REST API.
+This method accepts only one HTTP request per record.
+Select this option for environments that lack a persistent connection.</p>
+</dd>
+<dt class="hdlist1"><code>kafka</code></dt>
+<dd>
+<p>Reuses the built-in Kafka sink against the Zerobus Kafka-compatible endpoint.
+For more information, see <a href="#zerobus-kafka-route">Kafka route</a>.</p>
+</dd>
+</dl>
+</div>
+<div class="paragraph">
+<p>Because Zerobus accepts only JSON objects that match the target table schema, configure Debezium to emit flat JSON by applying the <a href="../transformations/event-flattening.html#new-record-state-extraction" class="xref page"><code>ExtractNewRecordState</code> SMT</a> with <code>schemas.enable=false</code>.
+Delivery uses an at-least-once guarantee.
+As a result, the sink might deliver the same record more than once.
+Configure downstream consumers to deduplicate records, for example, by using the source LSN that the record carries.
+To enable the service to write data to the target table, the following requirements apply:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>The target table must be a Unity Catalog-managed Delta table.</p>
+</li>
+<li>
+<p>The table must be in the same Databricks region as the workspace.</p>
+</li>
+<li>
+<p>Change Data Feed and column mapping must be disabled.</p>
+</li>
+<li>
+<p>The service principal must have the following permissions:</p>
+<div class="ulist">
+<ul>
+<li>
+<p><code>USE CATALOG</code></p>
+</li>
+<li>
+<p><code>USE SCHEMA</code></p>
+</li>
+<li>
+<p><code>SELECT</code></p>
+</li>
+<li>
+<p><code>MODIFY</code></p>
+</li>
+</ul>
+</div>
+</li>
+</ul>
+</div>
+<div class="sect4">
+<h5 id="_grpc_route_zerobus"><a class="anchor" href="#_grpc_route_zerobus"></a>gRPC route (<code>zerobus</code>)</h5>
+<div class="paragraph">
+<p>The following table describes the properties that control how Zerobus Ingest behaves when it uses gRPC streams to maintain connections between Debezium and Zerobus endpoints.</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 35%;">
+<col style="width: 10%;">
+<col style="width: 55%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Property</th>
+<th class="tableblock halign-left valign-top">Default</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-type"></a><a href="#zerobus-type"><code>debezium.sink.type</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default value.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Must be set to <code>zerobus</code>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-endpoint"></a><a href="#zerobus-endpoint"><code>debezium.sink.zerobus.endpoint</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default value.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The Zerobus gRPC endpoint, for example <code>&lt;workspace-id&gt;.zerobus.&lt;region&gt;.cloud.databricks.com</code> (AWS) or <code>&lt;workspace-id&gt;.zerobus.&lt;region&gt;.azuredatabricks.net</code> (Azure).</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-workspace-url"></a><a href="#zerobus-workspace-url"><code>debezium.sink.zerobus.workspace.url</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default value.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The Databricks workspace URL, for example <code><a href="https://dbc-xxxx.cloud.databricks.com" class="bare">https://dbc-xxxx.cloud.databricks.com</a></code>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-client-id"></a><a href="#zerobus-client-id"><code>debezium.sink.zerobus.client.id</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default value.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The OAuth client id (service principal application id).</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-client-secret"></a><a href="#zerobus-client-secret"><code>debezium.sink.zerobus.client.secret</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default value.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The OAuth client secret for the service principal.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-table"></a><a href="#zerobus-table"><code>debezium.sink.zerobus.table</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default value.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>(Optional) The fully qualified name of the default target table (<code>catalog.schema.table</code>).
+When this option is set, all events are written to this table; otherwise the mapped destination (topic) name is used as the fully qualified table name.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-payload-mode"></a><a href="#zerobus-payload-mode"><code>debezium.sink.zerobus.payload.mode</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>typed</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies the structure of rows that the sink writes to the target table.</p>
+</div>
+<div class="paragraph">
+<p>Set one of the following values:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>typed</code></dt>
+<dd>
+<p>Writes the fields of each change event to columns by using the data types of the target table.
+For details about how source types map to target column types, see <a href="#zerobus-data-type-mapping">Data type mapping</a>.</p>
+</dd>
+<dt class="hdlist1"><code>envelope</code></dt>
+<dd>
+<p>Writes each change event as a raw CDC envelope.
+Use this mode when a downstream process handles type casting and materialization.</p>
+</dd>
+</dl>
+</div>
+<div class="paragraph">
+<p>The two modes write different row schemas.
+The target table schema must match the selected mode; changing the mode without changing the target table schema causes ingestion to fail.</p>
+</div>
+<div class="admonitionblock important">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-important" title="Important"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>If you set the value to <code>envelope</code>, do not apply the <code>ExtractNewRecordState</code> SMT.
+This transformation removes the <code>op</code> field of the change event, so the sink cannot determine the operation type and records every row with <code>operation=change</code>.
+Apply only routing transformations, such as <code>RegexRouter</code>, in this mode.</p>
+</div>
+</td>
+</tr>
+</table>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-record-format"></a><a href="#zerobus-record-format"><code>debezium.sink.zerobus.record.format</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>json</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies the wire encoding for records that use the <a href="#zerobus-payload-mode">configured payload mode</a>.</p>
+</div>
+<div class="paragraph">
+<p>Set one of the following values:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>json</code></dt>
+<dd>
+<p>Writes JSON records.
+This format supports the <code>typed</code> and <code>envelope</code> payload modes.</p>
+</dd>
+<dt class="hdlist1"><code>protobuf</code></dt>
+<dd>
+<p>Writes schema-bound Protobuf records by using a descriptor that the sink supplies to Zerobus.
+Choose this format for envelope mode when you want Zerobus to use an explicit Protobuf schema instead of JSON encoding.
+This format supports only the <code>envelope</code> payload mode.
+The sink reports an error at start-up if you combine <code>protobuf</code> with the <code>typed</code> payload mode.</p>
+</dd>
+</dl>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-max-record-bytes"></a><a href="#zerobus-max-record-bytes"><code>debezium.sink.zerobus.max.record.bytes</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>10000000</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies the maximum encoded size, in bytes, of a JSON or Protobuf envelope record.
+The sink validates every record in a target-table group before it ingests any record in that group.
+If a record exceeds the limit, ingestion fails and the source offsets for the batch are not committed.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-json-flexible-fields-encoding"></a><a href="#zerobus-json-flexible-fields-encoding"><code>debezium.sink.zerobus.json.flexible.fields.encoding</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>string</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies how JSON envelope mode writes the <code>key</code>, <code>value</code>, <code>source_position</code>, and <code>headers</code> fields.
+Set the value to <code>string</code> to write canonical JSON text, or to <code>object</code> to write nested JSON values.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-idempotency-mode"></a><a href="#zerobus-idempotency-mode"><code>debezium.sink.zerobus.idempotency.mode</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>source</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies whether an envelope contains a deterministic <code>idempotency_key</code>.
+Set the value to <code>source</code> to write a <code>sha256:&lt;64 hexadecimal characters&gt;</code> identity derived from the source event, or to <code>none</code> to omit the identity.
+The readable source partition and offset remain available in <code>source_position</code> in both modes.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-tombstone-handling-mode"></a><a href="#zerobus-tombstone-handling-mode"><code>debezium.sink.zerobus.tombstone.handling.mode</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>event</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies how envelope mode handles tombstone records.
+Set the value to <code>event</code> to write an envelope with <code>operation=tombstone</code>, the original key, and a null value.
+Set the value to <code>drop</code> to skip tombstones intentionally.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-filter-destination-regex"></a><a href="#zerobus-filter-destination-regex"><code>debezium.sink.zerobus.filter.destination.regex</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default value.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>An optional regular expression that the complete Debezium destination must match for the envelope to be ingested.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-filter-operations"></a><a href="#zerobus-filter-operations"><code>debezium.sink.zerobus.filter.operations</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default value.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>An optional comma-separated operation allowlist.
+The canonical Debezium codes are <code>c</code>, <code>r</code>, <code>u</code>, <code>d</code>, <code>t</code>, and <code>m</code>.
+The aliases <code>create</code>, <code>read</code>, <code>update</code>, <code>delete</code>, <code>truncate</code>, <code>message</code>, <code>change</code>, and <code>tombstone</code> are also accepted.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-filter-header-name"></a><a href="#zerobus-filter-header-name"><code>debezium.sink.zerobus.filter.header.name</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default value.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The name of the record header to evaluate.
+Configure this property together with <a href="#zerobus-filter-header-value-regex"><code>filter.header.value.regex</code></a>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-filter-header-value-regex"></a><a href="#zerobus-filter-header-value-regex"><code>debezium.sink.zerobus.filter.header.value.regex</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default value.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>An optional regular expression that the complete value of the configured header must match.
+Configure this property together with <a href="#zerobus-filter-header-name"><code>filter.header.name</code></a>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-filter-value-json-pointer"></a><a href="#zerobus-filter-value-json-pointer"><code>debezium.sink.zerobus.filter.value.json.pointer</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default value.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>A JSON Pointer that selects a field from the serialized event value for filtering.
+The pointer must begin with <code>/</code>.
+Configure this property together with <a href="#zerobus-filter-value-regex"><code>filter.value.regex</code></a>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-filter-value-regex"></a><a href="#zerobus-filter-value-regex"><code>debezium.sink.zerobus.filter.value.regex</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default value.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>An optional regular expression that the complete value selected by the configured JSON Pointer must match.
+Configure this property together with <a href="#zerobus-filter-value-json-pointer"><code>filter.value.json.pointer</code></a>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-filter-malformed-mode"></a><a href="#zerobus-filter-malformed-mode"><code>debezium.sink.zerobus.filter.malformed.mode</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>fail</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies how the sink handles an event value that it cannot parse or evaluate for value filtering.
+Set the value to <code>fail</code> to stop the batch, or to <code>drop</code> to skip the event.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-max-inflight"></a><a href="#zerobus-max-inflight"><code>debezium.sink.zerobus.max.inflight.records</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>50000</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Maximum number of un-acknowledged records per stream.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-max-open-streams"></a><a href="#zerobus-max-open-streams"><code>debezium.sink.zerobus.max.open.streams</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>100</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies the maximum number of Zerobus streams that the sink keeps open at one time.
+Zerobus binds each stream to a single target table, and each stream holds a connection.
+Set this property to limit how many connections a source that captures many tables can hold at once.</p>
+</div>
+<div class="paragraph">
+<p>When the number of open streams exceeds the specified value, the sink flushes and closes the streams that have gone longest without receiving a record, and reopens them on demand when a record for that table arrives.
+Set the value to <code>0</code> to keep every stream open, so that the sink never closes a stream to stay within a limit.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-recovery"></a><a href="#zerobus-recovery"><code>debezium.sink.zerobus.recovery</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The SDK default.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies whether the Zerobus SDK recovers a stream that fails with a retriable error by re-sending the records that the service has not acknowledged.</p>
+</div>
+<div class="paragraph">
+<p>Because the SDK tracks which records are unacknowledged, recovery re-sends only those records.
+The sink does not retry the entire batch.
+If the recovery process cannot resolve an error, the connector stops, and the offset does not advance.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-recovery-retries"></a><a href="#zerobus-recovery-retries"><code>debezium.sink.zerobus.recovery.retries</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The SDK default.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies the maximum number of times that the SDK attempts to recover a failed stream.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-recovery-backoff-ms"></a><a href="#zerobus-recovery-backoff-ms"><code>debezium.sink.zerobus.recovery.backoff.ms</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The SDK default.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies the delay, in milliseconds, between stream recovery attempts.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-recovery-timeout-ms"></a><a href="#zerobus-recovery-timeout-ms"><code>debezium.sink.zerobus.recovery.timeout.ms</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The SDK default.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies the time, in milliseconds, after which the SDK abandons a stream recovery attempt.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-flush-timeout-ms"></a><a href="#zerobus-flush-timeout-ms"><code>debezium.sink.zerobus.flush.timeout.ms</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The SDK default.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies the time, in milliseconds, that a flush waits for the records in the stream to be acknowledged.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-metrics-log-interval"></a><a href="#zerobus-metrics-log-interval"><code>debezium.sink.zerobus.metrics.log.interval</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>0</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies the number of batches that the service processes before it emits a periodic <code>INFO</code> log line to summarize sink metrics.
+Set the value to <code>0</code> to disable periodic logging.
+This setting does not affect availability of metrics over JMX.
+For more information, see <a href="#zerobus-monitoring">Monitoring</a>.</p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
+<div class="paragraph">
+<p>In the preceding table, several Zerobus sink properties list the default value <code>The SDK default</code>.
+The SDK default is the value defined by the version of the Zerobus SDK that is used by the current Debezium Server instance.</p>
+</div>
+<div class="paragraph">
+<p>The SDK default applies only when the property is not specified in the Debezium Server configuration.
+If the property is omitted, the sink uses the SDK-defined value, including any changes introduced by later SDK upgrades.
+If you specify a value for the property, the configured value takes precedence.</p>
+</div>
+<div class="sect5">
+<h6 id="zerobus-envelope-row-contract"><a class="anchor" href="#zerobus-envelope-row-contract"></a>Envelope row contract</h6>
+<div class="paragraph">
+<p>Set <a href="#zerobus-payload-mode"><code>debezium.sink.zerobus.payload.mode</code></a> to <code>envelope</code> to preserve the change event for downstream materialization instead of mapping it directly onto the target table columns.
+The <code>max.record.bytes</code>, <code>json.flexible.fields.encoding</code>, <code>idempotency.mode</code>, <code>tombstone.handling.mode</code>, and <code>filter.*</code> properties apply only to this payload mode.</p>
+</div>
+<div class="paragraph">
+<p>JSON and Protobuf envelope records expose the same logical fields:</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 25%;">
+<col style="width: 75%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Field</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>target_table</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The fully qualified Unity Catalog table to which the sink routes the record.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>destination</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The original Debezium destination before the sink resolves the target table.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>partition</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The event partition, when one is present.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>operation</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>One of <code>create</code>, <code>read</code>, <code>update</code>, <code>delete</code>, <code>truncate</code>, <code>message</code>, <code>change</code>, or <code>tombstone</code>.
+The sink uses <code>change</code> when the source value does not contain a recognized Debezium operation.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>idempotency_key</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>A deterministic <code>sha256:&lt;64 hexadecimal characters&gt;</code> event identity when <a href="#zerobus-idempotency-mode"><code>idempotency.mode</code></a> is <code>source</code>.
+Use this field to deduplicate records after an at-least-once replay.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>key</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The original serialized record key.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>value</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The original serialized Debezium change-event value.
+The value is null for a tombstone.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>source_position</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>A map containing source partition and offset entries.
+Entry names use the <code>partition.</code> and <code>offset.</code> prefixes.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>headers</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The record headers, ordered by header name.</p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
+<div class="paragraph">
+<p>For JSON records, <a href="#zerobus-json-flexible-fields-encoding"><code>json.flexible.fields.encoding</code></a> controls whether <code>key</code>, <code>value</code>, <code>source_position</code>, and <code>headers</code> are canonical JSON strings or nested JSON values.
+For Protobuf records, the sink supplies the descriptor to Zerobus and encodes these flexible fields as canonical JSON strings.</p>
+</div>
+<div class="paragraph">
+<p>The sink applies configured include filters in the following order: destination, operation, header, and value.
+Every configured regular expression must match the complete selected value.
+An event that does not match is skipped and is considered processed when the rest of the batch succeeds.
+If <a href="#zerobus-filter-operations"><code>filter.operations</code></a> is configured, a tombstone is ingested only when the allowlist includes <code>tombstone</code>, even if <a href="#zerobus-tombstone-handling-mode"><code>tombstone.handling.mode</code></a> is <code>event</code>.</p>
+</div>
+<div class="paragraph">
+<p>The sink provides an at-least-once delivery guarantee.
+For each contiguous target-table group, the sink serializes and validates every record before ingestion, ingests the group, and waits for Zerobus to acknowledge the final record.
+The sink commits source offsets only after every target-table group in the batch succeeds.
+If a later group fails, an earlier acknowledged group can be replayed because the source batch remains uncommitted.
+Use <code>idempotency_key</code> to deduplicate such replays downstream.</p>
+</div>
+<div class="paragraph">
+<p>The following example configures the JSON envelope contract, deterministic identities, explicit tombstones, and an operation allowlist:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-properties hljs" data-lang="properties">debezium.sink.type=zerobus
+debezium.sink.zerobus.endpoint=&lt;workspace-id&gt;.zerobus.&lt;region&gt;.cloud.databricks.com
+debezium.sink.zerobus.workspace.url=https://&lt;workspace-host&gt;
+debezium.sink.zerobus.client.id=&lt;client-id&gt;
+debezium.sink.zerobus.client.secret=&lt;client-secret&gt;
+
+debezium.sink.zerobus.payload.mode=envelope
+debezium.sink.zerobus.record.format=json
+debezium.sink.zerobus.max.record.bytes=10000000
+debezium.sink.zerobus.json.flexible.fields.encoding=string
+debezium.sink.zerobus.idempotency.mode=source
+debezium.sink.zerobus.tombstone.handling.mode=event
+debezium.sink.zerobus.filter.operations=c,r,u,d,t,m,tombstone</code></pre>
+</div>
+</div>
+</div>
+<div class="sect5">
+<h6 id="_injection_points_16"><a class="anchor" href="#_injection_points_16"></a>Injection points</h6>
+<div class="paragraph">
+<p>You can modify the behavior of the gRPC route by injecting custom logic that replaces a specific default implementation.
+When no alternative implementation is available, the sink uses the default.</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 35%;">
+<col style="width: 10%;">
+<col style="width: 55%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Interface</th>
+<th class="tableblock halign-left valign-top">CDI classifier</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-ext-sdk"></a><a href="#zerobus-ext-sdk"><code>com.databricks.zerobus.ZerobusSdk</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>@CustomConsumerBuilder</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>A customized instance of a <code>ZerobusSdk</code> that is configured for use in opening the streams that carry records to target tables.
+By default, the sink builds the instance from the <a href="#zerobus-endpoint"><code>endpoint</code></a> and <a href="#zerobus-workspace-url"><code>workspace.url</code></a> options.</p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<div class="sect4">
+<h5 id="_rest_route_zerobus_rest"><a class="anchor" href="#_rest_route_zerobus_rest"></a>REST route (<code>zerobus-rest</code>)</h5>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 35%;">
+<col style="width: 10%;">
+<col style="width: 55%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Property</th>
+<th class="tableblock halign-left valign-top">Default</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-rest-type"></a><a href="#zerobus-rest-type"><code>debezium.sink.type</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default value.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Must be set to <code>zerobus-rest</code>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-rest-uri"></a><a href="#zerobus-rest-uri"><code>debezium.sink.zerobus-rest.uri</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default value.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The Zerobus REST base URI, for example <code><a href="https://&lt;workspace-id&gt;.zerobus.&lt;region&gt;.cloud.databricks.com" class="bare">https://&lt;workspace-id&gt;.zerobus.&lt;region&gt;.cloud.databricks.com</a></code>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-rest-workspace-url"></a><a href="#zerobus-rest-workspace-url"><code>debezium.sink.zerobus-rest.workspace.url</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default value.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The Databricks workspace URL.
+The service uses this value for OAuth and in the <code>unity-catalog-endpoint</code> header.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-rest-workspace-id"></a><a href="#zerobus-rest-workspace-id"><code>debezium.sink.zerobus-rest.workspace.id</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default value.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The numeric workspace ID that the service uses to build the Zerobus token audience.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-rest-client-id"></a><a href="#zerobus-rest-client-id"><code>debezium.sink.zerobus-rest.client.id</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default value.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The OAuth client ID (service principal application ID).</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-rest-client-secret"></a><a href="#zerobus-rest-client-secret"><code>debezium.sink.zerobus-rest.client.secret</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default value.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The OAuth client secret for the service principal.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-rest-table"></a><a href="#zerobus-rest-table"><code>debezium.sink.zerobus-rest.table</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default value.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>(Optional) A fully qualified default target table (<code>catalog.schema.table</code>). When not set, the mapped destination (topic) name is used.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="zerobus-rest-metrics-log-interval"></a><a href="#zerobus-rest-metrics-log-interval"><code>debezium.sink.zerobus-rest.metrics.log.interval</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>0</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies the number of batches that the service processes before it emits a periodic <code>INFO</code> log line to summarize sink metrics.
+Set the value to <code>0</code> to disable periodic logging.
+This setting does not affect availability of metrics over JMX.
+For more information, see <a href="#zerobus-monitoring">Monitoring</a>.</p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="sect4">
+<h5 id="zerobus-kafka-route"><a class="anchor" href="#zerobus-kafka-route"></a>Kafka route</h5>
+<div class="paragraph">
+<p>As an alternative to the <code>zerobus</code> and <code>zerobus-rest</code> routes, you can reuse the built-in <code>kafka</code> sink to write to the Zerobus Kafka-compatible endpoint.
+This route uses the standard Kafka producer with <code>SASL_SSL</code> and the <code>OAUTHBEARER</code> mechanism.
+Authentication is handled by <code>io.debezium.server.databricks.zerobus.ZerobusOAuthBearerLoginCallbackHandler</code>, which performs the OAuth token exchange and attaches the Unity Catalog authorization details that Zerobus requires.</p>
+</div>
+<div class="paragraph">
+<p>Because this route uses the generic <code>kafka</code> sink rather than the Zerobus sink, the data type normalization that the <a href="#zerobus-data-type-mapping">Data type mapping</a> section describes does not apply.
+Instead, the emitted JSON must match the target Delta table schema, which requires the source-side and format settings that the following sections describe.
+Zerobus is partitionless, and it ingests only the record value.
+It does not persist record keys, headers, partition assignments, or timestamps.</p>
+</div>
+<div class="paragraph">
+<p>The Kafka-compatible endpoint must be enabled for the workspace.
+If it is not enabled, authentication fails with <code>Access denied: feature "Zerobus Ingest Kafka Endpoint" is not enabled for workspace "&lt;workspace-id&gt;". Error Code: 4062</code>.</p>
+</div>
+<div class="paragraph">
+<p>To use this route, set <code>debezium.sink.type</code> to <code>kafka</code> and configure the following producer properties:</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 55%;">
+<col style="width: 45%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Property</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>debezium.sink.kafka.producer.bootstrap.servers</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The Zerobus Kafka endpoint, for example <code>&lt;workspace-id&gt;.zerobus.&lt;region&gt;.cloud.databricks.com:9092</code>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>debezium.sink.kafka.producer.security.protocol</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Must be set to <code>SASL_SSL</code>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>debezium.sink.kafka.producer.sasl.mechanism</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Must be set to <code>OAUTHBEARER</code>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>debezium.sink.kafka.producer.sasl.login.callback.handler.class</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Must be set to <code>io.debezium.server.databricks.zerobus.ZerobusOAuthBearerLoginCallbackHandler</code>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>debezium.sink.kafka.producer.sasl.jaas.config</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The JAAS configuration for the <code>OAuthBearerLoginModule</code>, which supplies the OAuth options that the login callback handler reads.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>debezium.sink.kafka.producer.acks</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Must be set to <code>all</code>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>debezium.sink.kafka.producer.enable.idempotence</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Must be set to <code>false</code>.
+Zerobus does not implement the transactional APIs, so it rejects the <code>InitProducerId</code> request that the Kafka producer sends when idempotence is enabled.
+The producer then fails with <code>UnsupportedVersionException: The node does not support INIT_PRODUCER_ID</code>.
+Because Kafka clients enable idempotence by default, you must set this property explicitly.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>debezium.sink.kafka.producer.compression.type</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Must be set to <code>none</code>.
+Zerobus rejects compressed record batches.</p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
+<div class="paragraph">
+<p>The <code>sasl.jaas.config</code> entry accepts the following options:</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 25%;">
+<col style="width: 20%;">
+<col style="width: 55%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Option</th>
+<th class="tableblock halign-left valign-top">Required</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>clientId</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Yes</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The OAuth client id (service principal application id).</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>clientSecret</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Yes</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The OAuth client secret for the service principal.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>workspaceUrl</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Yes, unless <code>tokenEndpoint</code> is set.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The Databricks workspace URL.
+The token endpoint is derived as <code>&lt;workspaceUrl&gt;/oidc/v1/token</code>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>workspaceId</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Yes, unless <code>audience</code> is set.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The numeric workspace id.
+The token audience is derived as <code>api://databricks/workspaces/&lt;workspaceId&gt;/zerobusDirectWriteApi</code>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>tables</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Yes</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>A comma-separated list of fully qualified target tables (<code>catalog.schema.table</code>).
+The handler uses this list to build the OAuth Rich Authorization Requests (RFC 9396) authorization details, which grant the token the Unity Catalog privileges that Zerobus requires for the target tables.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>tokenEndpoint</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Overrides the OIDC token endpoint that is otherwise derived from <code>workspaceUrl</code>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>audience</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Overrides the token audience that is otherwise derived from <code>workspaceId</code>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>token</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>A bearer token, such as a personal access token, to use without modification.
+If you set this option, the handler skips the OAuth exchange and uses this token directly.</p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
+<div class="sect5">
+<h6 id="_record_format_for_the_kafka_route"><a class="anchor" href="#_record_format_for_the_kafka_route"></a>Record format for the Kafka route</h6>
+<div class="paragraph">
+<p>Zerobus accepts a record value only if it is a JSON object whose fields match the target Delta table schema.
+A record that does not match is rejected with <code>InvalidRecordException: This record has failed the validation on broker and hence will be rejected</code>.
+To satisfy the requirement, configure the following options in addition to the producer properties:</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 55%;">
+<col style="width: 45%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Property</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>debezium.transforms</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Apply the <a href="../transformations/event-flattening.html#new-record-state-extraction" class="xref page"><code>ExtractNewRecordState</code> SMT</a> so that the emitted record is a flat row rather than a change event envelope.
+Optionally apply the <code>RegexRouter</code> SMT to map the topic name to the fully qualified name of the target table.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>debezium.format.value.schemas.enable</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Must be set to <code>false</code>.
+Otherwise, the JSON converter wraps each value in a <code>{"schema": &#8230;&#8203;, "payload": &#8230;&#8203;}</code> envelope, which does not match the table schema.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>debezium.source.decimal.handling.mode</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Must be set to <code>string</code>.
+Zerobus rejects a JSON number for a <code>DECIMAL</code> column, and the default <code>precise</code> mode emits a Base64-encoded byte array.
+The <code>string</code> mode emits the exact decimal value as a JSON string, which Zerobus accepts.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>debezium.source.time.precision.mode</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Use the default <code>adaptive</code> mode, which emits a <code>TIMESTAMP</code> column as the number of microseconds since the epoch.
+Zerobus rejects an ISO-8601 string for a <code>TIMESTAMP</code> column, and it interprets a numeric value as microseconds.
+Because of the latter, the <code>connect</code> mode, which emits milliseconds, silently stores an incorrect instant.</p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="sect5">
+<h6 id="_tuning_throughput_on_the_kafka_route"><a class="anchor" href="#_tuning_throughput_on_the_kafka_route"></a>Tuning throughput on the Kafka route</h6>
+<div class="paragraph">
+<p>Throughput on the Kafka route is bound by network round trips rather than by local processing, because Zerobus acknowledges each request from the region in which the workspace runs.
+When the default producer settings are active, the number of records that the service ingests per second is approximately equal to the number of in-flight requests, multiplied by the number of records per request, and divided by the request latency.
+As a result, a pipeline that produces one record at a time spends most of its time waiting.</p>
+</div>
+<div class="paragraph">
+<p>You can modify the default behavior by configuring the producer properties in the following table.
+Optimal values for these settings depend on the latency between the service and the workspace.
+Use the values in the table as starting points and adjust them based on latency data.
+To find the request latency of a running pipeline, read the <code>request_latency_avg</code> attribute of the standard <code>kafka.producer:type=producer-metrics</code> MBean, and to confirm that batching takes effect, read <code>records_per_request_avg</code>.</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 40%;">
+<col style="width: 15%;">
+<col style="width: 45%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Property</th>
+<th class="tableblock halign-left valign-top">Suggested value</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>debezium.sink.kafka.producer.linger.ms</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>100</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies how long the producer waits to send requests.
+Requests accumulate until the configured interval passes.</p>
+</div>
+<div class="paragraph">
+<p>Set the value to <code>0</code> to remove the delay interval so that the producer sends each request as soon as possible.
+When the property is set to <code>0</code>, the producer sends requests even if they contain a small number of records.
+Because each request incurs the overhead of a full network round trip, when the producer has a high number of records to process, a <code>0</code> value can result in lower throughput.</p>
+</div>
+<div class="paragraph">
+<p>Set a value greater than <code>0</code> if you want the producer to wait between sending requests.
+Setting a value greater than <code>0</code> can improve throughput, because the producer batches more records per request.</p>
+</div>
+<div class="paragraph">
+<p>In a change data capture pipeline, the end-to-end latency is typically much greater than the delay introduced by this setting, so the additional wait is usually negligible.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>debezium.sink.kafka.producer.batch.size</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>1048576</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies the maximum size, in bytes, of a single batch.
+If <code>linger.ms</code> is set, set this option if you want the producer to send batches after their size reaches the configured limit.
+This setting overrides the <code>linger.ms</code> setting to allow the producer to send batches before the end of the configured wait time.
+Zerobus rejects records larger than 10 MB, so a batch size of 1 MB leaves ample headroom.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>debezium.sink.kafka.producer.max.in.flight.requests.per.connection</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>10</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies the maximum number of unacknowledged requests that the producer can send before it receives a response.
+Increasing the value can improve throughput by allowing the producer to send additional requests before it receives acknowledgements from earlier requests.
+However, increasing the value can also result in records being delivered out of order if requests are retried.</p>
+</div>
+<div class="paragraph">
+<p>Zerobus is partitionless and provides an at-least-once delivery guarantee, so strict record ordering is not guaranteed regardless of how you configure this property.</p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>In standard Kafka environments where idempotence is enabled, <code>max.in.flight.requests.per.connection</code> must not exceed <code>5</code>, because the idempotent producer only guarantees ordering and exactly-once semantics for up to five in-flight requests.
+The Kafka route for the Databricks Zerobus Ingest sink requires <code>enable.idempotence=false</code>, so you can set this property to a value greater than <code>5</code>.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="paragraph">
+<p>The following example shows a complete configuration for the Kafka route:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-properties hljs" data-lang="properties">debezium.sink.type=kafka
+debezium.sink.kafka.producer.bootstrap.servers=&lt;workspace-id&gt;.zerobus.&lt;region&gt;.cloud.databricks.com:9092
+debezium.sink.kafka.producer.security.protocol=SASL_SSL
+debezium.sink.kafka.producer.sasl.mechanism=OAUTHBEARER
+debezium.sink.kafka.producer.sasl.login.callback.handler.class=io.debezium.server.databricks.zerobus.ZerobusOAuthBearerLoginCallbackHandler
+debezium.sink.kafka.producer.sasl.jaas.config=org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule required \
+    workspaceUrl="https://&lt;workspace-host&gt;" \
+    workspaceId="&lt;workspace-id&gt;" \
+    clientId="&lt;client-id&gt;" \
+    clientSecret="&lt;client-secret&gt;" \
+    tables="&lt;catalog&gt;.&lt;schema&gt;.&lt;table&gt;" ;
+debezium.sink.kafka.producer.acks=all
+debezium.sink.kafka.producer.enable.idempotence=false
+debezium.sink.kafka.producer.compression.type=none
+debezium.sink.kafka.producer.linger.ms=100
+debezium.sink.kafka.producer.batch.size=1048576
+debezium.sink.kafka.producer.max.in.flight.requests.per.connection=10
+debezium.sink.kafka.producer.key.serializer=org.apache.kafka.common.serialization.StringSerializer
+debezium.sink.kafka.producer.value.serializer=org.apache.kafka.common.serialization.StringSerializer
+debezium.sink.kafka.producer.interceptor.classes=io.debezium.server.databricks.zerobus.metrics.ZerobusProducerInterceptor
+
+debezium.format.value=json
+debezium.format.value.schemas.enable=false
+debezium.source.decimal.handling.mode=string
+
+debezium.transforms=unwrap,route
+debezium.transforms.unwrap.type=io.debezium.transforms.ExtractNewRecordState
+debezium.transforms.unwrap.delete.tombstone.handling.mode=rewrite
+debezium.transforms.unwrap.add.fields=op,source.ts_ms
+debezium.transforms.unwrap.add.headers=op,source.ts_ms
+debezium.transforms.route.type=org.apache.kafka.connect.transforms.RegexRouter
+debezium.transforms.route.regex=&lt;topic-prefix&gt;\\.&lt;schema&gt;\\.&lt;table&gt;
+debezium.transforms.route.replacement=&lt;catalog&gt;.&lt;schema&gt;.&lt;table&gt;</code></pre>
+</div>
+</div>
+</div>
+</div>
+<div class="sect4">
+<h5 id="zerobus-data-type-mapping"><a class="anchor" href="#zerobus-data-type-mapping"></a>Data type mapping</h5>
+<div class="paragraph">
+<p>When the sink maps data types, rather than converting values based on their serialized JSON representation, it uses Kafka Connect logical type information to normalize values to a format that is compatible with the target Delta column.
+By basing conversions on logical types rather than on the JSON encoding of values, the sink can accommodate different source-side serialization settings and avoid invalid-type ingestion errors without requiring users to tune source-side *.handling.mode options.</p>
+</div>
+<div class="paragraph">
+<p>The following table shows mappings between Debezium logical types and Delta column types:</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 45%;">
+<col style="width: 55%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Source / Debezium logical type</th>
+<th class="tableblock halign-left valign-top">Delta column type</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Integer, floating point, boolean, string</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>INT</code>/<code>BIGINT</code>, <code>DOUBLE</code>/<code>FLOAT</code>, <code>BOOLEAN</code>, <code>STRING</code></p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>org.apache.kafka.connect.data.Decimal</code> (decimal / numeric / money)</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>DECIMAL(p,s)</code> Emitted as an exact locale-independent string.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>io.debezium.time.Date</code> / Connect <code>Date</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>DATE</code> (epoch days)</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>io.debezium.time.Timestamp</code> / <code>MicroTimestamp</code> / <code>NanoTimestamp</code> / Connect <code>Timestamp</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>TIMESTAMP</code> or <code>TIMESTAMP_NTZ</code> (normalized to epoch micros)</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>io.debezium.time.ZonedTimestamp</code> (timestamp with time zone)</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>STRING</code> (ISO-8601 with offset)</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>io.debezium.time.Time</code> and other time-of-day types</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>BIGINT</code> (Zerobus does not currently ingest the Delta <code>TIME</code> type)</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Bytes / <code>io.debezium.data.Bits</code> (binary, blob, varbinary)</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>BINARY (encoded as Base64)</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>io.debezium.data.Json</code> (JSON / JSONB)</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>VARIANT</code></p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Homogeneous array</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>ARRAY&lt;T&gt;</code></p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="sect4">
+<h5 id="zerobus-monitoring"><a class="anchor" href="#zerobus-monitoring"></a>Monitoring</h5>
+<div class="paragraph">
+<p>You can use JMX metrics and connector log output to monitor the operational status and performance of the Debezium Databricks Zerobus Ingest sink.</p>
+</div>
+<div class="paragraph">
+<p>The Debezium Databricks Zerobus Ingest sink supports the following delivery routes: zerobus (gRPC), zerobus-rest (REST), and the <a href="#zerobus-kafka-route">Kafka route</a>.
+All three routes expose sink metrics over JMX under the object name <code>debezium.zerobus:type=connector-metrics,context=sink,server=&lt;route&gt;,task=0</code>, where <code>&lt;route&gt;</code> is <code>grpc</code> for the <code>zerobus</code> route, <code>rest</code> for the <code>zerobus-rest</code> route, or <code>kafka</code> for the Kafka route.
+The metrics use the same JMX exposure model as the JDBC sink connector and Debezium source connectors, so existing JMX monitoring tools such as JConsole, jmxterm, and Prometheus JMX Exporter can read them without any Zerobus-specific configuration.</p>
+</div>
+<div class="paragraph">
+<p>The sink registers the metrics when it starts, so no option is required to begin collecting them.
+Reading them from outside the process is a separate step: the service exposes JMX only after you set the <code>JMX_HOST</code> and <code>JMX_PORT</code> environment variables, and it starts the bundled Prometheus JMX Exporter only after you set <code>JMX_EXPORTER_PORT</code>.
+The <a href="monitoring.html#monitoring-debezium" class="xref page">Debezium monitoring documentation</a> provides details about how to expose metrics by using JMX.
+You can automate periodic metric logging by setting <a href="#zerobus-metrics-log-interval"><code>debezium.sink.zerobus.metrics.log.interval</code></a> or <a href="#zerobus-rest-metrics-log-interval"><code>debezium.sink.zerobus-rest.metrics.log.interval</code></a> to a positive value.
+After you enable either of these options, at the specified interval the connector writes an <code>INFO</code> log message that contains the same metric values that are available through JMX.</p>
+</div>
+<div class="paragraph">
+<p>The Kafka route is the exception to metrics being collected automatically: because it writes through the generic <code>kafka</code> sink, the Zerobus sink is never invoked and cannot instrument itself.
+On that route the metrics are not collected until you register the following producer interceptor, which reports the same attributes under <code>server=kafka</code>:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-properties hljs" data-lang="properties">debezium.sink.kafka.producer.interceptor.classes=io.debezium.server.databricks.zerobus.metrics.ZerobusProducerInterceptor</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>The interceptor reads the operation and the source timestamp from the record headers, and falls back to scanning the serialized value when the headers are absent.
+Because the interceptor runs for every produced record, prefer the headers on a high-volume pipeline: configure the <code>ExtractNewRecordState</code> SMT with <code>add.headers=op,source.ts_ms</code> in addition to <code>add.fields</code>, as shown in <a href="#zerobus-kafka-route">Kafka route</a>.
+Zerobus does not persist record headers, so the metadata does not reach the target table, and reading it from a header rather than scanning the value makes the interceptor several times cheaper per record.
+To enable periodic metric logging on this route, set <code>debezium.sink.kafka.producer.zerobus.metrics.log.interval</code> to a positive value.
+The option is the counterpart of <code>debezium.sink.zerobus[rest].metrics.log.interval</code>, except that it counts records rather than batches, because a producer interceptor observes individual sends.
+Two attributes carry a route-specific meaning: <code>TotalFlushes</code> counts broker-acknowledged records, which is the durability boundary on this route, and <code>TotalRecordsSkipped</code> remains <code>0</code>, because the generic sink forwards every record that it receives.</p>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>On the Kafka route the interceptor times one in every 128 records rather than every record, so that <code>LastFlushDurationMillis</code> and <code>MaxFlushDurationMillis</code> describe a representative sample.
+Reading the system clock is significantly more expensive when the producer&#8217;s network thread reads it concurrently, and on a high-volume pipeline that cost outweighs everything else the interceptor does.
+The first record is always timed, so the gauges report a value even on a pipeline that produces few records.
+All counters remain exact.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="paragraph">
+<p>The standard <code>kafka.producer:type=producer-metrics</code> and <code>kafka.producer:type=producer-topic-metrics</code> MBeans remain available, and provide per-topic byte counts and request latencies that complement the sink metrics.</p>
+</div>
+<div class="paragraph">
+<p>The following attributes are available:</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 40%;">
+<col style="width: 60%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Attribute</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>TotalRecordsIngested</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Total number of change events that Zerobus durably accepted, across all tables.
+On the gRPC route the sink counts a record only after the flush that covers it succeeds, so a batch that fails to flush never advances this metric.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>TotalInserts</code> / <code>TotalUpdates</code> / <code>TotalDeletes</code> / <code>TotalReads</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>These metrics report the number of ingested events sorted by operation type (<code>c</code> / <code>u</code> / <code>d</code>, and snapshot reads <code>r</code>).</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>TotalRecordsSkipped</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Number of records skipped without being forwarded (tombstones / null payloads, and events whose destination is not a fully qualified <code>catalog.schema.table</code>, such as schema-history or DDL events).
+The value remains <code>0</code> on the Kafka route, which forwards every record that it receives.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>TotalErrors</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Number of ingestion or flush failures observed.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>TotalFlushes</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The metric counts one of the following operations, depending on the route configuration:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>Stream flush operations (gRPC route).</p>
+</li>
+<li>
+<p>Successful record POST requests (REST route).</p>
+</li>
+<li>
+<p>Broker-acknowledged records (Kafka route).</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>For the REST and Kafka routes, a successful POST or acknowledgement indicates that the record has been durably accepted and is no longer at risk of loss due to a service failure.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>MilliSecondsBehindSource</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Indicates the age, in milliseconds, of the most recently processed event.
+The value is calculated as <code>current time - source.ts_ms</code>.
+The metric reports the value <code>-1</code> until after the Delta table ingests an event that contains a source timestamp.
+Values near <code>0</code> indicates that the sink is catching up to, or is synchronized with, the source.</p>
+</div>
+<div class="paragraph">
+<p>This metric is a primary indicator of pipeline freshness in a CDC-to-lakehouse deployment.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>MilliSecondsSinceLastEvent</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Indicates the time that elapsed since the sink last forwarded an event.
+The metric reports the value <code>-1</code> until the sink forwards the first event.</p>
+</div>
+<div class="paragraph">
+<p>Use this metric together with <code>MilliSecondsBehindSource</code>.
+Because <code>MilliSecondsBehindSource</code> reports the age of the last event that the sink processed, its value stops changing if the pipeline stops, and, as a result, an idle source cannot be distinguished from a stalled sink.
+By contrast, if the value of <code>MilliSecondsSinceLastEvent</code> grows while the source database is known to be receiving writes, the pipeline is stalled.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>LastFlushDurationMillis</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Duration of the most recent flush (gRPC), record POST (REST), or broker acknowledgement (Kafka) operation.
+On the Kafka route the value describes a sampled subset of records rather than every record, as the following note describes.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>MaxFlushDurationMillis</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Longest duration of any flush (gRPC), record POST (REST), or broker acknowledgement (Kafka) operation since the task started.
+On the Kafka route the value describes a sampled subset of records rather than every record, as the following note describes.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>ActiveStreams</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Number of currently open Zerobus streams (one per target table).
+For the REST and Kafka routes, which do not open persistent streams, this value is always <code>0</code>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>Connected</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Indicates whether the sink currently holds a usable connection to Zerobus.
+On the gRPC route the value reflects the state of the SDK client, and on the REST route the state of the HTTP client.
+On the Kafka route the value is always <code>true</code> while metrics are reported, because a producer interceptor observes records rather than connection state.
+To monitor the connection on the Kafka route, use the standard <code>kafka.producer:type=producer-metrics</code> attributes.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>Route</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The delivery route these metrics belong to (<code>grpc</code>, <code>rest</code>, or <code>kafka</code>).</p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
 </div>
 </div>
 </div>
@@ -5694,7 +7174,7 @@ RANGE_TOMBSTONE "r" -&gt; TRUNCATE "t"</code></pre>
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/452a227c224198ace7efc57e9d3d9d5f43f051d7">452a227c</a></span>)
+            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/149252e81976345908ff7dfd64943f6d6c106c5b">149252e8</a></span>)
             
         </div>
     </footer>
