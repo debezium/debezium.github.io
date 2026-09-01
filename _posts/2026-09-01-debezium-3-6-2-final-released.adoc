@@ -1,0 +1,168 @@
+---
+layout: post
+title:  Debezium 3.6.2.Final Released
+date:   2026-09-01
+tags:   [ releases, mongodb, mysql, mariadb, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox, spanner, jdbc, informix, ibmi, cockroachdb, yashandb, ingres ]
+author: ccranfor
+extraClasses: release-v2
+---
+
+As summer winds down, we're pleased to announce **Debezium 3.6.2.Final**, a maintenance release packed with correctness, performance, and security improvements across the entire connector family.
+
+Among the highlights, incremental snapshots now work on PostgreSQL read-only replicas, and a fix to Debezium's internal caching keeps long-running connectors from gradually losing throughput.
+On the security front, Debezium Server now masks passwords in its logs, and the PostgreSQL JDBC driver has been bumped to 42.7.13 to address CVE-2026-54291.
+Rounding things out are a healthy batch of DDL parser fixes for MySQL and Oracle, data-correctness fixes for incremental snapshots and heartbeat error handling, and improved PostgreSQL parallel snapshot consistency.
+
+Read on for the full details!
+
++++<!-- more -->+++
+
+* link:#new-features-and-improvements[New features and improvements]
+* link:#other-changes[Other changes]
+
+[id="new-features-and-improvements"]
+== New Features and Improvements
+
+The following covers all new features and improvements, grouped by connector component area.
+
+[cols="25%,25%,25%,25%"]
+|===
+|link:#new-features-and-improvements-debezium-core[Debezium Core]
+|link:#new-features-and-improvements-debezium-postgresql[Debezium for PostgreSQL]
+|link:#new-features-and-improvements-container-images[Container Images]
+|
+
+|===
+
+[id="new-features-and-improvements-debezium-core"]
+=== Debezium Core
+
+==== Fix for gradual throughput loss in long-running connectors
+
+Connectors could slowly lose throughput the longer they ran, with no errors logged and no change in workload to explain it.
+One production deployment saw its rate fall from roughly 90K records per minute at startup to 12,500 after eighteen hours, with a single thread consuming nearly a full CPU core.
+
+The cause was in `BoundedConcurrentHashMap`, the fixed-size cache Debezium uses across the runtime for schemas, topic names, prepared statements, and similar lookups.
+Its internal housekeeping ran when an entry was read, but not when an entry already in the cache was overwritten, so a caller that only ever writes never triggered it, and an internal tracking list grew without bound.
+Checking the length of that list also became more expensive as it grew, so the cost of processing each record climbed along with it.
+
+Writes now trigger the same housekeeping that reads always have, and the list length is tracked as it changes rather than recounted on every access.
+Cache sizes, eviction behavior, and the entries retained are all unchanged.
+(https://github.com/debezium/dbz/issues/2255[dbz#2255])
+
+[id="new-features-and-improvements-debezium-postgresql"]
+=== Debezium for PostgreSQL
+
+==== Incremental snapshots on read-only replicas
+
+Incremental snapshots on PostgreSQL read-only replicas previously failed with `cannot execute pg_current_xact_id() during recovery` error, because the snapshot logic attempted to create a new transaction ID, which is not permitted on replicas.
+This caused connectors running with `read.only=true` to enter an infinite restart loop when an incremental snapshot was triggered.
+
+This has been corrected, and users running against a hot standby can now use incremental snapshots for re-snapshotting subsets of data without restarting the connector or switching to the primary.
+(https://github.com/debezium/dbz/issues/1080[dbz#1080], https://github.com/debezium/dbz/issues/2431[dbz#2431])
+
+[id="new-features-and-improvements-container-images"]
+=== Container Images
+
+==== PostgreSQL GUC logical decoder support
+
+A recent PostgreSQL security update for PostgreSQL 15 and later introduces a new `output_plugin_libraries` GUC setting that restricts which logical decoding output plugins can start.
+By default, PostgreSQL now permits only `pgoutput` and `test_decoding`, so any updated PostgreSQL instance, including publicly available container images, will reject the `decoderbufs` plugin.
+
+The Debezium PostgreSQL container images now explicitly configure this GUC to include `decoderbufs` alongside the default plugins.
+For users who have not yet migrated to `pgoutput` and continue to use `decoderbufs`, the `output_plugin_libraries` setting must be specified in the PostgreSQL server configuration to include `decoderbufs`.
+(https://github.com/debezium/dbz/issues/2434[dbz#2434])
+
+[id="other-changes"]
+== Other fixes
+
+// [Debezium for MySQL]
+// Aggregate functions should be allowed as ids [DBZ-2437]
+// MySQL executable comments are not supported [DBZ-5621]
+// DDL parser rejects unquoted identifier `url` on MySQL 8.0.32+
+* Fix multiple MySQL DDL parser errors (https://github.com/debezium/dbz/issues/360[dbz#360] https://github.com/debezium/dbz/issues/690[dbz#690] https://github.com/debezium/dbz/issues/2381[dbz#2381])
+// [Debezium Server]
+* Passwords are not masked in Debezium Server log output (https://github.com/debezium/dbz/issues/1201[dbz#1201])
+// [storage]
+* JDBC storage `RetriableConnection` retries a failing operation indefinitely without honoring `max.retries` (https://github.com/debezium/dbz/issues/2244[dbz#2244])
+// [Debezium Core]
+* OpenLineage SMT never emits dataset metadata for schema changes on known topics and writes to its dedup caches on every record (https://github.com/debezium/dbz/issues/2262[dbz#2262])
+// [Debezium Core]
+* Fix incremental snapshots stopping after the database closes the connection (https://github.com/debezium/dbz/issues/2275[dbz#2275])
+// [Debezium Core]
+* Incorrect span attribute mapping for type in the Quarkus outbox extension (https://github.com/debezium/dbz/issues/2286[dbz#2286])
+// [Debezium for PostgreSQL]
+* Fix PostgreSQL parallel snapshot producing inconsistent reads across pooled connections (https://github.com/debezium/dbz/issues/2330[dbz#2330])
+// [Debezium JDBC sink]
+* Upgrade Hibernate to 7.2.19 (https://github.com/debezium/dbz/issues/2331[dbz#2331])
+// [Debezium for MongoDB]
+// Upgrade MongoDB driver to 5.6.5
+// Update MongoDB driver to 5.9.2
+* Upgrade MongoDB driver to 5.9.2 (https://github.com/debezium/dbz/issues/2332[dbz#2332], https://github.com/debezium/dbz/issues/2449[dbz#2449])
+// [Debezium for PostgreSQL]
+* Incremental snapshot silently loses data on `NUMERIC` keys holding `NaN` or `Infinity` (https://github.com/debezium/dbz/issues/2333[dbz#2333])
+// [Debezium Core]
+* `Temporals.max`/`min` give incorrect results for sub-second durations with equal whole seconds (https://github.com/debezium/dbz/issues/2338[dbz#2338])
+// [Debezium Quarkus Extensions]
+* Upgrade Quarkus to 3.33.2 (https://github.com/debezium/dbz/issues/2344[dbz#2344])
+// [Debezium for Oracle]
+* Fix Oracle LogMiner client ID exclusion filter not handling null values (https://github.com/debezium/dbz/issues/2348[dbz#2348])
+// [Debezium for Oracle]
+* Fix Oracle LogMiner extended string parser failing on table aliases (https://github.com/debezium/dbz/issues/2366[dbz#2366])
+// [Debezium for Oracle]
+* Fix duplicated Oracle LogMiner extended string and XML values (https://github.com/debezium/dbz/issues/2368[dbz#2368])
+// [Debezium for PostgreSQL]
+* Snapshot failure for array values when using the AWS Advanced JDBC driver (https://github.com/debezium/dbz/issues/2387[dbz#2387])
+// [Debezium for PostgreSQL]
+* Upgrade PostgreSQL JDBC driver to 42.7.13 (CVE-2026-54291) (https://github.com/debezium/dbz/issues/2400[dbz#2400])
+// [Debezium for Oracle]
+// Oracle: ALTER TABLE ADD with column and constraint incorrectly parses CONSTRAINT as a column
+// Oracle Alter Range Partition with Index-Clause fails
+* Fix multiple Oracle DDL parser errors (https://github.com/debezium/dbz/issues/2405[dbz#2405] https://github.com/debezium/dbz/issues/2407[dbz#2407])
+// [Debezium Core]
+* Fix config validation errors being masked by HTTP 500 NullPointerException on Kafka Connect (https://github.com/debezium/dbz/issues/2415[dbz#2415])
+// [Debezium for SQL Server]
+* `unavailable.value.placeholder` applies to `text` but not to `varchar(max)`, `nvarchar(max)`, or `varbinary(max)` (https://github.com/debezium/dbz/issues/2420[dbz#2420])
+// [Debezium for PostgreSQL]
+* Connector incorrectly parses text defaults containing escaped single quotes (https://github.com/debezium/dbz/issues/2440[dbz#2440])
+// [Debezium Core]
+* `MathOps.add` drops the first operand for `BigInteger` overloads (https://github.com/debezium/dbz/issues/2446[dbz#2446])
+// [Debezium for Oracle]
+* SQL syntax error on Oracle 11g during boundary queries due to unsupported `OFFSET...FETCH` clause (https://github.com/debezium/dbz/issues/2448[dbz#2448])
+// [Debezium JDBC sink]
+* JDBC sink omits `OVERRIDING SYSTEM VALUE` causing failure on PostgreSQL `GENERATED ALWAYS AS IDENTITY` primary keys (https://github.com/debezium/dbz/issues/2459[dbz#2459])
+// [Debezium for MariaDB]
+* `NullPointerException` in heartbeat error handlers when the driver reports no SQL state (https://github.com/debezium/dbz/issues/2464[dbz#2464])
+// [Debezium for Oracle]
+* Username/client filters have no effect when tracking is disabled (https://github.com/debezium/dbz/issues/2473[dbz#2473])
+// [Debezium Core]
+* Chunked parallel initial snapshot does not apply `snapshot.fetch.size` to chunk statements (https://github.com/debezium/dbz/issues/2483[dbz#2483])
+// [Debezium for Oracle]
+* Add `ORA-02399` as an allowed Oracle retriable exceptions (https://github.com/debezium/dbz/issues/2487[dbz#2487])
+// [Debezium for MariaDB]
+* Multiple issues in tagged GTID handling (https://github.com/debezium/dbz/issues/2496[dbz#2496])
+
+In total, https://github.com/orgs/debezium/projects/5/views/6?query=sort%3Aupdated-desc+is%3Aopen&filterQuery=status%3AReleased+stable-iteration%3A3.6.2.Final[41 issues] were resolved in Debezium 3.6.2.Final.
+The list of changes can also be found in our link:/releases/3.6/release-notes#release-3-6-2-final[release notes].
+
+A big thank you to all the contributors from the community who worked diligently on this release:
+ +
+https://github.com/AlvarVG[Alvar Viana Gomez],
+https://github.com/Naros[Chris Cranford],
+https://github.com/denizozogularas[denizozogularas],
+https://github.com/dingqianwen[dingqianwen],
+https://github.com/MrIvv[Ivan Senyk],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/mathewjustin[Justin Mathew],
+https://github.com/nrkljo[Lars M. Johansson],
+https://github.com/minleejae[Minjae Lee],
+https://github.com/pavelivanovskii[Pavel Ivanovskii],
+https://github.com/rick020[Rick Bruins],
+https://github.com/roldanbob[Robert Roldan],
+https://github.com/kinolaev[Sergei Nikolaev],
+https://github.com/StevenJDH[Steven Jenkins De Haro],
+https://github.com/sundongkim-dev[Sundong Kim],
+https://github.com/suryadanny[Surya Dhaneshwar],
+https://github.com/TimurRakhmatullin86[Timur Rakhmatullin],
+https://github.com/viragtripathi[Virag Tripathi], and
+https://github.com/vjuranek[Vojtech Juranek]!
