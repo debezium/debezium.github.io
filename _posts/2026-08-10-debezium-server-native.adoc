@@ -1,0 +1,260 @@
+---
+layout: post
+title:  "Supersonic Subatomic Debezium Server"
+date:   2026-08-14
+tags: [debezium-server, graalvm, mandrel, cdc, migration]
+author: gpanice
+---
+
+The Debezium 3.7.0.Alpha2 release comes with a lot of changes, one of them is a complete rewrite of Debezium Server to support native builds with Quarkus and Mandrel.
+In this article, we’ll walk through creating a native distribution of Debezium Server and follow the steps from a link:/blog/2026/07/06/kafka-less-migration/[previous article] as an example.
+
++++<!-- more -->+++
+
+== Introduction
+
+When we talk about native build for Java Applications, probably we are talking about link:https://www.graalvm.org/[GraalVM]: a high-performance runtime and toolchain for Java that released by Oracle Labs in 2018.
+It extends the traditional Java platform with advanced compilation technologies, like ahead-of-time (AOT) compilation, enabling applications to be compiled into standalone executables with fast startup times and reduced memory consumption.
+
+Building on these capabilities, in 2019 Red Hat released the first version of link:https://quarkus.io/[Quarkus] which was designed to maximize build-time optimizations and minimize runtime overhead, making it one of the leading Java frameworks for native execution.
+By integrating closely with GraalVM Native Image, Quarkus allows applications to achieve significantly performance improvements compared to traditional JVM deployments.
+
+To further support the Quarkus ecosystem, Red Hat introduced link:https://developers.redhat.com/blog/2020/06/05/mandrel-a-community-distribution-of-graalvm-for-the-red-hat-build-of-quarkus#[Mandrel] in 2020, a downstream distribution of GraalVM focused specifically on native image generation for Quarkus applications.
+
+The native distribution of Debezium Server leverages this ecosystem, combining Quarkus and Mandrel to deliver a lightweight, self-contained executable.
+
+=== Gold for the Price of Silver: JIT Compilation in the Data Streaming Context
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-08-10-debezium-server-native/aot_vs_jit.png" style="max-width:70%;" class="responsive-image" alt="AOT vs JIT">
+</div>
+++++
+
+As mentioned before, AOT compilation is an approach in which machine code is generated before an application is executed, rather than during runtime. While AOT has long been used across many software ecosystems, it became a practical and widely adopted option for Java applications with the introduction of GraalVM Native Image.
+
+By contrast, Just-In-Time (JIT) compilation has been a core part of Java's execution model since the late 1990s.
+Sun introduced its first JIT compiler for Java in 1996, and the HotSpot JVM, released in 1999, further popularized adaptive runtime optimization by compiling frequently executed code paths into highly optimized machine code.
+
+With JIT, Java applications start by running bytecode and gradually optimize themselves based on actual runtime behavior.
+This dynamic profiling enables excellent peak performance and throughput, making JIT the preferred choice for long-running services.
+
+The trade-off between JIT and AOT depends on the target use case: JIT generally delivers higher maximum throughput for applications that run continuously and can benefit from runtime profiling and optimization.
+AOT, on the other hand, prioritizes operational efficiency, fast startup, and lower memory footprint at the cost of some runtime optimization opportunities.
+
+Data streaming is obviously in JIT territory: it analyzes how code behaves during streaming and applies optimizations to frequently executed methods, often called hot spots.
+Unlike AOT, the JIT can leverage runtime profiling to perform adaptive optimizations such as profile-guided inlining, speculative devirtualization, branch prediction tuning, and dynamic recompilation of hot code paths.
+These optimizations are continuously refined while the application is running, enabling the JVM to generate machine code tailored to real workload characteristics: The product of a well-established engineering effort spanning three decades.
+
+=== The real price is the weight
+
+The JVM runtime infrastructure and JIT compilation have a memory cost: a traditional HotSpot deployment requires memory not only for application data, but also for the JVM itself, including class metadata, dynamic class loading mechanisms, garbage collection metadata, profiling information, the JIT compiler, and the code cache that stores dynamically generated machine code.
+These components enable adaptive optimizations and high peak throughput, but they increase the overall memory footprint. Native executables generated with GraalVM Native Image or Mandrel remove much of this overhead by performing analysis and compilation at build time.
+
+=== The Hidden Gold of a Lost Age: Batch Ingestion
+
+In some business scenarios, deploying a full ingestion and streaming platform capable of managing trillions of events in milliseconds is unnecessary.
+Sometimes the business simply needs to move data on an hourly or daily schedule from one source to another, without dealing with infrastructure complexity and costs.
+Debezium 3.6 introduced start/stop APIs for deterministic engine shutdown, which, combined with native builds, enables CDC pipelines for serverless environments.
+In this scenario, the native executable's fast startup makes batch ingestion cost-effective in cloud environments.
+
+=== A large ecosystem: why Quarkus
+
+Currently, the Debezium community supports about 15 connectors for different data sources and 20 Debezium Server sinks. In addition, we maintain CDC-ready containers, the Debezium Server operator, the Debezium Platform, and many other components that make our community vibrant and busy.
+Introducing native builds requires additional effort: Debezium's own libraries and their dependencies must be compatible with native compilation — for example, classes accessed via reflection need to be registered with the compiler.
+Quarkus and its community maintain a large number of native-ready Java libraries, which makes adopting this layer significantly easier for our project.
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-08-10-debezium-server-native/dbz_srv.png" style="max-width:80%;" class="responsive-image" alt="AOT vs JIT">
+</div>
+++++
+
+== Generate a native distribution for Debezium Server
+
+We are still in Alpha and do not yet distribute binaries or Docker images of the native Debezium Server.
+Follow these steps to build a distribution for your target system.
+
+=== Requirements
+
+This walkthrough is tested on Gnu/Linux with Kernel 7.1.4 on x86_64 with the following dependencies:
+
+- git `2.55.0`
+- OpenJDK `25`
+- Docker `29.6.2`
+- Docker compose `5.3.1`
+
+It should work on Linux and Mac platforms with x86_64 and ARM architecture.
+
+=== Supported Connectors & Sinks
+
+The following Debezium Connectors are supported for the native build in Debezium Server:
+
+- Postgres
+- MySQL
+- MariaDB
+- SQLServer
+- Oracle
+- MongoDB
+
+and the Debezium Server Sinks:
+
+- Redis
+- Http
+- [.line-through]#Jdbc# (next beta or main branch)
+
+[NOTE]
+====
+Please keep in mind that Debezium Server supports many other connectors and sinks in JVM mode.
+====
+
+=== Create a Distribution
+
+Let's download the Debezium Server repository and point to the `3.7.0.Alpha2` release:
+
+[source, shell]
+-----
+git clone --branch v3.7.0.Alpha2 --single-branch https://github.com/debezium/debezium-server.git
+-----
+
+and build the project for native:
+
+[source, shell]
+-----
+cd debezium-server
+./mvnw clean install -Dquick -Passembly,native
+-----
+
+Even if you don't have Mandrel or GraalVM installed on your system, Quarkus will download the required toolchain automatically.
+If all goes well, you should find the build output in the `target` directory of `debezium-server-native-dist`
+
+[source, shell]
+-----
+cd debezium-server-native-dist/target/
+-----
+
+[source, shell]
+-----
+drwxr-xr-x     - xxx  10 Aug 15:24   archive-tmp
+drwxr-xr-x     - xxx  10 Aug 15:20   classes
+drwxr-xr-x     - xxx  10 Aug 15:20   generated-sources
+drwxr-xr-x     - xxx  10 Aug 15:20   maven-archiver
+drwxr-xr-x     - xxx  10 Aug 15:20   maven-status
+drwxr-xr-x     - xxx  10 Aug 15:21   quarkus-app
+.rwxr-xr-x  289M xxx  10 Aug 15:24   debezium-server-native-dist-3.7.0.Alpha2-runner
+.rw-r--r--  7.2k xxx  10 Aug 15:24   debezium-server-native-dist-3.7.0.Alpha2-sources.jar
+.rw-r--r--  3.2k xxx  10 Aug 15:24   debezium-server-native-dist-3.7.0.Alpha2-tests.jar
+.rw-r--r--  6.3k xxx  10 Aug 15:20   debezium-server-native-dist-3.7.0.Alpha2.jar
+.rw-r--r--   90M xxx  10 Aug 15:24   debezium-server-native-dist-3.7.0.Alpha2.tar.gz
+.rw-r--r--   90M xxx  10 Aug 15:24   debezium-server-native-dist-3.7.0.Alpha2.zip
+.rw-r--r--   448 xxx  10 Aug 15:24   quarkus-artifact.properties
+-----
+
+Extract the distribution:
+
+[source, shell]
+-----
+tar xvfz debezium-server-native-dist-3.7.0.Alpha2.tar.gz
+-----
+
+[source, shell]
+-----
+cd debezium-server
+-----
+
+[source, shell]
+-----
+Permissions Size User Date Modified Name
+drwxr-xr-x     - xxx   8 Jul 10:47   config
+.rwxr-xr-x  289M xxx  10 Aug 15:24   debezium-server-native-dist-3.7.0.Alpha2-runner
+.rwxr-xr-x   522 xxx   8 Jul 10:47   run.bat
+.rwxr-xr-x   565 xxx   8 Jul 10:47   run.sh
+-----
+
+You can use `run.sh` to launch an instance of Debezium Server.
+
+== Run Debezium Server
+
+Following the example from the link:/blog/2026/07/06/kafka-less-migration/[previous article], we can use Debezium Server to create a data integration pipeline from Postgres to Redis.
+
+We can start the source and target databases with the following Docker Compose file:
+
+.infrastructure-compose.yaml
+[source,yaml]
+----
+services:
+
+  postgres:
+    container_name: postgres
+    image: quay.io/debezium/example-postgres:3.6
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+
+  redis:
+    image: mirror.gcr.io/redis:7.0
+    ports:
+      - 6379:6379
+    environment:
+      - ALLOW_EMPTY_PASSWORD=yes
+----
+
+Run the Docker Compose command below:
+
+[source, shell]
+-----
+docker compose -f infrastructure-compose.yaml up -d
+-----
+
+Place the following `application.properties` in the `config` directory of the Debezium Server distribution
+
+.application.properties
+[source,properties]
+----
+# Debezium CDC configuration
+debezium.source.offset.storage=org.apache.kafka.connect.storage.MemoryOffsetBackingStore
+debezium.source.name=debezium
+debezium.source.topic.prefix=migration
+debezium.source.plugin.name=pgoutput
+debezium.source.snapshot.mode=initial
+
+# datasource configuration
+debezium.source.offset.flush.interval.ms=0
+debezium.source.database.hostname=localhost
+debezium.source.database.port=5432
+debezium.source.database.user=postgres
+debezium.source.database.password=postgres
+debezium.source.database.dbname=postgres
+debezium.source.schema.include.list=inventory
+
+# sink
+debezium.sink.type=redis
+debezium.sink.redis.address=localhost:6379
+debezium.sink.redis.cluster.enabled=false
+
+quarkus.log.console.json=false
+----
+
+You can start replicating your data with the `run.sh`:
+
+[source, shell]
+-----
+./run.sh
+-----
+
+Similar to the previous article, you should see data flowing from Postgres to Redis.
+
+== Performance Considerations
+
+Performance evaluation is a serious thing. While we haven't yet had time to perform a comprehensive performance analysis, the result is already clear: the memory footprint has been significantly reduced together with the startup time.
+You should notice a substantial decrease in the amount of memory used by Debezium Server with a speed-up in the startup.
+In the coming months, we will focus on evaluating Debezium Server’s performance under certain conditions and, based on the findings, continue improving it step by step.
+
+== What's next
+
+We are in the Alpha stage and many things still need to be addressed. We plan to distribute binaries and Docker images for the native build in a future release.
+Additionally, the Debezium CLI project aims to integrate a simplified build process for Debezium Server that includes only the libraries required for a given pipeline (source and sink).
+
+The future is bright for CDC!
