@@ -1,0 +1,142 @@
+---
+layout: post
+title:  "Recent improvements in the Platform Stage UI"
+date:   2026-09-03
+tags: [ UI, debezium-platform, debezium-server, features ]
+author: indrashukla
+---
+:imagesdir: /assets/images/2026-09-03-platform-stage-ui-improvements
+
+The https://debezium.io/documentation/reference/stable/operations/debezium-platform.html[Debezium Platform] Stage UI gives you a cental place to design pipelines, configure sources, transforms, and destinations, and keep an eye on what is running.
+Over the last few preview releases we have shipped a set of Stage improvements that make that work faster, clearer, and less dependent on leaving the UI to look something up.
+
+This post walks through four of those changes:
+
+* Quick access to documentation from inside Stage
+* Pipeline status, failure feedback, and restart
+* Transform configuration driven by component descriptors
+* Exporting a Debezium Server configuration from an existing pipeline
+
+
++++<!-- more -->+++
+
+== Documentation where you are working
+
+Debezium has a lot of configuration, and the right answer is often a specific section of the docs.
+You should not have to leave Stage, search the documentation site, and try to land on the page that matches the screen you were just looking at.
+
+Stage now opens the relevant documentation section based on where you are in the UI: sources, destinations, transforms, pipelines, connections, and so on.
+The mapping is contextual, so a example PostgreSQL source takes you to relevant section in the PostgreSQL connector documentation rather than a generic overview.
+
+++++
+<div class="imageblock centered-image" style="margin-left:0; margin-right:0;">
+    <img src="/assets/images/2026-09-03-platform-stage-ui-improvements/in-app-documentation.gif" style="width:100%; max-width:100%;" class="responsive-image" alt="In-app documentation panel opening beside a PostgreSQL source form">
+</div>
+++++
+
+The goal is straightforward: stay in the flow, look up the property you need, and keep configuring.
+
+
+== Pipeline status, failure feedback, and restart
+
+Until recently, Stage did not surface pipeline deployment status.
+If a deploy failed, the UI looked much as it did when things were fine, and the actual error lived in server logs.
+
+The platform conductor now tracks pipeline status and exposes it on the pipeline API, including an error message when something goes wrong.
+Stage shows that status on the pipeline, so you can see where things stand without leaving the UI:
+
+* *Deploying* -- a create or update has been requested and is waiting for confirmation
+* *Running* -- the pipeline is up
+* *Failed* -- the pipeline did not start, or it exited unexpectedly
+
+When the pipeline is *Failed*, you get an access to the detailed error message, and a restart control that re-deploys from within the UI.
+
+In addition the Actions and Monitoring tabs are disabled while the pipeline is failed, since those tabs are not meaningful until it is running again.
+
+++++
+<div class="imageblock centered-image" style="margin-left:0; margin-right:0;">
+    <img src="/assets/images/2026-09-03-platform-stage-ui-improvements/pipeline-status.gif" style="width:100%; max-width:100%;" class="responsive-image" alt="In-app documentation panel opening beside a PostgreSQL source form">
+</div>
+++++
+
+
+== Transforms driven by component descriptors
+
+Sources and destinations in Stage already build their configuration forms from https://github.com/debezium/debezium-design-documents/blob/main/DDD-13.md#ddd-13-debezium-component-descriptors[component descriptors], as Mario described in the https://debezium.io/blog/2026/07/10/debezium-platform-status-update/[mid-year Platform update].
+Transforms were the remaining piece still backed by a static catalog in the frontend.
+
+That is no longer the case.
+Stage now loads available SMTs from the catalog API (`/api/catalog`) and renders each transform from its descriptor, the same way it already does for connectors.
+
+That means:
+
+* Newly registered transforms show up in the UI without a frontend update
+* Configuration fields, types, defaults, and validation come from the descriptor instead of a hard-coded form
+* Predicates are selected and configured from the catalog as well, including variant selection
+
+When you create or edit a transform you get a grouped, searchable typeahead instead of a flat static list.
+SMTs are organized into categories such as *Debezium SMT*, *Connector-specific*, *Kafka Connect SMT*, *AI*, and *Other*.
+After you pick a type, the form is schema-driven: related settings are grouped into sections with jumplinks, so you can move through a long configuration without scrolling blindly.
+
+Connector-specific transforms (`io.debezium.connector.*`) are only enabled when they match the source already selected on the pipeline, and the Transform node in the pipeline designer stays disabled until a source is chosen.
+
+++++
+<div class="imageblock centered-image" style="margin-left:0; margin-right:0;">
+    <img src="/assets/images/2026-09-03-platform-stage-ui-improvements/transform-descriptor-form.png" style="width:100%; max-width:100%;" class="responsive-image" alt="Transform create form with grouped SMT typeahead and schema-driven configuration sections">
+</div>
+++++
+
+This is the same descriptor model we already use for sources and destinations, so the configuration experience is now consistent across the pipeline.
+
+
+== Generate Debezium Server config from a pipeline
+
+Earlier we added the ability to *import* an existing Debezium Server `application.properties` file into Stage and turn it into a pipeline.
+That is still the fastest way to onboard a server you already run; see https://debezium.io/blog/2025/09/15/debezium-platform-smart-editor/[Simplifying pipeline creation with existing Debezium configurations].
+
+The other direction is just as useful.
+If you designed the pipeline in the Platform, you may still want a standard Debezium Server configuration -- for a host-based deployment, a local test, or to share the equivalent `application.properties` with someone who is not using the Platform.
+
+You can now download that configuration from an existing pipeline in Stage.
+Passwords, secrets, and credentials are redacted in the generated file, so you can share or store it without leaking connection secrets.
+Predicates that are not actually configured are omitted, so the file is valid Debezium Server configuration rather than a dump of empty objects.
+
+++++
+<div class="imageblock centered-image" style="margin-left:0; margin-right:0;">
+    <img src="/assets/images/2026-09-03-platform-stage-ui-improvements/pipeline-export-server-config.png" style="width:100%; max-width:100%;" class="responsive-image" alt="Export the Debezium server application file form a running pipeline in the platform">
+</div>
+++++
+
+A downloaded file looks like a normal Debezium Server `application.properties`:
+
+[source,properties]
+----
+debezium.source.connector.class=io.debezium.connector.postgresql.PostgresConnector
+debezium.source.topic.prefix=inventory
+debezium.source.plugin.name=pgoutput
+debezium.source.database.hostname=postgresql
+debezium.source.database.port=5432
+debezium.source.database.user=debezium
+debezium.source.database.password=********
+debezium.source.database.dbname=debezium
+debezium.source.schema.include.list=inventory
+
+debezium.sink.type=kafka
+debezium.sink.kafka.producer.bootstrap.servers=dbz-kafka-kafka-bootstrap:9092
+
+debezium.transforms=unwrap
+debezium.transforms.unwrap.type=io.debezium.transforms.ExtractNewRecordState
+debezium.transforms.unwrap.add.fields=op
+----
+
+Together with the earlier import path, you can move configuration in both directions: Server to Platform, and Platform back to Server.
+
+== Try it out
+
+These changes are available in the 3.7 preview line of the Debezium Platform.
+
+If you already run Stage, update to the latest 3.7 images and walk through a pipeline the way you usually do: create a transform, open the docs from the form, export the server config, and watch the pipeline status as it deploys.
+
+If you like the project, you can help with https://debezium.zulipchat.com/#narrow/channel/392459-community-platform[feedback], reporting https://github.com/debezium/dbz/issues[issues], and, if you like, a https://github.com/debezium/debezium-platform[star] on the repository.
+
+As always, feel free to leave a comment below or get in touch with us on the https://groups.google.com/forum/#!forum/debezium[mailing list] or in our https://debezium.zulipchat.com/login/#narrow/stream/302529-users[Zulip chat].
