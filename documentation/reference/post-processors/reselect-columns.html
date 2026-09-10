@@ -462,6 +462,12 @@
 <ul class="sectlevel1">
 <li><a href="#_overview">Overview</a></li>
 <li><a href="#keyless-tables">Keyless tables</a></li>
+<li><a href="#value-caching">Value caching</a>
+<ul class="sectlevel2">
+<li><a href="#value-caching-in-memory">In-memory cache</a></li>
+<li><a href="#value-caching-rocksdb">RocksDB cache</a></li>
+</ul>
+</li>
 <li><a href="#configuration-example">Configuration example</a></li>
 <li><a href="#post-processor-configuration-options">Configuration options</a></li>
 </ul>
@@ -538,6 +544,232 @@ Be sure to test the configuration to ensure that the reselection query provides 
 </div>
 </div>
 <div class="sect1">
+<h2 id="value-caching"><a class="anchor" href="#value-caching"></a>Value caching</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>By default, the post processor queries the database for every event that requires reselection.
+For workloads in which the same rows are reselected repeatedly (for example, TOAST or LOB columns that Debezium emits as placeholders on every unrelated row update), you can enable an optional cache of reselected values to reduce the number of database queries.</p>
+</div>
+<div class="paragraph">
+<p>Enable caching by setting <code>reselect.cache.enabled</code> to <code>true</code>.
+Reselected values are cached per row and per column, using the event&#8217;s message key as the cache key.
+Before querying the database, the post processor checks the cache for each column that requires reselection, and only queries columns that are not already cached.
+Eligible columns whose values are present in the event record are also written to the cache, even if no reselection is needed, so a later event that omits the same column can be served from the cache without querying the database again.</p>
+</div>
+<div class="paragraph">
+<p>The cache is refreshed on modification: any event that carries a real (non-placeholder) value for an eligible column updates that column&#8217;s cache entry with the current value.
+As a result, a later event that does not modify the column can be served from the cache, and a cached value is never served after the column has changed.</p>
+</div>
+<div class="paragraph">
+<p>Because the row identity is the message key, including its schema, a change to the key&#8217;s schema (for example, a DDL change or a primary-key reordering) yields a different cache key, so the post processor queries the database for the new key rather than returning a stale cached value.</p>
+</div>
+<div class="paragraph">
+<p>The cache storage is pluggable through the <code>reselect.cache.type</code> property, which names an implementation of the <code>io.debezium.processors.reselect.cache.ReselectColumnCache</code> contract.
+Debezium provides the implementations described in the following sections; you can also supply a custom implementation to integrate an alternative backend.
+Custom implementations that store values outside the JVM heap can extend <code>io.debezium.processors.reselect.cache.AbstractSerializingReselectColumnCache</code>, which handles the conversion of row keys and column values to and from bytes and requires only simple byte-level get, put, and remove storage operations.</p>
+</div>
+<div class="sect2">
+<h3 id="value-caching-in-memory"><a class="anchor" href="#value-caching-in-memory"></a>In-memory cache</h3>
+<div class="paragraph">
+<p>The default cache implementation, <code>io.debezium.processors.reselect.cache.MemoryReselectColumnCache</code>, stores values on the JVM heap.
+The cache is bounded in both dimensions, the number of rows and the number of columns cached per row, and evicts the least-recently-used entries when a bound is exceeded.
+Cached values also expire after a time-to-live, which bounds how long entries for rows that are no longer being updated are retained in memory.
+The cache is lost when the connector stops, so reselections begin repopulating it after a restart.</p>
+</div>
+<div class="paragraph">
+<p>The in-memory cache supports the following properties, in addition to the common <code>reselect.cache.*</code> properties:</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 1. In-memory cache configuration options</caption>
+<colgroup>
+<col style="width: 30%;">
+<col style="width: 25%;">
+<col style="width: 45%;">
+</colgroup>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Property</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Default</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Description</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="reselect-columns-post-processor-property-reselect-cache-max-size"></a><a href="#reselect-columns-post-processor-property-reselect-cache-max-size"><code>post.processors.reselect.cache.max.size</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>10000</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The maximum number of cached rows retained in the reselection cache.</p>
+</div>
+<div class="paragraph">
+<p>When the limit is reached, the least-recently-used entries are evicted.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="reselect-columns-post-processor-property-reselect-cache-ttl-ms"></a><a href="#reselect-columns-post-processor-property-reselect-cache-ttl-ms"><code>post.processors.reselect.cache.ttl.ms</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>600000</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The time-to-live, in milliseconds, of a cached reselection value.</p>
+</div>
+<div class="paragraph">
+<p>Because the cache is refreshed on modification, this value only bounds how long entries for rows that are no longer being updated are retained in memory; it is not the mechanism that guarantees freshness.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="reselect-columns-post-processor-property-reselect-cache-max-columns-per-row"></a><a href="#reselect-columns-post-processor-property-reselect-cache-max-columns-per-row"><code>post.processors.reselect.cache.max.columns.per.row</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>200</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The maximum number of columns cached per row in the reselection cache.</p>
+</div>
+<div class="paragraph">
+<p>When the limit is reached, the least-recently-used column entries for that row are evicted.
+This bound guards against wide tables (for example, tables with 500-1000 columns) growing the per-row inner map without limit.</p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="sect2">
+<h3 id="value-caching-rocksdb"><a class="anchor" href="#value-caching-rocksdb"></a>RocksDB cache</h3>
+<div class="paragraph">
+<p>The <code>io.debezium.storage.rocksdb.reselect.RocksDbReselectColumnCache</code> implementation persists cached values to disk in an embedded RocksDB database.
+Cached values persist after you a connector restarts, so columns that would otherwise need to be reselected continue to be served from the cache after a restart.
+Entries remain correct across restarts because the post processor refreshes the cache whenever a column arrives with a real value.</p>
+</div>
+<div class="paragraph">
+<p>To use the RocksDB cache, the <code>debezium-storage-rocksdb</code> artifact must be on the connector plugin path, and <code>reselect.cache.type</code> must be set to the implementation&#8217;s fully-qualified class name.</p>
+</div>
+<div class="paragraph">
+<p>Storage is permanent by default: no time-to-live is applied, and the database directory is retained when the connector stops.
+If you specify a positive <code>reselect.cache.ttl.ms</code> value, expired entries are treated as cache misses and removed when they are read.
+RocksDB reclaims expired entries from disk during compaction.
+A time-to-live is recommended for schemas that change frequently, because entries written under a previous key schema are never overwritten and would otherwise remain on disk indefinitely.</p>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>The time-to-live setting determines how the RocksDB database is opened, and the two modes store entries on disk in different formats.
+If you change <code>reselect.cache.ttl.ms</code> between <code>0</code> and a positive value across a connector restart, entries that were written before the change can become unreadable in the new mode.
+Unreadable entries are discarded and treated as cache misses, so the affected columns are transparently reselected from the database and re-cached; no manual cleanup of the storage directory is required.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="admonitionblock important">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-important" title="Important"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>RocksDB takes an exclusive lock on its storage directory.
+Configure a distinct <code>reselect.cache.rocksdb.path</code> for each connector, and for each task of a multi-task connector.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="paragraph">
+<p>The following example shows a post-processor configuration that uses the RocksDB cache:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">  "post.processors.reselector.reselect.cache.enabled" : "true",
+  "post.processors.reselector.reselect.cache.type" : "io.debezium.storage.rocksdb.reselect.RocksDbReselectColumnCache",
+  "post.processors.reselector.reselect.cache.rocksdb.path" : "/var/lib/debezium/reselect-cache"</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>The RocksDB cache supports the following properties, in addition to the common <code>reselect.cache.*</code> properties:</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 2. RocksDB cache configuration options</caption>
+<colgroup>
+<col style="width: 30%;">
+<col style="width: 25%;">
+<col style="width: 45%;">
+</colgroup>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Property</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Default</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Description</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="reselect-columns-post-processor-property-reselect-cache-rocksdb-path"></a><a href="#reselect-columns-post-processor-property-reselect-cache-rocksdb-path"><code>post.processors.reselect.cache.rocksdb.path</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The directory path in which the RocksDB database is stored.
+The directory is created if it does not exist.
+This property is required.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="reselect-columns-post-processor-property-reselect-cache-rocksdb-cleanup"></a><a href="#reselect-columns-post-processor-property-reselect-cache-rocksdb-cleanup"><code>post.processors.reselect.cache.rocksdb.cleanup</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>false</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies whether the RocksDB database directory is deleted when the connector stops.</p>
+</div>
+<div class="paragraph">
+<p>By default the directory is retained, so cached values persist across connector restarts.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="reselect-columns-post-processor-property-reselect-cache-rocksdb-ttl-ms"></a><a href="#reselect-columns-post-processor-property-reselect-cache-rocksdb-ttl-ms"><code>post.processors.reselect.cache.ttl.ms</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>0</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The time-to-live, in milliseconds, of a cached reselection value; <code>0</code> disables expiration so entries persist until overwritten or invalidated.</p>
+</div>
+<div class="paragraph">
+<p>Note that this is the same property that the in-memory cache uses, but with a different default: persistent storage is permanent unless a time-to-live is explicitly configured.</p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</div>
+<div class="sect1">
 <h2 id="configuration-example"><a class="anchor" href="#configuration-example"></a>Configuration example</h2>
 <div class="sectionbody">
 <div class="paragraph">
@@ -567,7 +799,7 @@ To enable the connector to use the <code>ReselectColumnsPostProcessor</code>, ad
 <p>The following table lists the configuration options that you can set for the Reselect Columns post-processor.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 1. Reselect columns post processor configuration options</caption>
+<caption class="title">Table 3. Reselect columns post processor configuration options</caption>
 <colgroup>
 <col style="width: 30%;">
 <col style="width: 25%;">
@@ -712,10 +944,9 @@ The post processor then uses the specified key field names as the primary key in
 </div>
 <div class="paragraph">
 <p>By default the post processor queries the database for every event that requires reselection.
-When set to <code>true</code>, reselected column values are cached per row and column, keyed by the event&#8217;s message key, and subsequent events that require the same column are served from the cache instead of querying the database.
-The cache is refreshed on modification: any event that carries a real (non-placeholder) value for a column updates that column&#8217;s cache entry with the current value, so a later event that does not modify the column can be served from the cache, and a cached value is never served after the column has changed.
-Because the row identity is the message key, a change to the key&#8217;s schema (for example, a DDL change or a primary-key reordering) yields a different key and a natural cache miss rather than a stale hit.
-This is most useful for large, rarely-changing columns (such as TOAST or LOB values) on frequently-updated rows.</p>
+When set to <code>true</code>, reselected column values are cached per row and column, and subsequent events that require the same column are served from the cache instead of querying the database.
+This is most useful for large, rarely-changing columns (such as TOAST or LOB values) on frequently-updated rows.
+See <a href="#value-caching">Value caching</a> for a description of the caching mechanism.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -726,58 +957,11 @@ This is most useful for large, rarely-changing columns (such as TOAST or LOB val
 <p><code>io.debezium.processors.reselect.cache.MemoryReselectColumnCache</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The fully-qualified name of the <code>io.debezium.processors.reselect.cache.ReselectColumnCache</code> implementation used to store reselected values.</p>
-</div>
-<div class="paragraph">
-<p>Defaults to an in-memory implementation.
-Provide a custom class to plug in an alternative cache backend.
+<p>The fully-qualified name of the <code>io.debezium.processors.reselect.cache.ReselectColumnCache</code> implementation used to store reselected values.
 Applies only when <code>reselect.cache.enabled</code> is <code>true</code>.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="reselect-columns-post-processor-property-reselect-cache-max-size"></a><a href="#reselect-columns-post-processor-property-reselect-cache-max-size"><code>post.processors.reselect.cache.max.size</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>10000</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The maximum number of cached rows retained in the reselection cache.</p>
 </div>
 <div class="paragraph">
-<p>When the limit is reached, the least-recently-used entries are evicted.
-Applies only to the default in-memory cache, when <code>reselect.cache.enabled</code> is <code>true</code>.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="reselect-columns-post-processor-property-reselect-cache-ttl-ms"></a><a href="#reselect-columns-post-processor-property-reselect-cache-ttl-ms"><code>post.processors.reselect.cache.ttl.ms</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>600000</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The time-to-live, in milliseconds, of a cached reselection value.</p>
-</div>
-<div class="paragraph">
-<p>Because the cache is refreshed on modification, this value only bounds how long entries for rows that are no longer being updated are retained in memory; it is not the mechanism that guarantees freshness.
-Applies only to the default in-memory cache, when <code>reselect.cache.enabled</code> is <code>true</code>.</p>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="reselect-columns-post-processor-property-reselect-cache-max-columns-per-row"></a><a href="#reselect-columns-post-processor-property-reselect-cache-max-columns-per-row"><code>post.processors.reselect.cache.max.columns.per.row</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>200</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>The maximum number of columns cached per row in the reselection cache.</p>
-</div>
-<div class="paragraph">
-<p>When the limit is reached, the least-recently-used column entries for that row are evicted.
-This bound guards against wide tables (for example, tables with 500–1000 columns) growing the per-row inner map without limit.
-Applies only to the default in-memory cache, when <code>reselect.cache.enabled</code> is <code>true</code>.</p>
+<p>Debezium provides the <a href="#value-caching-in-memory">in-memory cache</a> (the default) and the <a href="#value-caching-rocksdb">RocksDB cache</a> (<code>io.debezium.storage.rocksdb.reselect.RocksDbReselectColumnCache</code>); each caches supports additional <code>reselect.cache.*</code> properties, as described in <a href="#value-caching-rocksdb">RocksDB cache</a>.</p>
 </div></div></td>
 </tr>
 </tbody>
@@ -792,7 +976,7 @@ Applies only to the default in-memory cache, when <code>reselect.cache.enabled</
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/a077ab492412ff5d8e3446a1e47ca33da54eae94">a077ab49</a></span>)
+            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/61200236a89449a0390c23f4ab6c2b428a2590ca">61200236</a></span>)
             
         </div>
     </footer>
