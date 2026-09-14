@@ -472,6 +472,13 @@
 <li><a href="#_choosing_a_split_step">Choosing a split step</a></li>
 </ul>
 </li>
+<li><a href="#neo4j-cud-converter-schema-changes">Schema changes and DDL</a>
+<ul class="sectlevel2">
+<li><a href="#_column_changes">Column changes</a></li>
+<li><a href="#_table_changes">Table changes</a></li>
+<li><a href="#_recommended_workflow_for_a_schema_change">Recommended workflow for a schema change</a></li>
+</ul>
+</li>
 <li><a href="#neo4j-cud-converter-type-mapping">Type mapping</a></li>
 <li><a href="#neo4j-cud-converter-decimal-handling">Decimal handling</a></li>
 <li><a href="#neo4j-cud-converter-configuration-options">Configuration options</a>
@@ -726,6 +733,146 @@ This is a good option for users who already have Flink infrastructure.</p>
 </tr>
 </tbody>
 </table>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="neo4j-cud-converter-schema-changes"><a class="anchor" href="#neo4j-cud-converter-schema-changes"></a>Schema changes and DDL</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>The <code>Neo4jCudConverter</code> transforms <strong>data</strong> change events only (the Debezium envelope with an operation of <code>c</code>, <code>r</code>, <code>u</code>, or <code>d</code>).
+It does not translate schema changes (DDL) such as <code>CREATE TABLE</code>, <code>ALTER TABLE</code>, <code>DROP TABLE</code>, or <code>TRUNCATE</code> into graph operations.
+There are two reasons for this:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>Debezium publishes DDL to a dedicated schema change topic (for connectors that support one), not to the per-table data topics that feed the Neo4j sink connector, so schema change events never reach the SMT.</p>
+</li>
+<li>
+<p>Relational DDL has no single, safe mapping onto a graph model. For example, dropping a table does not imply the graph nodes should be deleted, and renaming a column does not imply the corresponding Neo4j property should be renamed in place.</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p><code>TRUNCATE</code> and message events, which <strong>can</strong> appear on a data topic, are also not translated: the CUD format has no label-scoped bulk delete and these events carry no row keys, so there is no CUD event that could represent them.
+For a table that is mapped, such records are dropped (rather than passed through as a raw envelope, which would break the downstream split step and Neo4j sink); for an unmapped table they pass through unchanged like any other unmapped record.</p>
+</div>
+<div class="paragraph">
+<p>As a result, structural changes are a coordinated, manual operation.
+The subsections below describe how the SMT behaves for each kind of change and what you must do to keep the graph consistent.</p>
+</div>
+<div class="sect2">
+<h3 id="_column_changes"><a class="anchor" href="#_column_changes"></a>Column changes</h3>
+<div class="paragraph">
+<p>The SMT reads column values by name from each record according to your per-table mapping, so column-level changes are absorbed silently in most cases, but not always:</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 30%;">
+<col style="width: 70%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Change</th>
+<th class="tableblock halign-left valign-top">Behavior and required action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Add a column</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No effect until you map it. With no <code>node.properties.include</code> filter, a new column is automatically emitted as a node property; with an include filter, it is ignored until you add it. Add the column to <code>table.&lt;table_name&gt;.node.properties.include</code> (or to <code>relationship.&lt;fk_column&gt;.properties</code>) and restart the connector if you want it. Existing nodes are not backfilled.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Drop a column</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>A dropped column simply stops appearing in the output. Remove it from any <code>node.properties.include</code>, <code>node.properties.exclude</code>, or <code>relationship.&lt;fk_column&gt;.properties</code> list to keep the configuration clean. Values already written to Neo4j remain and must be removed with Cypher (for example <code>MATCH (n:Label) REMOVE n.prop</code>) if you want them gone.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Rename a column</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Treated as a drop of the old name plus an add of the new name. The impact depends on the column&#8217;s role (see below). Update the affected mapping keys to the new name and restart the connector.</p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
+<div class="admonitionblock warning">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-warning" title="Warning"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>When a renamed or dropped column is referenced by a mapping, the SMT reacts according to the <a href="#neo4j-field-missing-behavior"><code>field.missing.behavior</code></a> setting (default <code>warn</code>):</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>If an <code>id</code> property (<code>node.id.properties</code>) is missing, the resolved key is incomplete. A node whose <strong>entire</strong> key resolves to empty is always dropped (an unkeyed MERGE would collapse every row into one node). A <strong>partial</strong> key is the same corruption at a smaller blast radius: for a create/read/update (MERGE) it would collapse every entity sharing the resolved key components into one node, so it too is dropped; for a delete it only over-matches existing nodes (rather than fabricating a merged one), and dropping it would leave stale nodes behind, so the delete is emitted with the partial key. All of these cases are reported unless the behavior is <code>ignore</code>, and all throw when it is <code>fail</code>. Always update <code>node.id.properties</code> in lockstep with a rename of a key column.</p>
+</li>
+<li>
+<p>A foreign key column that is <strong>absent from the record schema</strong> (a stale mapping or a typo) causes only that relationship to be skipped in <code>node.mode=node</code> (the node is still emitted), or the whole record to be skipped in <code>node.mode=relationship</code> (the relationship is the only event). This is the case governed by <code>field.missing.behavior</code>, so with <code>field.missing.behavior=fail</code> it throws a <code>DataException</code> naming the column.</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p><code>field.missing.behavior</code> applies only to columns that are <strong>absent from the schema</strong>.</p>
+</div>
+<div class="paragraph">
+<p>Set <code>field.missing.behavior=fail</code> if you would rather have missing-column situations surface immediately (through the connector&#8217;s <code>errors.tolerance</code> handling) than be logged and skipped.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_table_changes"><a class="anchor" href="#_table_changes"></a>Table changes</h3>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>DROP TABLE</code></dt>
+<dd>
+<p>Debezium stops producing change events for the table; it does <strong>not</strong> emit delete events for the rows that existed. The corresponding Neo4j nodes and relationships are therefore left in place (orphaned). To reconcile the graph, delete them with Cypher (for example <code>MATCH (n:Label) DETACH DELETE n</code>) and remove the table&#8217;s <code>table.&lt;table_name&gt;.*</code> mapping from the SMT configuration.</p>
+</dd>
+<dt class="hdlist1"><code>TRUNCATE</code></dt>
+<dd>
+<p>The SMT skips truncate events, so a source truncate does not remove anything from Neo4j. Clear the affected nodes with Cypher if required.</p>
+</dd>
+<dt class="hdlist1"><code>RENAME TABLE</code></dt>
+<dd>
+<p>The SMT dispatches on the bare <code>source.table</code> name, so records for the renamed table no longer match the old <code>table.&lt;old_name&gt;.<strong></code> mapping and pass through unchanged. Add a <code>table.&lt;new_name&gt;.</strong></code> mapping (and remove the old one) and restart the connector.</p>
+</dd>
+</dl>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_recommended_workflow_for_a_schema_change"><a class="anchor" href="#_recommended_workflow_for_a_schema_change"></a>Recommended workflow for a schema change</h3>
+<div class="paragraph">
+<p>Because the pipeline does not propagate DDL automatically, treat a schema change as a migration performed alongside the streaming pipeline:</p>
+</div>
+<div class="olist arabic">
+<ol class="arabic">
+<li>
+<p>Apply the DDL at the source database.</p>
+</li>
+<li>
+<p>Update the SMT per-table mappings to match the new schema (add, rename, or remove columns and tables), then restart the connector.</p>
+</li>
+<li>
+<p>Run any one-off Cypher needed to reconcile data already in Neo4j: rename properties after a column rename, or delete orphaned nodes after a <code>DROP TABLE</code> or <code>TRUNCATE</code>.</p>
+</li>
+</ol>
+</div>
 </div>
 </div>
 </div>
@@ -1333,6 +1480,36 @@ You can configure multiple relationships by repeating the pattern with different
 <p>Whether to pass through tombstone records (null value) emitted after delete events for Kafka log compaction.</p>
 </div></div></td>
 </tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="neo4j-field-missing-behavior"></a><a href="#neo4j-field-missing-behavior"><code>field.missing.behavior</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>warn</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>medium</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>How to react when a change event is missing a column the mapping needs to build a CUD event (an id property, a foreign key, or the required before/after image). This applies only when the column is <strong>absent from the record schema</strong> (a stale mapping or typo); a column that is present but <strong>null</strong> for a row is ordinary data and is always dropped quietly at <code>DEBUG</code>, regardless of this setting:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p><code>fail</code>: throw a <code>DataException</code> and let Kafka Connect&#8217;s error handling take over. The outcome is governed by the connector&#8217;s <code>errors.tolerance</code>: with the default <code>errors.tolerance=none</code> the task fails, while <code>errors.tolerance=all</code> skips the offending record and continues (logged when <code>errors.log.enable=true</code>).</p>
+</li>
+<li>
+<p><code>warn</code>: log a warning and skip the affected event (a single relationship in <code>node.mode=node</code>) or the whole record when nothing can be built.</p>
+</li>
+<li>
+<p><code>ignore</code>: skip silently (logged at debug level).</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>A node whose entire id key resolves to empty is never emitted, regardless of this setting, because an unkeyed MERGE would collapse every row into a single node. A <strong>partial</strong> key (some but not all id properties resolved) is dropped for a create/read/update (a partial-key MERGE would collapse distinct entities into one node) but emitted for a delete (which only over-matches existing nodes rather than fabricating a merged one).</p>
+</div></div></td>
+</tr>
 </tbody>
 </table>
 </div>
@@ -1490,7 +1667,7 @@ Non-FK columns on the join table (like <code>quantity</code>) become relationshi
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/e1ab11652cc566cfc036c5cb1d8e196a0d8468bf">e1ab1165</a></span>)
+            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/358ab97fbaa2032832d9a0211815db90e301d38b">358ab97f</a></span>)
             
         </div>
     </footer>
