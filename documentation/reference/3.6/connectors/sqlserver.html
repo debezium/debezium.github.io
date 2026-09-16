@@ -461,6 +461,7 @@
 <li><a href="#how-the-sqlserver-connector-works">How the SQL Server connector works</a>
 <ul class="sectlevel2">
 <li><a href="#sqlserver-snapshots">Snapshots</a></li>
+<li><a href="#debezium-sqlserver-chunk-based-parallel-snapshots">Chunk-based parallel snapshots</a></li>
 <li><a href="#sqlserver-ad-hoc-snapshots">Ad hoc snapshots</a></li>
 <li><a href="#sqlserver-incremental-snapshots">Incremental snapshots</a></li>
 <li><a href="#connector-custom-snapshot">Custom snapshotter SPI</a></li>
@@ -1136,6 +1137,148 @@ After the snapshot completes, the connector transitions to streaming.</p>
 </dd>
 </dl>
 </div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="debezium-sqlserver-chunk-based-parallel-snapshots"><a class="anchor" href="#debezium-sqlserver-chunk-based-parallel-snapshots"></a>Chunk-based parallel snapshots</h3>
+<div class="paragraph">
+<p>Chunk-based parallel snapshotting accelerates initial snapshots by distributing smaller units of work across multiple threads, improving workload balance and snapshot resilience.</p>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+Chunk-based parallel snapshotting is an incubating feature.
+</td>
+</tr>
+</table>
+</div>
+<div class="paragraph">
+<p>When you set <a href="#sqlserver-property-snapshot-max-threads"><code>snapshot.max.threads</code></a> to a value greater than <code>1</code>, the connector divides each table into <em>chunks</em> based on primary key ranges and distributes those chunks across the available threads.
+Each thread snapshots its assigned chunks concurrently, and the connector emits <code>READ</code> events for each captured row as it progresses through the chunks.</p>
+</div>
+<div class="paragraph">
+<p>The <a href="#sqlserver-property-snapshot-max-threads-multiplier"><code>snapshot.max.threads.multiplier</code></a> property controls how many chunks the connector creates per table relative to the thread count.
+By default, the connector creates one chunk per thread.
+Setting a higher multiplier creates more, smaller chunks, which keeps threads more evenly loaded.
+For example, with 4 threads and a multiplier of <code>2</code>, the connector creates 8 chunks instead of 4.</p>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>Tables without a primary key, and tables that use snapshot select overrides, are processed as a single chunk and fall back to single-threaded snapshotting.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="paragraph">
+<p>The following table summarizes the differences between the two parallel snapshotting approaches.</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 20%;">
+<col style="width: 40%;">
+<col style="width: 40%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Characteristic</th>
+<th class="tableblock halign-left valign-top">Chunk-based (default)</th>
+<th class="tableblock halign-left valign-top">Legacy table-per-thread</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Unit of work per thread</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Each thread processes a chunk of rows from a table.
+Chunks are defined by ranges of primary key values.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Each thread processes an entire table.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Load distribution</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Threads claim available chunks as they complete their current work, helping to balance the workload across threads.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Each thread remains assigned to the same table for the duration of the snapshot.
+Threads that finish processing smaller tables remain idle while other threads continue to process larger tables.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Idle-connection risk</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Low.</p>
+</div>
+<div class="paragraph">
+<p>Threads remain active until the snapshot finishes.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>High.</p>
+</div>
+<div class="paragraph">
+<p>Threads that finish processing a table can remain idle while waiting for other threads to complete.
+In environments that enforce connection timeouts, idle connections can prevent the connector from closing connections cleanly after the snapshot finishes.
+Failure to close a connection can result in an exception, even if a snapshot captures all data successfully.</p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
+<div class="paragraph">
+<p>Chunk-based snapshotting is the default behavior.
+To use chunk-based snapshotting, set <code>legacy.snapshot.max.threads</code> to <code>false</code>.</p>
+</div>
+<div class="paragraph">
+<p>To revert to the legacy table-per-thread behavior, set <a href="#sqlserver-property-legacy-snapshot-max-threads"><code>legacy.snapshot.max.threads</code></a> to <code>true</code>.</p>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>If you use the legacy behavior and experience idle-connection failures after a snapshot completes, set <code>snapshot.max.threads</code> to <code>1</code> as a workaround and retry the snapshot.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="admonitionblock important">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-important" title="Important"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>The legacy table-per-thread behavior is deprecated and will be removed in a future release.</p>
+</div>
+<div class="paragraph">
+<p>The property <code>internal.legacy.snapshot.max.threads</code> is a deprecated alias for <code>legacy.snapshot.max.threads</code> and should not be used in new configurations.</p>
+</div>
+</td>
+</tr>
+</table>
 </div>
 </div>
 <div class="sect2">
@@ -6930,8 +7073,8 @@ When set to a value greater than zero, the connector uses the n-th LSN specified
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>Specifies the number of threads that the connector uses when performing an initial snapshot.
-To enable parallel initial snapshots, set the property to a value greater than 1.
-In a parallel initial snapshot, the connector processes multiple tables concurrently.</p>
+The value must be a positive integer greater than or equal to <code>1</code>.
+When set to a value greater than <code>1</code>, the connector performs a parallel snapshot by dividing each table into chunks based on primary key ranges and processing the chunks concurrently across all available threads.</p>
 </div>
 <div class="admonitionblock note">
 <table>
@@ -6941,13 +7084,39 @@ In a parallel initial snapshot, the connector processes multiple tables concurre
 </td>
 <td class="content">
 <div class="paragraph">
-<p>When you enable parallel initial snapshots, the threads that perform each table snapshot can require varying times to complete their work.
-If a snapshot for one table requires significantly more time to complete than the snapshots for other tables, threads that have completed their work sit idle.
-In some environments, a network device such as a load balancer or firewall, terminates connections that remain idle for an extended interval.
-After the snapshot completes, the connector is unable to close the connection, resulting in an exception, and an incomplete snapshot, even in cases where the connector successfully transmitted all snapshot data.</p>
+<p>Tables without a primary key, and tables that use snapshot select overrides, are processed as a single chunk and fall back to single-threaded snapshotting.</p>
+</div>
+</td>
+</tr>
+</table>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="sqlserver-property-snapshot-max-threads-multiplier"></a><a href="#sqlserver-property-snapshot-max-threads-multiplier"><code>snapshot.max.threads.multiplier</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>1</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>A global multiplier that controls the number of chunks created per table during a parallel snapshot.
+By default, Debezium creates one chunk per thread.
+A higher value causes the connector to create more, smaller chunks per table when running a snapshot.
+Smaller chunks keep threads more evenly loaded.
+For example, with 4 threads and a multiplier of <code>2</code>, Debezium creates 8 chunks instead of 4.</p>
 </div>
 <div class="paragraph">
-<p>If you experience this problem, revert the value of <code>snapshot.max.threads</code> to <code>1</code>, and retry the snapshot.</p>
+<p>To override the multiplier for a specific table, set <code>snapshot.max.threads.multiplier.&lt;fully_qualified_table_name&gt;</code> to the desired value.</p>
+</div>
+<div class="admonitionblock tip">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-tip" title="Tip"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>Increasing the number of threads is generally more effective for improving snapshot throughput than increasing the multiplier.</p>
 </div>
 </td>
 </tr>
@@ -6962,9 +7131,37 @@ After the snapshot completes, the connector is unable to close the connection, r
 <p><code>false</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Specifies whether the parallel initial snapshot uses the legacy table-per-thread algorithm.
-When set to <code>false</code> (the default), the connector will chunk the contents of the source table across all parallel initial snapshot threads for maximum performance.
-When set to <code>true</code>, the connector will process each table per thread.</p>
+<p>The default value (<code>false</code>) enables the connector to accelerate initial snapshots by dividing tables into chunks and using separate threads to process each chunk concurrently.
+To revert to the legacy parallel snapshot behavior of processing one table per thread, set the value to <code>true</code>.</p>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>When the legacy behavior is enabled, threads that complete their table snapshot remain idle while waiting for other threads to complete.
+In environments that enforce connection timeouts, idle connections can prevent the connector from closing connections cleanly after the snapshot finishes.
+An exception can then result, even if the snapshot captures all data successfully.
+If you experience this problem, set <code>snapshot.max.threads</code> to <code>1</code> and retry the snapshot.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+The property <code>internal.legacy.snapshot.max.threads</code> is a deprecated alias for <code>legacy.snapshot.max.threads</code> and should not be used in new configurations.
+</td>
+</tr>
+</table>
 </div></div></td>
 </tr>
 <tr>
@@ -8722,7 +8919,7 @@ Available when <a href="#sqlserver-property-statistics-metrics-enabled"><code>st
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/71aab7cf05b23dd3f9814859890f22273369730e">71aab7cf</a></span>)
+            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/12808de889cb9e476bccb16e10aa43bfc42fb08a">12808de8</a></span>)
             
         </div>
     </footer>
