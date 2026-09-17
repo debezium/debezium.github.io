@@ -72,22 +72,6 @@ Quarkus and its community maintain a large number of native-ready Java libraries
 </div>
 ++++
 
-== Generate a native distribution for Debezium Server
-
-We are still in Alpha and do not yet distribute binaries or Docker images of the native Debezium Server.
-Follow these steps to build a distribution for your target system.
-
-=== Requirements
-
-This walkthrough was tested on GNU/Linux with kernel 7.1.4 on x86_64 with the following dependencies:
-
-- git `2.55.0`
-- OpenJDK `25`
-- Docker `29.6.2`
-- Docker compose `5.3.1`
-
-It should work on Linux and macOS with x86_64 and ARM architectures.
-
 === Supported Connectors & Sinks
 
 The following Debezium Connectors are supported for the native build in Debezium Server:
@@ -110,74 +94,14 @@ and the following Debezium Server sinks:
 Please keep in mind that Debezium Server supports many other connectors and sinks in JVM mode.
 ====
 
-=== Create a Distribution
-
-Let's download the Debezium Server repository and point to the `3.7.0.Alpha2` release:
-
-[source, shell]
------
-git clone --branch v3.7.0.Alpha2 --single-branch https://github.com/debezium/debezium-server.git
------
-
-and build the project for native:
-
-[source, shell]
------
-cd debezium-server
-./mvnw clean install -Dquick -Passembly,native
------
-
-Even if you don't have Mandrel or GraalVM installed on your system, Quarkus will download the required toolchain automatically.
-If all goes well, you should find the build output in the `target` directory of `debezium-server-native-dist`:
-
-[source, shell]
------
-cd debezium-server-native-dist/target/
------
-
-[source, shell]
------
-drwxr-xr-x     - xxx  10 Aug 15:24  archive-tmp
-drwxr-xr-x     - xxx  10 Aug 15:20  classes
-drwxr-xr-x     - xxx  10 Aug 15:20  generated-sources
-drwxr-xr-x     - xxx  10 Aug 15:20  maven-archiver
-drwxr-xr-x     - xxx  10 Aug 15:20  maven-status
-drwxr-xr-x     - xxx  10 Aug 15:21  quarkus-app
-.rwxr-xr-x  289M xxx  10 Aug 15:24  debezium-server-native-dist-3.7.0.Alpha2-runner
-.rw-r--r--  7.2k xxx  10 Aug 15:24  debezium-server-native-dist-3.7.0.Alpha2-sources.jar
-.rw-r--r--  3.2k xxx  10 Aug 15:24  debezium-server-native-dist-3.7.0.Alpha2-tests.jar
-.rw-r--r--  6.3k xxx  10 Aug 15:20  debezium-server-native-dist-3.7.0.Alpha2.jar
-.rw-r--r--   90M xxx  10 Aug 15:24  debezium-server-native-dist-3.7.0.Alpha2.tar.gz
-.rw-r--r--   90M xxx  10 Aug 15:24  debezium-server-native-dist-3.7.0.Alpha2.zip
-.rw-r--r--   448 xxx  10 Aug 15:24  quarkus-artifact.properties
------
-
-Extract the distribution:
-
-[source, shell]
------
-tar xvfz debezium-server-native-dist-3.7.0.Alpha2.tar.gz
------
-
-[source, shell]
------
-cd debezium-server
------
-
-[source, shell]
------
-Permissions Size User Date Modified Name
-drwxr-xr-x     - xxx   8 Jul 10:47  config
-.rwxr-xr-x  289M xxx  10 Aug 15:24  debezium-server-native-dist-3.7.0.Alpha2-runner
-.rwxr-xr-x   522 xxx   8 Jul 10:47  run.bat
-.rwxr-xr-x   565 xxx   8 Jul 10:47  run.sh
------
-
-You can use `run.sh` to launch an instance of Debezium Server.
-
 == Run Debezium Server
 
 Following the example from the link:/blog/2026/07/06/kafka-less-migration/[previous article], we can use Debezium Server to create a data integration pipeline from Postgres to Redis.
+
+[NOTE]
+====
+The example shown in this article is available in the https://github.com/debezium/debezium-examples/tree/main/data-replication/debezium-server-native[debezium-examples] repository.
+====
 
 We can start the source and target databases with the following Docker Compose file:
 
@@ -194,13 +118,22 @@ services:
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
+    networks:
+      - backend
 
   redis:
+    container_name: redis
     image: mirror.gcr.io/redis:7.0
     ports:
       - 6379:6379
     environment:
       - ALLOW_EMPTY_PASSWORD=yes
+    networks:
+      - backend
+
+networks:
+  backend:
+    name: debezium-native-backend
 ----
 
 Run the Docker Compose command below:
@@ -210,7 +143,18 @@ Run the Docker Compose command below:
 docker compose -f infrastructure-compose.yaml up -d
 -----
 
-Place the following `application.properties` in the `config` directory of the Debezium Server distribution
+Once the source and target destination are healthy, you can start replicating your data with the following command:
+
+[source, shell]
+-----
+ docker run --name inventory-pipeline -d \
+    -v $(pwd)/application.properties:/debezium/config/application.properties:z \
+    -p 8080:8080 \
+    --network debezium-native-backend \
+    quay.io/debezium/server-native:nightly
+-----
+
+The configuration used is the following:
 
 .application.properties
 [source,properties]
@@ -225,7 +169,7 @@ debezium.source.snapshot.mode=initial
 
 # datasource configuration
 debezium.source.offset.flush.interval.ms=0
-debezium.source.database.hostname=localhost
+debezium.source.database.hostname=postgres
 debezium.source.database.port=5432
 debezium.source.database.user=postgres
 debezium.source.database.password=postgres
@@ -234,20 +178,36 @@ debezium.source.schema.include.list=inventory
 
 # sink
 debezium.sink.type=redis
-debezium.sink.redis.address=localhost:6379
+debezium.sink.redis.address=redis:6379
 debezium.sink.redis.cluster.enabled=false
 
 quarkus.log.console.json=false
 ----
 
-You can start replicating your data with the `run.sh`:
+Similar to the previous article, you should see data flowing from Postgres to Redis. You can check the data has been correctly migrated to Redis:
 
 [source, shell]
 -----
-./run.sh
+docker exec -it redis redis-cli KEYS '*'
 -----
 
-Similar to the previous article, you should see data flowing from Postgres to Redis.
+To inspect the replicated stream entries:
+
+[source, shell]
+-----
+docker exec -it redis redis-cli XRANGE migration.inventory.customers - +
+docker exec -it redis redis-cli XRANGE migration.inventory.products - +
+docker exec -it redis redis-cli XRANGE migration.inventory.orders - +
+docker exec -it redis redis-cli XRANGE migration.inventory.products_on_hand - +
+-----
+
+Then let's add a new customer:
+
+[source, shell]
+-----
+docker exec -it postgres psql -U postgres -d postgres -c \
+"INSERT INTO inventory.customers (first_name, last_name, email) VALUES ('John', 'Doe', 'john.doe@example.com');"
+-----
 
 == Performance Considerations
 
