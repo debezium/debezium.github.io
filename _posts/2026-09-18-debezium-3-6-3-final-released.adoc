@@ -1,0 +1,157 @@
+---
+layout: post
+title:  Debezium 3.6.3.Final Released
+date:   2026-09-18
+tags:   [ releases, mongodb, mysql, mariadb, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox, spanner, jdbc, informix, ibmi, cockroachdb, yashandb, ingres ]
+author: ccranfor
+extraClasses: release-v2
+---
+
+We're pleased to announce **Debezium 3.6.3.Final**, a maintenance release focused on stability and reliability improvements.
+
+The Oracle connector receives the most attention in this release, with corrected savepoint partial rollback handling for tables with LOB columns, a fix for unbounded mining sessions with the log-count mining algorithm, and ORA-02002 now treated as a retriable error so the connector can recover from failovers.
+The MySQL and MariaDB connectors once again restart automatically after transient communication errors, while the SQL Server, Vitess, and Informix connectors pick up targeted fixes ranging from ambiguous column name errors to irregular heartbeat intervals.
+If you use the Oracle connector with an Ehcache or Infinispan buffer, be sure to review the breaking changes before upgrading.
+
+Read on for the full details!
+
++++<!-- more -->+++
+
+* link:#breaking-changes[Breaking changes]
+* link:#new-features-and-improvements[New features and improvements]
+* link:#other-changes[Other changes]
+
+[id="breaking-changes"]
+== Breaking changes
+
+With any new release of software, there can be breaking changes.
+This release is no exception, so let's discuss the major changes you should be aware of before upgrading to **Debezium 3.6.3.Final**
+
+=== Debezium for Oracle
+
+==== Savepoint partial rollbacks handled correctly
+
+The Oracle connector now correctly handles transactions that roll back to a savepoint, most notably for tables with LOB columns.
+Several defects in this area could cause the target to drift out of sync with the source, either by emitting changes that had been rolled back or by silently dropping changes that had not.
+
+When LOB support is enabled, the connector consolidates related `INSERT` and `UPDATE` events for the same row, but this consolidation only carried the column values forward and left the merged `INSERT` with a placeholder row identifier.
+When the partial rollback arrived, the connector could not find the event to discard, logged a _"Cannot undo"_ warning, and emitted the rolled-back change that looked like a normal change to the target.
+
+Additionally, when a rollback-to-savepoint event was mined near the end of a LogMiner session for a transaction that had not yet committed, the same rollback could be applied a second time when the transaction's events were re-read in the next mining session.
+Depending on the shape of the transaction, this produced either a spurious _"Cannot apply undo change"_ warning or, more seriously, marked an earlier legitimate change such as the original `INSERT` as rolled back and silently dropped it from the change stream.
+
+Rather than layering further fixes onto the existing logic, the LogMiner buffered implementation's handling of partial rollbacks has been reworked around a much simpler rule.
+When a rollback-to-savepoint event is processed, the connector removes the most recent event with the matching row identifier from the transaction cache, along with any contiguous events with empty row identifiers immediately preceding it.
+This ensures the connector emits exactly the changes that survived the rollback.
+
+No configuration changes are required.
+After upgrading, changes that were rolled back to a savepoint no longer reach downstream consumers, changes that were previously dropped in this scenario are emitted correctly, and the associated warnings no longer appear in the connector log.
+Any downstream compensation put in place to filter the spurious events can be removed.
+(https://github.com/debezium/dbz/issues/1422[dbz#1422], https://github.com/debezium/dbz/issues/1914[dbz#1914], https://github.com/debezium/dbz/issues/1960[dbz#1960])
+
+==== Ehcache and Infinispan cache files must be removed when upgrading
+
+Users who buffer Oracle transactions with Ehcache or Infinispan should remove their cache files as part of the upgrade, because the format of the cached data has changed in this release.
+
+As a follow-up to the partial rollback rework described above, the bookkeeping that tracks the last enqueued event for each transaction moved from the streaming event source into the transaction cache.
+This simplifies the LogMiner buffered implementation, but it also alters the format of the serialized caches, so caches written by an earlier version no longer match what the connector expects.
+
+No other behavior has changed as a result of this change.
+(https://github.com/debezium/dbz/issues/2652[dbz#2652])
+
+[id="new-features-and-improvements"]
+== New Features and Improvements
+
+The following covers all new features and improvements, grouped by connector component area.
+
+[cols="25%,25%,25%,25%"]
+|===
+|link:#new-features-and-improvements-debezium-mariadb-mysql[Debezium for MariaDB and MySQL]
+|link:#new-features-and-improvements-debezium-oracle[Debezium for Oracle]
+|
+|
+
+|===
+
+[id="new-features-and-improvements-debezium-mariadb-mysql"]
+=== Debezium for MariaDB and MySQL
+
+==== Transient errors are retriable again
+
+The MySQL and MariaDB connectors once again restart automatically after a transient failure, such as a dropped binlog connection or a brief network interruption.
+A regression introduced in Debezium 3.1 caused both connectors to classify every error as non-retriable, so these failures stopped the connector permanently and logged _"This connector will be stopped"_ rather than triggering a restart.
+
+The cause was in how the connectors' error handlers inspected an exception for non-retriable MySQL error codes.
+While walking the exception's cause chain, the handler lost its reference to the original exception, so the built-in check that treats `IOException` and `SQLException` as communication errors never saw it and always answered that the error was not retriable.
+Only deployments that configured `custom.retriable.exception` were unaffected, as that check runs separately.
+
+No configuration changes are required.
+After upgrading, transient communication errors are retried as expected, and any `custom.retriable.exception` setting added purely as a workaround can be removed.
+(https://github.com/debezium/dbz/issues/2611[dbz#2611])
+
+[id="new-features-and-improvements-debezium-oracle"]
+=== Debezium for Oracle
+
+==== ORA-02002 added to retriable exceptions for failover resilience
+
+During an Oracle failover where multiple archive log destinations are configured, such as one for the primary and one for the standby, the connector could encounter an ORA-02002 error ("error while writing to audit trail").
+Previously, this error was not recognized as retriable, causing the connector to stop unexpectedly rather than retrying the operation.
+
+Debezium now includes ORA-02002 in its list of retriable Oracle exceptions, allowing the connector to automatically recover during failover transitions without requiring manual intervention.
+This is particularly beneficial for high-availability deployments where seamless failover handling is critical.
+(https://github.com/debezium/dbz/issues/2625[dbz#2625])
+
+[id="other-changes"]
+== Other fixes
+
+// [Debezium for Oracle]
+* Savepoint partial rollback not handled when a LOB column changed (https://github.com/debezium/dbz/issues/1735[dbz#1735])
+// [Debezium for Oracle]
+* Rollback to savepoint discards more than it should when LOBs are enabled (https://github.com/debezium/dbz/issues/1917[dbz#1917])
+// [Debezium for Oracle]
+* Unbounded online-mode sessions and cap-growth heuristic inflation under sustained load in log-count mining (https://github.com/debezium/dbz/issues/2326[dbz#2326])
+// [Debezium for Oracle]
+* CREATE INDEX DDL fails to parse when using the ONLINE keyword (https://github.com/debezium/dbz/issues/2484[dbz#2484])
+// [Debezium for SQL Server]
+* Handle ambiguous column name failures and use `tran_end_time` in `lsn_time_mapping` queries (https://github.com/debezium/dbz/issues/2511[dbz#2511])
+// [Debezium for Oracle]
+* Ambiguous partial rollback leaves a stale deferred transaction that pins the offset SCN for the full deferred retention (https://github.com/debezium/dbz/issues/2531[dbz#2531])
+// [Debezium for Vitess]
+* gRPC channels leaked on repeated connect, and `close()` throws an NPE when never connected (https://github.com/debezium/dbz/issues/2545[dbz#2545])
+// [Debezium for Vitess]
+* VGTID configuration compared with reference equality (`==`) instead of `equals` (https://github.com/debezium/dbz/issues/2546[dbz#2546])
+// [Debezium for Vitess]
+* Zero-day DATETIME values (e.g. `2024-01-00`) crash the task; only zero-month values were handled (https://github.com/debezium/dbz/issues/2548[dbz#2548])
+// [Debezium for SQL Server]
+* Agent running check fails the task with an IllegalStateException when the status query returns no rows (https://github.com/debezium/dbz/issues/2551[dbz#2551])
+// [Debezium for Informix]
+* Irregular connector heartbeat intervals (https://github.com/debezium/dbz/issues/2575[dbz#2575])
+// [Debezium for SQL Server, Test Infrastructure]
+* CI job fails en masse when the first test suites run before server startup recovery completes (https://github.com/debezium/dbz/issues/2585[dbz#2585])
+// [Debezium for Oracle]
+* XStream metrics bean does not extend the MXBean interface (https://github.com/debezium/dbz/issues/2602[dbz#2602])
+// [Debezium for Oracle]
+* Log message mistakenly uses RowId rather than ThreadId (https://github.com/debezium/dbz/issues/2617[dbz#2617])
+
+
+In total, https://github.com/orgs/debezium/projects/5/views/6?query=sort%3Aupdated-desc+is%3Aopen&filterQuery=status%3AReleased+stable-iteration%3A3.6.3.Final[23 issues] were resolved in Debezium 3.6.3.Final.
+The list of changes can also be found in our link:/releases/3.6/release-notes#release-3.6.3-final[release notes].
+
+A big thank you to all the contributors from the community who worked diligently on this release:
+ +
+https://github.com/b-goyal[Bhagyashree Goyal],
+https://github.com/chijioke-ibekwe[Chijioke Ibekwe],
+https://github.com/Naros[Chris Cranford],
+https://github.com/nrkdaer11[Daniel Eriksson],
+https://github.com/Unidade[Dario Rodrigues],
+https://github.com/denizozogularas[Deniz Ozogul],
+https://github.com/kmos[Giovanni Panice],
+https://github.com/TaylorJerry[JerryS],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/mfvitale[Mario Fiore Vitale],
+https://github.com/mcrauwel[Matthias Crauwels],
+https://github.com/tarqu1n[Matt Langley],
+https://github.com/minleejae[Minjae Lee],
+https://github.com/roldanbob[Robert Roldan],
+https://github.com/kinolaev[Sergei Nikolaev], and
+https://github.com/vjuranek[Vojtech Juranek]!
