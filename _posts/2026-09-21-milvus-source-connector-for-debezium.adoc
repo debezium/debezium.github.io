@@ -147,32 +147,13 @@ The pipeline that delivers it is a Debezium source feeding a Debezium sink, with
 
 Debezium already had the on-ramp to Milvus: the https://debezium.io/documentation/reference/stable/connectors/postgresql.html[PostgreSQL connector] captures pgvector columns as vector logical types, and https://debezium.io/documentation/reference/stable/operations/debezium-server.html[Debezium Server] ships a Milvus sink, so Postgres-to-Milvus is a configuration exercise. What was missing was the off-ramp: until now, vectors checked into Milvus and never checked out. That off-ramp is the literal ask in discussion #36683 ("incremental export to kafka").
 
-Everything below is scripted and reproducible. The whole pipeline lives in the Debezium examples repository under https://github.com/debezium/debezium-examples/tree/main/milvus-to-pgvector[`milvus-to-pgvector`]: the Compose file and Milvus config, both connector registrations, a seed script, and a `test.yaml` that walks the same path step by step. To run it yourself: `python3 scripts/run-example-test.py milvus-to-pgvector` from the root of the examples clone, which fetches the connector plugin itself. The https://github.com/debezium/debezium-examples/blob/main/milvus-to-pgvector/README.md[README] walks through every command with its output; this section keeps to the highlights, and every sample output shown is copied from a run of that example against Milvus 2.5.4.
+The whole pipeline lives in the Debezium examples repository under https://github.com/debezium/debezium-examples/tree/main/milvus-to-pgvector[`milvus-to-pgvector`]: the Compose file and Milvus config, both connector registrations, a seed script, and a `test.yaml` that CI runs on every change. The https://github.com/debezium/debezium-examples/blob/main/milvus-to-pgvector/README.md[README] walks through every command, and `python3 scripts/run-example-test.py milvus-to-pgvector` from the root of the examples clone runs the whole thing unattended, plugin download included. Rather than repeat those commands, this section follows the data through the pipeline; every output shown is copied from a run of that example against Milvus 2.5.4.
 
-=== Prerequisites
+=== The stack
 
-* Docker + Docker Compose, with ≥8 GB free RAM (six containers: Milvus with its etcd and MinIO, Kafka, Kafka Connect, Postgres)
-* `curl` for everything that talks to Milvus and Connect, and `jq` for the pretty-printing in this post
+The connector is not in the Debezium Connect image yet, so the example unpacks its released plugin archive from Maven Central into a `plugins/` directory that the Compose file mounts into Connect; the https://github.com/debezium/debezium-examples/blob/main/milvus-to-pgvector/README.md#get-the-milvus-connector[README] has the two-line fetch. One `docker compose up` then brings up six services: Milvus standalone with its etcd and MinIO, one Kafka that serves as both Milvus's MQ and Connect's broker, Kafka Connect with the plugin mounted, and Postgres from the official pgvector image. The one file worth reading is https://github.com/debezium/debezium-examples/blob/main/milvus-to-pgvector/milvus-user.yaml[`milvus-user.yaml`]. It points Milvus at the etcd and MinIO containers, puts it on Kafka as its MQ backend, which is the connector's single hard deployment requirement, and sets one DML channel, which is why the pchannel throughout is `by-dev-rootcoord-dml_0`. The Debezium JDBC sink needs no installation; it ships inside the Connect image.
 
-=== Step 1: Get the stack running
-
-The connector is not in the Debezium Connect image yet, so its released plugin archive is unpacked from Maven Central into the example's `plugins/` directory, which the Compose file mounts into Connect. Everything else is one `docker compose up`, with the repository's `.env` file supplying the Debezium image version. That two-line fetch is in the example's https://github.com/debezium/debezium-examples/blob/main/milvus-to-pgvector/README.md#get-the-milvus-connector[README] and there is no point repeating it here; pick the walkthrough up once the plugin is in place:
-
-[source,bash]
-----
-DC='docker compose --env-file ../.env -f docker-compose.yaml'   # shorthand for the rest of the walkthrough
-$DC up -d
-until curl -sf localhost:9091/healthz; do sleep 5; done          # Milvus needs about a minute
-curl -s localhost:8083/connector-plugins | grep -o -e MilvusConnector -e JdbcSinkConnector
-# JdbcSinkConnector
-# MilvusConnector
-----
-
-If `MilvusConnector` is missing, `plugins/debezium-connector-milvus` is empty: Docker creates an empty directory for a missing bind-mount source instead of failing.
-
-Six services come up: Milvus standalone with its etcd and MinIO, one Kafka that serves as both Milvus's MQ and Connect's broker, Kafka Connect with the plugin mounted, and Postgres from the official pgvector image. The one file worth reading is https://github.com/debezium/debezium-examples/blob/main/milvus-to-pgvector/milvus-user.yaml[`milvus-user.yaml`]. It points Milvus at the etcd and MinIO containers, puts it on Kafka as its MQ backend, which is the connector's single hard deployment requirement, and sets one DML channel, which is why the pchannel throughout is `by-dev-rootcoord-dml_0`. The Debezium JDBC sink needs no installation; it ships inside the Connect image.
-
-=== Step 2: The collection, as Milvus holds it
+=== The collection, as Milvus holds it
 
 The snapshot phase needs a collection that already exists and holds data, so https://github.com/debezium/debezium-examples/blob/main/milvus-to-pgvector/seed-milvus.sh[`seed-milvus.sh`] runs first. Through the Milvus REST API it creates `products` with an Int64 primary key, two VarChar fields, a Float, and a dim-4 `FloatVector` under a COSINE index, loads it, and inserts four rows:
 
@@ -187,32 +168,13 @@ The snapshot phase needs a collection that already exists and holds data, so htt
 
 Dim 4 keeps one event readable on a screen; the pipeline is identical at dim 1536.
 
-[source,bash]
-----
-./seed-milvus.sh
-# {"code":0,"data":{}}
-# {"code":0,"data":{}}
-# {"code":0,"cost":0,"data":{"insertCount":4,"insertIds":[1001,1002,1003,1004]}}
-$DC exec -T kafka /kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list | grep dml
-# by-dev-rootcoord-dml_0
-----
+Once the script has run, Kafka lists a topic named `by-dev-rootcoord-dml_0`. That topic is the pchannel, and those four inserts are already sitting on it as binary protobuf, in the undocumented format from the dissection. Nothing outside Milvus can read them yet.
 
-That topic is the pchannel, and those four inserts are already sitting on it as binary protobuf, in the undocumented format from the dissection. Nothing outside Milvus can read them yet.
+=== The same four rows, after the source connector
 
-=== Step 3: The same four rows, after the source connector
+https://github.com/debezium/debezium-examples/blob/main/milvus-to-pgvector/source-milvus.json[`source-milvus.json`] is pointing the connector at the three touchpoints: `milvus.uri` for the gRPC endpoint, `milvus.etcd.endpoints` with `milvus.etcd.root.path` for the checkpoint, and `milvus.kafka.bootstrap.servers` with `milvus.pchannel.name` for the MQ. One setting needs a word, `milvus.wire.format=proto_single`: on 3.7.0.Beta2, the release the example pins, the `auto` default fails on the first streamed message, so the format is set explicitly. Auto-detection works from 3.7.0.CR1 onward.
 
-https://github.com/debezium/debezium-examples/blob/main/milvus-to-pgvector/source-milvus.json[`source-milvus.json`] is pointing the connector at the three touchpoints: `milvus.uri` for the gRPC endpoint, `milvus.etcd.endpoints` with `milvus.etcd.root.path` for the checkpoint, and `milvus.kafka.bootstrap.servers` with `milvus.pchannel.name` for the MQ. One setting needs a word, `milvus.wire.format=proto_single`, which has to be set explicitly because the `auto` default fails on the first streamed message.
-
-[source,bash]
-----
-curl -s -X POST localhost:8083/connectors -H 'Content-Type: application/json' -d @source-milvus.json
-CONSUME="$DC exec -T kafka /kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:9092 --topic milvus.default.products"
-$CONSUME --from-beginning --max-messages 4 --timeout-ms 20000 | jq -r '.payload.op' | sort | uniq -c
-#    4 r
-$CONSUME --partition 0 --offset 0 --max-messages 1 | jq -c '.schema.fields[] | select(.field=="after") | .fields[] | select(.field=="embedding")'
-# {"type":"array","items":{"type":"float","optional":false},"optional":true,"name":"io.debezium.data.FloatVector","version":1,"field":"embedding"}
-$CONSUME --partition 0 --offset 0 --max-messages 1 | jq '.payload'
-----
+Registering it puts four events on `milvus.default.products`, all `op=r`, one per seeded row, and the value schema types `embedding` as an array of floats carrying the name `io.debezium.data.FloatVector`. This is the payload of the first one:
 
 [source,json]
 ----
@@ -232,7 +194,7 @@ $CONSUME --partition 0 --offset 0 --max-messages 1 | jq '.payload'
 }
 ----
 
-Row 1001 from the table above, now a Debezium change event on `milvus.default.products` (`<topic.prefix>.<database>.<collection>`), with the embedding intact and carrying a type name, and with a key Struct holding `pk` that is not shown here. Four events, all `op=r`, one per seeded row. Nobody declared that schema to the connector; it read it from Milvus during the snapshot.
+Row 1001 from the table above, now a Debezium change event on `milvus.default.products` (`<topic.prefix>.<database>.<collection>`), with the embedding intact and carrying a type name, and with a key Struct holding `pk` that is not shown here. Nobody declared that schema to the connector; it read it from Milvus during the snapshot.
 
 ==== What the connector takes responsibility for
 
@@ -248,11 +210,11 @@ That one event is small, but almost everything a CDC pipeline needs is already d
 * **Bounded memory.** The ordering buffer is capped by `milvus.buffer.max.events` (10,000) and `milvus.buffer.max.bytes` (64 MB). When it fills, the task stops polling the channel and drains whatever the watermark allows instead of growing until the JVM gives up.
 * **Filtering and topic naming.** Include and exclude lists take literal names or Java regular expressions and select collections (on the snapshot path today, see Limitations), and each collection gets its own topic, `<prefix>.<database>.<collection>`.
 * **Talking to a real cluster.** `milvus.token` for authenticated deployments, `milvus.database` to choose the database, and `milvus.kafka.*` for the consumer group, poll interval and partition the connector uses on Milvus's MQ.
-* **Operability.** Pause, resume, restart and offset handling are plain Kafka Connect, with Milvus-specific metrics, heartbeats and Debezium notifications on top; the last step of the walkthrough exercises them.
+* **Operability.** Pause, resume, restart and offset handling are plain Kafka Connect, with Milvus-specific metrics, heartbeats and Debezium notifications on top; the last section of the walkthrough exercises them.
 
 One thing the registration does not mention is converters, and the example depends on the default. The Debezium Connect image runs JSON converters with schemas enabled, which is what gives the sink a Struct key to derive a primary key from and the `FloatVector` type name to act on. On a worker configured schemaless, set `key.converter.schemas.enable=true` and `value.converter.schemas.enable=true` on both connectors. (An earlier version of this demo lost a day to the schemaless variant of this mistake. You're welcome.)
 
-=== Step 4: The final output, in Postgres
+=== The final output, in Postgres
 
 https://github.com/debezium/debezium-examples/blob/main/milvus-to-pgvector/sink-postgres.json[`sink-postgres.json`] is Debezium's own JDBC sink.
 
@@ -263,46 +225,26 @@ https://github.com/debezium/debezium-examples/blob/main/milvus-to-pgvector/sink-
 
 And no `transforms` at all. A third-party sink needs transforms to unwrap the Debezium envelope and extract the key, plus settings that turn tombstones into deletes; the Elasticsearch version of this demo needed two. The Debezium JDBC sink reads Debezium envelopes natively, so its config is connection details and policy, nothing else.
 
-[source,bash]
+With the `vector` extension enabled and the sink registered, the table appears within seconds, four rows and all:
+
 ----
-PSQL="$DC exec -T postgres psql -U postgres"
-$PSQL -c 'CREATE EXTENSION vector'
-# register the sink with the same POST as the source, this time with sink-postgres.json
-$PSQL -c '\d products'
-#                Table "public.products"
-#   Column   |  Type   | Collation | Nullable | Default
-# -----------+---------+-----------+----------+---------
-#  pk        | bigint  |           | not null |
-#  name      | text    |           |          |
-#  category  | text    |           |          |
-#  price     | real    |           |          |
-#  embedding | halfvec |           |          |
-# Indexes:
-#     "products_pkey" PRIMARY KEY, btree (pk)
-$PSQL -c 'SELECT * FROM products ORDER BY pk'
-#   pk  |        name         |  category   | price |                   embedding
-# ------+---------------------+-------------+-------+------------------------------------------------
-#  1001 | trail running shoes | outdoor     | 89.99 | [0.099975586,0.19995117,0.30004883,0.39990234]
-#  1002 | cast iron skillet   | kitchen     |  34.5 | [0.89990234,0.099975586,0.19995117,0.30004883]
-#  1003 | wireless headphones | electronics |   129 | [0.19995117,0.7998047,0.099975586,0.5]
-#  1004 | building blocks     | toys        | 24.99 | [0.39990234,0.39990234,0.89990234,0.099975586]
-# (4 rows)
+               Table "public.products"
+  Column   |  Type   | Collation | Nullable | Default
+-----------+---------+-----------+----------+---------
+ pk        | bigint  |           | not null |
+ name      | text    |           |          |
+ category  | text    |           |          |
+ price     | real    |           |          |
+ embedding | halfvec |           |          |
+Indexes:
+    "products_pkey" PRIMARY KEY, btree (pk)
 ----
 
-`halfvec` (16-bit floats) is Debezium's type pairing for `FloatVector`, and the `0.099975586` where Milvus holds `0.1` is that rounding, not a bug: every pgvector distance operator works on the column, and Step 6 shows it ranking neighbours identically to Milvus. If you need strict 32-bit fidelity, create the table yourself with `embedding vector(4)` before registering the sink; `schema.evolution=basic` only adds missing columns, so the sink writes into what you defined.
+`halfvec` (16-bit floats) is Debezium's type pairing for `FloatVector`, so the `0.1` Milvus holds comes back from Postgres as `0.099975586`: that is the rounding, not a bug. Every pgvector distance operator works on the column, and the similarity search below shows it ranking neighbours identically to Milvus. If you need strict 32-bit fidelity, create the table yourself with `embedding vector(4)` before registering the sink; `schema.evolution=basic` only adds missing columns, so the sink writes into what you defined.
 
-=== Step 5: Changes, in order, within a second
+=== Changes, in order, within a second
 
-Milvus has no SQL shell, so the "ingestion service" is three `curl` calls against its REST API, and the https://github.com/debezium/debezium-examples/blob/main/milvus-to-pgvector/README.md#change-data-in-milvus[README] carries them verbatim: insert pk 1005, a camping stove at 59.99; upsert the same row at 49.99; delete pk 1004, the building blocks. What is worth showing is not the calls but what they leave on the topic.
-
-[source,bash]
-----
-$CONSUME --partition 0 --offset 4 --max-messages 6 --formatter-property print.offset=true \
-  | sed -E 's/^Offset:([0-9]+)\t/\1 /' | while read -r off val; do
-      if [ "$val" = null ]; then echo "[offset $off] TOMBSTONE (null value)"
-      else echo "[offset $off] $(echo "$val" | jq -c '.payload | {op, tso: .source.tso, before, after: (.after | if . then {pk, name, price} else null end)}')"; fi
-    done
-----
+Milvus has no SQL shell, so the "ingestion service" is three `curl` calls against its REST API, and the https://github.com/debezium/debezium-examples/blob/main/milvus-to-pgvector/README.md#change-data-in-milvus[README] carries them verbatim: insert pk 1005, a camping stove at 59.99; upsert the same row at 49.99; delete pk 1004, the building blocks. What is worth showing is not the calls but what they leave on the topic. Read from offset 4 onward, with each record reduced to its operation, its TSO and the key fields of its images:
 
 ----
 [offset 4] {"op":"c","tso":469170991077785601,"before":null,"after":{"pk":1005,"name":"camping stove","price":59.99}}
@@ -313,69 +255,21 @@ $CONSUME --partition 0 --offset 4 --max-messages 6 --formatter-property print.of
 [offset 9] TOMBSTONE (null value)
 ----
 
-One Milvus upsert (offsets 5 to 7) became a delete and an insert sharing a single TSO, delete first. That is the intra-bucket ordering decision from the dissection, on the wire. The delete of pk 1004 (offsets 8 and 9) is an `op=d` with a primary-key-only `before` image, since Milvus does not publish the prior state of a deleted entity, followed by a tombstone. Postgres ends with exactly one row for pk 1005, at the new price, and no row for pk 1004:
-
-[source,bash]
-----
-$PSQL -c 'SELECT pk, name, price FROM products ORDER BY pk'
-#   pk  |        name         | price
-# ------+---------------------+-------
-#  1001 | trail running shoes | 89.99
-#  1002 | cast iron skillet   |  34.5
-#  1003 | wireless headphones |   129
-#  1005 | camping stove       | 49.99
-# (4 rows)
-----
+One Milvus upsert (offsets 5 to 7) became a delete and an insert sharing a single TSO, delete first. That is the intra-bucket ordering decision from the dissection, on the wire. The delete of pk 1004 (offsets 8 and 9) is an `op=d` with a primary-key-only `before` image, since Milvus does not publish the prior state of a deleted entity, followed by a tombstone. Postgres ends with exactly one row for pk 1005, at the new price, and no row for pk 1004.
 
 A dual-writing application cannot make the upsert guarantee; the connector inherits it from Milvus's own commit order. And the delete is the event that batch export can never see, with no delete-handling code anywhere in the pipeline.
 
-=== Step 6: Both engines, one question
+=== Both engines, one question
 
-Everything so far would hold for any scalar table. The reason to pick pgvector is that the embedding arrived as a _working vector_, not an opaque payload, and the way to prove it is to ask both engines the same question. Take pk 1001's embedding as the query, ask Postgres for its three nearest neighbours by cosine distance (`<=>`, the same metric the Milvus index was built with), then ask Milvus:
-
-[source,bash]
-----
-V=$($PSQL -tA -c 'select embedding from products where pk = 1001')
-
-$PSQL -tA -c "select pk from products order by embedding <=> '$V' limit 3"
-# 1001
-# 1005
-# 1003
-
-curl -s -X POST localhost:19530/v2/vectordb/entities/search -H 'Content-Type: application/json' \
-  -d '{"collectionName":"products","data":['"$V"'],"annsField":"embedding","limit":3,"outputFields":["pk"]}' \
-  | jq -c '[.data[].pk]'
-# [1001,1005,1003]
-----
+Everything so far would hold for any scalar table. The reason to pick pgvector is that the embedding arrived as a _working vector_, not an opaque payload, and the way to prove it is to ask both engines the same question. Take pk 1001's embedding as the query, read back from Postgres as `halfvec` so that both sides are asked about the vector that made the round trip. Postgres ranks its three nearest neighbours by cosine distance (`<=>`, the same metric the Milvus index was built with); Milvus answers the same query through its ANN search endpoint. Both return 1001, 1005, 1003, in that order.
 
 Identical top-3 from a SQL `ORDER BY` and from Milvus's ANN index, on vectors that travelled from Milvus through Kafka into Postgres as `halfvec`. The distances agree too: Postgres puts the camping stove at cosine distance 0.00915 from the running shoes, and Milvus reports a cosine similarity of 0.99085 for the same pair. From here, "similar to this product _and_ in stock" is a `JOIN` away.
 
-=== Step 7: Pause, write, resume
+=== Pause, write, resume
 
-Finally, the offset guarantees when the connector stops. The example scripts this step too, writing two rows during the pause; the run below is a wider variant of it, so the commands are inline: pause the source, insert three rows while it is down, and resume.
+Finally, the offset guarantees when the connector stops. The README scripts this step with two rows written during the pause; the run below is a wider variant of it. Pause the source through the Connect REST API, insert three rows (a yoga mat, an espresso grinder, a board game) through the Milvus REST API while it is down, and resume. During the pause Milvus counts seven rows and Postgres still four. Within seconds of the resume Postgres counts seven as well, and the topic's end offset stands at 13.
 
-[source,bash]
-----
-curl -s -X PUT localhost:8083/connectors/milvus-source/pause
-curl -s -X POST localhost:19530/v2/vectordb/entities/insert -H 'Content-Type: application/json' \
-    -d '{"collectionName": "products", "data": [
-          {"pk": 1006, "name": "yoga mat",         "category": "fitness", "price": 29.99,  "embedding": [0.3, 0.2, 0.6, 0.2]},
-          {"pk": 1007, "name": "espresso grinder", "category": "kitchen", "price": 149.00, "embedding": [0.8, 0.2, 0.1, 0.4]},
-          {"pk": 1008, "name": "board game",       "category": "toys",    "price": 39.99,  "embedding": [0.5, 0.3, 0.8, 0.2]}]}'
-curl -s -X POST localhost:19530/v2/vectordb/entities/query -H 'Content-Type: application/json' \
-    -d '{"collectionName":"products","filter":"pk > 0","outputFields":["count(*)"]}' | jq -c '.data'
-# [{"count(*)":7}]
-$PSQL -tA -c 'select count(*) from products'
-# 4
-curl -s -X PUT localhost:8083/connectors/milvus-source/resume
-$PSQL -tA -c 'select count(*) from products'
-# 7
-$DC exec -T kafka /kafka/bin/kafka-run-class.sh org.apache.kafka.tools.GetOffsetShell \
-  --bootstrap-server kafka:9092 --topic milvus.default.products
-# milvus.default.products:0:13
-----
-
-On resume, the topic replays exactly the three missed `op=c` events and the two counts match. The topic ends at 13 records: four snapshot reads, the insert, the three records of the upsert, the two of the delete, and the three rows written while the connector was paused. No loss, no duplicates, on vanilla Kafka Connect offset management with no bespoke daemon involved.
+On resume, the topic replays exactly the three missed `op=c` events and the two counts match. Thirteen records: four snapshot reads, the insert, the three records of the upsert, the two of the delete, and the three rows written while the connector was paused. No loss, no duplicates, on vanilla Kafka Connect offset management with no bespoke daemon involved.
 
 For monitoring in anger rather than a demo: the connector exposes snapshot and streaming metrics over JMX, where the standard `MilliSecondsBehindSource` is computed from the TSO watermark and the snapshot bean reports the checkpoint TSO it started from; interval heartbeats (`heartbeat.interval.ms`) prove liveness on quiet collections.
 
@@ -383,15 +277,15 @@ For monitoring in anger rather than a demo: the connector exposes snapshot and s
 
 The connector is incubating, and its edges deserve stating as plainly as its features:
 
-* **Kafka only, as Milvus's MQ backend.** Deployments backed by Pulsar or RocksMQ are not supported; the connector reads the MQ directly, so it must speak the deployment's MQ. Milvus 2.6 has no MQ at all: supporting it means a Woodpecker implementation of `MilvusMessageConsumer` and a WAL offset type, and nothing else in the pipeline changes.
+* **Kafka only, as Milvus's MQ backend.** Deployments backed by Pulsar or RocksMQ are not supported as the connector reads the MQ directly, so it must speak the deployment's MQ. Milvus 2.6 has no MQ at all: supporting it means a Woodpecker implementation of `MilvusMessageConsumer` and a WAL offset type, and nothing else in the pipeline changes.
 * **Single task, single pchannel.** One connector instance consumes one pchannel; `tasks.max` values above 1 are ignored.
-* **No** `op=u` **events.** A Milvus upsert surfaces as the delete+insert pair, not a synthesized update event.
+* **No** `op=u` **events.** A Milvus upsert surfaces as the delete+insert pair, not a synthesized update event. The configuration already accepts `milvus.upsert.mode=correlate` for exactly that purpose, but nothing reads the setting yet, so it is a no-op until the pairing is implemented in the ordering engine.
 * **PK-only** `before` **images on deletes.** Milvus does not publish the prior state of a deleted entity, so the connector cannot either.
 * **Collection DDL is not emitted.** Create/drop operations are tracked internally for ordering but not yet emitted as schema-change events.
 * **The default etcd checkpoint key does not match Milvus 2.5.** The snapshot runs without a checkpoint and streaming starts from the end of the channel; `milvus.etcd.checkpoint.path` can point at the real key for a known collection, but the default needs fixing in the connector.
 * **Include and exclude lists apply to the snapshot only.** During streaming, every collection on the pchannel is captured.
 * **Offsets can run ahead of the ordering buffer.** A crash while events are buffered can drop them; see the offsets section above.
-* `milvus.wire.format=auto` **is not yet functional.** The detector exists but is not wired in; set `proto_single` (or `msgpack_batch`) explicitly for now. A fix that wires it in is in progress.
+* `milvus.wire.format=auto` **only works from 3.7.0.CR1.** In 3.7.0.Beta2 the detector exists but is not wired in, so on that release set `proto_single` (or `msgpack_batch`) explicitly; the fix landed as https://github.com/debezium/debezium-connector-milvus/pull/12[DBZ-2530] and ships in CR1.
 * The emitted message format may still change; the connector is not yet recommended for production use.
 
-That list doubles as the roadmap: the checkpoint key path, Pulsar MQ support, multi-pchannel and multi-task scaling, stream-side collection filtering, offsets that trail the ordering buffer, working wire-format auto-detection, and schema-change events. If any of these matters to your use case, issues and patches are welcome. The connector lives at https://github.com/debezium/debezium-connector-milvus[debezium/debezium-connector-milvus], and the https://debezium.zulipchat.com/#narrow/stream/302533-dev[Debezium developer chat] is where design discussions happen.
+That list doubles as the roadmap: the checkpoint key path, Pulsar MQ support, multi-pchannel and multi-task scaling, stream-side collection filtering, offsets that trail the ordering buffer, a working `correlate` upsert mode, and schema-change events. If any of these matters to your use case, issues and patches are welcome. The connector lives at https://github.com/debezium/debezium-connector-milvus[debezium/debezium-connector-milvus], and the https://debezium.zulipchat.com/#narrow/stream/302533-dev[Debezium developer chat] is where design discussions happen.
