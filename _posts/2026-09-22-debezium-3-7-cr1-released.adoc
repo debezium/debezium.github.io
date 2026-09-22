@@ -1,0 +1,227 @@
+---
+layout: post
+title:  Debezium 3.7.0.CR1 Released
+date:   2026-09-22
+tags:   [ releases, mongodb, mysql, mariadb, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox, spanner, jdbc, informix, ibmi, cockroachdb, yashandb, ingres, tidb, milvus, sqlite, cli ]
+author: ccranfor
+extraClasses: release-v2
+---
+
+With autumn officially underway, we're pleased to announce **Debezium 3.7.0.CR1**, the first release candidate for the 3.7 series, focused on stability and polish ahead of the final release.
+
+Among the highlights, PyDebeziumAI brings real-time change data capture to LangChain and LangGraph applications, the Oracle connector gains new tools for monitoring and troubleshooting long-running transactions, and MongoDB now keeps streaming from the preferred replica set member after a failover.
+This release also includes important reliability fixes for MySQL, MariaDB, SQL Server, and Oracle, along with numerous other improvements across the board.
+
+Read on for the full details!
+
++++<!-- more -->+++
+
+* link:#breaking-changes[Breaking changes]
+* link:#new-features-and-improvements[New features and improvements]
+* link:#other-changes[Other changes]
+
+[id="breaking-changes"]
+== Breaking changes
+
+With any new release of software, there can be breaking changes.
+This release is no exception, so let's discuss the major changes you should be aware of before upgrading to **Debezium 3.7.0.CR1**
+
+=== Debezium for Oracle
+
+==== Last enqueued event tracking moved to the transaction cache
+
+The buffered LogMiner implementation now tracks the most recently enqueued event for each transaction directly in the transaction cache, rather than in a separate structure maintained alongside it.
+This consolidates transaction state in a single place, reducing duplicated bookkeeping in the streaming pipeline.
+
+To support this, the XML begin and end events now carry the redo sequence number (`SEQUENCE#`), which the connector uses to detect the boundary between statements that contain XML updates when handling rollbacks.
+As a result, the serialized form of these events stored in the Ehcache and Infinispan transaction buffers has changed.
+
+If you use the Ehcache or Infinispan buffer types and capture `XMLTYPE` columns, allow any in-flight transactions to complete and clear the transaction buffer caches before upgrading, as XML events persisted by an earlier version cannot be deserialized.
+Deployments using the default heap buffer are not affected.
+(https://github.com/debezium/dbz/issues/2652[dbz#2652])
+
+[id="new-features-and-improvements"]
+== New Features and Improvements
+
+The following covers all new features and improvements, grouped by connector component area.
+
+[cols="25%,25%,25%,25%"]
+|===
+|link:#new-features-and-improvements-debezium-mongodb[Debezium for MongoDB]
+|link:#new-features-and-improvements-debezium-oracle[Debezium for Oracle]
+|link:#new-features-and-improvements-debezium-platform[Debezium Platform]
+|link:#new-features-and-improvements-debezium-ai-python[Debezium AI for Python]
+
+|===
+
+[id="new-features-and-improvements-debezium-mongodb"]
+=== Debezium for MongoDB
+
+==== Read preference honored after replica set promotion
+
+The connector now continues to respect the configured read preference when a replica set member it is streaming from changes role.
+Previously, when a secondary serving the change stream was promoted to primary, the connector kept streaming from that node, placing unwanted load on the primary.
+
+The connector now monitors the replica set topology, and when a promotion invalidates the read preference, it closes the change stream cursor, reopens it against a node matching the read preference, and resumes from the last resume token.
+This completes the remaining work for reading changes from MongoDB secondaries and helps keep streaming load off the primary.
+(https://github.com/debezium/dbz/issues/917[dbz#917])
+
+[id="new-features-and-improvements-debezium-oracle"]
+=== Debezium for Oracle
+
+==== Total abandoned transaction count metric
+
+The Oracle LogMiner JMX metrics now include a `TotalAbandonedTransactionCount` metric that increments every time a transaction is abandoned.
+The existing metrics expose abandoned transactions as an array of transaction identifiers, which is impractical to scrape and chart in tools such as Prometheus and Grafana.
+The new counter makes it easy to monitor and alert on abandoned transactions over time.
+(https://github.com/debezium/dbz/issues/2428[dbz#2428])
+
+==== Richer in-flight transaction logging
+
+When the buffered LogMiner implementation logs transactions that have not yet committed or rolled back, it now includes additional metadata about each transaction, such as its creation time and the number of buffered events, rather than only the transaction identifier and SCN.
+This gives administrators the details they need to make an informed decision about dropping a long-running transaction without having to run manual LogMiner queries.
+
+When deferred transactions are in use, the state of the deferred transactions is also logged as a separate entry, using the same format.
+(https://github.com/debezium/dbz/issues/2576[dbz#2576])
+
+==== Signal to log pending transactions
+
+A new signal lets you dump the connector's current view of active and deferred transactions to the connector logs on demand.
+Previously, obtaining this information required additional logging that may not have been enabled at the time, or direct access to query LogMiner.
+
+For each transaction, the output includes the transaction identifier, starting SCN, change time, username, client identifier, redo thread, and, for active transactions, the number of buffered events.
+Entries are sorted from oldest to newest, making it easy to identify which transactions are holding back the mining window and to pair the output with the existing `drop-transaction` signal.
+(https://github.com/debezium/dbz/issues/2577[dbz#2577])
+
+==== ORA-02002 treated as a retriable error
+
+The connector now treats `ORA-02002` as a retriable error.
+During a switchover or failover with multiple archive destinations configured, Oracle can raise `ORA-02002: error while writing to audit trail`, which previously caused the connector to stop unexpectedly.
+The connector now retries in this scenario, allowing it to recover automatically once the failover completes.
+(https://github.com/debezium/dbz/issues/2625[dbz#2625])
+
+[id="new-features-and-improvements-debezium-platform"]
+=== Debezium Platform
+
+==== Custom evaluation window for alert rules
+
+When creating an alert rule, the _Evaluation window_ field now offers a _Custom_ option in addition to the predefined set of durations, allowing any window between 1 and 60 minutes to be entered.
+This gives users the flexibility to tune alert rules to the exact time window that suits their pipelines.
+(https://github.com/debezium/dbz/issues/2563[dbz#2563])
+
+video::https://github.com/user-attachments/assets/4a165d66-ddd5-4691-8eeb-5f6d95f5d448[width=100%,align="center"]
+
+[id="new-features-and-improvements-debezium-ai-python"]
+=== Debezium AI for Python
+
+==== PyDebeziumAI for real-time RAG with LangChain and LangGraph
+
+PyDebeziumAI is a new Python library that integrates directly with Debezium to keep vector stores in sync with your relational database in real time.
+As rows change, it automatically updates the corresponding embeddings, so retrieval-augmented generation (RAG) applications and LLM agents always work with current data.
+
+The library consumes Debezium change events either in embedded mode or as JSON from a message broker, maps them into LangChain-compatible documents with configurable projection of columns into content and metadata, and uses deterministic identifiers to apply correct upsert and delete semantics to the vector index.
+It includes out-of-the-box adapters for Chroma, PGVector, and Milvus, support for soft deletes, retries with exponential backoff and jitter, and a dead-letter queue for reliable delivery.
+
+LangChain-compatible retrievers and LangGraph node integrations allow LLM agents to work directly with the synchronized data.
+The project, including end-to-end RAG examples, is available in the https://github.com/debezium/debezium-ai-python[debezium-ai-python] repository.
+(https://github.com/debezium/dbz/issues/2066[dbz#2066])
+
+[id="other-changes"]
+== Other fixes
+
+// [Debezium Platform]
+* Improve the initial loading state management in the Platform UI (https://github.com/debezium/dbz/issues/1725[dbz#1725])
+// [Debezium for MongoDB]
+* CDC events missing and connector crash on a delete operation (https://github.com/debezium/dbz/issues/1862[dbz#1862])
+// [Debezium for Spanner]
+* Missing validation that `tasks.min` must be less than or equal to `tasks.max` (https://github.com/debezium/dbz/issues/1870[dbz#1870])
+// [Debezium Storage]
+* Validation issues with the JDBC connection for offset storage (https://github.com/debezium/dbz/issues/1957[dbz#1957])
+// [Debezium for Oracle]
+* Simplify the LogMiner buffered implementation event logic (https://github.com/debezium/dbz/issues/1960[dbz#1960])
+// [Debezium for SQLite]
+* Stream ongoing changes from the CDC log with a clean snapshot handoff (https://github.com/debezium/dbz/issues/2160[dbz#2160])
+// [Debezium for SQLite]
+* Add the SQL trigger generator that populates the CDC log (https://github.com/debezium/dbz/issues/2161[dbz#2161])
+// [Debezium for CockroachDB]
+* JDBC sink `UNNEST` batch writes fail when a batch contains multiple events for the same primary key (https://github.com/debezium/dbz/issues/2356[dbz#2356])
+// [Debezium for MySQL]
+* Connector silently loses rows after a keepalive reconnect under backpressure (https://github.com/debezium/dbz/issues/2359[dbz#2359])
+// [Debezium for Neo4j, Debezium Examples]
+* Add a relational to Neo4j example to the debezium-examples repository (https://github.com/debezium/dbz/issues/2453[dbz#2453])
+// [Debezium for Oracle]
+* DDL parser fails on `CREATE INDEX` with the `ONLINE` keyword and on `XMLTYPE` with the `SCHEMA` feature (https://github.com/debezium/dbz/issues/2484[dbz#2484], https://github.com/debezium/dbz/issues/2656[dbz#2656])
+// [Debezium Platform]
+* Stage signal collection verification reports success when the collection does not exist (https://github.com/debezium/dbz/issues/2526[dbz#2526])
+// [Debezium for Milvus]
+* Wire format detection and snapshot consistency (https://github.com/debezium/dbz/issues/2530[dbz#2530])
+// [Debezium for Cassandra]
+* Cassandra 5 CDC `NullPointerException` on `ALTER TABLE` enabling CDC on a pre-existing table (https://github.com/debezium/dbz/issues/2541[dbz#2541])
+// [Debezium Core]
+* The internal `custom.retriable.exception` property is defined with a non-String default (https://github.com/debezium/dbz/issues/2556[dbz#2556])
+// [Debezium for Oracle]
+* Standby connector silently skips events after DDL changes (https://github.com/debezium/dbz/issues/2598[dbz#2598])
+// [Debezium for Oracle]
+* `LogFileCollector` exception is misleading when the archiver is slow to archive logs (https://github.com/debezium/dbz/issues/2601[dbz#2601])
+// [Debezium for MariaDB, Debezium for MySQL]
+* MySQL and MariaDB error handlers pass a null throwable to `super.isRetriable()`, making every error non-retriable (https://github.com/debezium/dbz/issues/2611[dbz#2611])
+// [Debezium for MongoDB]
+* Startup validation rejects valid split-event resume tokens (https://github.com/debezium/dbz/issues/2619[dbz#2619])
+// [Debezium Core]
+* `FieldToEmbedding` uses shared static factory state and `OpenAiModelFactory` hardcodes request/response logging (https://github.com/debezium/dbz/issues/2627[dbz#2627])
+// [Debezium Platform]
+* Form values not visible in Alert Rules view mode when using dark mode (https://github.com/debezium/dbz/issues/2629[dbz#2629])
+// [Debezium Platform]
+* Conductor crashes with the chart default `QUARKUS_MAILER_HOST=""` (https://github.com/debezium/dbz/issues/2630[dbz#2630])
+// [Debezium Core]
+* `ExtractChangedRecordState` reports false positives on unchanged binary fields and throws `DataException` on schema evolution (https://github.com/debezium/dbz/issues/2635[dbz#2635])
+// [Debezium Core]
+* Log a warning that incremental snapshots are disabled for Oracle read-only mode (https://github.com/debezium/dbz/issues/2637[dbz#2637])
+// [Debezium Core]
+* Fix typo in a comment in `AbstractSnapshotChangeEventSource#execute` (https://github.com/debezium/dbz/issues/2638[dbz#2638])
+// [Debezium for MongoDB]
+* Stabilize incremental snapshot pause/resume test assertions (https://github.com/debezium/dbz/issues/2641[dbz#2641])
+// [Debezium for MongoDB]
+* Fix false positives in the replica set authentication test (https://github.com/debezium/dbz/issues/2643[dbz#2643])
+// [Debezium for PostgreSQL]
+* Guardrail test can stop the engine before startup completes (https://github.com/debezium/dbz/issues/2645[dbz#2645])
+// [BinaryLog Client]
+* Do not fail on zero-year dates in MySQL (part II) (https://github.com/debezium/dbz/issues/2659[dbz#2659])
+// [BinaryLog Client]
+* Test binlog client pull requests against the Debezium binlog connectors (https://github.com/debezium/dbz/issues/2665[dbz#2665])
+// [Debezium Core]
+* SQL Server arithmetic overflow on tables with more than 2.14B rows during parallel chunked snapshot due to hardcoded `COUNT(1)` (https://github.com/debezium/dbz/issues/2670[dbz#2670])
+// [Debezium for Oracle]
+* `ExtendedStringParser` assigns schema and table names in reverse order (https://github.com/debezium/dbz/issues/2671[dbz#2671])
+// [Debezium for Oracle]
+* `SelectLobParser.reset()` does not reset the inherited parser state (https://github.com/debezium/dbz/issues/2672[dbz#2672])
+// [Debezium JDBC sink]
+* Include source state and recent Connect logs in JDBC end-to-end startup timeouts (https://github.com/debezium/dbz/issues/2684[dbz#2684])
+
+In total, https://github.com/orgs/debezium/projects/5/views/6?query=sort%3Aupdated-desc+is%3Aopen&filterQuery=status%3AReleased+iteration%3A3.7.0.CR1[50 issues] were resolved in Debezium 3.7.0.CR1.
+The list of changes can also be found in our link:/releases/3.7/release-notes#release-3-7-0-cr1[release notes].
+
+A big thank you to all the contributors from the community who worked diligently on this release:
+ +
+https://github.com/ADBlom[A. D. Blom],
+https://github.com/akshat08[Akshat Sapra],
+https://github.com/anilabhabaral[Anilabha Baral],
+https://github.com/bhuvan-somisetty[Bhuvan Somisetty],
+https://github.com/charlesjmorgan[Charles Morgan],
+https://github.com/Naros[Chris Cranford],
+https://github.com/Unidade[Dario Rodrigues],
+https://github.com/gaetancollaud[Gaétan Collaud],
+https://github.com/GaribKarimli[Garib Karimli],
+https://github.com/kmos[Giovanni Panice],
+https://github.com/indraraj[Indra Shukla],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/mfvitale[Mario Fiore Vitale],
+https://github.com/tarqu1n[Matt Langley],
+https://github.com/minleejae[Minjae Lee],
+https://github.com/pxcamus[Philippe Camus],
+https://github.com/roldanbob[Robert Roldan],
+https://github.com/kinolaev[Sergei Nikolaev],
+https://github.com/stn1slv[Stanislav Deviatov],
+https://github.com/shrsu[Sujal Shrestha],
+https://github.com/Thiagoag[Thiago Garcia], and
+https://github.com/viragtripathi[Virag Tripathi]!
