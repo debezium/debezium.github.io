@@ -66,7 +66,11 @@ Milvus publishes every write to an internal message queue before it persists it.
 
 So the connector does what Milvus's own components do: it becomes another consumer of the pchannel. Zilliz's milvus-cdc reads the same MQ. The consequence is that capturing changes requires access to three Milvus components, not one.
 
-image::overview.png["How the connector taps Milvus: the message channel, etcd, and the gRPC API",width=520,role=centered-image]
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-09-21-milvus-source-connector-for-debezium/overview.png" width="520" style="max-width:100%;" class="responsive-image" alt="How the connector taps Milvus: the message channel, etcd, and the gRPC API">
+</div>
+++++
 
 . **The MQ backend (Kafka).** The connector subscribes to the pchannel topic (`milvus.pchannel.name`, e.g. `by-dev-rootcoord-dml_0`) and consumes the raw insert, delete, and timetick messages Milvus writes there. These come in two wire formats, msgpack batches and single protobuf messages, and neither is documented; the schema lives in https://github.com/milvus-io/milvus-proto/blob/master/proto/msg.proto[`msg.proto`].
 . **etcd.** Milvus stores the per-channel checkpoint (a TSO and the MQ offset it had consumed up to) in etcd and does not expose it through any API, which is why the connector needs direct etcd access. This checkpoint is where streaming starts once the snapshot is done.
@@ -91,7 +95,11 @@ The snapshot starts by reading the channel checkpoint from etcd. That checkpoint
 
 The order of those two reads is what makes the handoff safe. The checkpoint is taken before the query, so everything the checkpoint covers is inside the snapshot, and everything after it is in the stream the connector is about to read: nothing is lost. What the handoff does allow is overlap. A write that lands between the checkpoint and the snapshot query appears twice, once as `op=r` and again as `op=c` when the stream replays it, and `insert.mode=upsert` on the sink is what makes the second copy harmless. Milvus's checkpoint trails its writes (by about a second in the run below), so seeded rows are exactly that case: in a run of the walkthrough's example with the checkpoint path corrected, the four seeded rows came through as four reads followed by four creates. An earlier design pinned the query to the checkpoint TSO with `guarantee_ts` to close that window; the Milvus SDK's query request has no such field, so the connector settles for at-least-once at the seam.
 
-image::handoff.png["The snapshot-to-streaming handoff and the overlap window it allows",width=800,role=centered-image]
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-09-21-milvus-source-connector-for-debezium/handoff.png" style="max-width:100%;" class="responsive-image" alt="The snapshot-to-streaming handoff and the overlap window it allows">
+</div>
+++++
 
 Milvus 2.5 stores that checkpoint under `meta/datacoord-meta/channel-cp/<vchannel>`, and the connector's default looks under `data-coord/checkpoint/binlog/channel/<pchannel>`, a key that does not exist. Out of the box it therefore finds no checkpoint, logs a warning, snapshots anyway, and starts streaming from the end of the channel, which is why the snapshot event in the walkthrough carries `"tso": 0`. A write that lands between the snapshot query and that seek would be missed. Pointing `milvus.etcd.checkpoint.path` at the real key produces the behaviour described above (checkpoint found, stream resumed from the following offset, the overlap replayed and absorbed); fixing the default is the first item on the list at the end of this post.
 
@@ -107,7 +115,11 @@ Milvus solves this internally with the timetick protocol, and the connector impl
 
 A four-message example shows the mechanism. Two vchannels, A and B, share one pchannel, and the connector reads, in arrival order: an event from A with TSO 105, an event from B with TSO 101, a timetick of 110 from A, and a timetick of 108 from B. The two events arrived in the wrong order, so the engine holds both in its buffer, sorted by TSO. Once both ticks are in, the watermark is the smaller of the two, 108, and every buffered event with a TSO at or below it is safe to release, because neither vchannel can produce anything older. The engine emits the event with TSO 101 and then the one with TSO 105, in strict TSO order, the reverse of how they arrived. An event with a TSO above 108 would stay buffered until a later round of ticks lifted the watermark past it.
 
-image::tso.png["Arrivals buffered and released in TSO order by the watermark gate",width=800,role=centered-image]
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-09-21-milvus-source-connector-for-debezium/tso.png" style="max-width:100%;" class="responsive-image" alt="Arrivals buffered and released in TSO order by the watermark gate">
+</div>
+++++
 
 Downstream consumers therefore observe changes in exactly the order Milvus committed them, across collections and across vchannels. Two decisions in that engine cost me the most to get right:
 
@@ -127,7 +139,11 @@ Two services share one product corpus. An _ingestion service_ owns writes: it em
 
 The pipeline that delivers it is a Debezium source feeding a Debezium sink, with no transforms and no custom code anywhere.
 
-image::architecture.png["Architecture",width=800,role=centered-image]
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-09-21-milvus-source-connector-for-debezium/architecture.png" style="max-width:100%;" class="responsive-image" alt="Architecture">
+</div>
+++++
 
 Debezium already had the on-ramp to Milvus: the https://debezium.io/documentation/reference/stable/connectors/postgresql.html[PostgreSQL connector] captures pgvector columns as vector logical types, and https://debezium.io/documentation/reference/stable/operations/debezium-server.html[Debezium Server] ships a Milvus sink, so Postgres-to-Milvus is a configuration exercise. What was missing was the off-ramp: until now, vectors checked into Milvus and never checked out. That off-ramp is the literal ask in discussion #36683 ("incremental export to kafka").
 
