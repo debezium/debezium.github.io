@@ -14,13 +14,15 @@ What came out of that summer is a Debezium source connector that turns https://m
 
 +++<!-- more -->+++
 
-One choice deserves stating up front, because my proposal said the opposite. I pitched this connector against Milvus 2.6, whose Woodpecker WAL replaces the external message queue, and I built it against 2.5, which still publishes every write to Kafka. Three things made me to choose 2.5: the 2.6 WAL protos were still changing in early 2026, the only prior art, Zilliz's milvus-cdc, reads the 2.5 message queue, and most production deployments are on 2.5.So, I built for the MQ and put the transport behind an abstraction rather than threading Kafka through the connector. Everything above that line is transport-agnostic: the streaming engine pulls from a `MilvusMessageConsumer` interface and works on a `RawMilvusMessage`, not on a Kafka `ConsumerRecord`, and the deserializer, the timetick ordering engine, the schema layer, the dispatcher and the offset model never learn where the bytes came from. Supporting 2.6 is then a Woodpecker implementation of that one interface plus a WAL offset type, and nothing else in the pipeline moves.
+I built the connector against Milvus 2.5, which publishes every write to Kafka. The choice of 2.5 was driven by three factors: the 2.6 WAL protos were still evolving in early 2026, the only existing reference implementation, Zilliz's milvus-cdc, reads the 2.5 message queue, and the majority of production deployments were on 2.5. Consequently, I designed the connector to consume from Kafka and placed the transport layer behind an abstraction, rather than embedding Kafka directly into the connector. This design ensures that all components above the transport layer—including the deserializer, timetick ordering engine, schema layer, dispatcher, and offset management—are transport-agnostic. They operate on a `MilvusMessageConsumer` interface and `RawMilvusMessage` type, without any direct knowledge of Kafka `ConsumerRecord`s. Adapting the connector for Milvus 2.6 would then only require implementing a Woodpecker-specific version of this interface and a corresponding WAL offset type, leaving the rest of the pipeline unchanged.
 
-== Introduction
+== What is Milvus
 
 A vector database stores embeddings (the high-dimensional float arrays that machine-learning models produce to represent text, images, or audio) and answers nearest-neighbor queries over them: "give me the 10 stored vectors most similar to this one." Relational and keyword-search databases are built around exact matches and B-tree or inverted-index lookups, not approximate similarity search.
 
-Milvus is an open source vector database built for that workload: scalable embedding storage, ANN indexes, and hybrid metadata-plus-vector retrieval. It underpins semantic search, retrieval-augmented generation (RAG), recommendation systems, multimodal search, and deduplication and similarity pipelines.
+Milvus is an open source vector database built for that workload. Zilliz open-sourced it in 2019.It underpins semantic search, retrieval-augmented generation (RAG), recommendation systems, multimodal search, and deduplication and similarity pipelines.
+
+Milvus 2.5 separates storage from compute: stateless proxies take requests, the root, data and query coordinators own metadata and timestamps, query nodes serve searches and data nodes build segments, and the storage layer is etcd for metadata, MinIO or S3 for segment files, and a log broker (Pulsar, Kafka or RocksMQ) for the write stream. The Milvus documentation calls that broker "the backbone of Milvus": every insert and delete is appended to it first, and the data nodes and query nodes are subscribers that apply the log. Milvus 2.6 replaces the external broker with its own WAL, Woodpecker, which is the version split described at the top of this post. The connector reads the broker and etcd directly, so it needs a self-hosted Standalone or Distributed deployment with Kafka as the broker; Milvus Lite, the embedded Python library, has no broker to read.
 
 Once Milvus holds production data, a second problem shows up that has nothing to do with vector search: everything around Milvus needs to know when that data changes.
 
@@ -56,7 +58,45 @@ Three things separate this connector from relational CDC:
 
 You reach for the connector whenever Milvus graduates from "index we can rebuild" to "system other things depend on": adding keyword or hybrid search next to vector search, keeping a scalar-prefilter companion store in sync, taking continuous incremental backups with a queryable deletion audit trail, or making Milvus the embedding source of truth after a migration.
 
-The rest of this post takes the connector apart, which means taking a bit of Milvus apart first, and then builds a complete, reproducible example: a pgvector table in Postgres kept in sync with Milvus, where similarity search in plain SQL returns the same neighbours as Milvus.
+== Use Cases
+
+The pgvector pipeline later in this post is one use case built end to end. Others the connector reduces to a sink registration:
+
+* **Hybrid search with a keyword mirror.** Vector search is weak at exact tokens such as SKUs or names, so teams pair Milvus with Elasticsearch or OpenSearch and fuse the rankings. The mirror is only correct if it holds exactly what the collection holds, deletions included; the Elasticsearch sink with the Milvus primary key as the document `_id` does that.
+* **RAG freshness.** In a retrieval-augmented system the events that matter are deletes and re-embeds: a document retracted, a chunk re-embedded under a new model. A consumer of the change stream can invalidate cached answers keyed on the affected chunk IDs, or record what the retriever could see at a given TSO so an answer can be audited later.
+* **Deletion evidence for compliance.** A right-to-erasure request is not closed until the embedding is gone too, and batch export cannot show a deletion at all. The connector emits an `op=d` with the key and commit timestamp, followed by a tombstone, and a JDBC or S3 sink keeps it as a durable record.
+* **Migration and model rollouts.** Moving to another store means running its sink until the counts match and flipping the readers. Rolling out a new embedding model means a consumer that re-embeds each insert into a second collection; when it has caught up, the retriever switches.
+
+== Why Migrate to the Connector
+
+Anyone who needs Milvus changes downstream already has something in place, and the case depends on what that is.
+
+* **From dual writes.** The first partial failure leaves Milvus and the mirror disagreeing with no record of which write was the truth, and every new consumer is a code change in the ingestion service. With the connector the ingestion service writes Milvus alone; a mirror is a sink registration.
+* **From batch export.** A scheduled `query_iterator` job cannot see deletes, lags by however often it runs, and scans the whole collection each time. The connector emits deletes, lags by about a second, and after the snapshot its only calls to Milvus are one `DescribeCollection` per new collection: streaming reads the message queue.
+* **From milvus-cdc.** Zilliz's daemon is the right tool for active-standby replication into a second Milvus and is more mature than this connector, but another Milvus is the only sink it has. Keep it for disaster recovery; the connector is for everything that is not another Milvus.
+* **From a hand-rolled channel reader.** Consuming the pchannel directly means owning two undocumented wire formats, the timetick watermark, the delete-before-insert rule, the etcd checkpoint and offset persistence. That list is this connector.
+
+[options="header"]
+|===
+| | Dual writes | Batch export | milvus-cdc | Debezium connector
+| Sees deletes | yes | no | yes | yes
+| Commit order | per writer only | none | yes | yes, by TSO
+| Survives a failure | no reconciliation | re-run the job | resumes | resumes from Connect offsets
+| Sinks | one per code path | one per job | another Milvus | any Kafka Connect sink
+| Code you maintain | in every writing service | the export job | none | none, configuration only
+|===
+
+The output is the standard Debezium envelope under plain Kafka Connect operations, and the transport sits behind an interface, so a move from Milvus 2.5 to 2.6 changes the piece that reads bytes off Milvus and nothing downstream. The connector is incubating (see Limitations): run it beside the job it replaces, compare counts, then retire the job.
+
+== Why This Is One of the Most Complex Source Connectors to Build
+
+Most Debezium source connectors share one identity: the database keeps an ordered change log, exposes a documented interface to read it, and hands out a position to resume from. Milvus breaks every part of that, and what it does not provide the connector has to build.
+
+. **No change log to ask for.** Other source connectors read a change log the database provides for the purpose: a replication slot, a binlog, change tables, a change stream. Milvus has no change API; its write stream is an internal message-queue topic meant for its own data nodes, in two undocumented wire formats whose only specification is `msg.proto`.
+. **A Kafka topic as the write-ahead log.** This is the first Debezium source connector whose source is a database's internal Kafka topic, in the database's own format, rather than an API or a CDC feed already shaped like Debezium events. That puts a Kafka consumer, with its own consumer group, poll loop and partition assignment, inside a Kafka Connect source task, against a cluster that may not be the one Connect runs on, and makes the connector's resume position an offset on somebody else's topic.
+. **Four systems where a relational connector has one.** Another source connector opens one connection to one database. This connector's source is a running combination of Milvus, etcd, MinIO and Kafka, and it talks to three of them: Kafka for the stream, etcd for the checkpoint, Milvus over gRPC for schemas. Each has its own authentication, failure modes and version drift, and a wrong value for any one yields a connector that runs and captures nothing; the wrong default checkpoint key in the current release is exactly that failure. Every test of the connector, unit tests aside, means standing all four up.
+. **Order is reconstructed, not preserved.** A pchannel interleaves independent vchannels, so arrival order is not commit order. The connector reimplements Milvus's timetick watermark to restore TSO order, adds a rule for events sharing a timestamp (delete before insert, or an upsert deletes the row downstream), and bounds how long it waits for a quiet vchannel.
+. **No point to pin the snapshot to.** Other source connectors snapshot inside a transaction pinned to a log position. Milvus's query API cannot answer "as of TSO X", so the seam between snapshot and stream is at-least-once by construction, and idempotent, key-addressed sinks are part of the design.
 
 == Dissecting Milvus and the Debezium Connector
 
@@ -133,7 +173,7 @@ The connector's offset (what Kafka Connect persists to resume from) is its posit
 
 One caveat sits in that list. The MQ position is advanced as messages are polled, before the events they carry have cleared the ordering buffer, and the offset attached to each emitted record is that latest polled position. If the connector crashes while events are still buffered, the restart seeks past them and they are lost. The window is short, the time events wait in the buffer, but it exists, so delivery is not strictly at-least-once in the current build. What is safe by construction is the snapshot: until `snapshot_completed` is committed, a restart re-runs it in full, which is why an idempotent, primary-key-addressed sink matters. One early demo run proved that point: crash-restarts duplicated the snapshot, producing 3,001 events on the topic for a 1,001-row collection, yet Elasticsearch converged to exactly 1,001 documents, because the Milvus PK was the ES document `_id`.
 
-== Use Case: Keeping Postgres (pgvector) in Sync with Milvus
+== Walkthrough: Keeping Postgres (pgvector) in Sync with Milvus
 
 Two services share one product corpus. An _ingestion service_ owns writes: it embeds product data and inserts, upserts, and deletes rows in Milvus, the source of truth for the vectors and the engine that answers high-throughput ANN queries. Everything else about the business (orders, inventory, pricing, the reporting queries) already lives in Postgres, and the questions the back office asks are half vector, half relational: "the ten products most similar to this one that are still in stock," "which listings are near-duplicates of each other," "how far apart are two categories' embeddings on average." With https://github.com/pgvector/pgvector[pgvector], each of those is a single SQL query with a join, provided the embeddings are in Postgres. Today they get there through a nightly batch copy that cannot see deletes, or not at all. The ingestion service should not know Postgres exists, and Postgres should hold the same vectors Milvus does, current to within a second.
 
@@ -287,5 +327,3 @@ The connector is incubating, and its edges deserve stating as plainly as its fea
 * **Offsets can run ahead of the ordering buffer.** A crash while events are buffered can drop them; see the offsets section above.
 * `milvus.wire.format=auto` **only works from 3.7.0.CR1.** In 3.7.0.Beta2 the detector exists but is not wired in, so on that release set `proto_single` (or `msgpack_batch`) explicitly; the fix landed as https://github.com/debezium/debezium-connector-milvus/pull/12[DBZ-2530] and ships in CR1.
 * The emitted message format may still change; the connector is not yet recommended for production use.
-
-That list doubles as the roadmap: the checkpoint key path, Pulsar MQ support, multi-pchannel and multi-task scaling, stream-side collection filtering, offsets that trail the ordering buffer, a working `correlate` upsert mode, and schema-change events. If any of these matters to your use case, issues and patches are welcome. The connector lives at https://github.com/debezium/debezium-connector-milvus[debezium/debezium-connector-milvus], and the https://debezium.zulipchat.com/#narrow/stream/302533-dev[Debezium developer chat] is where design discussions happen.
