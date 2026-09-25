@@ -8,21 +8,33 @@ author: kangiras
 
 :imagesdir: /assets/images/2026-09-21-milvus-source-connector-for-debezium
 
-Google Summer of Code 2026 with the Debezium community was the best learning experience I have had as an engineer. I started it as a beginner: I had never built a Kafka Connect connector, never taken a database apart to find out where its changes live, and never worked somewhere every design choice of mine would be read by people who knew the system far better than I did. That turned out to be the point. I learned by reading code until it made sense, writing down what I thought it did, and getting corrected in review, week after week, until the whole thing worked end to end. I came out of the summer a much better engineer than I went in, and I would do it again tomorrow.
-
+Google Summer of Code 2026 with the Debezium community was the best learning experience I have had as an engineer. I started it as a beginner as I had never built a Kafka Connect connector, never taken a database apart to find out where its changes live, and never worked somewhere every design choice of mine would be read by people who knew the system far better than I did. That turned out to be the point. I learned by reading code until it made sense, writing down what I thought it did, and getting corrected in review, week after week, until the whole thing worked end to end. I came out of the summer a much better engineer than I went in, and I would do it again in the near future.
 What came out of that summer is a Debezium source connector that turns https://milvus.io/[Milvus], the open source vector database, into a first-class source of change events. This post covers how it works and what you can build once Milvus is one.
 
 +++<!-- more -->+++
 
-I built the connector against Milvus 2.5, which publishes every write to Kafka. The choice of 2.5 was driven by three factors: the 2.6 WAL protos were still evolving in early 2026, the only existing reference implementation, Zilliz's milvus-cdc, reads the 2.5 message queue, and the majority of production deployments were on 2.5. Consequently, I designed the connector to consume from Kafka and placed the transport layer behind an abstraction, rather than embedding Kafka directly into the connector. This design ensures that all components above the transport layer—including the deserializer, timetick ordering engine, schema layer, dispatcher, and offset management—are transport-agnostic. They operate on a `MilvusMessageConsumer` interface and `RawMilvusMessage` type, without any direct knowledge of Kafka `ConsumerRecord`s. Adapting the connector for Milvus 2.6 would then only require implementing a Woodpecker-specific version of this interface and a corresponding WAL offset type, leaving the rest of the pipeline unchanged.
+I built the connector against Milvus 2.5, which publishes every write to Kafka. Three factors drove the choice of 2.5:
+
+* The 2.6 version is still evolving in 2026 and has some breaking changes,
+* The only existing reference implementation, Zilliz's milvus-cdc, reads the 2.5 message queue,
+* The majority of production deployments were on 2.5.
+
+Consequently, I designed the connector to consume from Kafka and placed the transport layer behind an abstraction, rather than embedding Kafka directly into the connector. This design ensures that all components above the transport layer including the deserializer, timetick ordering engine, schema layer, dispatcher, and offset management are transport-agnostic. They operate on a `MilvusMessageConsumer` interface and `RawMilvusMessage` type, without any direct knowledge of Kafka `ConsumerRecord`. Adapting the connector for Milvus 2.6 would then only require implementing a Woodpecker-specific version of this interface and a corresponding WAL offset type, leaving the rest of the pipeline unchanged.
 
 == What is Milvus
 
-A vector database stores embeddings (the high-dimensional float arrays that machine-learning models produce to represent text, images, or audio) and answers nearest-neighbor queries over them: "give me the 10 stored vectors most similar to this one." Relational and keyword-search databases are built around exact matches and B-tree or inverted-index lookups, not approximate similarity search.
+A vector database stores embeddings (the high-dimensional float arrays that machine-learning models produce to represent text, images, or audio) and answers nearest-neighbor queries over them. Relational and keyword-search databases are built around exact matches and B-tree or inverted-index lookups, not approximate similarity search.
 
-Milvus is an open source vector database built for that workload. Zilliz open-sourced it in 2019.It underpins semantic search, retrieval-augmented generation (RAG), recommendation systems, multimodal search, and deduplication and similarity pipelines.
+Milvus is an open source vector database built for that workload. Zilliz open-sourced it in 2019. It underpins semantic search, retrieval-augmented generation (RAG), recommendation systems, multimodal search, and deduplication and similarity pipelines.
 
-Milvus 2.5 separates storage from compute: stateless proxies take requests, the root, data and query coordinators own metadata and timestamps, query nodes serve searches and data nodes build segments, and the storage layer is etcd for metadata, MinIO or S3 for segment files, and a log broker (Pulsar, Kafka or RocksMQ) for the write stream. The Milvus documentation calls that broker "the backbone of Milvus": every insert and delete is appended to it first, and the data nodes and query nodes are subscribers that apply the log. Milvus 2.6 replaces the external broker with its own WAL, Woodpecker, which is the version split described at the top of this post. The connector reads the broker and etcd directly, so it needs a self-hosted Standalone or Distributed deployment with Kafka as the broker; Milvus Lite, the embedded Python library, has no broker to read.
+Milvus 2.5 separates storage from compute:
+
+* Stateless proxies take requests,
+* The root, data and query coordinators own metadata and timestamps,
+* Query nodes serve searches and data nodes build segments,
+* The storage layer is etcd for metadata, MinIO or S3 for segment files, and a log broker (Pulsar, Kafka or RocksMQ) for the write stream.
+
+Every insert and delete is appended to it first, and the data nodes and query nodes are subscribers that apply the log. Milvus 2.6 replaces the external broker with its own WAL, Woodpecker, which is the version split described at the top of this post. The connector reads the broker and etcd directly, so it needs a self-hosted Standalone or Distributed deployment with Kafka as the broker. Milvus Lite, the embedded Python library, has no broker to read.
 
 Once Milvus holds production data, a second problem shows up that has nothing to do with vector search: everything around Milvus needs to know when that data changes.
 
@@ -30,14 +42,18 @@ Once Milvus holds production data, a second problem shows up that has nothing to
 
 Once Milvus becomes a live system of record for embeddings, it stops being the end of your data pipeline and becomes the middle of it. Downstream systems need its inserts and deletes as events:
 
-* a keyword-search mirror (Elasticsearch) that must never drift from the collection,
-* a cache or companion store (Redis) serving payloads next to ANN results,
-* analytics pipelines counting what was added and removed,
-* backup and compliance systems that need a durable record of every deletion.
+* A keyword-search mirror (Elasticsearch) that must never drift from the collection,
+* A cache or companion store (Redis) serving payloads next to ANN results,
+* Analytics pipelines counting what was added and removed,
+* Backup and compliance systems that need a durable record of every deletion.
 
-Teams solve this today with two patterns, and both fail in well-understood ways. Dual writes (the application writes to both Milvus and Elasticsearch or Redis) desynchronize on the first partial failure, and there is no way to reconcile because neither side knows which write was the truth. Batch export cannot see deletes at all: by the time the export job runs, the row is already gone from Milvus, so the downstream copy keeps serving data the source deleted. Milvus's `query_iterator` is one-shot; it can copy a collection, but it cannot follow one.
+Teams solve this today with two patterns, and both fail in well-understood ways. Dual writes (the application writes to both Milvus and Elasticsearch or Redis) desynchronize on the first partial failure, and there is no way to reconcile because neither side knows which write was the truth. Batch export cannot see deletes at all because by the time the export job runs, the row is already gone from Milvus, so the downstream copy keeps serving data the source deleted. Milvus's `query_iterator` is one-shot. It can copy a collection, but it cannot follow one.
 
-The Milvus maintainers describe this gap themselves. In https://github.com/milvus-io/milvus/discussions/36683[milvus discussion #36683], a user who needed to export ~1M records from Milvus to Elasticsearch had hand-rolled a batch Java tool; the maintainers conceded that `query_iterator` "is the only way to export readable data from milvus" and pointed at CDC for "incremental export to kafka." In https://github.com/milvus-io/milvus/discussions/17088[discussion #17088], maintainers confirmed that a change-subscription interface was "still waiting for design." Zilliz built a dedicated CDC daemon, https://github.com/zilliztech/milvus-cdc[milvus-cdc], for active-standby disaster recovery, but it can only sink into another Milvus.
+The Milvus maintainers describe this gap themselves:
+
+* In https://github.com/milvus-io/milvus/discussions/36683[milvus discussion #36683], a user who needed to export ~1M records from Milvus to Elasticsearch had hand-rolled a batch Java tool. The maintainers conceded that `query_iterator` was the only way to export readable data from milvus and pointed at CDC for incremental export to kafka.
+* In https://github.com/milvus-io/milvus/discussions/17088[discussion #17088], maintainers confirmed that a change-subscription interface was still in progress.
+* Zilliz built a dedicated CDC daemon, https://github.com/zilliztech/milvus-cdc[milvus-cdc], for active-standby disaster recovery, but it can only sink into another Milvus.
 
 The alternative is an event-driven vector architecture: Milvus stays the source of truth for embeddings, its commit stream is published to Kafka as ordered change events, and any number of consumers subscribe independently. Adding a consumer changes nothing in the source system.
 
@@ -48,32 +64,28 @@ Milvus exposes no change stream over its gRPC API, so something has to bridge it
 * **A snapshot + streaming model**, with the handoff between them anchored to a Milvus checkpoint.
 * **Ordered delivery** and Kafka Connect's standard offset management, so restarts resume from a persisted position instead of from scratch.
 * **The standard Debezium change-event envelope** (`before`/`after`/`source`/`op`), which means every existing single message transform and converter in the Debezium ecosystem works unchanged.
-* **The entire Kafka Connect sink ecosystem.** Once Milvus changes are Debezium events on a topic, the Elasticsearch sink, the Redis sink, the S3 sink, and the JDBC sink are all Milvus integrations, with zero custom code. This is what generalizes the milvus-cdc idea from "replicate to another Milvus" to "replicate to anything."
+* **The entire Kafka Connect sink ecosystem.** Once Milvus changes are Debezium events on a topic, the Elasticsearch sink, the Redis sink, the S3 sink, and the JDBC sink are all Milvus integrations, with zero custom code. This is what generalizes the milvus-cdc idea from replicating to another Milvus to replicating to anything.
 
 Three things separate this connector from relational CDC:
 
-. **Vector-aware payloads.** Float vectors are emitted as the `io.debezium.data.FloatVector` logical type; JSON and geometry fields map to `io.debezium.data.Json`. Consumers see typed vectors, not opaque blobs.
-. **No WAL, no binlog.** The connector's starting point comes from a Milvus channel checkpoint stored in etcd; from there its position is an offset into Milvus's message queue plus a timetick watermark per virtual channel.
+. **Vector-aware payloads.** Float vectors are emitted as the `io.debezium.data.FloatVector` logical type, and JSON and geometry fields map to `io.debezium.data.Json`. Consumers see typed vectors, not opaque blobs.
+. **No WAL, no binlog.** The connector's starting point comes from a Milvus channel checkpoint stored in etcd. From there its position is an offset into Milvus's message queue plus a timetick watermark per virtual channel.
 . **TSO ordering.** Events are ordered by Milvus's own timestamp oracle (TSO) using its timetick protocol.
-
-You reach for the connector whenever Milvus graduates from "index we can rebuild" to "system other things depend on": adding keyword or hybrid search next to vector search, keeping a scalar-prefilter companion store in sync, taking continuous incremental backups with a queryable deletion audit trail, or making Milvus the embedding source of truth after a migration.
 
 == Use Cases
 
-The pgvector pipeline later in this post is one use case built end to end. Others the connector reduces to a sink registration:
-
-* **Hybrid search with a keyword mirror.** Vector search is weak at exact tokens such as SKUs or names, so teams pair Milvus with Elasticsearch or OpenSearch and fuse the rankings. The mirror is only correct if it holds exactly what the collection holds, deletions included; the Elasticsearch sink with the Milvus primary key as the document `_id` does that.
+* **Hybrid search with a keyword mirror.** Vector search is weak at exact tokens such as SKUs or names, so teams pair Milvus with Elasticsearch or OpenSearch and fuse the rankings. The mirror is only correct if it holds exactly what the collection holds, deletions included. The Elasticsearch sink with the Milvus primary key as the document `_id` does that.
 * **RAG freshness.** In a retrieval-augmented system the events that matter are deletes and re-embeds: a document retracted, a chunk re-embedded under a new model. A consumer of the change stream can invalidate cached answers keyed on the affected chunk IDs, or record what the retriever could see at a given TSO so an answer can be audited later.
 * **Deletion evidence for compliance.** A right-to-erasure request is not closed until the embedding is gone too, and batch export cannot show a deletion at all. The connector emits an `op=d` with the key and commit timestamp, followed by a tombstone, and a JDBC or S3 sink keeps it as a durable record.
-* **Migration and model rollouts.** Moving to another store means running its sink until the counts match and flipping the readers. Rolling out a new embedding model means a consumer that re-embeds each insert into a second collection; when it has caught up, the retriever switches.
+* **Migration and model rollouts.** Moving to another store means running its sink until the counts match and flipping the readers. Rolling out a new embedding model means a consumer that re-embeds each insert into a second collection. When it has caught up, the retriever switches.
 
 == Why Migrate to the Connector
 
 Anyone who needs Milvus changes downstream already has something in place, and the case depends on what that is.
 
-* **From dual writes.** The first partial failure leaves Milvus and the mirror disagreeing with no record of which write was the truth, and every new consumer is a code change in the ingestion service. With the connector the ingestion service writes Milvus alone; a mirror is a sink registration.
+* **From dual writes.** The first partial failure leaves Milvus and the mirror disagreeing with no record of which write was the truth, and every new consumer is a code change in the ingestion service. With the connector the ingestion service writes Milvus alone, and a mirror is a sink registration.
 * **From batch export.** A scheduled `query_iterator` job cannot see deletes, lags by however often it runs, and scans the whole collection each time. The connector emits deletes, lags by about a second, and after the snapshot its only calls to Milvus are one `DescribeCollection` per new collection: streaming reads the message queue.
-* **From milvus-cdc.** Zilliz's daemon is the right tool for active-standby replication into a second Milvus and is more mature than this connector, but another Milvus is the only sink it has. Keep it for disaster recovery; the connector is for everything that is not another Milvus.
+* **From milvus-cdc.** Zilliz's daemon is the right tool for active-standby replication into a second Milvus and is more mature than this connector, but another Milvus is the only sink it has. Keep it for disaster recovery. The connector is for everything that is not another Milvus.
 * **From a hand-rolled channel reader.** Consuming the pchannel directly means owning two undocumented wire formats, the timetick watermark, the delete-before-insert rule, the etcd checkpoint and offset persistence. That list is this connector.
 
 [options="header"]
@@ -92,17 +104,17 @@ The output is the standard Debezium envelope under plain Kafka Connect operation
 
 Most Debezium source connectors share one identity: the database keeps an ordered change log, exposes a documented interface to read it, and hands out a position to resume from. Milvus breaks every part of that, and what it does not provide the connector has to build.
 
-. **No change log to ask for.** Other source connectors read a change log the database provides for the purpose: a replication slot, a binlog, change tables, a change stream. Milvus has no change API; its write stream is an internal message-queue topic meant for its own data nodes, in two undocumented wire formats whose only specification is `msg.proto`.
+. **No change log to ask for.** Other source connectors read a change log the database provides for the purpose: a replication slot, a binlog, change tables, a change stream. Milvus has no change API. Its write stream is an internal message-queue topic meant for its own data nodes, in two undocumented wire formats whose only specification is `msg.proto`.
 . **A Kafka topic as the write-ahead log.** This is the first Debezium source connector whose source is a database's internal Kafka topic, in the database's own format, rather than an API or a CDC feed already shaped like Debezium events. That puts a Kafka consumer, with its own consumer group, poll loop and partition assignment, inside a Kafka Connect source task, against a cluster that may not be the one Connect runs on, and makes the connector's resume position an offset on somebody else's topic.
-. **Four systems where a relational connector has one.** Another source connector opens one connection to one database. This connector's source is a running combination of Milvus, etcd, MinIO and Kafka, and it talks to three of them: Kafka for the stream, etcd for the checkpoint, Milvus over gRPC for schemas. Each has its own authentication, failure modes and version drift, and a wrong value for any one yields a connector that runs and captures nothing; the wrong default checkpoint key in the current release is exactly that failure. Every test of the connector, unit tests aside, means standing all four up.
+. **Four systems where a relational connector has one.** Another source connector opens one connection to one database. This connector's source is a running combination of Milvus, etcd, MinIO and Kafka, and it talks to three of them: Kafka for the stream, etcd for the checkpoint, Milvus over gRPC for schemas. Each has its own authentication, failure modes and version drift, and a wrong value for any one yields a connector that runs and captures nothing. The wrong default checkpoint key in the current release is exactly that failure. Every test of the connector, unit tests aside, means standing all four up.
 . **Order is reconstructed, not preserved.** A pchannel interleaves independent vchannels, so arrival order is not commit order. The connector reimplements Milvus's timetick watermark to restore TSO order, adds a rule for events sharing a timestamp (delete before insert, or an upsert deletes the row downstream), and bounds how long it waits for a quiet vchannel.
-. **No point to pin the snapshot to.** Other source connectors snapshot inside a transaction pinned to a log position. Milvus's query API cannot answer "as of TSO X", so the seam between snapshot and stream is at-least-once by construction, and idempotent, key-addressed sinks are part of the design.
+. **No point to pin the snapshot to.** Other source connectors snapshot inside a transaction pinned to a log position. Milvus's query API cannot answer a query as of a given TSO, so the seam between snapshot and stream is at-least-once by construction, and idempotent, key-addressed sinks are part of the design.
 
 == Dissecting Milvus and the Debezium Connector
 
 === The Milvus write path, and why the connector taps the message queue
 
-Milvus publishes every write to an internal message queue before it persists it. When a client calls `insert`, `upsert`, or `delete` over gRPC, the proxy validates the request and produces messages onto a _physical channel_ (pchannel), a topic on Milvus's MQ backend. Milvus's own data nodes are consumers of that channel; consuming it is how Milvus builds its segments and applies deletes.
+Milvus publishes every write to an internal message queue before it persists it. When a client calls `insert`, `upsert`, or `delete` over gRPC, the proxy validates the request and produces messages onto a _physical channel_ (pchannel), a topic on Milvus's MQ backend. Milvus's own data nodes are consumers of that channel. Consuming it is how Milvus builds its segments and applies deletes.
 
 So the connector does what Milvus's own components do: it becomes another consumer of the pchannel. Zilliz's milvus-cdc reads the same MQ. The consequence is that capturing changes requires access to three Milvus components, not one.
 
@@ -112,7 +124,7 @@ So the connector does what Milvus's own components do: it becomes another consum
 </div>
 ++++
 
-. **The MQ backend (Kafka).** The connector subscribes to the pchannel topic (`milvus.pchannel.name`, e.g. `by-dev-rootcoord-dml_0`) and consumes the raw insert, delete, and timetick messages Milvus writes there. These come in two wire formats, msgpack batches and single protobuf messages, and neither is documented; the schema lives in https://github.com/milvus-io/milvus-proto/blob/master/proto/msg.proto[`msg.proto`].
+. **The MQ backend (Kafka).** The connector subscribes to the pchannel topic (`milvus.pchannel.name`, e.g. `by-dev-rootcoord-dml_0`) and consumes the raw insert, delete, and timetick messages Milvus writes there. These come in two wire formats, msgpack batches and single protobuf messages, and neither is documented. The schema lives in https://github.com/milvus-io/milvus-proto/blob/master/proto/msg.proto[`msg.proto`].
 . **etcd.** Milvus stores the per-channel checkpoint (a TSO and the MQ offset it had consumed up to) in etcd and does not expose it through any API, which is why the connector needs direct etcd access. This checkpoint is where streaming starts once the snapshot is done.
 . **The Milvus gRPC API.** Used during the snapshot to list collections, read schemas, and query rows, and during streaming the first time a collection shows up on the channel: to resolve its primary key, and to fetch its whole schema if that first event is a delete.
 
@@ -123,17 +135,23 @@ An alternative design, polling collections through the API and diffing, was neve
 The connector does not require collections to be declared up front, which matters when collections are created per tenant or per model version and come and go.
 
 * **During the snapshot**, the connector lists collections through the Milvus metadata API, filters them against `milvus.collection.include.list` / `exclude.list` (literal names or Java regular expressions), and reads each schema.
-* **During streaming**, a collection is registered when its first event arrives on the pchannel. The raw insert message carries typed column data, which is enough to build the Connect schema; one `DescribeCollection` call over gRPC resolves the primary key (with a name-and-type heuristic as fallback), and if the first event is a delete, the whole schema comes from that call. The include and exclude lists are not consulted on this path: today every collection on the pchannel is streamed (see Limitations).
+* **During streaming**, a collection is registered when its first event arrives on the pchannel. The raw insert message carries typed column data, which is enough to build the Connect schema. One `DescribeCollection` call over gRPC resolves the primary key (with a name-and-type heuristic as fallback), and if the first event is a delete, the whole schema comes from that call. The include and exclude lists are not consulted on this path: today every collection on the pchannel is streamed (see Limitations).
 
-Each captured collection gets its own topic, named `<topic.prefix>.<database>.<collection>`. Note the database segment: the topic is `milvus.default.products`, not `milvus.products`; a sink configured with the short name finds no topic.
+Each captured collection gets its own topic, named `<topic.prefix>.<database>.<collection>`. Note the database segment: the topic is `milvus.default.products`, not `milvus.products`. A sink configured with the short name finds no topic.
 
 === The snapshot and the handoff
 
-The classic CDC failure mode sits at the seam between "copy the existing data" and "stream the new data": lose an event in the gap and the mirror is silently incomplete; overlap them carelessly and you resurrect a deleted row. The connector's answer is to anchor the stream at a point the snapshot is guaranteed to cover, the etcd checkpoint.
+The classic CDC failure mode sits at the seam between copying the existing data and streaming the new data: lose an event in the gap and the mirror is silently incomplete, or overlap them carelessly and you resurrect a deleted row. The connector's answer is to anchor the stream at a point the snapshot is guaranteed to cover, the etcd checkpoint.
 
-The snapshot starts by reading the channel checkpoint from etcd. That checkpoint pairs two values: a TSO and the MQ offset Milvus had consumed up to at that timestamp. The connector keeps both, then queries each included collection over gRPC with `consistency_level=Strong`, which makes Milvus answer with everything committed up to the query, and emits every row it gets back as an `op=r` snapshot-read event stamped with the checkpoint TSO. When the last collection has been read, it records `snapshot_completed = true` in the connector offsets, seeks the MQ consumer to the message after the checkpoint offset, and begins streaming from there.
+The snapshot starts by reading the channel checkpoint from etcd. That checkpoint pairs two values, a TSO and the MQ offset Milvus had consumed up to at that timestamp, and the connector keeps both. From there it:
 
-The order of those two reads is what makes the handoff safe. The checkpoint is taken before the query, so everything the checkpoint covers is inside the snapshot, and everything after it is in the stream the connector is about to read: nothing is lost. What the handoff does allow is overlap. A write that lands between the checkpoint and the snapshot query appears twice, once as `op=r` and again as `op=c` when the stream replays it, and `insert.mode=upsert` on the sink is what makes the second copy harmless. Milvus's checkpoint trails its writes (by about a second in the run below), so seeded rows are exactly that case: in a run of the walkthrough's example with the checkpoint path corrected, the four seeded rows came through as four reads followed by four creates. An earlier design pinned the query to the checkpoint TSO with `guarantee_ts` to close that window; the Milvus SDK's query request has no such field, so the connector settles for at-least-once at the seam.
+* Queries each included collection over gRPC with `consistency_level=Strong`, which makes Milvus answer with everything committed up to the query.
+* Emits every row it gets back as an `op=r` snapshot-read event stamped with the checkpoint TSO.
+* Records `snapshot_completed = true` in the connector offsets when the last collection has been read.
+* Seeks the MQ consumer to the message after the checkpoint offset, and
+* Begins streaming from there.
+
+The order of those two reads is what makes the handoff safe. The checkpoint is taken before the query, so everything the checkpoint covers is inside the snapshot, and everything after it is in the stream the connector is about to read: nothing is lost. What the handoff does allow is overlap. A write that lands between the checkpoint and the snapshot query appears twice, once as `op=r` and again as `op=c` when the stream replays it, and `insert.mode=upsert` on the sink is what makes the second copy harmless. Milvus's checkpoint trails its writes (by about a second in the run below), so seeded rows are exactly that case: in a run of the walkthrough's example with the checkpoint path corrected, the four seeded rows came through as four reads followed by four creates. An earlier design pinned the query to the checkpoint TSO with `guarantee_ts` to close that window. The Milvus SDK's query request has no such field, so the connector settles for at-least-once at the seam.
 
 ++++
 <div class="imageblock centered-image">
@@ -141,11 +159,11 @@ The order of those two reads is what makes the handoff safe. The checkpoint is t
 </div>
 ++++
 
-Milvus 2.5 stores that checkpoint under `meta/datacoord-meta/channel-cp/<vchannel>`, and the connector's default looks under `data-coord/checkpoint/binlog/channel/<pchannel>`, a key that does not exist. Out of the box it therefore finds no checkpoint, logs a warning, snapshots anyway, and starts streaming from the end of the channel, which is why the snapshot event in the walkthrough carries `"tso": 0`. A write that lands between the snapshot query and that seek would be missed. Pointing `milvus.etcd.checkpoint.path` at the real key produces the behaviour described above (checkpoint found, stream resumed from the following offset, the overlap replayed and absorbed); fixing the default is the first item on the list at the end of this post.
+Milvus 2.5 stores that checkpoint under `meta/datacoord-meta/channel-cp/<vchannel>`, and the connector's default looks under `data-coord/checkpoint/binlog/channel/<pchannel>`, a key that does not exist. Out of the box it therefore finds no checkpoint, logs a warning, snapshots anyway, and starts streaming from the end of the channel, which is why the snapshot event in the walkthrough carries `"tso": 0`. A write that lands between the snapshot query and that seek would be missed. Pointing `milvus.etcd.checkpoint.path` at the real key produces the behaviour described above (checkpoint found, stream resumed from the following offset, the overlap replayed and absorbed). Fixing the default is the first item on the list at the end of this post.
 
 === Streaming, timeticks, and strict TSO order
 
-Once streaming, the connector deserializes each raw MQ message, but arrival order on the pchannel is not commit order. Milvus multiplexes several _virtual channels_ (vchannels) onto one pchannel, and each vchannel makes progress independently; a message that arrives later may carry an earlier commit timestamp.
+Once streaming, the connector deserializes each raw MQ message, but arrival order on the pchannel is not commit order. Milvus multiplexes several _virtual channels_ (vchannels) onto one pchannel, and each vchannel makes progress independently, so a message that arrives later may carry an earlier commit timestamp.
 
 Milvus solves this internally with the timetick protocol, and the connector implements the same watermark logic in its timetick ordering engine:
 
@@ -153,7 +171,14 @@ Milvus solves this internally with the timetick protocol, and the connector impl
 * Each vchannel periodically publishes a _timetick_: a promise that it will never again produce an event older than that tick.
 * The engine buffers incoming events and maintains a global watermark, the minimum of the latest timeticks across all vchannels. Once the watermark reaches an event's TSO, no vchannel can still produce anything older, so the event is released.
 
-A four-message example shows the mechanism. Two vchannels, A and B, share one pchannel, and the connector reads, in arrival order: an event from A with TSO 105, an event from B with TSO 101, a timetick of 110 from A, and a timetick of 108 from B. The two events arrived in the wrong order, so the engine holds both in its buffer, sorted by TSO. Once both ticks are in, the watermark is the smaller of the two, 108, and every buffered event with a TSO at or below it is safe to release, because neither vchannel can produce anything older. The engine emits the event with TSO 101 and then the one with TSO 105, in strict TSO order, the reverse of how they arrived. An event with a TSO above 108 would stay buffered until a later round of ticks lifted the watermark past it.
+A four-message example shows the mechanism. Two vchannels, A and B, share one pchannel, and the connector reads, in arrival order:
+
+. an event from A with TSO 105,
+. an event from B with TSO 101,
+. a timetick of 110 from A,
+. a timetick of 108 from B.
+
+The two events arrived in the wrong order, so the engine holds both in its buffer, sorted by TSO. Once both ticks are in, the watermark is the smaller of the two, 108, and every buffered event with a TSO at or below it is safe to release, because neither vchannel can produce anything older. The engine emits the event with TSO 101 and then the one with TSO 105, in strict TSO order, the reverse of how they arrived. An event with a TSO above 108 would stay buffered until a later round of ticks lifted the watermark past it.
 
 ++++
 <div class="imageblock centered-image">
@@ -163,19 +188,24 @@ A four-message example shows the mechanism. Two vchannels, A and B, share one pc
 
 Downstream consumers therefore observe changes in exactly the order Milvus committed them, across collections and across vchannels. Two decisions in that engine cost me the most to get right:
 
-**Deletes sort before inserts within one TSO.** Milvus implements an upsert as a delete followed by an insert at a single TSO. Since the pair shares a timestamp, the engine must impose an order within the bucket, and it must be delete first: a consumer that applies insert-then-delete ends up with the row deleted after an upsert. An early version of the connector got this wrong, and no unit test noticed; the end-to-end demo did, when an upserted product vanished from Elasticsearch, the sink in an earlier iteration of the demo. (You'll see the corrected pair, sharing one TSO, in the walkthrough.)
+**Deletes sort before inserts within one TSO.** Milvus implements an upsert as a delete followed by an insert at a single TSO. Since the pair shares a timestamp, the engine must impose an order within the bucket, and it must be delete first: a consumer that applies insert-then-delete ends up with the row deleted after an upsert. An early version of the connector got this wrong, and no unit test noticed. The end-to-end demo did, when an upserted product vanished from Elasticsearch, the sink in an earlier iteration of the demo. (You'll see the corrected pair, sharing one TSO, in the walkthrough.)
 
 **Liveness beats strictness under stall.** The watermark only advances if every vchannel keeps ticking. If one goes quiet (a rebalance, an idle shard), strict ordering would buffer events forever. The `milvus.timetick.stall.timeout.ms` setting bounds this: once the watermark has not moved for that long (30 seconds by default) while events are waiting, the engine force-flushes what it has, logging that strict TSO ordering was relaxed, rather than halting the pipeline. It is a deliberate trade: strict ordering and roughly a second of commit-to-queryable latency on the healthy path, delivery instead of strictness when a channel goes silent.
 
 === Offsets: how progress is tracked
 
-The connector's offset (what Kafka Connect persists to resume from) is its position in Milvus's message queue: the Kafka offset of the last message read from the pchannel, the latest timetick seen per vchannel, the etcd checkpoint TSO the snapshot started from, and the `snapshot_completed` flag.
+The connector's offset (what Kafka Connect persists to resume from) is its position in Milvus's message queue:
+
+* The Kafka offset of the last message read from the pchannel,
+* The latest timetick seen per vchannel,
+* The etcd checkpoint TSO the snapshot started from, and
+* The `snapshot_completed` flag.
 
 One caveat sits in that list. The MQ position is advanced as messages are polled, before the events they carry have cleared the ordering buffer, and the offset attached to each emitted record is that latest polled position. If the connector crashes while events are still buffered, the restart seeks past them and they are lost. The window is short, the time events wait in the buffer, but it exists, so delivery is not strictly at-least-once in the current build. What is safe by construction is the snapshot: until `snapshot_completed` is committed, a restart re-runs it in full, which is why an idempotent, primary-key-addressed sink matters. One early demo run proved that point: crash-restarts duplicated the snapshot, producing 3,001 events on the topic for a 1,001-row collection, yet Elasticsearch converged to exactly 1,001 documents, because the Milvus PK was the ES document `_id`.
 
 == Walkthrough: Keeping Postgres (pgvector) in Sync with Milvus
 
-Two services share one product corpus. An _ingestion service_ owns writes: it embeds product data and inserts, upserts, and deletes rows in Milvus, the source of truth for the vectors and the engine that answers high-throughput ANN queries. Everything else about the business (orders, inventory, pricing, the reporting queries) already lives in Postgres, and the questions the back office asks are half vector, half relational: "the ten products most similar to this one that are still in stock," "which listings are near-duplicates of each other," "how far apart are two categories' embeddings on average." With https://github.com/pgvector/pgvector[pgvector], each of those is a single SQL query with a join, provided the embeddings are in Postgres. Today they get there through a nightly batch copy that cannot see deletes, or not at all. The ingestion service should not know Postgres exists, and Postgres should hold the same vectors Milvus does, current to within a second.
+Two services share one product corpus. An _ingestion service_ owns writes: it embeds product data and inserts, upserts, and deletes rows in Milvus, the source of truth for the vectors and the engine that answers high-throughput ANN queries. Everything else about the business (orders, inventory, pricing, the reporting queries) already lives in Postgres, and the questions the back office asks are half vector, half relational: the ten products most similar to this one that are still in stock, which listings are near-duplicates of each other, how far apart two categories' embeddings are on average. With https://github.com/pgvector/pgvector[pgvector], each of those is a single SQL query with a join, provided the embeddings are in Postgres. Today they get there through a nightly batch copy that cannot see deletes, or not at all. The ingestion service should not know Postgres exists, and Postgres should hold the same vectors Milvus does, current to within a second.
 
 The pipeline that delivers it is a Debezium source feeding a Debezium sink, with no transforms and no custom code anywhere.
 
@@ -185,13 +215,20 @@ The pipeline that delivers it is a Debezium source feeding a Debezium sink, with
 </div>
 ++++
 
-Debezium already had the on-ramp to Milvus: the https://debezium.io/documentation/reference/stable/connectors/postgresql.html[PostgreSQL connector] captures pgvector columns as vector logical types, and https://debezium.io/documentation/reference/stable/operations/debezium-server.html[Debezium Server] ships a Milvus sink, so Postgres-to-Milvus is a configuration exercise. What was missing was the off-ramp: until now, vectors checked into Milvus and never checked out. That off-ramp is the literal ask in discussion #36683 ("incremental export to kafka").
+Debezium already had the on-ramp to Milvus: the https://debezium.io/documentation/reference/stable/connectors/postgresql.html[PostgreSQL connector] captures pgvector columns as vector logical types, and https://debezium.io/documentation/reference/stable/operations/debezium-server.html[Debezium Server] ships a Milvus sink, so Postgres-to-Milvus is a configuration exercise. What was missing was the off-ramp: until now, vectors checked into Milvus and never checked out. That off-ramp is exactly what discussion #36683 asked for, an incremental export to Kafka.
 
-The whole pipeline lives in the Debezium examples repository under https://github.com/debezium/debezium-examples/tree/main/milvus-to-pgvector[`milvus-to-pgvector`]: the Compose file and Milvus config, both connector registrations, a seed script, and a `test.yaml` that CI runs on every change. The https://github.com/debezium/debezium-examples/blob/main/milvus-to-pgvector/README.md[README] walks through every command, and `python3 scripts/run-example-test.py milvus-to-pgvector` from the root of the examples clone runs the whole thing unattended, plugin download included. Rather than repeat those commands, this section follows the data through the pipeline; every output shown is copied from a run of that example against Milvus 2.5.4.
+The whole pipeline lives in the Debezium examples repository under https://github.com/debezium/debezium-examples/tree/main/milvus-to-pgvector[`milvus-to-pgvector`]: the Compose file and Milvus config, both connector registrations, a seed script, and a `test.yaml` that CI runs on every change. The https://github.com/debezium/debezium-examples/blob/main/milvus-to-pgvector/README.md[README] walks through every command, and `python3 scripts/run-example-test.py milvus-to-pgvector` from the root of the examples clone runs the whole thing unattended, plugin download included. Rather than repeat those commands, this section follows the data through the pipeline. Every output shown is copied from a run of that example against Milvus 2.5.4.
 
 === The stack
 
-The connector is not in the Debezium Connect image yet, so the example unpacks its released plugin archive from Maven Central into a `plugins/` directory that the Compose file mounts into Connect; the https://github.com/debezium/debezium-examples/blob/main/milvus-to-pgvector/README.md#get-the-milvus-connector[README] has the two-line fetch. One `docker compose up` then brings up six services: Milvus standalone with its etcd and MinIO, one Kafka that serves as both Milvus's MQ and Connect's broker, Kafka Connect with the plugin mounted, and Postgres from the official pgvector image. The one file worth reading is https://github.com/debezium/debezium-examples/blob/main/milvus-to-pgvector/milvus-user.yaml[`milvus-user.yaml`]. It points Milvus at the etcd and MinIO containers, puts it on Kafka as its MQ backend, which is the connector's single hard deployment requirement, and sets one DML channel, which is why the pchannel throughout is `by-dev-rootcoord-dml_0`. The Debezium JDBC sink needs no installation; it ships inside the Connect image.
+The connector is not in the Debezium Connect image yet, so the example unpacks its released plugin archive from Maven Central into a `plugins/` directory that the Compose file mounts into Connect. The https://github.com/debezium/debezium-examples/blob/main/milvus-to-pgvector/README.md#get-the-milvus-connector[README] has the two-line fetch. One `docker compose up` then brings up six services:
+
+* Milvus standalone with its etcd and MinIO,
+* 1 Kafka that serves as both Milvus's MQ and Connect's broker,
+* Kafka Connect with the plugin mounted, and
+* Postgres from the official pgvector image.
+
+The one file worth reading is https://github.com/debezium/debezium-examples/blob/main/milvus-to-pgvector/milvus-user.yaml[`milvus-user.yaml`]. It points Milvus at the etcd and MinIO containers, puts it on Kafka as its MQ backend, which is the connector's single hard deployment requirement, and sets one DML channel, which is why the pchannel throughout is `by-dev-rootcoord-dml_0`. The Debezium JDBC sink needs no installation. It ships inside the Connect image.
 
 === The collection, as Milvus holds it
 
@@ -206,13 +243,19 @@ The snapshot phase needs a collection that already exists and holds data, so htt
 | 1004 | building blocks | toys | 24.99 | `[0.4, 0.4, 0.9, 0.1]`
 |===
 
-Dim 4 keeps one event readable on a screen; the pipeline is identical at dim 1536.
+Dim 4 keeps one event readable on a screen. The pipeline is identical at dim 1536.
 
 Once the script has run, Kafka lists a topic named `by-dev-rootcoord-dml_0`. That topic is the pchannel, and those four inserts are already sitting on it as binary protobuf, in the undocumented format from the dissection. Nothing outside Milvus can read them yet.
 
 === The same four rows, after the source connector
 
-https://github.com/debezium/debezium-examples/blob/main/milvus-to-pgvector/source-milvus.json[`source-milvus.json`] is pointing the connector at the three touchpoints: `milvus.uri` for the gRPC endpoint, `milvus.etcd.endpoints` with `milvus.etcd.root.path` for the checkpoint, and `milvus.kafka.bootstrap.servers` with `milvus.pchannel.name` for the MQ. One setting needs a word, `milvus.wire.format=proto_single`: on 3.7.0.Beta2, the release the example pins, the `auto` default fails on the first streamed message, so the format is set explicitly. Auto-detection works from 3.7.0.CR1 onward.
+https://github.com/debezium/debezium-examples/blob/main/milvus-to-pgvector/source-milvus.json[`source-milvus.json`] is pointing the connector at the three touchpoints:
+
+* `milvus.uri` for the gRPC endpoint,
+* `milvus.etcd.endpoints` with `milvus.etcd.root.path` for the checkpoint, and
+* `milvus.kafka.bootstrap.servers` with `milvus.pchannel.name` for the MQ.
+
+One setting needs a word, `milvus.wire.format=proto_single`: on 3.7.0.Beta2, the release the example pins, the `auto` default fails on the first streamed message, so the format is set explicitly. Auto-detection works from 3.7.0.CR1 onward.
 
 Registering it puts four events on `milvus.default.products`, all `op=r`, one per seeded row, and the value schema types `embedding` as an array of floats carrying the name `io.debezium.data.FloatVector`. This is the payload of the first one:
 
@@ -234,7 +277,7 @@ Registering it puts four events on `milvus.default.products`, all `op=r`, one pe
 }
 ----
 
-Row 1001 from the table above, now a Debezium change event on `milvus.default.products` (`<topic.prefix>.<database>.<collection>`), with the embedding intact and carrying a type name, and with a key Struct holding `pk` that is not shown here. Nobody declared that schema to the connector; it read it from Milvus during the snapshot.
+Row 1001 from the table above, now a Debezium change event on `milvus.default.products` (`<topic.prefix>.<database>.<collection>`), with the embedding intact and carrying a type name, and with a key Struct holding `pk` that is not shown here. Nobody declared that schema to the connector. It read it from Milvus during the snapshot.
 
 ==== What the connector takes responsibility for
 
@@ -245,12 +288,12 @@ That one event is small, but almost everything a CDC pipeline needs is already d
 * **Every Milvus field type, not only float vectors.** Bool, the Int8 through Int64 family, Float and Double, VarChar and Text, Array, JSON and Geometry as `io.debezium.data.Json`, and the whole vector family: `FloatVector` as the typed logical vector in the event above, BinaryVector, Int8Vector, Float16Vector and BFloat16Vector as bytes, SparseFloatVector as JSON. `decimal.handling.mode` decides whether Float and Double arrive as floats, as Connect `Decimal`, or as strings. That `FloatVector` type name is what lets a generic JDBC sink create a pgvector column one step from now instead of a float array.
 * **Identity.** Every event is keyed by a Struct holding the Milvus primary key, which is what makes downstream idempotent: upsert on conflict, delete by key, replay safely.
 * **Order.** Events leave in strict Milvus TSO order across vchannels via the timetick watermark, with the delete ahead of the insert inside an upsert's shared timestamp.
-* **The Debezium envelope.** `before`, `after`, `source`, `op`, plus tombstones after deletes, which means every existing Debezium SMT, converter and sink works against Milvus with no new code. Postgres is one sink file; Elasticsearch, Redis or S3 is a different sink file against the same topic, and Milvus never learns that a consumer was added.
+* **The Debezium envelope.** `before`, `after`, `source`, `op`, plus tombstones after deletes, which means every existing Debezium SMT, converter and sink works against Milvus with no new code. Postgres is one sink file. Elasticsearch, Redis or S3 is a different sink file against the same topic, and Milvus never learns that a consumer was added.
 * **Both Milvus wire formats.** msgpack batches and single protobuf messages are both deserialized. If a message in the other format shows up, which is what a rolling Milvus upgrade produces, the task fails with a typed mismatch error naming the topic, partition and offset rather than a parse error with no address.
 * **Bounded memory.** The ordering buffer is capped by `milvus.buffer.max.events` (10,000) and `milvus.buffer.max.bytes` (64 MB). When it fills, the task stops polling the channel and drains whatever the watermark allows instead of growing until the JVM gives up.
 * **Filtering and topic naming.** Include and exclude lists take literal names or Java regular expressions and select collections (on the snapshot path today, see Limitations), and each collection gets its own topic, `<prefix>.<database>.<collection>`.
 * **Talking to a real cluster.** `milvus.token` for authenticated deployments, `milvus.database` to choose the database, and `milvus.kafka.*` for the consumer group, poll interval and partition the connector uses on Milvus's MQ.
-* **Operability.** Pause, resume, restart and offset handling are plain Kafka Connect, with Milvus-specific metrics, heartbeats and Debezium notifications on top; the last section of the walkthrough exercises them.
+* **Operability.** Pause, resume, restart and offset handling are plain Kafka Connect, with Milvus-specific metrics, heartbeats and Debezium notifications on top. The last section of the walkthrough exercises them.
 
 One thing the registration does not mention is converters, and the example depends on the default. The Debezium Connect image runs JSON converters with schemas enabled, which is what gives the sink a Struct key to derive a primary key from and the `FloatVector` type name to act on. On a worker configured schemaless, set `key.converter.schemas.enable=true` and `value.converter.schemas.enable=true` on both connectors. (An earlier version of this demo lost a day to the schemaless variant of this mistake. You're welcome.)
 
@@ -261,9 +304,9 @@ https://github.com/debezium/debezium-examples/blob/main/milvus-to-pgvector/sink-
 * `primary.key.mode=record_key` with `primary.key.fields=pk` makes the Milvus primary key the Postgres primary key. Every idempotency guarantee below follows from that one choice.
 * `insert.mode=upsert` and `delete.enabled=true` are the entire write path: `op=r` and `op=c` become `INSERT ... ON CONFLICT (pk) DO UPDATE`, `op=d` becomes a `DELETE` by key, and the tombstone is understood.
 * `schema.evolution=basic` lets the sink issue the `CREATE TABLE` from the first event's schema, which is where the `FloatVector` type name turns into a pgvector column.
-* `collection.name.format=products` names the table, because the default is the topic name, `milvus.default.products`, which is not valid SQL. (Debezium 3 renamed this setting; `table.name.format` still works as a deprecated alias.)
+* `collection.name.format=products` names the table, because the default is the topic name, `milvus.default.products`, which is not valid SQL. (Debezium 3 renamed this setting, and `table.name.format` still works as a deprecated alias.)
 
-And no `transforms` at all. A third-party sink needs transforms to unwrap the Debezium envelope and extract the key, plus settings that turn tombstones into deletes; the Elasticsearch version of this demo needed two. The Debezium JDBC sink reads Debezium envelopes natively, so its config is connection details and policy, nothing else.
+And no `transforms` at all. A third-party sink needs transforms to unwrap the Debezium envelope and extract the key, plus settings that turn tombstones into deletes. The Elasticsearch version of this demo needed two. The Debezium JDBC sink reads Debezium envelopes natively, so its config is connection details and policy, nothing else.
 
 With the `vector` extension enabled and the sink registered, the table appears within seconds, four rows and all:
 
@@ -280,11 +323,17 @@ Indexes:
     "products_pkey" PRIMARY KEY, btree (pk)
 ----
 
-`halfvec` (16-bit floats) is Debezium's type pairing for `FloatVector`, so the `0.1` Milvus holds comes back from Postgres as `0.099975586`: that is the rounding, not a bug. Every pgvector distance operator works on the column, and the similarity search below shows it ranking neighbours identically to Milvus. If you need strict 32-bit fidelity, create the table yourself with `embedding vector(4)` before registering the sink; `schema.evolution=basic` only adds missing columns, so the sink writes into what you defined.
+`halfvec` (16-bit floats) is Debezium's type pairing for `FloatVector`, so the `0.1` Milvus holds comes back from Postgres as `0.099975586`: that is the rounding, not a bug. Every pgvector distance operator works on the column, and the similarity search below shows it ranking neighbours identically to Milvus. If you need strict 32-bit fidelity, create the table yourself with `embedding vector(4)` before registering the sink. `schema.evolution=basic` only adds missing columns, so the sink writes into what you defined.
 
 === Changes, in order, within a second
 
-Milvus has no SQL shell, so the "ingestion service" is three `curl` calls against its REST API, and the https://github.com/debezium/debezium-examples/blob/main/milvus-to-pgvector/README.md#change-data-in-milvus[README] carries them verbatim: insert pk 1005, a camping stove at 59.99; upsert the same row at 49.99; delete pk 1004, the building blocks. What is worth showing is not the calls but what they leave on the topic. Read from offset 4 onward, with each record reduced to its operation, its TSO and the key fields of its images:
+Milvus has no SQL shell, so the ingestion service is three `curl` calls against its REST API, and the https://github.com/debezium/debezium-examples/blob/main/milvus-to-pgvector/README.md#change-data-in-milvus[README] carries them verbatim:
+
+. insert pk 1005, a camping stove at 59.99,
+. upsert the same row at 49.99, and
+. delete pk 1004, the building blocks.
+
+Read from offset 4 onward, with each record reduced to its operation, its TSO and the key fields of its images:
 
 ----
 [offset 4] {"op":"c","tso":469170991077785601,"before":null,"after":{"pk":1005,"name":"camping stove","price":59.99}}
@@ -297,33 +346,41 @@ Milvus has no SQL shell, so the "ingestion service" is three `curl` calls agains
 
 One Milvus upsert (offsets 5 to 7) became a delete and an insert sharing a single TSO, delete first. That is the intra-bucket ordering decision from the dissection, on the wire. The delete of pk 1004 (offsets 8 and 9) is an `op=d` with a primary-key-only `before` image, since Milvus does not publish the prior state of a deleted entity, followed by a tombstone. Postgres ends with exactly one row for pk 1005, at the new price, and no row for pk 1004.
 
-A dual-writing application cannot make the upsert guarantee; the connector inherits it from Milvus's own commit order. And the delete is the event that batch export can never see, with no delete-handling code anywhere in the pipeline.
+A dual-writing application cannot make the upsert guarantee. The connector inherits it from Milvus's own commit order. And the delete is the event that batch export can never see, with no delete-handling code anywhere in the pipeline.
 
 === Both engines, one question
 
-Everything so far would hold for any scalar table. The reason to pick pgvector is that the embedding arrived as a _working vector_, not an opaque payload, and the way to prove it is to ask both engines the same question. Take pk 1001's embedding as the query, read back from Postgres as `halfvec` so that both sides are asked about the vector that made the round trip. Postgres ranks its three nearest neighbours by cosine distance (`<=>`, the same metric the Milvus index was built with); Milvus answers the same query through its ANN search endpoint. Both return 1001, 1005, 1003, in that order.
+Everything so far would hold for any scalar table. The reason to pick pgvector is that the embedding arrived as a _working vector_, not an opaque payload, and the way to prove it is to ask both engines the same question. Take pk 1001's embedding as the query, read back from Postgres as `halfvec` so that both sides are asked about the vector that made the round trip. Postgres ranks its three nearest neighbours by cosine distance (`<=>`, the same metric the Milvus index was built with). Milvus answers the same query through its ANN search endpoint. Both return 1001, 1005, 1003, in that order.
 
-Identical top-3 from a SQL `ORDER BY` and from Milvus's ANN index, on vectors that travelled from Milvus through Kafka into Postgres as `halfvec`. The distances agree too: Postgres puts the camping stove at cosine distance 0.00915 from the running shoes, and Milvus reports a cosine similarity of 0.99085 for the same pair. From here, "similar to this product _and_ in stock" is a `JOIN` away.
+Identical top-3 from a SQL `ORDER BY` and from Milvus's ANN index, on vectors that travelled from Milvus through Kafka into Postgres as `halfvec`. The distances agree too: Postgres puts the camping stove at cosine distance 0.00915 from the running shoes, and Milvus reports a cosine similarity of 0.99085 for the same pair. From here, finding products similar to this one that are also in stock is a `JOIN` away.
 
 === Pause, write, resume
 
-Finally, the offset guarantees when the connector stops. The README scripts this step with two rows written during the pause; the run below is a wider variant of it. Pause the source through the Connect REST API, insert three rows (a yoga mat, an espresso grinder, a board game) through the Milvus REST API while it is down, and resume. During the pause Milvus counts seven rows and Postgres still four. Within seconds of the resume Postgres counts seven as well, and the topic's end offset stands at 13.
+Finally, the offset guarantees when the connector stops. The README scripts this step with two rows written during the pause. The run below is a wider variant of it. Pause the source through the Connect REST API, insert three rows (a yoga mat, an espresso grinder, a board game) through the Milvus REST API while it is down, and resume. During the pause Milvus counts seven rows and Postgres still four. Within seconds of the resume Postgres counts seven as well, and the topic's end offset stands at 13.
 
-On resume, the topic replays exactly the three missed `op=c` events and the two counts match. Thirteen records: four snapshot reads, the insert, the three records of the upsert, the two of the delete, and the three rows written while the connector was paused. No loss, no duplicates, on vanilla Kafka Connect offset management with no bespoke daemon involved.
+On resume, the topic replays exactly the three missed `op=c` events and the two counts match. Thirteen records in all:
 
-For monitoring in anger rather than a demo: the connector exposes snapshot and streaming metrics over JMX, where the standard `MilliSecondsBehindSource` is computed from the TSO watermark and the snapshot bean reports the checkpoint TSO it started from; interval heartbeats (`heartbeat.interval.ms`) prove liveness on quiet collections.
+* Four snapshot reads,
+* One insert,
+* Three records for the upsert,
+* Two for the delete, and
+* Three rows written while the connector was paused.
+
+No loss, no duplicates, on Kafka Connect offset management with no daemon involved.
+
+For monitoring in production: The connector exposes snapshot and streaming metrics over JMX, where the standard `MilliSecondsBehindSource` is computed from the TSO watermark and the snapshot bean reports the checkpoint TSO it started from. Interval heartbeats (`heartbeat.interval.ms`) prove liveness on quiet collections.
 
 == Limitations and What's Next
 
 The connector is incubating, and its edges deserve stating as plainly as its features:
 
 * **Kafka only, as Milvus's MQ backend.** Deployments backed by Pulsar or RocksMQ are not supported as the connector reads the MQ directly, so it must speak the deployment's MQ. Milvus 2.6 has no MQ at all: supporting it means a Woodpecker implementation of `MilvusMessageConsumer` and a WAL offset type, and nothing else in the pipeline changes.
-* **Single task, single pchannel.** One connector instance consumes one pchannel; `tasks.max` values above 1 are ignored.
+* **Single task, single pchannel.** One connector instance consumes one pchannel, and `tasks.max` values above 1 are ignored.
 * **No** `op=u` **events.** A Milvus upsert surfaces as the delete+insert pair, not a synthesized update event. The configuration already accepts `milvus.upsert.mode=correlate` for exactly that purpose, but nothing reads the setting yet, so it is a no-op until the pairing is implemented in the ordering engine.
 * **PK-only** `before` **images on deletes.** Milvus does not publish the prior state of a deleted entity, so the connector cannot either.
 * **Collection DDL is not emitted.** Create/drop operations are tracked internally for ordering but not yet emitted as schema-change events.
-* **The default etcd checkpoint key does not match Milvus 2.5.** The snapshot runs without a checkpoint and streaming starts from the end of the channel; `milvus.etcd.checkpoint.path` can point at the real key for a known collection, but the default needs fixing in the connector.
+* **The default etcd checkpoint key does not match Milvus 2.5.** The snapshot runs without a checkpoint and streaming starts from the end of the channel. `milvus.etcd.checkpoint.path` can point at the real key for a known collection, but the default needs fixing in the connector.
 * **Include and exclude lists apply to the snapshot only.** During streaming, every collection on the pchannel is captured.
-* **Offsets can run ahead of the ordering buffer.** A crash while events are buffered can drop them; see the offsets section above.
-* `milvus.wire.format=auto` **only works from 3.7.0.CR1.** In 3.7.0.Beta2 the detector exists but is not wired in, so on that release set `proto_single` (or `msgpack_batch`) explicitly; the fix landed as https://github.com/debezium/debezium-connector-milvus/pull/12[DBZ-2530] and ships in CR1.
-* The emitted message format may still change; the connector is not yet recommended for production use.
+* **Offsets can run ahead of the ordering buffer.** A crash while events are buffered can drop them. See the offsets section above.
+* `milvus.wire.format=auto` **only works from 3.7.0.CR1.** In 3.7.0.Beta2 the detector exists but is not wired in, so on that release set `proto_single` (or `msgpack_batch`) explicitly. The fix landed as https://github.com/debezium/debezium-connector-milvus/pull/12[DBZ-2530] and ships in CR1.
+* The emitted message format may still change, and the connector is not yet recommended for production use.
