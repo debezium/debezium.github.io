@@ -675,6 +675,37 @@ In addition, the payload of the source message must be a <code>Struct</code> tha
 <div class="paragraph">
 <p>If the structure of the events in the Kafka topic do not adhere to these rules, you must implement a custom single message transformation to convert the structure of the source events into a usable format.</p>
 </div>
+<div class="paragraph">
+<p>When an event field is a Kafka Connect <code>STRUCT</code> for which no dedicated column type is registered, the connector serializes the structure to JSON and stores it in a JSON-capable column:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p><strong>Native JSON dialects</strong> (MySQL, PostgreSQL, SingleStore, StarRocks, CockroachDB): Written directly to native <code>JSON</code> or <code>jsonb</code> columns.</p>
+</li>
+<li>
+<p><strong>Oracle</strong>: The connector selects the column type based on the target database version. Oracle 21c and later use native <code>JSON</code> columns; earlier versions use <code>CLOB</code> columns to store JSON text.</p>
+</li>
+<li>
+<p><strong>Other dialects</strong> (Db2, SQL Server): Stored as JSON text in a large character column, such as <code>CLOB</code> or <code>LONGTEXT</code>.</p>
+</li>
+</ul>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>Large character types such as <code>CLOB</code> and <code>LONGTEXT</code> are typically stored out-of-row, which can reduce write performance.
+If you can guarantee that the serialized <code>STRUCT</code> value does not exceed a fixed length, you can improve write performance by pre-creating the target column ahead of time as an in-row bounded type, such as <code>VARCHAR(n)</code>.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
 </div>
 <div class="sect2">
 <h3 id="jdbc-primary-key-handling"><a class="anchor" href="#jdbc-primary-key-handling"></a>Primary key handling</h3>
@@ -1148,7 +1179,7 @@ Automatic table creation does not expose SingleStore-specific shard key, sort ke
 If the target table requires explicit shard keys, sort keys, or other SingleStore table options, create the destination table in SingleStore before the connector writes to it.</p>
 </div>
 <div class="paragraph">
-<p>For SingleStore targets, Debezium maps Debezium <code>io.debezium.data.Json</code> logical values and Kafka Connect <code>ARRAY</code> and <code>MAP</code> schema values to the SingleStore <code>JSON</code> column type.
+<p>For SingleStore targets, Debezium maps Debezium <code>io.debezium.data.Json</code> logical values and Kafka Connect <code>ARRAY</code>, <code>MAP</code>, and <code>STRUCT</code> schema values to the SingleStore <code>JSON</code> column type.
 The connector maps Debezium <code>io.debezium.data.geometry.Geometry</code> and <code>io.debezium.data.geometry.Geography</code> logical values to the SingleStore <code>GEOGRAPHY</code> column type, and <code>io.debezium.data.geometry.Point</code> logical values to the SingleStore <code>GEOGRAPHYPOINT</code> column type.
 SingleStore supports a subset of WKT geospatial values.
 The connector writes <code>POINT</code>, <code>LINESTRING</code>, and <code>POLYGON</code> WKB values to SingleStore as WKT strings.</p>
@@ -1203,8 +1234,12 @@ StarRocks <code>DATETIME</code> columns do not accept a precision argument; Star
 When column type propagation is enabled, <code>BIGINT UNSIGNED</code> source columns map to <code>LARGEINT</code> columns, preserving the full unsigned 64-bit range.</p>
 </div>
 <div class="paragraph">
-<p>Debezium <code>io.debezium.data.Json</code> logical values and Kafka Connect <code>MAP</code> schema values map to the StarRocks <code>JSON</code> column type, <code>ENUM</code> and <code>SET</code> values map to <code>STRING</code> columns, and <code>YEAR</code> values map to <code>INT</code> columns.
-The StarRocks dialect does not support geospatial or vector logical types, and Kafka Connect <code>ARRAY</code> and <code>STRUCT</code> schema types are not mapped to the StarRocks <code>ARRAY</code> and <code>STRUCT</code> column types.</p>
+<p>Debezium <code>io.debezium.data.Json</code> logical values and Kafka Connect <code>MAP</code> and <code>STRUCT</code> schema values map to the StarRocks <code>JSON</code> column type, <code>ENUM</code> and <code>SET</code> values map to <code>STRING</code> columns, and <code>YEAR</code> values map to <code>INT</code> columns.
+The StarRocks dialect does not map geospatial or vector logical types to native StarRocks column types.
+Because geospatial values are struct-based, they are serialized to <code>JSON</code> like other <code>STRUCT</code> values rather than being rejected.</p>
+</div>
+<div class="paragraph">
+<p>The Kafka Connect <code>ARRAY</code> schema type is not mapped to the StarRocks <code>ARRAY</code> column type, and <code>STRUCT</code> values are stored as <code>JSON</code> rather than as the native StarRocks <code>STRUCT</code> column type.</p>
 </div>
 </div>
 <div class="sect2">
@@ -1229,7 +1264,7 @@ Setting <code>flush.max.retries</code> to <code>0</code> disables the retries so
 <div class="ulist">
 <ul>
 <li>
-<p><code>io.debezium.data.Json</code> logical values and Kafka Connect <code>MAP</code> schema values are written to the CockroachDB <code>jsonb</code> column type.</p>
+<p><code>io.debezium.data.Json</code> logical values and Kafka Connect <code>MAP</code> and <code>STRUCT</code> schema values are written to the CockroachDB <code>jsonb</code> column type.</p>
 </li>
 <li>
 <p><code>io.debezium.data.Xml</code> logical values and propagated range, <code>macaddr</code>, and <code>cidr</code> column types are written as <code>text</code>, because CockroachDB does not provide those types.</p>
@@ -1814,7 +1849,7 @@ In the preceding table, where a second entry, marked with an asterisk, appears i
 SingleStore maps Debezium <code>io.debezium.data.Json</code> logical values to <code>json</code>.</p>
 </div>
 <div class="paragraph">
-<p>Kafka Connect <code>MAP</code> schema values are also written to SingleStore <code>json</code> columns.
+<p>Kafka Connect <code>MAP</code> and <code>STRUCT</code> schema values are also written to SingleStore <code>json</code> columns.
 Debezium <code>io.debezium.data.geometry.Geometry</code> and <code>io.debezium.data.geometry.Geography</code> logical values are written to SingleStore <code>geography</code> columns, and <code>io.debezium.data.geometry.Point</code> logical values are written to SingleStore <code>geographypoint</code> columns.</p>
 </div>
 <div class="paragraph">
@@ -1824,7 +1859,7 @@ For example, the connector uses the following mappings:</p>
 <div class="ulist">
 <ul>
 <li>
-<p><code>io.debezium.data.Json</code> logical values and Kafka Connect <code>MAP</code> schema values are written to CockroachDB <code>jsonb</code> columns.</p>
+<p><code>io.debezium.data.Json</code> logical values and Kafka Connect <code>MAP</code> and <code>STRUCT</code> schema values are written to CockroachDB <code>jsonb</code> columns.</p>
 </li>
 <li>
 <p><code>io.debezium.data.Xml</code> logical values are written to <code>text</code> columns because CockroachDB has no XML type.</p>
@@ -3399,7 +3434,7 @@ Quoting behavior is dialect-specific, and varies among different types of databa
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/7a9b237690c594b1547251100bf7a46eef8ec014">7a9b2376</a></span>)
+            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/e74c810d06738d80c41b470cdff60aa20096e30a">e74c810d</a></span>)
             
         </div>
     </footer>
