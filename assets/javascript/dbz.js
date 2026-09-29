@@ -40,6 +40,8 @@
         );
       }
     );
+
+    root.dispatchEvent(new CustomEvent('dbz:theme-change', { detail: { theme: theme } }));
   }
 
   function initThemeToggle() {
