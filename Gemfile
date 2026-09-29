@@ -26,6 +26,7 @@ group :jekyll_plugins do
   gem 'jekyll-paginate-v2'
   gem 'jekyll-archives'
   gem 'jekyll-minifier'
+  gem 'jekyll-sitemap'
 end
 
 # Needed for Ruby 3.x compatibility 
