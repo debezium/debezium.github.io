@@ -1,0 +1,1269 @@
+---
+layout: post
+title:  Debezium 3.7 Release Summary
+date:   2026-09-29
+tags:   [ releases, mongodb, mysql, mariadb, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox, spanner, jdbc, informix, ibmi, cockroachdb, yashandb, ingres, tidb, milvus, sqlite, cli ]
+author: ccranfor
+extraClasses: release-v2
+---
+
+As September draws to a close, we're thrilled to announce the general availability of **Debezium 3.7**, the latest milestone in the Debezium 3.x series.
+This release brings together everything from the last three months of development, adding a wide range of new features, improvements, and bug fixes across the entire ecosystem.
+
++++<!-- more -->+++
+
+Debezium 3.7 welcomes new incubating connectors for TiDB, Milvus, and SQLite, and the CockroachDB connector is no longer incubating.
+The Debezium CLI has its first official release, the Debezium Platform now supports alerting and can deploy pipelines to hosts outside of Kubernetes, and PyDebeziumAI brings real-time change data capture to LangChain and LangGraph applications.
+
+Thanks to our amazing community of contributors, this is one of Debezium's largest feature-packed releases.
+Read on for the full details of everything that shipped in Debezium 3.7!
+
+* link:#breaking-changes[Breaking changes]
+* link:#new-features-and-improvements[New features and improvements]
+* link:#other-changes[Other changes]
+* link:#google-summer-of-code[Google Summer of Code 2026]
+* link:#whats-next[What's next?]
+
+[id="breaking-changes"]
+== Breaking changes
+
+With any major release, there can be breaking changes.
+Let's discuss the key changes you should be aware of before upgrading to **Debezium 3.7**.
+
+=== Debezium for Oracle
+
+==== Continuous mining removed for Oracle 12
+
+Oracle deprecated continuous mining in Oracle 12c and permanently removed it in 19c, and Debezium previously only supported it on a best-effort basis for Oracle 12c deployments.
+This feature has now been removed entirely from the Oracle connector.
+
+If you are currently using continuous mining with Oracle 12c, you will need to switch to a different capture mode before upgrading.
+The LogMiner adapter remains the recommended approach for Oracle change data capture.
+(https://github.com/debezium/dbz/issues/1953[dbz#1953])
+
+==== Savepoint partial rollbacks handled correctly
+
+The Oracle connector handles a rollback to a savepoint by walking back through the buffered events of the transaction and discarding the change that was undone.
+Two defects in this process could cause the target to drift out of sync with the source.
+
+First, when LOB support is enabled, the connector consolidates related `INSERT` and `UPDATE` events for the same row, but this consolidation only carried the column values forward and left the merged `INSERT` with a placeholder row identifier.
+When the partial rollback arrived, the connector could not find the event to discard, logged a _"Cannot undo"_ warning, and emitted the rolled-back change that looked like a normal change to the target.
+
+Second, when a rollback-to-savepoint event was mined near the end of a LogMiner session for a transaction that had not yet committed, the same rollback could be applied a second time when the transaction's events were re-read in the next mining session.
+Depending on the shape of the transaction, this produced either a spurious _"Cannot apply undo change"_ warning or, more seriously, marked an earlier legitimate change such as the original `INSERT` as rolled back and silently dropped it from the change stream.
+
+The connector now preserves the correct row identifier when an `UPDATE` is folded into an `INSERT`, and partial rollbacks are applied idempotently so that a rollback already processed is never re-applied in a later mining session.
+Together these ensure the connector emits exactly the changes that survived the rollback.
+
+No configuration changes are required.
+After upgrading, changes that were rolled back to a savepoint no longer reach downstream consumers, changes that were previously dropped in this scenario are emitted correctly, and the associated warnings no longer appear in the connector log.
+Any downstream compensation put in place to filter the spurious events can be removed.
+(https://github.com/debezium/dbz/issues/1422[dbz#1422], https://github.com/debezium/dbz/issues/1914[dbz#1914])
+
+==== Last enqueued event tracking moved to the transaction cache
+
+The buffered LogMiner implementation now tracks the most recently enqueued event for each transaction directly in the transaction cache, rather than in a separate structure maintained alongside it.
+This consolidates transaction state in a single place, reducing duplicated bookkeeping in the streaming pipeline.
+
+To support this, the XML begin and end events now carry the redo sequence number (`SEQUENCE#`), which the connector uses to detect the boundary between statements that contain XML updates when handling rollbacks.
+As a result, the serialized form of these events stored in the Ehcache and Infinispan transaction buffers has changed.
+
+If you use the Ehcache or Infinispan buffer types and capture `XMLTYPE` columns, allow any in-flight transactions to complete and clear the transaction buffer caches before upgrading, as XML events persisted by an earlier version cannot be deserialized.
+Deployments using the default heap buffer are not affected.
+(https://github.com/debezium/dbz/issues/2652[dbz#2652])
+
+=== Debezium JDBC sink
+
+==== MySQL type preservation audit and fixes
+
+Several MySQL data types that were previously silently corrupted or mishandled in MySQL-to-MySQL JDBC sink pipelines have been fixed.
+Users upgrading should verify their pipelines, as some behaviors that previously appeared to work (but produced wrong data) may now surface errors instead.
+Affected types include `BIGINT UNSIGNED` max values, `BIT(>1)` columns with Avro converters, `ENUM`/`SET` values containing commas or quotes, spatial coordinate ordering, and `TIME` values outside the standard clock range.
+(https://github.com/debezium/dbz/issues/2102[dbz#2102])
+
+=== Debezium for Cassandra
+
+==== Removal of Cassandra 3 connector
+
+Cassandra 3 has reached end of life, and the Cassandra 3 connector has been removed from Debezium.
+As part of this change, the Guava dependency has been upgraded to version 32.0.0, which is incompatible with Cassandra 3 but aligns with the requirements of Cassandra 4 and later.
+
+If you are currently using the Cassandra 3 connector, you will need to upgrade to Cassandra 4 or later before upgrading to Debezium 3.7.
+The Cassandra 4 and Cassandra 5 connectors remain fully supported.
+(https://github.com/debezium/dbz/issues/2273[dbz#2273])
+
+[id="new-features-and-improvements"]
+== New Features and Improvements
+
+The following covers all new features and improvements introduced throughout the Debezium 3.7 release cycle, grouped by connector component area.
+
+[cols="25%,25%,25%,25%"]
+|===
+|link:#new-features-and-improvements-debezium-core[Debezium Core]
+|link:#new-features-and-improvements-debezium-db2[Debezium for Db2]
+|link:#new-features-and-improvements-debezium-mariadb[Debezium for MariaDB]
+|link:#new-features-and-improvements-debezium-mongodb[Debezium for MongoDB]
+
+|link:#new-features-and-improvements-debezium-mysql[Debezium for MySQL]
+|link:#new-features-and-improvements-debezium-oracle[Debezium for Oracle]
+|link:#new-features-and-improvements-debezium-postgresql[Debezium for PostgreSQL]
+|link:#new-features-and-improvements-debezium-sqlserver[Debezium for SQL Server]
+
+|link:#new-features-and-improvements-debezium-jdbc[Debezium JDBC sink]
+|link:#new-features-and-improvements-debezium-quarkus-extension[Debezium Quarkus Extensions]
+|link:#new-features-and-improvements-debezium-operator[Debezium Operator]
+|link:#new-features-and-improvements-debezium-platform[Debezium Platform]
+
+|link:#new-features-and-improvements-debezium-server[Debezium Server]
+|link:#new-features-and-improvements-debezium-embedded-engine[Debezium Embedded Engine]
+|link:#new-features-and-improvements-debezium-cli[Debezium CLI]
+|link:#new-features-and-improvements-debezium-cockroachdb[Debezium for CockroachDB]
+
+|link:#new-features-and-improvements-debezium-informix[Debezium for Informix]
+|link:#new-features-and-improvements-debezium-milvus[Debezium for Milvus]
+|link:#new-features-and-improvements-debezium-neo4j[Debezium for Neo4j]
+|link:#new-features-and-improvements-debezium-spanner[Debezium for Spanner]
+
+|link:#new-features-and-improvements-debezium-sqlite[Debezium for SQLite]
+|link:#new-features-and-improvements-debezium-tidb[Debezium for TiDB]
+|link:#new-features-and-improvements-debezium-vitess[Debezium for Vitess]
+|link:#new-features-and-improvements-debezium-ai-python[Debezium AI for Python]
+
+|link:#new-features-and-improvements-container-images[Container Images]
+|
+|
+|
+
+|===
+
+[id="new-features-and-improvements-debezium-core"]
+=== Debezium Core
+
+==== Schema history memory optimization
+
+Deployments with many identically structured tables, such as multi-tenant databases where each tenant has its own schema, can now see significantly reduced memory consumption.
+Debezium now deduplicates schema history objects so that only one copy of each unique table, column, and attribute definition is retained in memory, rather than storing redundant copies for every structurally identical table.
+(https://github.com/debezium/dbz/issues/1813[dbz#1813])
+
+==== Caching for reselected column values
+
+The `ReselectColumnsPostProcessor` re-queries the source database to fill in large out-of-line columns, such as PostgreSQL TOAST columns or Oracle LOBs, that the database leaves out of change events when they haven't changed.
+On tables where these columns rarely change but the rows are updated often, that can mean a lot of repeated queries for the same values.
+
+The post processor can now cache reselected values, so when the same column value is needed across multiple events, it's served from the cache instead of the source database.
+The cache invalidates an entry as soon as a real change to the value is detected, so correctness doesn't depend on expiration alone.
+Caching is disabled by default and can be enabled with `reselect.cache.enabled=true`.
+
+The cache is built on a standard contract that any storage backend can implement, and Debezium ships two implementations.
+One keeps a bounded cache on the JVM heap, while the RocksDB implementation stores values on disk, allowing much larger working sets to be cached and further reducing round trips to the source database.
+(https://github.com/debezium/dbz/issues/2002[dbz#2002], https://github.com/debezium/dbz/issues/2435[dbz#2435])
+
+==== ExtendedTimestamp for high-precision timestamps beyond INT64 limits
+
+Databases like PostgreSQL, Oracle, and SQL Server support timestamp ranges and precisions that can exceed what a single `INT64` epoch value can represent, leading to silent overflow and data corruption for far-future dates or high-precision values.
+
+A new `io.debezium.time.ExtendedTimestamp` semantic type addresses this by separating calendar range from sub-second precision, using a composite `STRUCT` with `seconds` and `nanos` fields.
+This approach follows the same design used by Java's `Instant` and Google Protocol Buffers `Timestamp`, and eliminates the overflow risk that affected `MicroTimestamp` and `NanoTimestamp` at the boundaries of their representable ranges.
+(https://github.com/debezium/dbz/issues/2119[dbz#2119])
+
+==== Embeddings SMT for OpenAI models
+
+Debezium's AI embeddings transformations gain a new module for OpenAI.
+Built on the LangChain4j OpenAI integration, the transformation sends the configured text field of each change event to an OpenAI embedding model and adds the resulting vector to the record.
+
+This lets users who already standardize on OpenAI models enrich their change events with embeddings directly in the pipeline, alongside the existing embedding providers, without any custom code.
+(https://github.com/debezium/dbz/issues/1067[dbz#1067])
+
+==== Dedicated metric for snapshot read events
+
+Snapshot events are emitted with the `READ` operation, which previously had no dedicated counter in Debezium's event metrics.
+As a result, monitoring dashboards in the Debezium Platform or in Prometheus showed zero create, update, and delete events while a snapshot was actively processing rows, making snapshot throughput effectively invisible.
+
+Debezium now exposes a `TotalNumberOfReadEventsSeen` metric through JMX, following the same pattern as the existing create, update, and delete counters.
+The OpenTelemetry JMX configuration generated by the Debezium Operator maps the new attribute as a `read` event type, and the Debezium Platform gains a snapshot event count rate panel built on it.
+Note that the counter covers both initial and incremental snapshot events.
+(https://github.com/debezium/dbz/issues/2167[dbz#2167])
+
+==== Faster JMX LastEvent metric rendering improved snapshot throughput
+
+The common pipeline metrics render a JSON summary of every dispatched change event to populate the JMX `LastEvent` attribute.
+Previously, each rendering constructed a brand new Jackson `ObjectMapper`, a cost paid for every snapshot and streaming event across all source connectors and both the Kafka Connect and Debezium Server runtimes.
+
+The rendering now uses jackson-core's stateless `JsonStringEncoder`, which is roughly seven times faster and allocates about five times less memory per event.
+In end-to-end snapshot benchmarks of a one million row table, this translated to up to 47% higher throughput on PostgreSQL and 38% on MySQL, with allocation per row roughly halved and noticeably fewer garbage collections and lower CPU usage.
+The rendered output is byte-identical to before and no new dependency is introduced.
+(https://github.com/debezium/dbz/issues/2492[dbz#2492])
+
+==== Captured tables included in snapshot notifications
+
+Debezium now emits a dedicated notification that lists the tables to be captured once an initial snapshot has resolved its data collections.
+The same information is also available for incremental snapshots.
+This gives monitoring tools and operators clear visibility into exactly which tables a snapshot is going to process, without having to infer it from connector configuration or logs.
+(https://github.com/debezium/dbz/issues/2537[dbz#2537])
+
+==== HTTP notification channel
+
+Debezium now provides an `http` notification channel that delivers connector notifications as JSON to an HTTP endpoint.
+This makes it straightforward to integrate snapshot progress and other notifications with webhooks, alerting systems, or custom services, without having to consume a Kafka topic or JMX.
+
+To use it, add `http` to `notification.enabled.channels` and set the target URL with `notification.http.url`.
+Delivery supports configurable timeouts and retries, and the channel includes built-in protection against server-side request forgery (SSRF), with private network destinations only reachable when explicitly allowed via `notification.http.allow.private.networks`.
+(https://github.com/debezium/dbz/issues/2538[dbz#2538])
+
+[id="new-features-and-improvements-debezium-db2"]
+=== Debezium for Db2
+
+==== Change table pruning support
+
+Change tables captured by the DB2 Capture Agent can now be automatically pruned, preventing unbounded growth that previously required a separate Apply Agent to manage.
+After successfully producing change events, the connector signals the Capture Agent with the most recent processed position, allowing it to purge entries that are no longer needed.
+(https://github.com/debezium/dbz/issues/1843[dbz#1843])
+
+==== LOB column serialization support
+
+The Db2 connector now correctly serializes LOB columns (CLOB, BLOB, and DBCLOB) during both snapshot and streaming.
+Previously, CLOB and DBCLOB columns emitted internal driver handle strings during snapshots and null values during streaming, while BLOB columns always produced null values.
+
+With this fix, text-based LOB columns are emitted as their string content, and binary LOB columns are serialized according to the configured `binary.handling.mode` (e.g., base64).
+(https://github.com/debezium/dbz/issues/2304[dbz#2304])
+
+[id="new-features-and-improvements-debezium-mariadb"]
+=== Debezium for MariaDB
+
+==== Support for InnoDB-based binary logs
+
+MariaDB 12.3 introduced a new InnoDB-based binary log storage format designed for improved throughput and crash recovery.
+The MariaDB connector and binary log client have been updated to ensure compatibility with this new format, allowing Debezium to capture changes from MariaDB deployments that use InnoDB-based binary logging.
+(https://github.com/debezium/dbz/issues/2259[dbz#2259])
+
+[id="new-features-and-improvements-debezium-mongodb"]
+=== Debezium for MongoDB
+
+==== Date type keys in incremental snapshots
+
+Incremental snapshots of MongoDB collections now support collections whose key is a BSON Date type.
+This continues the ongoing work to broaden the key types that can be used to chunk and resume MongoDB incremental snapshots, so collections keyed by dates no longer need a workaround to be captured incrementally.
+(https://github.com/debezium/dbz/issues/765[dbz#765])
+
+==== Read preference honored after replica set promotion
+
+The connector now continues to respect the configured read preference when a replica set member it is streaming from changes role.
+Previously, when a secondary serving the change stream was promoted to primary, the connector kept streaming from that node, placing unwanted load on the primary.
+
+The connector now monitors the replica set topology, and when a promotion invalidates the read preference, it closes the change stream cursor, reopens it against a node matching the read preference, and resumes from the last resume token.
+This completes the remaining work for reading changes from MongoDB secondaries and helps keep streaming load off the primary.
+(https://github.com/debezium/dbz/issues/917[dbz#917])
+
+==== New SMT for relational-style MongoDB events
+
+Unlike relational connectors, which emit `before` and `after` states as nested `Struct` values, MongoDB change events carry these states as JSON strings.
+The new `io.debezium.connector.mongodb.transforms.MongoToRelationalMapper` transformation converts them into Kafka Connect `Struct` values while preserving the rest of the change event envelope, record key, headers, and operation.
+This lets MongoDB events flow through the same pipelines as relational events, including transformations such as `ExtractChangedRecordState` and the Debezium JDBC sink.
+
+Users can define a fixed projection per collection using `schema.mapping.<database>.<collection>`, selecting document paths, naming output fields, and assigning Connect types.
+This produces a stable, pre-defined schema even when fields are missing from individual documents or change shape, which is especially valuable when writing MongoDB data into relational targets.
+When no projection is configured, the transformation infers a schema from each event's document images.
+(https://github.com/debezium/dbz/issues/1715[dbz#1715])
+
+==== Lossless handling mode for BSON Timestamp values
+
+The `ExtractNewDocumentState` transformation previously converted a BSON Timestamp into a Kafka Connect Timestamp using only its `time` component, silently discarding the `increment`.
+As a result, distinct values such as `Timestamp(1710000000, 7)` and `Timestamp(1710000000, 8)` became indistinguishable after transformation.
+
+A new `bson.timestamp.handling.mode` option addresses this.
+The default, `connect`, retains the existing behavior for compatibility, while `struct` emits both the `time` and `increment` components so consumers can faithfully reconstruct the original BSON value.
+(https://github.com/debezium/dbz/issues/2570[dbz#2570])
+
+[id="new-features-and-improvements-debezium-mysql"]
+=== Debezium for MySQL
+
+==== CREATE TABLE ... LIKE syntax support
+
+The MySQL connector now correctly handles `CREATE TABLE ... LIKE` DDL statements, which create a new table using the structure of an existing table.
+Previously, this common MySQL pattern could cause schema tracking issues, potentially leading to missed or incorrectly shaped change events for the newly created table.
+(https://github.com/debezium/dbz/issues/248[dbz#248])
+
+==== Correct boolean conversion for negative TINYINT(1) values
+
+The `TinyIntOneToBooleanConverter` now correctly treats negative `TINYINT(1)` values as `true`, matching MySQL's own semantics where any non-zero value is considered true.
+This applies to both the MySQL and MariaDB connectors.
+Previously, negative values such as -1 or -128 were incorrectly converted to `false` because the converter used a greater-than-zero check instead of a not-equal-to-zero check.
+(https://github.com/debezium/dbz/issues/2260[dbz#2260])
+
+==== Support for NOBLOB binlog_row_image format
+
+Debezium now supports the `NOBLOB` binlog row image format for MySQL.
+This format is commonly used in databases with large BLOB columns that are updated infrequently, as it reduces binlog size by excluding BLOB and TEXT columns from row images when they are not modified.
+Previously, the connector rejected this format at startup, forcing users to choose between `FULL` and `MINIMAL` row image modes.
+
+This behavior is conceptually similar to how PostgreSQL handles unchanged TOAST columns and how Oracle handles LOB values.
+In all three cases, the database's replication stream may omit large-value columns that were not modified in a given transaction.
+During snapshots, all column values are always available because Debezium reads the full row directly via SQL.
+During streaming, however, when a BLOB or TEXT column was not changed and is therefore excluded from the binlog row image, Debezium populates the field with the configured `unavailable.value.placeholder` value.
+This is the same approach used for unavailable TOASTed columns in PostgreSQL and LOB columns in Oracle, giving users a consistent way to detect and handle missing column values across all three databases.
+(https://github.com/debezium/dbz/issues/473[dbz#473])
+
+==== Accurate binlog positions beyond 4GB
+
+The `log_pos` field in a MySQL binlog event header is an unsigned 32-bit value, yet a binlog file can legitimately grow beyond 4GB because MySQL never splits a transaction across files.
+Once a file crosses that boundary the server truncates the position it writes into the header, and the binlog client previously trusted that wrapped value.
+Every position the connector exposed past 4GB was therefore wrong, even though streaming itself continued: committed offsets, the `source.pos` field of emitted events, the reconnect position, and the `BinlogPosition` metric.
+On servers without GTIDs, a restart from a wrapped offset could land in the middle of an unrelated event and fail with the misleading _"log event entry exceeded max_allowed_packet"_ error.
+
+The binlog client now tracks the real 64-bit position itself, anchored on the 8-byte position carried by the ROTATE event and advanced by the length of each event read from the stream.
+Behavior for positions below 4GB is unchanged.
+Above it, offsets and `source.pos` now report the real position, consistent with what `SHOW BINARY LOGS` and `mysqlbinlog` report, and positions compare in the correct order.
+This change is complemented by the fix for the schema history comparator in https://github.com/debezium/dbz/issues/2506[dbz#2506].
+
+One limitation remains: the binlog dump protocol itself only carries a 32-bit start position, so restarting from a position beyond 4GB on a server without GTIDs is still not possible.
+Tracking the real position removes the silent corruption and lays the groundwork for handling that case explicitly.
+(https://github.com/debezium/dbz/issues/2508[dbz#2508])
+
+[id="new-features-and-improvements-debezium-oracle"]
+=== Debezium for Oracle
+
+==== ROWID surrogate key sorting by primary key
+
+Incremental snapshots using the ROWID pseudocolumn as a surrogate key can now execute significantly faster.
+Previously, the snapshot query sorted by ROWID, which can be very expensive on large tables.
+The connector now uses the table's primary key for ordering while still projecting ROWID as the surrogate key, avoiding the costly sort without changing the snapshot behavior.
+(https://github.com/debezium/dbz/issues/1726[dbz#1726])
+
+==== Downstream mining support for XStream
+
+The Oracle connector can now capture changes from a downstream mining database when using the XStream adapter.
+A downstream mining database receives the primary's transaction logs and replays them on a separate host, so all change data capture mining work can move off the production database.
+This avoids placing mining load on the primary and lets DBAs tune the downstream environment independently.
+
+In this mode, snapshots and metadata queries are sent to the primary database, while the XStream outbound server runs against the downstream system.
+To enable it, set `capture.mode` to `downstream` and point the `+secondary.*+` connection properties at the downstream database.
+The downstream database must be configured as a `STANDBY SNAPSHOT` with transaction logs registered automatically through Oracle RFS.
+Downstream mining isn't available for the LogMiner adapter.
+LogMiner users can offload mining to a physical standby with `capture.mode` set to `physical_standby` instead.
+(https://github.com/debezium/dbz/issues/1868[dbz#1868])
+
+==== Non-blocking OpenLogReplicator client
+
+The OpenLogReplicator client has been converted from a blocking to a non-blocking architecture.
+This improves the responsiveness of connector shutdown operations, as the client can now promptly exit its read loop when a stop is requested rather than waiting for the socket read timeout to expire.
+(https://github.com/debezium/dbz/issues/1198[dbz#1198])
+
+==== Snapshot-only mode no longer requires archive log configuration
+
+The Oracle connector no longer validates archive log destination configuration when running in snapshot-only mode (`initial_only`).
+Previously, the archive log validation ran unconditionally at startup, causing snapshot-only runs to fail on managed deployments like Oracle Autonomous Database where the archive log configuration is hidden from the connector user.
+
+This change makes snapshot-only deployments simpler, particularly in cloud-managed Oracle environments where archive log destinations are controlled by the service provider.
+(https://github.com/debezium/dbz/issues/2305[dbz#2305])
+
+==== Support for BC (negative) timestamps
+
+The Oracle connector now correctly captures dates in the BC era (negative years) across all four Oracle temporal types: `DATE`, `TIMESTAMP`, `TIMESTAMP WITH TIME ZONE`, and `TIMESTAMP WITH LOCAL TIME ZONE`.
+Previously, a date such as `-2018-03-27` inserted via `TO_DATE('-2018-03-27', 'SYYYY-MM-DD')` would be incorrectly represented as the positive-year equivalent `2018-03-27`.
+
+Because Oracle's calendar has no year zero while ISO 8601 does, BC years are offset by one: Oracle year 2018 BC becomes ISO year `-2017`.
+How BC values appear in change events depends on the `time.precision.mode` setting.
+Epoch-based types such as `io.debezium.time.Timestamp` and `io.debezium.time.MicroTimestamp` emit negative epoch values, while string-based types such as `io.debezium.time.ZonedTimestamp` emit ISO 8601 strings with a negative year (e.g., `"-2017-03-27T01:34:56.007890-11:00"`).
+
+Both snapshot and streaming paths are covered, and no new connector configuration properties are required.
+(https://github.com/debezium/dbz/issues/1286[dbz#1286])
+
+[NOTE]
+====
+BC values stored in `TIMESTAMP(7-9)` columns exceed the representable range of `io.debezium.time.NanoTimestamp`, so users with BC data at nanosecond precision should use `time.precision.mode` set as `isostring` or `structured` only.
+====
+
+==== LogMiner DML parser performance improvements
+
+The LogMiner DML parser has been significantly optimized, delivering 1.7x to 2.6x higher throughput for UPDATE statement parsing across a range of table widths and column sizes.
+For tables with wide `VARCHAR2` columns or extended 32K strings, the improvements are even more dramatic.
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-08-26-debezium-3-7-beta1-released/logminer-parser-throughput.svg" class="responsive-image" alt="LogMiner DML Parser UPDATE throughput comparison">
+</div>
+++++
+
+Users who enable the extended `MAX_STRING_SIZE` parameter may encounter a LogMiner bug where apostrophes in text column values are not properly escaped.
+Debezium's relaxed quote detection mode addresses this Oracle limitation, but previously suffered from O(n^2) performance loss for such columns, compounded by text length.
+This release improves that mode by up to 94x in worst-case scenarios.
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-08-26-debezium-3-7-beta1-released/logminer-parser-relaxed.svg" class="responsive-image" alt="Relaxed quote detection mode throughput comparison">
+</div>
+++++
+
+These improvements directly translate to higher event throughput for Oracle connectors processing tables with many columns or large column values.
+(https://github.com/debezium/dbz/issues/2491[dbz#2491])
+
+[NOTE]
+====
+The JMH Benchmarks for these changes can be found https://github.com/debezium/debezium/blob/main/debezium-microbenchmark-oracle/src/main/java/io/debezium/performance/connector/oracle/parser/LogMinerDmlParserUpdatePerf.java[here].
+====
+
+==== Total abandoned transaction count metric
+
+The Oracle LogMiner JMX metrics now include a `TotalAbandonedTransactionCount` metric that increments every time a transaction is abandoned.
+The existing metrics expose abandoned transactions as an array of transaction identifiers, which is impractical to scrape and chart in tools such as Prometheus and Grafana.
+The new counter makes it easy to monitor and alert on abandoned transactions over time.
+(https://github.com/debezium/dbz/issues/2428[dbz#2428])
+
+==== Richer in-flight transaction logging
+
+When the buffered LogMiner implementation logs transactions that have not yet committed or rolled back, it now includes additional metadata about each transaction, such as its creation time and the number of buffered events, rather than only the transaction identifier and SCN.
+This gives administrators the details they need to make an informed decision about dropping a long-running transaction without having to run manual LogMiner queries.
+
+When deferred transactions are in use, the state of the deferred transactions is also logged as a separate entry, using the same format.
+(https://github.com/debezium/dbz/issues/2576[dbz#2576])
+
+==== Signal to log pending transactions
+
+A new signal lets you dump the connector's current view of active and deferred transactions to the connector logs on demand.
+Previously, obtaining this information required additional logging that may not have been enabled at the time, or direct access to query LogMiner.
+
+For each transaction, the output includes the transaction identifier, starting SCN, change time, username, client identifier, redo thread, and, for active transactions, the number of buffered events.
+Entries are sorted from oldest to newest, making it easy to identify which transactions are holding back the mining window and to pair the output with the existing `drop-transaction` signal.
+(https://github.com/debezium/dbz/issues/2577[dbz#2577])
+
+==== ORA-02002 treated as a retriable error
+
+The connector now treats `ORA-02002` as a retriable error.
+During a switchover or failover with multiple archive destinations configured, Oracle can raise `ORA-02002: error while writing to audit trail`, which previously caused the connector to stop unexpectedly.
+The connector now retries in this scenario, allowing it to recover automatically once the failover completes.
+(https://github.com/debezium/dbz/issues/2625[dbz#2625])
+
+==== Improved parsing of partition-conversion DDL
+
+The Oracle DDL parser now recognizes `ALTER TABLE ... MODIFY` statements that convert a non-partitioned table into a partitioned table as a distinct operation, aligning the grammar with Oracle's documented `ALTER TABLE` partition operations.
+This improves the reliability of DDL parsing for these statements and avoids side effects caused by the grammar previously conflating them with other partition modifications.
+(https://github.com/debezium/dbz/issues/2408[dbz#2408])
+
+[id="new-features-and-improvements-debezium-postgresql"]
+=== Debezium for PostgreSQL
+
+==== First-class geometric type mapping
+
+Tables containing PostgreSQL geometric columns (`box`, `circle`, `line`, `lseg`, `path`, `polygon`) now produce usable, structured change events instead of opaque binary data.
+Previously, these types had no explicit mapping, so their values were either dropped entirely or emitted as raw bytes that downstream consumers couldn't interpret.
+
+The types `box`, `lseg`, `path`, and `polygon` are mapped to the existing `Geometry` Struct using WKB encoding, with an extension field that preserves the original PostgreSQL type.
+The `circle` and `line` types receive new dedicated Struct schemas (`io.debezium.data.geometry.Circle` and `io.debezium.data.geometry.Line`) because they have no faithful Well-Known Binary representation.
+(https://github.com/debezium/dbz/issues/2135[dbz#2135])
+
+==== Incremental snapshots on read-only replicas
+
+Incremental snapshots on PostgreSQL read-only replicas previously failed with `cannot execute pg_current_xact_id() during recovery` error, because the snapshot logic attempted to create a new transaction ID, which is not permitted on replicas.
+This caused connectors running with `read.only=true` to enter an infinite restart loop when an incremental snapshot was triggered.
+
+This has been corrected, and users running against a hot standby can now use incremental snapshots for re-snapshotting subsets of data without restarting the connector or switching to the primary.
+(https://github.com/debezium/dbz/issues/1080[dbz#1080], https://github.com/debezium/dbz/issues/2431[dbz#2431])
+
+==== Faster snapshots with per-column type caching
+
+The PostgreSQL connector now caches the resolved column type per `ResultSet` during snapshots, rather than resolving it on every row.
+Previously, each row paid the cost of calling `ResultSetMetaData.getColumnTypeName` and `TypeRegistry.get` once per column, making overhead scale based on number of columns and rows.
+For a table with 82 columns, this kept the snapshot producer pinned at around 25K rows per second.
+
+With caching in place, the `rowToArray` stage runs approximately 35% faster, and end-to-end snapshot throughput for the same table increased to over 30K rows per second.
+The gain scales with column count and benefits all snapshot flavors, including initial, blocking, incremental, and read-only incremental.
+(https://github.com/debezium/dbz/issues/2350[dbz#2350])
+
+==== TimescaleDB 2.29 compatibility
+
+TimescaleDB 2.29 removed the schema and table name columns from its internal chunk catalog, which caused the TimescaleDB transformation to fail while streaming with a `Failed to read TimescaleDB metadata` error.
+The transformation now works with TimescaleDB 2.29, so users can upgrade their Timescale deployments without breaking their change data capture pipelines.
+(https://github.com/debezium/dbz/issues/2335[dbz#2335])
+
+[id="new-features-and-improvements-debezium-sqlserver"]
+=== Debezium for SQL Server
+
+==== Support for specifying capture instance
+
+The SQL Server connector now allows users to specify which CDC capture instance to use when multiple capture instances exist for the same table.
+This is useful when different capture instances track different column subsets, preventing unwanted schema changes in downstream topics when a new capture instance is created.
+(https://github.com/debezium/dbz/issues/960[dbz#960])
+
+[id="new-features-and-improvements-debezium-jdbc"]
+=== Debezium JDBC sink
+
+==== Starrocks catalog name support
+
+Users connecting to a Starrocks target through the MySQL driver can now specify the desired catalog name with a new `dialect.starrocks.catalog_name` option.
+Previously, the driver defaulted to a schema that did not match the intended catalog, with no way to override it.
+(https://github.com/debezium/dbz/issues/979[dbz#979])
+
+==== JMX metrics support
+
+The JDBC sink connector now exposes JMX metrics, giving users visibility into what is actually happening at the target database.
+These complement the standard Kafka Connect sink task metrics by describing operations beyond the connector's `put()` boundary. (https://github.com/debezium/dbz/issues/1174[dbz#1174])
+
+[cols="40%,60%"]
+|===
+|Metric Name |Description
+
+|`TotalNumberOfWrites`
+|Total number of processed events (insert/update/upsert) applied to the target database.
+
+|`TotalNumberOfDeletes`
+|Total number of delete operations applied to the target database.
+
+|`TotalNumberOfTruncates`
+|Total number of truncate operations applied to the target database.
+
+|`TotalNumberOfFilteredEvents`
+|Number of records skipped without being applied, such as unresolvable tables, disabled deletes/truncates, or schema-change events.
+
+|`TotalNumberOfTablesCreated`
+|Total number of tables the sink created in the target database when schema evolution is enabled.
+
+|`TotalNumberOfTablesAltered`
+|Total number of tables the sink altered in the target database when schema evolution is enabled.
+|===
+
+==== CockroachDB dialect support
+
+CockroachDB users can now use Hibernate's native `CockroachDialect` with the JDBC sink without losing upsert support.
+Previously, the sink did not recognize this dialect and fell back to a generic mode that could not generate `INSERT ... ON CONFLICT ... DO UPDATE` statements, forcing users to manually override with `PostgreSQLDialect` as a workaround.
+A dedicated CockroachDB dialect provider now handles this automatically.
+(https://github.com/debezium/dbz/issues/1639[dbz#1639])
+
+==== SingleStore database support
+
+The JDBC sink connector can now write directly to SingleStore, a distributed SQL database that is compatible with the MySQL wire protocol but has its own SQL syntax and type-handling differences.
+A dedicated dialect ensures correct DML operations without requiring manual configuration workarounds.
+Geospatial type support is planned for a future release.
+(https://github.com/debezium/dbz/issues/2146[dbz#2146])
+
+==== Startup validation with validate-only schema evolution mode
+
+A new `schema.evolution=validate-only` mode catches missing target tables at startup rather than waiting for the first record to arrive.
+For low-traffic topics, this can mean the difference between discovering a configuration problem in seconds versus hours.
+
+This mode is designed for deployments where target tables are managed externally (e.g., by a DDL pipeline) and the connector should only perform DML.
+It validates statically resolvable table names using the default collection naming strategy; configurations that rely on `+${source.*}+` placeholders in the collection name format or custom naming strategies are not eligible for startup validation.
+When `topics.regex` is used, validation is deferred until topic assignment.
+(https://github.com/debezium/dbz/issues/2179[dbz#2179])
+
+==== Dead letter queue support
+
+The JDBC sink connector can now route records that fail to write to a dead letter queue, rather than stopping the task.
+Previously, a single bad record, such as one that violates a constraint, would stop the sink task until someone restarted it manually.
+
+When a batch fails with a non-transient error, the connector retries the records one at a time to isolate the ones that fail, sends only those to the dead letter queue, and carries on with the rest.
+Transient failures, such as lost database connections, are never sent to the dead letter queue and are still retried based on `flush.max.retries` and `flush.retry.delay.ms`.
+A new `TotalNumberOfErrantRecords` metric reports how many records have been routed to the dead letter queue.
+
+This feature is available when the shared change event sink framework is enabled with `internal.enable.sces=true`, which is disabled by default.
+The shared change event sink framework is incubating, so this option and its behavior may change in future releases.
+With that in place, it uses the standard Kafka Connect error handling options, `errors.tolerance=all` and `errors.deadletterqueue.topic.name`.
+Because the connector provides at-least-once delivery, we recommend the `upsert` insert mode when using a dead letter queue, so that records redelivered after a restart aren't routed there as constraint violations.
+(https://github.com/debezium/dbz/issues/984[dbz#984])
+
+==== Sink support for PostgreSQL enum columns
+
+The JDBC sink connector now correctly handles writing to PostgreSQL enum columns.
+Previously, sinking to a PostgreSQL enum column would fail with a type mismatch error because the generated SQL did not include the necessary type cast.
+The connector now detects enum column types via the propagated source type metadata and applies the appropriate PostgreSQL cast.
+(https://github.com/debezium/dbz/issues/1344[dbz#1344])
+
+==== Record value and header primary key modes now support deletion
+
+The JDBC sink connector now supports row deletion when using `record_value` or `record_header` primary key modes.
+Previously, deletion was only supported with `record_key` mode.
+This provides more flexibility for pipelines where the primary key is derived from the record value or headers rather than the Kafka record key.
+(https://github.com/debezium/dbz/issues/1421[dbz#1421])
+
+==== Opt-in timestamp clamping for out-of-range values
+
+Every database supports a different timestamp range, and Oracle's BC-era values often fall outside what other databases can represent.
+The JDBC sink connector introduces `timestamp.clamp.out.of.range.values`, an opt-in setting that clamps incoming timestamps to the target dialect's minimum or maximum rather than failing the sink operation.
+(https://github.com/debezium/dbz/issues/1008[dbz#1008])
+
+==== SingleStore ARRAY to JSON mapping
+
+The JDBC sink connector can now write Kafka Connect `ARRAY` schema values into SingleStore `JSON` columns.
+Array values arriving from Kafka topics are serialized to JSON on the way into the target column, so users no longer need a custom transformation or additional pre-processing to sink array fields into SingleStore.
+(https://github.com/debezium/dbz/issues/2567[dbz#2567])
+
+[id="new-features-and-improvements-debezium-quarkus-extension"]
+=== Debezium Quarkus Extensions
+
+==== Debezium Server configuration convention support
+
+Users can now configure the Quarkus extension using Debezium Server's canonical `+debezium.*+` configuration prefix, in addition to the existing `+quarkus.debezium.*+` prefix.
+This alignment simplifies configuration when moving between the two systems, and is part of the broader effort to enable native execution support for Debezium Server.
+(https://github.com/debezium/dbz/issues/1690[dbz#1690])
+
+[id="new-features-and-improvements-debezium-operator"]
+=== Debezium Operator
+
+==== Conductor and operator level metrics
+
+The Debezium Platform now exposes conductor and operator level metrics through the JMX Exporter, providing visibility into memory, CPU consumption, and other operational metrics beyond the existing pipeline-level metrics.
+This gives operators a more complete picture of the platform's resource utilization and health.
+(https://github.com/debezium/dbz/issues/1918[dbz#1918])
+
+==== Support for priorityClassName in the DebeziumServer pod template
+
+The `DebeziumServer` custom resource's pod template already exposed affinity, node selectors, tolerations, security context, and image pull secrets, but not a priority class.
+The pod template now accepts `priorityClassName`, so a Kubernetes priority class can be assigned to Debezium Server pods managed by the operator, allowing scheduling and preemption behavior to be controlled in the same way as other workloads in the cluster.
+(https://github.com/debezium/dbz/issues/2251[dbz#2251])
+
+==== Image pull secrets for the operator Helm chart
+
+The operator Helm chart already allowed the operator image to be overridden, but offered no way to attach an image pull secret to the operator pod itself.
+Deployments in clusters that cannot pull from public registries had to fork the chart or maintain hand-written manifests.
+
+The chart now supports configuring `imagePullSecrets` for the operator deployment, completing the picture alongside the pull secret support that the `DebeziumServer` resource already provided for server pods.
+(https://github.com/debezium/dbz/issues/2461[dbz#2461])
+
+[id="new-features-and-improvements-debezium-platform"]
+=== Debezium Platform
+
+==== Host-based pipeline deployment
+
+The Debezium Platform could previously only deploy pipelines to Kubernetes.
+It now has a new host-based deployment mode, which lays the foundation for running pipelines on bare-metal servers, cloud VMs, and on-premise machines that don't use Kubernetes.
+Existing Kubernetes deployments are unaffected, since the Platform continues to use the Debezium Operator unless host mode is explicitly enabled.
+
+In host mode, the Platform discovers the machines it can use from a standard SSH config file and manages changes to that file automatically.
+New hosts are prepared for you, with Docker and the Debezium Server image installed, so there is no manual setup on each machine.
+Pipelines are then spread across the available hosts, and can be deployed, stopped, started, and inspected through their logs just as they are on Kubernetes.
+The Platform also flags a pipeline when its configuration has been changed directly on the host.
+
+Work on this feature continues in https://github.com/debezium/dbz/issues/2085[dbz#2085], and the full design is described in https://github.com/debezium/debezium-design-documents/pull/45[DDD-41].
+(https://github.com/debezium/dbz/issues/2086[dbz#2086], https://github.com/debezium/dbz/issues/2087[dbz#2087], https://github.com/debezium/dbz/issues/2088[dbz#2088], https://github.com/debezium/dbz/issues/2090[dbz#2090], https://github.com/debezium/dbz/issues/2092[dbz#2092], https://github.com/debezium/dbz/issues/2094[dbz#2094], https://github.com/debezium/dbz/issues/2101[dbz#2101])
+
+==== Integrated documentation access
+
+The Debezium Platform UI now provides quick access to relevant documentation directly within the interface, allowing users to reference connector configuration and operational guidance without leaving the platform.
+(https://github.com/debezium/dbz/issues/1570[dbz#1570])
+
+video::https://github.com/user-attachments/assets/904d9459-8f38-4622-96d4-9f214ded7282[width=100%,align="center"]
+
+==== Boolean and integer value types in configuration UI
+
+The Debezium Platform UI now supports entering boolean and integer value types for additional configuration properties in source and destination configurations.
+Previously, only free-style text input was available for properties not part of the standard configuration schema, limiting the ability to correctly specify non-string values.
+(https://github.com/debezium/dbz/issues/1859[dbz#1859])
+
+==== Reduced OTel metrics latency
+
+Monitoring metrics in the Debezium Platform now appear much faster, with worst-case latency reduced from approximately 90 seconds to 26 seconds.
+Previously, conservative defaults for OpenTelemetry scrape and export intervals meant that short-lived snapshots could complete before their metrics ever appeared.
+The platform now automatically configures more responsive defaults when OTel is enabled, making real-time observation of snapshot progress and event throughput practical.
+(https://github.com/debezium/dbz/issues/2168[dbz#2168])
+
+==== Glass contrast mode
+
+The Debezium Platform Stage UI now supports a Glass contrast mode toggle, allowing users to switch between the default and glass contrast themes.
+In dark theme, glass contrast is preferred by default for enhanced visibility.
+User preferences are stored across sessions, following the PatternFly glass mode design guidelines.
+(https://github.com/debezium/dbz/issues/2212[dbz#2212])
+
+video::https://github.com/user-attachments/assets/556fe9e6-e6df-4ef9-b523-82b2bb0042be[width=100%,align="center"]
+
+==== Connection validation for Azure Event Hub
+
+The Debezium Platform now includes a connection validator for Azure Event Hub destinations.
+This allows users to verify their Event Hub connection settings directly from the Platform UI before creating a pipeline, providing immediate feedback on connectivity issues.
+(https://github.com/debezium/dbz/issues/1088[dbz#1088])
+
+==== Pipeline failure visibility
+
+The Debezium Platform UI now displays pipeline deployment failures with their error details directly in the interface.
+Users can see what went wrong when a pipeline fails to deploy and trigger a re-deployment from the UI, eliminating the need to check server logs for troubleshooting.
+(https://github.com/debezium/dbz/issues/2261[dbz#2261])
+
+video::https://github.com/user-attachments/assets/fb092df2-5531-44b8-bfda-58c8f125a243[width=100%,align="center"]
+
+==== Optional OIDC bearer token authentication
+
+The Debezium Platform conductor now supports optional OIDC bearer token authentication for its API endpoints.
+When configured, all `+/api/*+` endpoints require a valid bearer token, while health check endpoints (`+/q/*+`) remain open.
+
+This enables integration with identity providers like Keycloak for securing Platform API access in production environments.
+(https://github.com/debezium/dbz/issues/2306[dbz#2306])
+
+==== Adaptive polling for resource listing pages
+
+The Debezium Platform UI now uses adaptive polling on its resource listing pages.
+Previously, all listing pages (pipelines, sources, transforms, destinations, and connections) polled data at a fixed 5-second interval, regardless of user activity.
+The new approach decreases polling frequency when the user is idle and pauses it entirely when the browser tab is in the background, reducing unnecessary API traffic and improving overall UI responsiveness.
+(https://github.com/debezium/dbz/issues/1878[dbz#1878])
+
+==== Connection handling in the pipeline designer
+
+The pipeline designer now handles connections when creating pipelines via Debezium Server configuration.
+Previously, the flow automatically created sources, destinations, and transforms, but did not manage connection creation.
+The designer now creates and associates connections with the source and destination configuration, providing a more complete and streamlined pipeline setup experience.
+(https://github.com/debezium/dbz/issues/1906[dbz#1906])
+
+video::https://github.com/user-attachments/assets/ae848168-0f11-48f5-b42a-1d0b1fd609a5[width=100%,align="center"]
+
+==== Improved pipeline log viewer
+
+The pipeline log screen in the Debezium Platform has received a series of usability improvements aimed at making large, fast-moving logs easier to work with.
+These include a proper loading state, the ability to pause and resume live log updates, and filtering by log level such as error, warning, info, and debug, so users can focus on the entries that matter when diagnosing a pipeline.
+(https://github.com/debezium/dbz/issues/1380[dbz#1380])
+
+==== Image pull secrets and pull policy for all Helm chart images
+
+The Debezium Platform Helm chart previously only allowed the image pull policy to be overridden for the conductor and stage images, and had no support for image pull secrets at all.
+
+The chart now supports configuring `imagePullPolicy` for every image it deploys, including the descriptors and Debezium Server images, and introduces `imagePullSecrets` support with a hybrid model: a chart-level setting applies to all containers by default, and an optional per-component setting overrides it where needed.
+This makes the platform straightforward to deploy from private registries, in air-gapped environments, and across dev, staging, and production clusters with differing pull policies.
+All new fields are optional, so existing values files continue to work unchanged.
+(https://github.com/debezium/dbz/issues/1851[dbz#1851])
+
+==== User-friendly names and descriptions for Debezium Server sink connectors
+
+When listing Debezium Server sink connectors, the platform previously returned fully qualified implementation class names such as `io.debezium.server.kinesis.KinesisChangeConsumer` as both the connector name and description.
+Sink connectors now carry proper, human-readable names and descriptions, making them far easier to identify and select in the Platform UI.
+(https://github.com/debezium/dbz/issues/1919[dbz#1919])
+
+video::https://github.com/user-attachments/assets/9014f662-5d19-4a26-8d1a-c73df8d19704[width=100%,align="center"]
+
+==== MongoDB signal data collection verification
+
+The conductor's signal verification endpoint, used by the `debezium source verify-signals` CLI command, lets users confirm that a signal data collection is correctly set up for a source connection.
+For MongoDB connections this check was previously a stub that always reported success, so a misconfigured or non-existent signal collection went unnoticed.
+
+The verification is now fully implemented for MongoDB sources, checking that the signal collection actually exists in the configured namespace.
+This brings MongoDB in line with the behavior already available for relational connections and makes the verification results trustworthy across all supported sources.
+(https://github.com/debezium/dbz/issues/2270[dbz#2270])
+
+==== Alerting support
+
+The Debezium Platform has offered pipeline monitoring through a set of predefined panels, but monitoring was passive: users had to watch dashboards to notice problems.
+Alerting closes this gap by letting users define threshold-based rules against existing monitoring panels and receive notifications when those thresholds are breached.
+
+Alert rules are built by selecting a monitoring panel, a comparison operator, a numeric threshold, and an evaluation window that suppresses transient spikes.
+The evaluation window can be one of the predefined durations or a custom value between 1 and 60 minutes.
+Rules are evaluated globally across all pipelines, and each alert identifies which pipeline triggered it.
+Alerts follow a pending, firing, and resolved lifecycle with incident tracking, and support critical, warning, and info severity levels.
+They're always visible in the Platform UI and can also be delivered by email over SMTP or through an HTTP webhook.
+A queryable, filterable alert history with configurable retention rounds out the feature.
+
+video::https://github.com/user-attachments/assets/600f128b-e519-4409-8f53-ea98d2d5cb26[width=100%,align="center"]
+
+The UI gains a new Alerts section with Rules, Channels, and History pages, plus a global alert badge in the header.
+Alert grouping, silencing, escalation policies, and repeat notifications are out of scope for this initial implementation.
+(https://github.com/debezium/dbz/issues/2314[dbz#2314], https://github.com/debezium/dbz/issues/2450[dbz#2450], https://github.com/debezium/dbz/issues/2563[dbz#2563])
+
+video::https://github.com/user-attachments/assets/4a165d66-ddd5-4691-8eeb-5f6d95f5d448[width=100%,align="center"]
+
+==== Table explorer in the incremental snapshot action
+
+Triggering an incremental snapshot from the Platform Stage previously required typing collection names by hand.
+The incremental snapshot action now embeds the same table explorer component already used in the source configuration, so users can browse and select the tables or collections to snapshot using the existing collection API rather than entering identifiers manually.
+(https://github.com/debezium/dbz/issues/2465[dbz#2465])
+
+video::https://github.com/user-attachments/assets/1d6e9788-e1cb-4b20-865d-4694d48ef2c5[width=100%,align="center"]
+
+==== All pipeline statuses shown in the Stage UI
+
+The Platform Stage previously only distinguished the failed state for a pipeline.
+With the conductor now reporting additional states such as deploying and running, the Stage UI displays the full set of pipeline statuses, giving users a clearer picture of where each pipeline is in its lifecycle at a glance.
+(https://github.com/debezium/dbz/issues/2543[dbz#2543])
+
+image::https://github.com/user-attachments/assets/3d17c70d-58cc-4003-8eeb-02e89b342a9c[width=100%,align="center"]
+
+[id="new-features-and-improvements-debezium-server"]
+=== Debezium Server
+
+==== Smarter sink-to-storage property remapping
+
+When the sink and storage backends use the same technology (e.g., Redis) but with different endpoints, Debezium Server could previously overwrite explicitly configured storage properties with sink properties, leading to subtle misconfiguration.
+
+The automatic sink-to-storage property remapping now respects explicit storage configuration; if `schema.history.internal` or `offset.storage` sub-properties are already set, the remapping is skipped.
+The original convenience behavior, where sink properties are shared with storage when no explicit storage configuration exists, continues to work as before.
+(https://github.com/debezium/dbz/issues/2078[dbz#2078])
+
+==== Native distribution module for Debezium Server
+
+Debezium Server can now be built as a native executable, enabling faster startup times and lower memory footprint compared to the traditional JVM distribution.
+A new `debezium-server-native-dist` module provides the build configuration and packaging needed for native compilation.
+(https://github.com/debezium/dbz/issues/2108[dbz#2108])
+
+==== JDBC sink consumer delegates to the JDBC sink connector
+
+Debezium Server now delegates all JDBC consumer operations to the JDBC sink connector, minimizing future maintenance and inheriting all future improvements to the sink connector out of the box.
+(https://github.com/debezium/dbz/issues/2265[dbz#2265])
+
+==== Readiness probe for health checks
+
+Debezium Server now includes a proper readiness health check that reflects whether the connector is actually ready to process changes.
+Previously, the `/q/health/ready` endpoint always returned UP as soon as the Quarkus application started, regardless of the connector's actual state.
+
+The new readiness probe checks the engine's polling status, giving orchestration tools like Kubernetes an accurate signal for routing traffic.
+(https://github.com/debezium/dbz/issues/2393[dbz#2393])
+
+==== IRSA and WebIdentityToken support for the Kinesis sink
+
+The Kinesis sink now supports AWS IRSA (IAM Roles for Service Accounts) and WebIdentityToken-based authentication.
+Previously, running the Kinesis sink in Kubernetes with a service account mapped to an AWS IAM role failed because the classpath did not include the required AWS STS module.
+The sink now bundles the `software.amazon.awssdk:sts` dependency, enabling the default credential provider chain to resolve web identity tokens and assume the target role.
+
+This is especially important for Kubernetes-based deployments on Amazon EKS, where IRSA is the recommended approach for granting AWS permissions to pods without embedding static credentials.
+(https://github.com/debezium/dbz/issues/1738[dbz#1738], https://github.com/debezium/dbz/issues/2386[dbz#2386])
+
+==== Databricks ZeroBus Ingest sink adapter
+
+Debezium Server now includes a sink adapter for Databricks ZeroBus Ingest, enabling direct change event delivery to Unity Catalog-managed Delta tables without requiring an intermediate message broker.
+ZeroBus Ingest is Databricks' serverless ingestion API, generally available on AWS and Azure, which writes records directly into managed Delta tables.
+With this integration, Debezium Server users can set up a streamlined source database to Delta pipeline for change data capture into the Databricks lakehouse.
+
+The sink commits source offsets only after ZeroBus durably writes and acknowledges each batch, providing at-least-once delivery semantics with deterministic idempotency keys.
+(https://github.com/debezium/dbz/issues/2279[dbz#2279], https://github.com/debezium/dbz/issues/2378[dbz#2378])
+
+==== Correct Prometheus metric labels for sink connectors
+
+The Prometheus JMX Exporter configuration shipped with Debezium Server now correctly labels sink connector metrics.
+Previously, sink connectors registered their MXBeans with a key ordering that did not match any existing rule pattern. This caused the `task` key to be embedded inside the `name` label (e.g., `name="jdbc-sink, task=0"` instead of `name="jdbc-sink"` with a separate `task="0"` label).
+This broke Prometheus queries, alerts, and dashboards that group or filter by connector name or task ID.
+(https://github.com/debezium/dbz/issues/2380[dbz#2380])
+
+==== Connector profiles for the server distribution
+
+The `debezium-server-dist` module now includes connector profiles (e.g., `connector-postgres`, `connector-mysql`) following the same pattern already present in `debezium-server-native-dist`.
+This enables trimmed distribution builds using profile combinations that produce a zip/tar.gz containing only the required connector and sink dependencies.
+
+These profiles are the foundation for minimal, connector-specific Debezium Server distributions, such as those assembled by the Debezium CLI.
+(https://github.com/debezium/dbz/issues/2421[dbz#2421], https://github.com/debezium/dbz/issues/2433[dbz#2433])
+
+==== Connection validator for RocketMQ
+
+The Debezium Platform can now verify connections to Apache RocketMQ before a pipeline is deployed.
+A dedicated connection validator, connection type, and schema have been added for RocketMQ, so users get immediate feedback on misconfigured hosts or credentials rather than discovering the problem when the pipeline starts.
+(https://github.com/debezium/dbz/issues/1094[dbz#1094])
+
+==== TLS and mTLS support for the RabbitMQ Stream sink
+
+The RabbitMQ Stream sink previously had no way to configure TLS, so connecting to a TLS-enabled stream port failed with a closed connection as the client sent plaintext to the encrypted endpoint.
+
+The `rabbitmqstream` sink now supports TLS and mutual TLS, with configurable trust and client certificate material and hostname verification, bringing it to parity with the TLS support already available in the AMQP-based RabbitMQ sink.
+This allows Debezium Server to publish to RabbitMQ Stream clusters that enforce encrypted, certificate-authenticated connections, a common requirement in Kubernetes deployments.
+(https://github.com/debezium/dbz/issues/1582[dbz#1582])
+
+==== Kafka sink respects SMT-selected partitions
+
+The Debezium Server Kafka sink now sends each record to the partition chosen by a single message transformation, such as `PartitionRouting`.
+Previously, the sink ignored the partition selected by the SMT and let the Kafka producer choose a partition based on the record key, so records that should have been co-located were spread across all partitions.
+
+This brings the Kafka sink in line with Kafka Connect and the other Debezium Server sinks.
+Configurations that don't set a partition through an SMT are unaffected.
+(https://github.com/debezium/dbz/issues/2691[dbz#2691])
+
+[id="new-features-and-improvements-debezium-embedded-engine"]
+=== Debezium Embedded Engine
+
+==== Shutdown strategies
+
+Applications embedding the Debezium Engine can now define custom conditions for gracefully stopping the engine, such as shutting down after a snapshot completes, after processing a fixed number of events, or when the event queue has been fully drained.
+Previously, there was no built-in way to stop the engine based on runtime conditions, requiring applications to implement their own external shutdown logic.
+(https://github.com/debezium/dbz/issues/1745[dbz#1745])
+
+[id="new-features-and-improvements-debezium-cli"]
+=== Debezium CLI
+
+==== First official release of the Debezium CLI
+
+Until now, creating, managing, and monitoring change data capture pipelines outside of Kafka Connect meant working through the Debezium Platform user interface or its REST API.
+With Debezium 3.7, the Debezium CLI has its first official release, giving developers and operators a single command-line entry point for the whole pipeline lifecycle, whether they are iterating locally or automating production workflows.
+
+The CLI is distributed through JBang and is organized around two subsystems.
+The platform subsystem talks to a running Debezium Platform and provides commands to list, create, update, and delete pipelines, sources, destinations, connections, and transforms, to stream pipeline logs, send signals, and verify signal configuration, and to switch between multiple platform environments.
+The build subsystem lets users scaffold a configuration, assemble a trimmed Debezium Server distribution containing only the connector and sink they need, wrap it in an OCI container image without a Docker daemon, and push the image to a registry.
+
+Together these allow a user to go from an empty terminal to a running pipeline without hand-managing JAR files or configuration.
+(https://github.com/debezium/dbz/issues/1955[dbz#1955])
+
+==== Connection and transform management commands
+
+The Debezium JBang CLI has been extended with new commands for managing connections and transforms in the Debezium Platform.
+Users can now list, get, create, update, delete, and validate connections, as well as list available schemas and collections.
+Transform commands provide full CRUD operations for managing data transformations.
+(https://github.com/debezium/dbz/issues/2077[dbz#2077])
+
+==== Pipeline log access and catalog discovery commands
+
+The Debezium JBang CLI now includes commands for accessing pipeline logs and discovering available connector catalogs.
+The `debezium pipeline logs` command supports both full log dump download and live tail streaming over WebSocket, providing a `kubectl logs -f` equivalent for Debezium pipelines.
+Catalog commands let users list available connector descriptors and inspect specific component configurations for the current platform version.
+(https://github.com/debezium/dbz/issues/2143[dbz#2143])
+
+==== Complete CLI platform subsystem
+
+The Debezium JBang CLI now includes a complete platform management subsystem with several new commands (https://github.com/debezium/dbz/issues/2176[dbz#2176]):
+
+`pipeline signal`:: Send signals to running pipelines (e.g., stop snapshot, force re-read).
+`source verify-signals`:: Verify that signaling is correctly configured for a source.
+`config set/get`:: Manage CLI settings such as the platform URL.
+`switch`:: Switch between multiple platform environments (development, staging, production) without passing connection details on every command.
+
+image::https://github.com/user-attachments/assets/9b128c24-f2b2-4a72-bc21-4206dff837b9[width=100%,align="center"]
+
+[id="new-features-and-improvements-debezium-cockroachdb"]
+=== Debezium for CockroachDB
+
+==== Configurable changefeed strategy
+
+Users can now choose how changefeeds are created with a new `cockroachdb.changefeed.strategy` option.
+The `single` strategy (default) creates one multi-table changefeed, which CockroachDB recommends for clusters with many tables.
+The `per-table` strategy creates a separate changefeed per table, providing better parallelism, fault isolation, and the ability to tune settings like `resolved` intervals independently for each table.
+(https://github.com/debezium/dbz/issues/1636[dbz#1636])
+
+==== Sinkless changefeed support
+
+The CockroachDB connector can now stream change events directly over the SQL connection using sinkless (core) changefeeds, eliminating the need for an intermediate Kafka cluster.
+Previously, the connector required CockroachDB to push changes to a separate Kafka cluster first, which meant managing a second Kafka client and its associated configuration.
+
+With sinkless changefeeds, the connector produces directly to the output topics like other Debezium connectors, inheriting the worker's existing Kafka configuration automatically.
+(https://github.com/debezium/dbz/issues/2024[dbz#2024])
+
+==== Documentation and warnings for static capture sets
+
+The CockroachDB connector now documents that `table.include.list` patterns are resolved once at startup, meaning tables created after the connector starts are not automatically captured.
+Additionally, an `execute-snapshot` signal targeting a table outside the running capture set now produces a clear warning instead of silently succeeding without emitting any rows.
+This aligns the CockroachDB connector's behavior with all other Debezium connectors.
+(https://github.com/debezium/dbz/issues/2392[dbz#2392])
+
+==== Schema and table in the source info block
+
+The CockroachDB connector now emits `schema` and `table` fields in the source info block of change events, matching the behavior of the PostgreSQL and SQL Server connectors.
+Previously, the source block carried only `db` and CockroachDB-specific fields (`cluster`, `resolved_ts`, `hlc`), which blocked JDBC sink topic-to-table routing using `collection.name.format` templates like `${source.schema}_${source.table}`.
+(https://github.com/debezium/dbz/issues/2432[dbz#2432])
+
+==== Optional consumer group offset commits for observability
+
+The CockroachDB connector now supports an opt-in setting to asynchronously commit processed positions to the Kafka consumer group.
+The connector's intermediate consumer stores positions in Connect offsets with explicit seeks, which is correct for delivery semantics but makes standard Kafka lag monitoring tools unreliable. For example, `kafka-consumer-groups --describe` shows no committed offset, and consoles alert on permanently growing lag.
+
+With this option enabled, the connector mirrors its actual progress to the consumer group purely for observability, while correctness continues to rely on Connect offsets.
+(https://github.com/debezium/dbz/issues/2472[dbz#2472])
+
+==== CockroachDB connector graduates from incubating
+
+The CockroachDB connector has carried an incubating designation since its first release.
+With this release the connector graduates from incubating status: the incubating notices have been removed from the connector README and reference documentation, and the connector's plugin archive no longer carries the incubating suffix in the installation guide.
+
+If the incubating status kept you from adopting the connector, now is the time to take another look: the CockroachDB connector is production-ready.
+(https://github.com/debezium/dbz/issues/2580[dbz#2580])
+
+[id="new-features-and-improvements-debezium-informix"]
+=== Debezium for Informix
+
+==== Updated to Informix JDBC driver v15.0.1.4
+
+The Informix connector now ships with the latest Informix JDBC driver version 15.0.1.4, bringing driver-level bug fixes and compatibility improvements.
+(https://github.com/debezium/dbz/issues/2342[dbz#2342])
+
+[id="new-features-and-improvements-debezium-milvus"]
+=== Debezium for Milvus
+
+==== Incubating Milvus source connector
+
+https://milvus.io[Milvus] is an open-source vector database built for storing, indexing, and searching high-dimensional embeddings at scale, and it sits at the heart of many retrieval-augmented generation and semantic search systems.
+Debezium has supported Milvus as a sink for some time, and this release adds the other direction: an incubating source connector that captures inserts, updates, and deletes from Milvus collections in real time.
+
+Milvus does not expose a change stream through its API, so the connector reads directly from the internal message queue channels that Milvus publishes every write to, resolving collection schemas through the Milvus metadata API and using etcd checkpoints and timestamp-oracle ordering to provide resumable, correctly ordered events.
+Change events carry full schema fidelity, including vector field dimensions, so downstream consumers can replicate embeddings to other stores, keep search indexes in sync, or feed AI pipelines.
+The connector supports an initial snapshot of existing collections with a seamless hand-off to streaming, heartbeats, notifications, and metrics.
+
+The connector requires Milvus 2.5 or later deployed with Kafka as the message queue backend.
+As an incubating connector, its configuration and behavior may still change in future releases.
+(https://github.com/debezium/dbz/issues/2065[dbz#2065])
+
+[id="new-features-and-improvements-debezium-neo4j"]
+=== Debezium for Neo4j
+
+==== Hardening of the Neo4j source SMT
+
+The Neo4j source single message transformation has been hardened with improved fail safety and observability, making it more resilient to unexpected input and easier to monitor in production.
+(https://github.com/debezium/dbz/issues/2574[dbz#2574])
+
+[id="new-features-and-improvements-debezium-spanner"]
+=== Debezium for Spanner
+
+==== Placement tables support
+
+The Spanner change stream connector now supports placement tables, expanding the scope of tables that can be monitored for change data capture.
+(https://github.com/debezium/dbz/issues/1415[dbz#1415])
+
+[id="new-features-and-improvements-debezium-sqlite"]
+=== Debezium for SQLite
+
+==== Incubating SQLite source connector
+
+SQLite is the most widely deployed database engine in the world, embedded in browsers, mobile and desktop applications, and a growing number of edge and IoT devices, and increasingly used as a primary application database.
+Until now it has been one of the most common sources of data with no standard way to stream its changes, and this release closes that gap with an incubating Debezium source connector for SQLite.
+
+The connector brings Debezium's familiar pipeline to a SQLite database file: an initial snapshot of existing table data followed by continuous streaming of inserts, updates, and deletes.
+Because SQLite has no server process or transaction log to tap into, changes are captured through a change data capture log table that database triggers keep up to date, which the connector then reads and translates into standard Debezium change events with the usual envelope and source metadata.
+Table and column include and exclude filters and offset-based resume after a restart are supported, and the connector runs against the standard `sqlite-jdbc` driver with no external services required.
+
+As an incubating connector, its configuration and behavior may still change in future releases.
+(https://github.com/debezium/dbz/issues/2056[dbz#2056])
+
+[id="new-features-and-improvements-debezium-tidb"]
+=== Debezium for TiDB
+
+==== Incubating TiDB connector
+
+https://pingcap.com/tidb[TiDB] is an open-source, MySQL-compatible distributed SQL database designed for hybrid transactional and analytical processing (HTAP) workloads.
+It is commonly used in scenarios that require horizontal scalability, strong consistency, and high availability across large datasets.
+
+An incubating Debezium connector for TiDB is now available, using Kafka-based change data capture.
+This enables users running TiDB to integrate with the broader Debezium ecosystem for real-time data streaming and event-driven architectures.
+(https://github.com/debezium/dbz/issues/789[dbz#789])
+
+[id="new-features-and-improvements-debezium-vitess"]
+=== Debezium for Vitess
+
+==== Pin the VStream to specific cells
+
+The Vitess connector now exposes a new optional `vitess.cells` configuration property, which accepts a comma-separated list of cells or cell aliases that are permitted to serve the VStream.
+In multi-cell Vitess deployments, this provides the standard locality control, keeping the stream on nearby tablets and avoiding unnecessary cross-cell traffic and latency.
+(https://github.com/debezium/dbz/issues/2547[dbz#2547])
+
+[id="new-features-and-improvements-debezium-ai-python"]
+=== Debezium AI for Python
+
+==== PyDebeziumAI for real-time RAG with LangChain and LangGraph
+
+PyDebeziumAI is a new Python library, introduced during the 3.7 release cycle, that integrates directly with Debezium to keep vector stores in sync with your relational database in real time.
+As rows change, it automatically updates the corresponding embeddings, so retrieval-augmented generation (RAG) applications and LLM agents always work with current data.
+
+The library consumes Debezium change events either in embedded mode or as JSON from a message broker, maps them into LangChain-compatible documents with configurable projection of columns into content and metadata, and uses deterministic identifiers to apply correct upsert and delete semantics to the vector index.
+It includes out-of-the-box adapters for Chroma, PGVector, and Milvus, support for soft deletes, retries with exponential backoff and jitter, and a dead-letter queue for reliable delivery.
+
+LangChain-compatible retrievers and LangGraph node integrations allow LLM agents to work directly with the synchronized data.
+The project, including end-to-end RAG examples, is available in the https://github.com/debezium/debezium-ai-python[debezium-ai-python] repository.
+(https://github.com/debezium/dbz/issues/2066[dbz#2066])
+
+==== Synchronization layer and Chroma vector store integration
+
+PyDebeziumAI now supports end-to-end real-time synchronization between CDC event streams and a Chroma vector database.
+A new synchronization layer automatically translates database changes into the appropriate vector store operations, keeping vector embeddings in sync as source data is inserted, updated, or deleted.
+(https://github.com/debezium/dbz/issues/2040[dbz#2040])
+
+==== PGVector and Milvus backend support
+
+Users can now choose from multiple vector database backends, with new PGVector and Milvus adapters joining the existing ChromaDB support.
+This release also introduces standardized logging and observability across all PyDebeziumAI modules, making it easier to monitor and troubleshoot the CDC-to-vector synchronization pipeline.
+(https://github.com/debezium/dbz/issues/2128[dbz#2128])
+
+==== Structured metadata filtering and reactive LangGraph agent
+
+PyDebeziumAI now includes a unified metadata filtering API for vector store adapters, allowing consistent filter syntax across Chroma, PGVector, and Milvus backends.
+A new https://github.com/debezium/debezium-ai-python/tree/main/examples/reactive_agent[reactive LangGraph agent example] demonstrates how CDC-driven updates can feed real-time context changes into AI agent decision-making.
+(https://github.com/debezium/dbz/issues/2156[dbz#2156])
+
+[id="new-features-and-improvements-container-images"]
+=== Container Images
+
+==== PostgreSQL GUC logical decoder support
+
+A recent PostgreSQL security update for PostgreSQL 15 and later introduces a new `output_plugin_libraries` GUC setting that restricts which logical decoding output plugins can start.
+By default, PostgreSQL now permits only `pgoutput` and `test_decoding`, so any updated PostgreSQL instance, including publicly available container images, will reject the `decoderbufs` plugin.
+
+The Debezium PostgreSQL container images now explicitly configure this GUC to include `decoderbufs` alongside the default plugins.
+For users who have not yet migrated to `pgoutput` and continue to use `decoderbufs`, the `output_plugin_libraries` setting must be specified in the PostgreSQL server configuration to include `decoderbufs`.
+(https://github.com/debezium/dbz/issues/2434[dbz#2434])
+
+[id="other-changes"]
+== Other fixes
+
+Beyond the new features and improvements above, Debezium 3.7 includes numerous bug fixes across the ecosystem.
+The following highlights the most impactful fixes; the complete list is available in the link:/releases/3.7/release-notes[release notes].
+
+* PostgreSQL connector could silently lose data on connector restart (https://github.com/debezium/dbz/issues/51[dbz#51])
+* PostgreSQL connector could lose data on connector restart in additional scenarios (https://github.com/debezium/dbz/issues/76[dbz#76])
+* Debezium Server logging did not mask passwords (https://github.com/debezium/dbz/issues/1201[dbz#1201])
+* PostgreSQL source could lose data when using JDBC copy (https://github.com/debezium/dbz/issues/1554[dbz#1554])
+* `poll.interval.ms` was capped at 5 seconds (https://github.com/debezium/dbz/issues/1644[dbz#1644])
+* MongoDB change events could go missing and the connector could crash on a delete operation (https://github.com/debezium/dbz/issues/1862[dbz#1862])
+* Transactional `pg_logical_emit_message()` events were emitted twice after a connector restart (https://github.com/debezium/dbz/issues/2004[dbz#2004])
+* SQL Server connector could lose data in direct mode on updates when the fetch size is greater than 0 (https://github.com/debezium/dbz/issues/2012[dbz#2012])
+* PostgreSQL connector started slowly when the database defined many custom types (https://github.com/debezium/dbz/issues/2041[dbz#2041])
+* Incremental snapshot was abandoned when the query that opens the emit window failed (https://github.com/debezium/dbz/issues/2105[dbz#2105])
+* Oracle `RowIdCodec` silently discarded high bits, producing corrupted `row_id` values (https://github.com/debezium/dbz/issues/2169[dbz#2169])
+* `RocketMqConfig#toString()` leaked the RocketMQ ACL secret key in clear text (https://github.com/debezium/dbz/issues/2188[dbz#2188])
+* MySQL connector crashed with "Connection reset by peer" on TLS 1.3 due to an unhandled `KeyUpdate` (https://github.com/debezium/dbz/issues/2213[dbz#2213])
+* MySQL stream-only start (no snapshot) permanently failed on restart against a server with a non-empty `gtid_purged` (https://github.com/debezium/dbz/issues/2227[dbz#2227])
+* MySQL connector could get stuck in a permanent keepalive reconnect loop when the GTID auto-position seek exceeded `connect.keep.alive.interval.ms` (https://github.com/debezium/dbz/issues/2266[dbz#2266])
+* CockroachDB connector deduplication dropped events for different rows sharing a timestamp (https://github.com/debezium/dbz/issues/2283[dbz#2283])
+* PostgreSQL parallel snapshot connections were not pinned to the exported snapshot, giving inconsistent reads (https://github.com/debezium/dbz/issues/2330[dbz#2330])
+* Incremental snapshot silently lost data for `NUMERIC` keys holding `NaN` or `Infinity` (https://github.com/debezium/dbz/issues/2333[dbz#2333])
+* MySQL connector silently lost rows after a keepalive reconnect under backpressure (https://github.com/debezium/dbz/issues/2359[dbz#2359])
+* Cassandra connector silently dropped `cdc=true` change events bundled with `cdc=false` tables in the same mutation (https://github.com/debezium/dbz/issues/2388[dbz#2388])
+* JDBC sink failed against PostgreSQL targets whose primary key is `GENERATED ALWAYS AS IDENTITY` (https://github.com/debezium/dbz/issues/2459[dbz#2459])
+* Oracle ambiguous partial rollbacks left a stale deferred transaction that pinned the offset SCN (https://github.com/debezium/dbz/issues/2531[dbz#2531])
+* Oracle standby connector silently skipped events after DDL changes (https://github.com/debezium/dbz/issues/2598[dbz#2598])
+* MySQL and MariaDB error handlers treated every error as non-retriable (https://github.com/debezium/dbz/issues/2611[dbz#2611])
+* Parallel chunked snapshot failed with an arithmetic overflow on SQL Server tables with more than 2.14 billion rows (https://github.com/debezium/dbz/issues/2670[dbz#2670])
+* Connection string masking failed to mask the username in MongoDB connection strings (https://github.com/debezium/dbz/issues/2719[dbz#2719])
+
+In total, https://github.com/orgs/debezium/projects/5/views/6?query=sort%3Aupdated-desc+is%3Aopen&filterQuery=iteration%3A3.7.0.Final%2C3.7.0.CR1%2C3.7.0.Beta2%2C3.7.0.Beta1%2C3.7.0.Alpha2%2C3.7.0.Alpha1[517 issues] were resolved across the Debezium 3.7 release cycle.
+The list of changes can also be found in our link:/releases/3.7/release-notes[release notes].
+
+A big thank you to all the contributors from the community who worked diligently on this release:
+ +
+https://github.com/akatrm[Aakash Mhatre],
+https://github.com/Abhishek-Gawande[Abhishek Gawande],
+https://github.com/ADBlom[A. D. Blom],
+https://github.com/akshat08[Akshat Sapra],
+https://github.com/AlvarVG[Alvar Viana],
+https://github.com/AlvarVG[Alvar Viana Gomez],
+https://github.com/AnatolyPopov[Anatolii Popov],
+https://github.com/anilabhabaral[Anilabha Baral],
+https://github.com/akanimesh7[Animesh Kumar],
+https://github.com/antonio0[Antonio Marino],
+https://github.com/atorik[Atsushi Torikoshi],
+https://github.com/kebab-mai-haddi[Aviral Srivastava],
+https://github.com/battmush[battmush],
+https://github.com/b-goyal[Bhagyashree Goyal],
+https://github.com/bhuvan-somisetty[Bhuvan Somisetty],
+https://github.com/Binayak490-cyber[Binayak Das],
+https://github.com/bisbeb[Björn Bärtschi],
+https://github.com/brian-hughes[Brian Hughes],
+https://github.com/Bue-von-hon[Bue Von Hun],
+https://github.com/Chaitanya-030[Chaitanya Sheth],
+https://github.com/charlesjmorgan[Charles Morgan],
+https://github.com/tingley[Chase Tingley],
+https://github.com/chijioke-ibekwe[Chijioke Ibekwe],
+https://github.com/Naros[Chris Cranford],
+https://github.com/coleknutson1[Cole Knutson],
+https://github.com/cuong-dang[Cuong Dang],
+https://github.com/nrkdaer11[Daniel Eriksson],
+https://github.com/dasvh[dario],
+https://github.com/Unidade[Dario Rodrigues],
+https://github.com/kornys[David Kornel],
+https://github.com/dayron-perez[Dayron Perez Roldan],
+https://github.com/denizozogularas[Deniz Ozogul],
+https://github.com/dingqianwen[dingqianwen],
+https://github.com/div-dev123[Divyansh Agrawal],
+https://github.com/d1vyanshu-kumar[Divyanshu Kumar],
+https://github.com/exgoya[exgoya],
+https://github.com/gaetancollaud[Gaétan Collaud],
+https://github.com/ganeshannt[Ganeshan Nagarajan],
+https://github.com/GaribKarimli[Garib Karimli],
+https://github.com/gaurav7261[gaurav miglani],
+https://github.com/g-zemlianyi[Georgii Zemlianyi],
+https://github.com/justing-bq[Georgii Zemlianyi],
+https://github.com/Gimini-3[Gimin Kim],
+https://github.com/Gioppix[Giovanni Feltrin],
+https://github.com/kmos[Giovanni Panice],
+https://github.com/gor-st[Gor Grigoryan],
+https://github.com/hagar-yasser1[Hagar Yasser],
+https://github.com/ilyasahsan123[Ilyas Ahsan],
+https://github.com/indraraj[Indra Shukla],
+https://github.com/MrIvv[Ivan Senyk],
+https://github.com/jiangzzhu[Jiang Zhu],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/jogomez97[Joan Gomez],
+https://github.com/jouir[Julien Riou],
+https://github.com/jun-su-lee[junsu lee],
+https://github.com/JunWang222[Jun Wang],
+https://github.com/mathewjustin[Justin Mathew],
+https://github.com/kartikangiras[Kartik Angiras],
+https://github.com/dutta1kartik3[Kartik Dutta],
+https://github.com/KMohnishM[Kodukulla Mohnish Mythreya],
+https://github.com/nrkljo[Lars M. Johansson],
+https://github.com/lekhrocks[Lekhraj Kumar],
+https://github.com/mly-zju[Lingyang Ma],
+https://github.com/iraelite[Luciano Capo],
+https://github.com/MV-GH[Maarten Vercruysse],
+https://github.com/mahitha-ada[Mahitha Adapa],
+https://github.com/prathit06[Malik Prathit],
+https://github.com/MarBruhn[Marcel Bruhn],
+https://github.com/marcleibold[Marc Leibold],
+https://github.com/mfvitale[Mario Fiore Vitale],
+https://github.com/mhejnas[Matt Hejnas],
+https://github.com/mcrauwel[Matthias Crauwels],
+https://github.com/henm[Matthias Hengel],
+https://github.com/tarqu1n[Matt Langley],
+https://github.com/minleejae[Minjae Lee],
+https://github.com/KMohnishM[Mohnish],
+https://github.com/nancyxu825[Nancy Xu],
+https://github.com/nathan-smit-1[Nathan Smit],
+https://github.com/nickchomey[Nick Chomey],
+https://github.com/nkokitkar[Nikita Kokitkar],
+https://github.com/soepic1[Oladele Oluwaseun],
+https://github.com/ochedru[Olivier Chédru],
+https://github.com/omkarmehta06[Omkar Mehta],
+https://github.com/pugarte7[Pablo Ugarte],
+https://github.com/cezarpaulo16[Paulo Cezar],
+https://github.com/PauloCezarDaSilvaJunior[Paulo Silva],
+https://github.com/pavelivanovskii[Pavel Ivanovskii],
+https://github.com/pxcamus[Philippe Camus],
+https://github.com/pypsink[Pierre-Yves Péton],
+https://github.com/ragulshanmugam[Ragul Shanmugam],
+https://github.com/rainerschamm[Rainer Schamm],
+https://github.com/rajusurarapu149[Raju Surarapu],
+https://github.com/regi-c[Regi Çallmori],
+https://github.com/rk3rn3r[René Kerner],
+https://github.com/rick020[Rick Bruins],
+https://github.com/roldanbob[Robert Roldan],
+https://github.com/RohithDevarshetty[Rohith Devarshetty],
+https://github.com/Roshr2211[Roshni R],
+https://github.com/rossd-bitquill[Ross Dutkiewicz],
+https://github.com/sangeet259[Sangeet Mishra],
+https://github.com/seanconnaughton2003[Sean Connaughton],
+https://github.com/kinolaev[Sergei Nikolaev],
+https://github.com/skdus531[skdus531],
+https://github.com/SreedevT[sreedev],
+https://github.com/stn1slv[Stanislav Deviatov],
+https://github.com/StevenJDH[Steven Jenkins De Haro],
+https://github.com/shrsu[Sujal Shrestha],
+https://github.com/sundongkim-dev[Sundong Kim],
+https://github.com/suryadanny[Surya Dhaneshwar],
+https://github.com/Thiagoag[Thiago Garcia],
+https://github.com/TimurRakhmatullin86[Timur Rakhmatullin],
+https://github.com/tommyk-gears[Tommy Karlsson],
+https://github.com/tusharsaini18899[Tushar Saini],
+https://github.com/vsantonastaso[Vincenzo Santonastaso],
+https://github.com/viragtripathi[Virag Tripathi],
+https://github.com/vjuranek[Vojtech Juranek],
+https://github.com/wagnercsantos[Wagner Santos],
+https://github.com/pyaroslav[Yaroslav Perventsev],
+https://github.com/yashisrivastava-confluent[Yashi Srivastava],
+https://github.com/yramanovich[Yauheni Ramanovich],
+https://github.com/yongwang-eng[Yong Wang],
+https://github.com/zach-all[Zach All],
+https://github.com/ZdravkoDonev-redis[Zdravko Donev],
+https://github.com/PDGGK[Zihan Dai],
+https://github.com/leosanqing[刘镕通],
+https://github.com/Tlinian[林石培],
+https://github.com/OctoberWithYou[梁嘉成], and
+https://github.com/caicancai[蔡灿材]!
+
+[id="google-summer-of-code"]
+== Google Summer of Code 2026
+
+This year, Debezium took part in https://summerofcode.withgoogle.com/[Google Summer of Code], and all five projects from our 2026 contributors are part of Debezium 3.7.
+We'd like to give a special thank you to each of them for their hard work over the summer:
+
+* https://github.com/Binayak490-cyber[Binayak Das] built the link:#new-features-and-improvements-debezium-cli[Debezium CLI], which has its first official release in 3.7.
+* https://github.com/d1vyanshu-kumar[Divyanshu Kumar] brought link:#new-features-and-improvements-debezium-platform[host-based pipeline deployment] to the Debezium Platform.
+* https://github.com/KMohnishM[Kodukulla Mohnish Mythreya] created link:#new-features-and-improvements-debezium-ai-python[PyDebeziumAI], bringing real-time change data capture to LangChain and LangGraph applications.
+* https://github.com/kartikangiras[Kartik Angiras] developed the new link:#new-features-and-improvements-debezium-milvus[Milvus source connector].
+* https://github.com/siddhantcvdi[Siddhant Chaturvedi] developed the new link:#new-features-and-improvements-debezium-sqlite[SQLite source connector].
+
+We'd also like to thank the mentors who guided these projects, and everyone who applied this year.
+
+[id="whats-next"]
+== What's next?
+
+With Debezium 3.7 out the door, the team is already turning its attention to Debezium 3.8 and, just as importantly, to what 2027 holds for the project.
+Over the coming weeks, we'll be putting together the Debezium roadmap for 2027, and we'd love for the community to help shape it.
+
+Debezium has always been guided by the people who use it every day, and your feedback plays a big part in deciding what we work on.
+Whether it's a new connector you'd like to see, a pain point in your current pipelines, or an idea for how Debezium could fit better into your architecture, we want to hear about it.
+No idea is too big or too small, and every suggestion helps us understand where Debezium should go next.
+
+You can share your roadmap suggestions on our https://groups.google.com/g/debezium[mailing list] or join the conversation on our https://debezium.zulipchat.com/#narrow/stream/302529-users[Zulip chat].
+
+Happy streaming!
