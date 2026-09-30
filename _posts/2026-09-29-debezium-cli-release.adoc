@@ -1,0 +1,300 @@
+---
+layout: post
+title:  "Debezium CLI: A Unified Command-Line Interface for CDC Pipeline Lifecycle Management"
+date:   2026-09-29
+tags: [ community, release, platform, cli, gsoc ]
+author: binayakdas
+---
+
+Change Data Capture (CDC) has established itself as the gold standard for real-time data streaming, cache invalidation, outbox pattern implementations, and microservice data synchronizations.
+For years, the Debezium project has empowered engineers worldwide to stream row-level database changes reliably into Apache Kafka, Apache Pulsar, Redis, and dozens of downstream cloud messaging platforms.
+
+However, operating CDC pipelines traditionally came with operational friction.
+Developers had to hand-craft nested JSON connector configurations, deploy them via raw `curl` commands to Kafka Connect REST endpoints, navigate differing configuration dialects for standalone Debezium Server distributions, or manage complex Kubernetes manifests manually.
+With the introduction of the Debezium Platform, the ecosystem gained a robust control plane—but developers and platform engineers still needed a fast, intuitive, and unified tool right in their terminal.
+
+As part of Google Summer of Code (GSoC) 2026, we designed and built the **Debezium CLI (`debezium-jbang`)**: a modern, zero-dependency command-line interface that covers the entire lifecycle of Debezium pipelines—from local scaffolding and daemonless container image assembly to real-time schema discovery and remote platform orchestration.
+
+In this post, we explore the motivation, architecture, key capabilities, and hands-on workflows powered by the new Debezium CLI.
+
+'''
+
+== Why a Unified CLI?
+
+The primary design principle behind Debezium CLI is *developer velocity without infrastructure overhead*.
+Whether an engineer is prototyping a new pipeline locally on their laptop or an SRE is auditing pipelines across multiple Kubernetes clusters, the CLI delivers:
+
+* **Zero-Friction Installation:** Powered by https://www.jbang.dev/[JBang], the CLI requires no manual Java compilation, package manager friction, or Maven installation. It runs everywhere Java or JBang is present, and supports instant execution via the Debezium catalog: `jbang debezium@debezium`.
+* **Daemonless Distribution and Container Builds:** Build custom Debezium Server distribution archives and layered OCI container images without needing a local Maven runtime or a running Docker daemon.
+* **Unified Control Plane:** Seamlessly manage connectors, transformations, destinations, and pipelines against Debezium Platform instances across development, staging, and production environments.
+* **Live Discovery & Diagnostics:** Discover database catalogs, validate connection credentials against live source databases, inspect schema collections, and stream runtime pipeline logs directly in the terminal.
+
+'''
+
+== Architecture Overview
+
+Under the hood, the Debezium CLI is built on **Picocli** and is organized into two primary, complementary subsystems:
+
+[caption="Debezium CLI Architecture"]
+image::/assets/images/blog/2026-09-29-debezium-cli-architecture.png[Debezium CLI Architecture,width=750,align="center"]
+
+[cols="1,2,3",options="header"]
+|===
+| Subsystem | Commands | Core Responsibilities
+| **Build Subsystem**
+| `init`, `validate`, `build`, `push`
+| Scaffolds `dbz.yaml`, performs static analysis, resolves Maven dependencies dynamically via Eclipse Aether, and builds layered OCI images via Google Jib Core without Docker.
+
+| **Platform Subsystem**
+| `switch`, `config`, `catalog`, `source`, `destination`, `connection`, `transform`, `pipeline`
+| Interfaces with the Debezium Platform REST API, providing multi-environment profiles, schema exploration, runtime health checks, and signal emission.
+|===
+
+Let's dive into both subsystems with hands-on examples.
+
+'''
+
+== Phase 1: Local Development & The Build Subsystem
+
+The Build subsystem empowers developers to go from zero to a fully packaged, deployable Debezium Server container image in seconds, all governed by a declarative project descriptor: `dbz.yaml`.
+
+=== 1. Scaffolding a Project (`init`)
+
+To scaffold a new CDC project, simply run `debezium init` specifying your source database and target sink:
+
+[source,bash]
+----
+$ debezium init --source postgres --sink kafka
+----
+
+This creates a clean, fully commented `dbz.yaml` file pre-configured for your chosen source and sink:
+
+[source,yaml]
+----
+# Debezium Server Configuration
+version: "1.0"
+
+debezium:
+  version: "3.7.0.Alpha2"
+  source:
+    connector: "postgres"
+    config:
+      database.hostname: "${DBZ_DB_HOST:-localhost}"
+      database.port: "${DBZ_DB_PORT:-5432}"
+      database.user: "${DBZ_DB_USER}"
+      database.password: "${DBZ_DB_PASS}"
+      database.dbname: "${DBZ_DB_NAME:-inventory}"
+      topic.prefix: "inventory"
+
+  sink:
+    type: "kafka"
+    config:
+      bootstrap.servers: "${DBZ_KAFKA_BOOTSTRAP:-localhost:9092}"
+
+build:
+  target: "tar"
+  image:
+    name: "debezium-server"
+    registry: "ghcr.io/my-org"
+    tag: "latest"
+----
+
+=== 2. Static Analysis & Environment Validation (`validate`)
+
+Before triggering any build, `debezium validate` verifies syntax, checks required fields, and audits referenced environment variables:
+
+[source,bash]
+----
+$ export DBZ_DB_USER=postgres
+$ export DBZ_DB_PASS=secretpassword
+$ debezium validate
+Project descriptor dbz.yaml is valid!
+----
+
+If a mandatory variable is missing, the validator alerts you before any resource is consumed.
+
+=== 3. Daemonless OCI Image Assembly (`build`)
+
+Traditionally, building a custom Debezium Server container required writing a multi-stage `Dockerfile`, running a local Docker daemon, and downloading multi-gigabyte Maven dependency trees.
+
+The Debezium CLI solves this using the **Google Jib Core API** and dynamic **Eclipse Aether (Maven Resolver)**:
+
+[source,bash]
+----
+$ debezium build --image
+----
+
+[source,console]
+----
+Resolving dependencies for Debezium Server 3.7.0.Alpha2 (postgres -> kafka)...
+Resolved 48 artifacts (184 MB) in 4.2s.
+Assembling layered OCI image target/debezium-server.tar...
+  [Layer 1/3] Base runtime: eclipse-temurin:21-jre-jammy
+  [Layer 2/3] Debezium Server runtime libraries
+  [Layer 3/3] User configurations and startup scripts
+Built OCI image archive: target/debezium-server.tar (image: debezium-server:postgres-kafka-latest)
+----
+
+No Docker daemon required! The build runs inside CI runners, unprivileged Kubernetes pods, or developer laptops with equal fidelity.
+
+=== 4. Pushing to Container Registries (`push`)
+
+Once the image tarball is assembled, `debezium push` publishes it directly to your target container registry:
+
+[source,bash]
+----
+# Push to Docker Hub or GitHub Container Registry:
+$ debezium push --registry ghcr.io/my-org
+
+# Or push to a local/insecure development registry:
+$ debezium push --registry localhost:5001 --allow-insecure-registries
+----
+
+[source,console]
+----
+Pushing debezium-server:postgres-kafka-latest -> localhost:5001...
+No credentials found — attempting anonymous push...
+Pushed: localhost:5001/debezium-server:postgres-kafka-latest
+Pull with: docker pull localhost:5001/debezium-server:postgres-kafka-latest
+----
+
+Here is a recording showing the entire Build Subsystem workflow in action:
+
+video::https://asciinema.org/a/EXcJwoW15MsbsCGf.svg[link="https://asciinema.org/a/EXcJwoW15MsbsCGf",title="Debezium CLI Build and Push Workflow Demo",width=100%]
+
+'''
+
+== Phase 2: Remote Orchestration & The Platform Subsystem
+
+While the Build subsystem handles standalone packaging, modern architectures frequently rely on the **Debezium Platform** for centralized orchestration, dynamic reconfigurations, and centralized telemetry.
+The Debezium CLI provides native integration with the Platform API.
+
+=== 1. Multi-Environment Switching (`config` & `switch`)
+
+Switching between development, testing, and production clusters is instant:
+
+[source,bash]
+----
+# Register and switch environments
+$ debezium config set --env=dev platform-url http://localhost:8080
+$ debezium config set --env=staging platform-url https://platform.staging.internal:8080
+$ debezium switch dev
+Switched to environment: dev
+
+$ debezium config get
+NAME                 URL                                      ACTIVE
+----                 ---                                      ------
+dev                  http://localhost:8080                    *
+staging              https://platform.staging.internal:8080   
+Effective platform URL: http://localhost:8080
+----
+
+=== 2. Discovering Connector Capabilities (`catalog`)
+
+No need to browse documentation to find connector configuration properties. The CLI queries the live platform catalog directly:
+
+[source,bash]
+----
+$ debezium catalog list
+TYPE    CLASS
+------  --------------------------------------------------
+source  io.debezium.connector.postgresql.PostgresConnector
+source  io.debezium.connector.mysql.MySqlConnector
+
+$ debezium catalog get source io.debezium.connector.postgresql.PostgresConnector
+----
+
+[source,console]
+----
+Name:        Debezium PostgreSQL Connector
+Type:        source-connector
+Version:     3.7.0-SNAPSHOT
+Description: Captures row-level changes from a PostgreSQL database in near real-time.
+
+NAME               TYPE    REQUIRED  DEFAULT  DESCRIPTION
+-----------------  ------  --------  -------  -----------
+database.hostname  string  true               Resolvable hostname or IP address.
+database.port      number  false     5432     Port of the database server.
+database.user      string  true               Name of the database user.
+----
+
+JSON output is also supported via `--format=json`, making programmatic integration with CI/CD pipelines trivial.
+
+=== 3. Live Connection Validation & Database Discovery (`connection`)
+
+Before creating a pipeline, the CLI lets you test your database credentials against the live network and inspect database schemas directly:
+
+[source,bash]
+----
+# Validate database connection parameters:
+$ debezium connection validate -f connection.yaml
+Connection is valid.
+
+# Discover schemas and tables in the target database:
+$ debezium connection collections 1
+  public
+    public.customers
+    public.orders
+    public.order_lines
+    public.products
+----
+
+=== 4. Managing Pipelines & Sending Signals (`pipeline`)
+
+Once sources and destinations are registered, creating and orchestrating pipelines takes a single command:
+
+[source,bash]
+----
+$ debezium pipeline create -f pipeline.yaml
+Pipeline created with id: 1
+
+$ debezium pipeline list
+ID    NAME               SOURCE         DESTINATION    LOG LEVEL
+---   ----               ------         -----------    ---------
+1     customer-sync      pg-source      kafka-dest     INFO
+----
+
+Need to trigger an ad-hoc incremental snapshot or pause ingestion for maintenance? Use the `pipeline signal` command:
+
+[source,bash]
+----
+# Trigger an incremental snapshot:
+$ debezium pipeline signal --type=execute-snapshot \
+  --data='{"data-collections": ["public.customers"]}' 1
+Signal sent to pipeline 1.
+
+# Adjust logging verbosity or pause ingestion:
+$ debezium pipeline signal --type=pause 1
+Signal sent to pipeline 1.
+----
+
+'''
+
+== Getting Started
+
+Getting started with the Debezium CLI takes less than thirty seconds.
+
+If you have https://www.jbang.dev/[JBang] installed:
+
+[source,bash]
+----
+# Run directly from the Debezium catalog:
+$ jbang debezium@debezium --help
+
+# Or install it globally as a standalone executable:
+$ jbang app install --name debezium debezium@debezium
+$ debezium --version
+----
+
+Once installed, explore all available commands using `debezium --help`.
+
+'''
+
+== Acknowledgements & GSoC 2026 Reflection
+
+The Debezium CLI was designed and implemented during **Google Summer of Code 2026**.
+
+A heartfelt and special thank you to my mentors, **Giovanni Panice** and **Mario Fiore Vitale**, for their invaluable guidance, detailed architectural feedback, and supportive code reviews throughout the program.
+Working alongside the Debezium core team has been an extraordinary learning journey in building resilient, enterprise-grade developer tooling for the open-source data streaming ecosystem.
+
+We encourage everyone in the Debezium community to try out the new CLI, share feedback in the https://debezium.zulipchat.com/#narrow/channel/573881-community-gsoc/topic/Debezium.20CLI[Debezium CLI topic on Zulip], and contribute ideas for upcoming releases!
