@@ -1,0 +1,332 @@
+---
+layout: post
+title: "Host-Based Pipeline Deployment for Debezium Platform"
+date: 2026-09-18
+tags: [ debezium-platform, gsoc, docker, ansible, quarkus, cdc ]
+author: d1vyanshu-kumar
+---
+
+Hello Debezium community, Divyanshu here.
+
+This summer, I worked on host-based pipeline deployment for the Debezium Platform as a https://summerofcode.withgoogle.com/programs/2026/projects/1xyxocte[Google Summer of Code 2026] contributor, under the mentorship of https://github.com/mfvitale[Mario Fiore Vitale] and https://github.com/kmos[Giovanni Panice].
+
+The project implements https://github.com/debezium/debezium-design-documents/pull/45[DDD-41] and is tracked by https://github.com/debezium/dbz/issues/2085[DBZ-2085].
+It adds a deployment path for running Debezium Server pipelines on remote hosts, including bare-metal machines and virtual machines, while preserving the existing Kubernetes operator path.
+
+++++
+<!-- more -->
+++++
+
+== Why add a host-based deployment path?
+
+The Debezium Platform provides a control plane for designing and managing change data capture pipelines.
+Users define sources, destinations, transforms, connections, and pipelines, while the Conductor backend orchestrates deployment.
+
+Before this work, the Platform deployment model was centered on Kubernetes and the Debezium Operator.
+That remains the default and is the right choice for teams that already operate Kubernetes.
+However, not every environment needs, or wants, a Kubernetes cluster just to run a few Debezium Server instances.
+
+Many CDC deployments run close to their source databases on virtual machines, traditional servers, or private infrastructure.
+For those environments, the practical requirement is straightforward: let the Platform deploy and manage Debezium Server containers on remote hosts without asking the operator to build a Kubernetes environment first.
+
+Host-based deployment addresses that requirement.
+It does not replace the Kubernetes path.
+It adds another deployment option behind the same Platform pipeline model.
+
+== Architecture at a glance
+
+Host-based deployment has three responsibilities:
+
+* The *Conductor* discovers hosts, provisions them, schedules pipelines, and records deployment state.
+* *Ansible* prepares a remote host and optionally installs the Host Agent.
+* The *Host Agent*, when selected, executes local Docker lifecycle commands through a small HTTP API.
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-09-18-GSoC-2026-host-based-pipeline-deployment/architecture-overview.png" style="max-width:100%;" class="responsive-image" alt="Host-based pipeline deployment architecture">
+</div>
+++++
+
+The diagram has one intentional boundary: Conductor owns orchestration, while the remote host owns local container work.
+Conductor knows that a pipeline is `DEPLOYING`, `RUNNING`, `STOPPED`, `FAILED`, or in `CONFIG_DRIFT`.
+The Host Agent only reports local facts, such as whether a container is running and the hash of its deployed configuration.
+
+Keeping those responsibilities separate prevents the remote Agent from becoming coupled to Conductor's database model.
+
+== Selecting a deployment mode
+
+The Platform now has two pipeline-oriented configuration settings:
+
+[source,properties]
+----
+# Existing default
+pipeline.deployment.mode=operator
+
+# Enable host-based deployment
+pipeline.deployment.mode=host
+
+# In host mode, choose how container lifecycle commands run
+pipeline.host.container-runtime=ansible
+# or
+pipeline.host.container-runtime=agent
+----
+
+`operator` remains the default deployment mode.
+Similarly, `ansible` remains the default container runtime in host mode.
+This preserves existing behavior for installations that do not set either property.
+
+The runtime selection uses Quarkus `@LookupIfProperty` with CDI `Instance<T>.get()` lookups.
+When `pipeline.host.container-runtime=agent`, Conductor obtains `AgentContainerRuntime`; otherwise it obtains the default `AnsibleContainerRuntime`.
+
+[IMPORTANT]
+====
+`@LookupIfProperty` only affects CDI lookups through `Instance<T>.get()`.
+It does not disable methods observing startup events or methods annotated with `@Scheduled`.
+
+For that reason, host-specific services such as `SshConfigWatcherService` and `HostDeploymentStatusPoller` include an explicit runtime guard before they read SSH configuration or perform host polling.
+This prevents host-only work from running when Conductor is operating in Kubernetes mode.
+====
+
+== Discovering hosts from SSH configuration
+
+Host-based deployment uses the inventory many operators already maintain: OpenSSH configuration.
+
+[source,text]
+----
+Host cdc-host-1
+    HostName 192.168.1.20
+    User deploy
+    IdentityFile ~/.ssh/cdc-host-key
+----
+
+`SshConfigParser` reads `~/.ssh/config` and produces host entries from ordinary `Host` blocks.
+It handles details that are easy to miss in a simple line parser:
+
+* OpenSSH keywords are case-insensitive.
+* Both whitespace and `=` are valid delimiters.
+* Quoted values and inline comments are handled safely.
+* Wildcard blocks such as `Host *` are ignored because they are not concrete deployment targets.
+* Invalid ports and duplicate aliases are rejected instead of silently creating ambiguous host records.
+
+`SshConfigWatcherService` watches the parent directory of the SSH configuration file and reconciles the parsed host list with the Platform database.
+Watching the directory matters because some filesystems and mounted configuration sources update files through replacement rather than in-place writes.
+
+The watcher also has a scheduled reconciliation fallback.
+The file watcher provides fast feedback for normal edits, while the scheduled pass catches changes that a filesystem watch service can miss.
+
+Each reconciliation produces a side-effect-free plan before it changes any state:
+
+* A host in SSH configuration but not in the database becomes `PENDING` and is provisioned.
+* A host in the database but no longer in SSH configuration is marked `REMOVED`.
+* A known host whose resolved hostname changed is updated and provisioned again.
+
+The watcher also checks POSIX permissions for referenced SSH identity files, helping operators find keys that OpenSSH would reject as too permissive.
+
+== Provisioning a remote host
+
+Once a host is discovered, `HostProvisioningService` owns its provisioning lifecycle:
+
+[source,text]
+----
+PENDING -> PROVISIONING -> READY
+                |
+                +       -> FAILED
+----
+
+Provisioning is deliberately run on a dedicated executor instead of the Quarkus request or reactive threads.
+Ansible commands can involve package installation, image pulls, and network operations. Isolating that blocking work keeps the Platform API responsive.
+
+`AnsibleHostProvisioner` invokes bundled playbooks through `ProcessBuilder`.
+It continuously drains Ansible output while the process runs, avoiding the classic child-process deadlock where an operating-system pipe fills before the parent reads it.
+The output is filtered for useful progress information, and the Agent bearer token is redacted before a provisioning report is persisted or logged.
+
+The provisioning playbook prepares Docker and the host prerequisites.
+When the Agent runtime is selected, it additionally:
+
+. installs the Java runtime required by the current Agent distribution;
+. retrieves the Host Agent uber-JAR from Maven coordinates;
+. creates a systemd service for the Agent;
+. provides the per-host bearer token through the service environment; and
+. enables and starts the service.
+
+The Agent artifact is fetched from a Maven repository rather than copied from a developer's local checkout.
+This was an important review improvement: a provisioning workflow should be independent of the machine that built the code.
+For local snapshot verification, a local Maven repository can be used; the playbook otherwise follows the Maven artifact module's default repository behavior.
+
+== Scheduling a pipeline safely
+
+Deploying a pipeline means selecting a ready host, allocating a port, persisting deployment state, and then initiating remote container work.
+Those steps must remain correct when more than one pipeline is deployed at the same time.
+
+`HostDeploymentService` locks all `READY` hosts with `PESSIMISTIC_WRITE`, ordered by ID.
+The stable ordering is important.
+Without it, two transactions could lock the same hosts in different orders and create an ABBA deadlock.
+
+After acquiring the locks, the deployment strategy selects the least-loaded host.
+When two hosts have the same number of deployments, the lower database ID wins, which makes the choice deterministic.
+
+The service then allocates a port using the live maximum port already assigned to that host, starting from the configured base port when there are no deployments.
+Because this calculation happens while the ready-host rows are locked, concurrent deployments cannot receive the same port.
+
+The lock is held only for selection and allocation.
+It is released before any remote Docker or Ansible operation begins.
+Holding a database lock during an image pull would make unrelated deployments wait unnecessarily.
+
+== Mapping and deploying a Debezium Server pipeline
+
+`HostPipelineController` coordinates deploy, undeploy, stop, start, and log retrieval.
+Long-running lifecycle work runs on a dedicated executor with an explicitly activated CDI request context, so transactional services remain available on those worker threads.
+
+For a deployment, the flow is:
+
+. `HostPipelineMapper` maps the Platform pipeline into Debezium Server `application.properties` content.
+. It reuses the existing operator mapper for common configuration, then overrides offset and schema-history storage to file-based locations mounted inside the container.
+. The properties are sorted deterministically and hashed with SHA-256.
+. `HostDeploymentService` selects a host and port, then persists a deployment record in `DEPLOYING` state.
+. `HostPipelineController` delegates the remote operation to the selected `HostContainerRuntime`.
+. The status poller confirms whether the container has become `RUNNING`.
+
+The deterministic SHA-256 hash is later used to detect configuration drift.
+If the configuration file on the host no longer matches the expected content, the deployment can be marked `CONFIG_DRIFT`.
+
+Undeployment is intentionally ordered as remote cleanup followed by database cleanup.
+The controller first attempts a graceful stop, then removes the container and local files, and only then deletes the `HostDeployment` record.
+Hard-deleting the record releases the unique pipeline deployment mapping and allows a later clean redeployment.
+
+== Two container runtimes
+
+`HostContainerRuntime` provides the boundary between orchestration and infrastructure work.
+
+The default `AnsibleContainerRuntime` executes Docker lifecycle commands through Ansible and SSH.
+The optional `AgentContainerRuntime` delegates the same operations to `HostAgentClient`, which calls the remote Host Agent over HTTP.
+
+This gives the controller one lifecycle flow while allowing operators to choose the transport appropriate to their environment.
+
+The interface is also used by the status poller:
+
+* In Ansible mode, the poller checks Docker state and the deployed configuration hash through Ansible commands.
+* In Agent mode, it calls the Agent status endpoint and receives the same local facts through HTTP.
+
+Both paths feed the same deployment state machine:
+
+* `DEPLOYING` becomes `RUNNING` when the container is confirmed running.
+* A container that does not start before the deployment grace period expires becomes `FAILED`.
+* A previously running container that stops unexpectedly becomes `FAILED`.
+* A running container with a different configuration hash becomes `CONFIG_DRIFT`.
+
+Transient Agent connectivity and Ansible failures use Debezium's existing `RetryingRunnable` utility with exponential backoff.
+When retries are exhausted, the poller skips that cycle instead of treating an unknown state as a failed deployment.
+
+== The Host Agent
+
+The Host Agent is a standalone Quarkus application running as a systemd service on the remote machine.
+It has no database or Kubernetes dependency. Its scope is intentionally narrow: validate an authenticated request, perform local Docker and filesystem work, and return the result.
+
+The Agent API is documented by OpenAPI annotations and is available at `/q/openapi`.
+
+[cols="1,1,1,3",options="header"]
+|===
+|Method |Endpoint |Success |Purpose
+
+|`POST`
+|`/api/agent/deploy`
+|`202 Accepted`
+|Creates local configuration and data directories, writes `application.properties`, and starts the Docker deployment asynchronously.
+
+|`POST`
+|`/api/agent/undeploy/{containerName}`
+|`204 No Content`
+|Stops and removes the container, then removes its local configuration and data directories.
+
+|`POST`
+|`/api/agent/stop/{containerName}`
+|`204 No Content`
+|Gracefully stops a running container.
+
+|`POST`
+|`/api/agent/start/{containerName}`
+|`204 No Content`
+|Starts a previously stopped container.
+
+|`GET`
+|`/api/agent/status/{containerName}`
+|`200 OK` or `404 Not Found`
+|Returns the running state and current SHA-256 configuration hash.
+
+|`GET`
+|`/api/agent/logs/{containerName}`
+|`200 OK`
+|Returns the most recent container logs.
+|===
+
+Deploy returns `202 Accepted` because Docker image pulls and container startup can take longer than an HTTP request should block.
+The Agent starts the Docker command asynchronously on a Java virtual thread, and the Conductor poller observes the resulting state.
+
+The Agent uses bearer-token authentication when an `AGENT_TOKEN` is configured.
+`AgentTokenFilter` validates the `Authorization: Bearer <token>` header with `MessageDigest.isEqual()`, which avoids short-circuit token comparison.
+For local development, authentication is disabled if no token is configured.
+
+Jakarta Validation protects the API boundary before Docker or filesystem code runs.
+Container names must match a safe pattern, image names cannot be blank, ports must be in the valid range, and deployment configuration content must be present.
+For example, a request using `../outside` as a container name is rejected with `400 Bad Request` before it can affect an Agent directory.
+
+== Scope and current limitations
+
+The goal of this work is to add a deployment path, not to claim that every Kubernetes-specific behavior exists on a remote host.
+
+For example, in-process pipeline signals are not supported in host mode because the existing signal channel depends on co-location with the Debezium Server process in the operator environment.
+Making that limitation explicit is more useful than presenting host mode as a transparent replacement for every operator capability.
+
+The Platform itself remains an incubating project, and release availability follows the normal Debezium release process.
+
+== Project delivery
+
+The project was delivered through seven main issues and pull requests:
+
+[cols="1,3,1",options="header"]
+|===
+|Issue |Area |Pull request
+
+|https://github.com/debezium/dbz/issues/2086[DBZ-2086]
+|Host status and deployment persistence model, including Flyway migrations.
+|https://github.com/debezium/debezium-platform/pull/436[#436]
+
+|https://github.com/debezium/dbz/issues/2087[DBZ-2087]
+|Runtime deployment-mode selection and host environment wiring.
+|https://github.com/debezium/debezium-platform/pull/443[#443]
+
+|https://github.com/debezium/dbz/issues/2088[DBZ-2088]
+|OpenSSH configuration parser for host discovery.
+|https://github.com/debezium/debezium-platform/pull/450[#450]
+
+|https://github.com/debezium/dbz/issues/2090[DBZ-2090]
+|SSH configuration watcher and reconciliation workflow.
+|https://github.com/debezium/debezium-platform/pull/460[#460]
+
+|https://github.com/debezium/dbz/issues/2092[DBZ-2092]
+|Asynchronous Ansible provisioning and deprovisioning.
+|https://github.com/debezium/debezium-platform/pull/466[#466]
+
+|https://github.com/debezium/dbz/issues/2101[DBZ-2101]
+|Concurrent scheduling, lifecycle control, configuration mapping, and deployment polling.
+|https://github.com/debezium/debezium-platform/pull/493[#493]
+
+|https://github.com/debezium/dbz/issues/2094[DBZ-2094]
+|Standalone Host Agent, REST integration, authentication, validation, Maven-based provisioning, and OpenAPI documentation.
+|https://github.com/debezium/debezium-platform/pull/539[#539]
+|===
+
+After the main feature work, https://github.com/debezium/dbz/issues/2509[DBZ-2509] improved the SSH watcher integration test by replacing direct file truncation and rewriting with atomic file updates.
+This prevents the watcher from observing a temporary empty configuration during a test write.
+
+== What I learned
+
+The most valuable part of this project was learning how a feature becomes maintainable in an established codebase.
+
+That meant following existing Debezium patterns instead of inventing new ones: Blaze-Persistence entity views at domain boundaries, JBoss Logging, Quarkus configuration mappings, CDI lookup semantics, and `RetryingRunnable` for retry behavior.
+
+It also meant treating review feedback as design input.
+The final shape of the feature is better because of that feedback: configuration ownership is clearer, the default behavior is explicit, provisioning is independent of a developer machine, the Agent API validates input declaratively, and the API contract is documented.
+
+I am deeply grateful to Mario Fiore Vitale and Giovanni Panice for their mentorship, careful reviews, and guidance throughout the summer.
+Thank you as well to the Debezium community for creating a project where contributors can learn by working on real problems.
