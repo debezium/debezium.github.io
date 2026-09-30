@@ -2355,10 +2355,11 @@ In this example, the key contains a single <code>id</code> field of type <code>s
 <h3 id="mongodb-change-events-value"><a class="anchor" href="#mongodb-change-events-value"></a>Change event values</h3>
 <div class="paragraph">
 <p>The value in a change event is a bit more complicated than the key. Like the key, the value has a <code>schema</code> section and a <code>payload</code> section. The <code>schema</code> section contains the schema that describes the <code>Envelope</code> structure of the <code>payload</code> section, including its nested fields. Change events for operations that create, update or delete data all have a value payload with an envelope structure.
-The <code>after</code>, <code>before</code>, and <code>updateDescription.updatedFields</code> fields contain MongoDB Extended JSON strings.
+The <code>after</code>, <code>before</code>, <code>updateDescription.updatedFields</code>, and <code>source.resume_token</code> fields contain MongoDB Extended JSON strings.
 The connector&#8217;s <a href="#mongodb-property-json-serialization-mode"><code>json.serialization.mode</code></a> property controls how the connector serializes BSON values in these fields.
 By default, the connector preserves the legacy behavior: it serializes full document fields by using MongoDB Extended JSON v1 strict representation and serializes <code>updateDescription.updatedFields</code> by using MongoDB Extended JSON v2 relaxed representation.
-To use MongoDB Extended JSON v2 canonical representation, set <code>json.serialization.mode</code> to <code>extended</code>.</p>
+To use MongoDB Extended JSON v2 canonical representation, set <code>json.serialization.mode</code> to <code>extended</code>.
+For details about the event&#8217;s resume token, see <a href="#mongodb-resume-tokens">Resume tokens in source metadata</a>.</p>
 </div>
 <div class="paragraph">
 <p>Consider the same sample document that was used to show an example of a change event key:</p>
@@ -2392,6 +2393,41 @@ To use MongoDB Extended JSON v2 canonical representation, set <code>json.seriali
 <p><a href="#mongodb-tombstone-events">Tombstone events</a></p>
 </li>
 </ul>
+</div>
+<div class="sect3">
+<h4 id="mongodb-resume-tokens"><a class="anchor" href="#mongodb-resume-tokens"></a>Resume tokens in source metadata</h4>
+<div class="paragraph">
+<p>For streaming create, update, and delete events, the optional <code>source.resume_token</code> field contains the complete resume token from the MongoDB change stream event&#8217;s <code>_id</code> field.
+MongoDB replacement operations also include their event&#8217;s token.
+The field has the Kafka Connect <code>STRING</code> type and the <code>io.debezium.data.Json</code> logical type.
+It contains an Extended JSON document, including <code>_data</code> and any other token fields, such as <code>_typeBits</code>, that MongoDB supplies.
+The connector does not decode or modify the contents of the token.</p>
+</div>
+<div class="paragraph">
+<p>The <a href="#mongodb-property-json-serialization-mode"><code>json.serialization.mode</code></a> property controls the token&#8217;s JSON representation.
+The <code>legacy</code> and <code>strict</code> modes use Extended JSON v1 strict representation, <code>extended</code> uses Extended JSON v2 canonical representation, and <code>relaxed</code> uses Extended JSON v2 relaxed representation.
+Binary values within the token use the binary representation of the selected Extended JSON mode.
+The token document itself is not Base64-encoded in the event payload.
+The connector continues to store its internal resume offset as Base64-encoded BSON, and change event keys are unchanged.</p>
+</div>
+<div class="paragraph">
+<p>Initial, blocking, and incremental snapshot read events have a null <code>source.resume_token</code>, because each read represents a document copied from a collection rather than a change stream event.
+The snapshot&#8217;s starting resume position is not a token for an individual read event.
+Heartbeat and transaction metadata messages do not have this data event source field, and tombstone messages have a null value.
+For a <a href="#mongodb-property-cursor-oversize-handling-mode">supported split change stream event</a>, the connector emits one reconstructed event with the final fragment&#8217;s resume token.</p>
+</div>
+<div class="paragraph">
+<p>To resume an independent change stream after an event, parse the field&#8217;s Extended JSON string into a BSON document and pass that document to MongoDB&#8217;s <code>resumeAfter</code> option.
+Use the same change stream scope, pipeline, and options, including full document and pre-image settings.
+The token must still be valid in MongoDB&#8217;s retained oplog history.
+Resuming after a reconstructed split event starts after its final fragment.</p>
+</div>
+<div class="paragraph">
+<p>Treat resume tokens as opaque MongoDB metadata.
+Do not use their textual representation as a permanent identifier across serialization modes or change stream configurations.
+When <code>updateLookup</code> supplies a full document, replaying an event can return newer document contents even if the event token is unchanged.
+Document field exclusion and masking settings do not modify the token&#8217;s contents.</p>
+</div>
 </div>
 </div>
 <div class="sect2">
@@ -3622,7 +3658,7 @@ Set <a href="#mongodb-property-capture-mode-full-update-type">capture.mode.full.
 <p><code>legacy</code></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Specifies the MongoDB Extended JSON serialization mode that the connector uses for MongoDB document fields in change event values, including <code>after</code>, <code>before</code>, and <code>updateDescription.updatedFields</code>.
+<p>Specifies the MongoDB Extended JSON serialization mode that the connector uses for BSON documents in change event values, including <code>after</code>, <code>before</code>, <code>updateDescription.updatedFields</code>, and <code>source.resume_token</code>.
 Set this property to one of the following values:</p>
 </div>
 <div class="dlist">
@@ -3630,7 +3666,7 @@ Set this property to one of the following values:</p>
 <dt class="hdlist1"><code>legacy</code></dt>
 <dd>
 <p>Preserves the historical JSON behavior.
-The connector serializes full document fields, such as <code>after</code> and <code>before</code>, by using the MongoDB Extended JSON v1 strict representation, and serializes <code>updateDescription.updatedFields</code> by using the MongoDB Extended JSON v2 relaxed representation.</p>
+The connector serializes full document fields, such as <code>after</code> and <code>before</code>, and <code>source.resume_token</code> by using the MongoDB Extended JSON v1 strict representation, and serializes <code>updateDescription.updatedFields</code> by using the MongoDB Extended JSON v2 relaxed representation.</p>
 </dd>
 <dt class="hdlist1"><code>strict</code></dt>
 <dd>
@@ -3644,7 +3680,7 @@ The connector serializes full document fields, such as <code>after</code> and <c
 <dd>
 <p>Uses the MongoDB Extended JSON v2 relaxed representation.</p>
 <div class="paragraph">
-<p>Compared with the default <code>legacy</code> mode, the non-default settings can change how BSON values are represented inside the JSON strings in <code>after</code>, <code>before</code>, and <code>updateDescription.updatedFields</code>.
+<p>Compared with the default <code>legacy</code> mode, the non-default settings can change how BSON values are represented inside the JSON strings in <code>after</code>, <code>before</code>, <code>updateDescription.updatedFields</code>, and <code>source.resume_token</code>.
 For example, DateTime, Binary, RegExp, and Int64 values can use different Extended JSON forms.
 For the complete list of BSON type representations, see the MongoDB documentation for <a href="https://www.mongodb.com/docs/manual/reference/mongodb-extended-json-v1/">Extended JSON v1</a> and <a href="https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/">Extended JSON v2</a>.</p>
 </div>
@@ -3697,11 +3733,15 @@ For the complete list of BSON type representations, see the MongoDB documentatio
 <p><a id="mongodb-property-capture-start-op-time"></a><a href="#mongodb-property-capture-start-op-time"><code>capture.start.op.time</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>No default value</p>
+<p><code>-1</code> (disabled)</p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>Specifies the <a href="https://www.mongodb.com/docs/manual/changeStreams/#ref-start-time-id1">startAtOperationTime</a> change stream parameter.
-Set the value to be a long representation of the BSON timestamp.</p>
+Set the value to the packed 64-bit long representation of a BSON timestamp, which contains both seconds and the operation increment.
+This value is not a Unix timestamp in seconds or milliseconds.
+The connector uses it only if no offset is available when streaming starts.
+For readable timestamp formats, use <a href="#mongodb-property-capture-start-timestamp"><code>capture.start.timestamp</code></a>.
+You cannot configure both properties unless <code>capture.start.op.time</code> is <code>-1</code> (disabled).</p>
 </div>
 <div class="admonitionblock important">
 <table>
@@ -3711,7 +3751,7 @@ Set the value to be a long representation of the BSON timestamp.</p>
 </td>
 <td class="content">
 <div class="paragraph">
-<p>The ability to set the <code>capture.start.op.time`</code> property to override the normal offset-based behavior and begin streaming from a specific timestamp is a Technology Preview feature.
+<p>The ability to set the <code>capture.start.op.time</code> property to begin streaming from a specific timestamp when no offset is available is a Technology Preview feature.
 Technology Preview features are not supported with Red&#160;Hat production service level agreements (SLAs) and might not be functionally complete.
 Red&#160;Hat does not recommend using them in production.
 These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.</p>
@@ -3722,6 +3762,66 @@ These features provide early access to upcoming product features, enabling custo
 </td>
 </tr>
 </table>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="mongodb-property-capture-start-timestamp"></a><a href="#mongodb-property-capture-start-timestamp"><code>capture.start.timestamp</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default value</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies the starting position for a change stream when no offset is available.
+An empty or whitespace-only value is treated as unset.
+This property is an alternative to <a href="#mongodb-property-capture-start-op-time"><code>capture.start.op.time</code></a> and has the same Technology Preview status.
+Set the value to a string in one of the following formats:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>Integer Unix seconds, for example, <code>1789084800</code>.</p>
+</li>
+<li>
+<p>ISO-8601 with <code>Z</code> or an explicit UTC offset, for example, <code>2026-09-11T00:00:00Z</code> or <code>2026-09-11T09:00:00+09:00</code>.</p>
+</li>
+<li>
+<p>A BSON timestamp in Extended JSON v2 format, for example, <code>{"$timestamp":{"t":1789084800,"i":7}}</code>.</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>Unix seconds and ISO-8601 values use an operation increment of <code>0</code>, so capture starts at the beginning of the specified second.
+Extended JSON preserves the <code>i</code> value, which is an operation increment within a second, not a fractional second.
+Events at the specified BSON timestamp are included.</p>
+</div>
+<div class="paragraph">
+<p>Seconds and the Extended JSON <code>i</code> value must be integers in the range <code>0</code> through <code>4294967295</code>.
+For ISO-8601 values, the corresponding UTC instant must be between <code>1970-01-01T00:00:00Z</code> and <code>2106-02-07T06:28:15Z</code>, inclusive.
+Nonzero fractional seconds, timestamps without a UTC offset, and out-of-range values cause configuration errors.
+Numeric values are always interpreted as seconds; Unix milliseconds are not supported.
+An ISO-8601 fractional part containing only zeros, such as <code>.000</code>, is accepted.
+You cannot configure this property together with <code>capture.start.op.time</code> unless that property is <code>-1</code> (disabled).
+Configuration validation reports conflicting settings as errors on both properties.</p>
+</div>
+<div class="paragraph">
+<p>To start streaming from the configured timestamp without an initial snapshot, set <a href="#mongodb-property-snapshot-mode"><code>snapshot.mode</code></a> to <code>no_data</code> and use a connector with no stored offset.
+For example:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
+  "snapshot.mode": "no_data",
+  "capture.start.timestamp": "2026-09-11T00:00:00Z"
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>A stored resume token or offset timestamp takes precedence over this property.
+Changing the property does not rewind an existing connector.
+If the connector performs a snapshot, streaming uses the position established by the snapshot.
+This setting does not create a historical snapshot.
+MongoDB must still retain the requested starting position in the oplog; configuring a timestamp does not restore expired oplog history.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -4575,7 +4675,7 @@ Set the property to one of the following values:</p>
 <dt class="hdlist1"><code>split</code></dt>
 <dd>
 <p>Change events exceeding the maximum BSON size will be split using the <a href="https://www.mongodb.com/docs/v6.0/reference/operator/aggregation/changeStreamSplitLargeEvent/">$changeStreamSplitLargeEvent</a> aggregation. This option requires <strong>MongoDB 6.0.9 or newer</strong>.
-The connector combines all fragments into a single change event and uses the last fragment&#8217;s resume token for its offset.
+The connector combines all fragments into a single change event and uses the last fragment&#8217;s resume token for its offset and the emitted event&#8217;s <code>source.resume_token</code> field.
 When validating the saved resume token at startup, the connector applies the same full-document and pre-image options that it uses for streaming.
 The change stream used to determine the snapshot start position also uses these options.
 If its first event is split, the connector reads all fragments and records the last fragment&#8217;s token before copying collection data.</p>
@@ -6270,7 +6370,7 @@ As a result, the secondary node that is elected as the new primary node might be
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/31472d4a0f3edf242ffd66921de0df8c39cfe3fe">31472d4a</a></span>)
+            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/6d4177229187b155c9ee6d1b238d2407a88178c1">6d417722</a></span>)
             
         </div>
     </footer>
