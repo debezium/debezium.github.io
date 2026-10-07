@@ -11,8 +11,10 @@
 (function () {
   'use strict';
 
+  // Most of this works on the Asciidoctor body. A page without one (the
+  // release series page renders it only when the page has content) still gets
+  // the parts that do not need it - see init().
   var doc = document.querySelector('[data-dbz-doc]');
-  if (!doc) return;
 
   /* ------------------------------------------------------ table of contents */
 
@@ -62,43 +64,101 @@
   }
 
   /*
-   * Marks the heading currently in view. IntersectionObserver alone reports
-   * only what is intersecting, so the last heading seen above the viewport is
-   * tracked explicitly - otherwise nothing is highlighted while reading the
-   * middle of a long section.
+   * Release notes: copies the links of Asciidoctor's own #toc into the sticky
+   * "On this page" rail. Copied rather than moved, so the inline #toc is still
+   * there for smaller screens; CSS shows one or the other (dbz-doc.css,
+   * .dbz-toc-rail). Only the top level is taken, which for release notes is
+   * one entry per release.
+   */
+  function railDocToc() {
+    var slot = document.querySelector('[data-dbz-toc-slot]');
+    var toc = doc.querySelector('#toc');
+    if (!slot || !toc) return;
+
+    var source = toc.querySelectorAll('.sectlevel1 > li > a');
+    if (source.length < 2) return;
+
+    var list = document.createElement('div');
+    var headings = [];
+    Array.prototype.forEach.call(source, function (a) {
+      var id = (a.getAttribute('href') || '').slice(1);
+      var heading = id && document.getElementById(id);
+      if (!heading) return;
+
+      var link = document.createElement('a');
+      link.className = 'dbz-toc__link';
+      link.href = '#' + id;
+      link.textContent = (a.textContent || '').trim();
+      list.appendChild(link);
+      headings.push(heading);
+    });
+    if (headings.length < 2) return;
+
+    slot.appendChild(list);
+    slot.closest('[data-dbz-toc-rail]').classList.add('is-ready');
+    toc.classList.add('is-railed');
+    highlightOnScroll(headings, list);
+  }
+
+  /*
+   * A rail whose links are written in the template rather than built here,
+   * such as the release series page's. Each link's target is tracked like a
+   * heading; on that page the targets are whole <section>s, which works the
+   * same way since only their position is used.
+   */
+  function highlightStaticRails() {
+    Array.prototype.forEach.call(document.querySelectorAll('[data-dbz-toc-static]'), function (rail) {
+      var targets = [];
+      Array.prototype.forEach.call(rail.querySelectorAll('.dbz-toc__link'), function (link) {
+        var target = document.getElementById((link.getAttribute('href') || '').slice(1));
+        if (target) targets.push(target);
+      });
+      if (targets.length >= 2) highlightOnScroll(targets, rail);
+    });
+  }
+
+  /*
+   * Marks the item currently being read: the last target whose top has
+   * reached the band just under the sticky header. Targets can be headings or
+   * whole sections; only their position is used.
+   *
+   * A scroll listener rather than IntersectionObserver. The observer only
+   * reports a target crossing the band's edge, so a jump from a link could skip
+   * every crossing and leave the highlight stale, and while a heading sat in
+   * the band an earlier one above the viewport took precedence over it.
+   * Reading positions on each animation frame has neither problem and is
+   * cheap for the handful of targets a rail lists.
    */
   function highlightOnScroll(headings, list) {
-    if (!('IntersectionObserver' in window)) return;
-
     var links = list.querySelectorAll('.dbz-toc__link');
-    var visible = {};
+    // Clears the sticky header (6rem) plus a little, so a heading counts as
+    // current once it settles under the bar rather than at the viewport edge.
+    var BAND = 112;
+    var pending = false;
+    var lastId = null;
 
-    var setCurrent = function (id) {
+    var update = function () {
+      pending = false;
+      var current = null;
+      Array.prototype.forEach.call(headings, function (h) {
+        if (h.getBoundingClientRect().top <= BAND) current = h.id;
+      });
+      if (current === lastId) return;
+      lastId = current;
       Array.prototype.forEach.call(links, function (l) {
-        l.classList.toggle('is-current', l.getAttribute('href') === '#' + id);
+        l.classList.toggle('is-current', current !== null && l.getAttribute('href') === '#' + current);
       });
     };
 
-    var observer = new IntersectionObserver(
-      function (entries) {
-        entries.forEach(function (entry) {
-          visible[entry.target.id] = entry.isIntersecting;
-        });
+    var schedule = function () {
+      if (pending) return;
+      pending = true;
+      window.requestAnimationFrame(update);
+    };
 
-        var current = null;
-        Array.prototype.forEach.call(headings, function (h) {
-          if (visible[h.id]) { if (!current) current = h.id; }
-          else if (h.getBoundingClientRect().top < 0) { current = h.id; }
-        });
-
-        if (current) setCurrent(current);
-      },
-      // Top margin clears the sticky header so a heading counts as "current"
-      // once it settles under the bar rather than at the viewport edge.
-      { rootMargin: '-6rem 0px -70% 0px', threshold: 0 }
-    );
-
-    Array.prototype.forEach.call(headings, function (h) { observer.observe(h); });
+    window.addEventListener('scroll', schedule, { passive: true });
+    window.addEventListener('resize', schedule);
+    update();
   }
 
   /* ------------------------------------------------------------ copy button */
@@ -296,8 +356,9 @@
     if (!sections.length) return;
 
     // The document's own table of contents is filtered alongside the sections,
-    // so it cannot end up listing something that is currently hidden.
-    var tocLinks = doc.querySelectorAll('#toc a');
+    // so it cannot end up listing something that is currently hidden. That
+    // includes the copy railDocToc() puts in the rail, outside the document.
+    var tocLinks = document.querySelectorAll('#toc a, [data-dbz-toc-slot] a');
 
     var apply = function () {
       var query = input.value.trim().toLowerCase();
@@ -312,7 +373,7 @@
       Array.prototype.forEach.call(tocLinks, function (link) {
         var target = document.getElementById((link.getAttribute('href') || '').slice(1));
         var section = target ? target.closest('.sect1') : null;
-        var item = link.closest('li');
+        var item = link.closest('li') || link;
         if (item) item.hidden = !!(section && section.hidden);
       });
 
@@ -332,9 +393,13 @@
   }
 
   function init() {
+    highlightStaticRails();
+    if (!doc) return;
+
     wrapTables();
     addCopyButtons();
     buildToc();
+    railDocToc();
     initRoadmap();
     initDocFilter();
   }
