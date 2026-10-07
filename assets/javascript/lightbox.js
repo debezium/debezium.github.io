@@ -59,6 +59,7 @@ document.addEventListener('DOMContentLoaded', function() {
             if (!this.src) { return; }
             modal.style.display = 'block';
             modalImage.src = this.src;
+            modalImage.alt = this.alt;
             modalCaption.textContent = this.alt;
             resetZoom();
         });
