@@ -46,42 +46,4 @@ antora playbook.yml
 
 ## Release process
 
-What is important for the release process is to make sure that the `playbook.yml` file references the correct branches or tags for building the Debezium documentation on GitHub pages that also aligns with the displayed series (See CONTRIBUTING.md for more details on series configuration). For example, if series `0.8`, `0.9`, and `0.10` are all displayed, then Antora should technically be building 3 differing combinations of either branches or tags.
-
-In `playbook.yml`, the `content` section is what drives what branch/tags will be rendered.
-
-
-```yaml
-content:
-  sources:
-    - url: https://github.com/debezium/debezium.git
-      start_path: documentation
-      branches:
-        - 'main'
-        - '0.9'
-        - '0.8'
-```
-
-In this example, Antora will build documentation from 3 branches, `master`, `0.9`, and `0.8`.
-
-Similarly, tags could also be used in conjunction with or without the branches as follows:
-
-```yaml
-content:
-  sources:
-    - url: https://github.com/debezium/debezium.git
-      start_path: documentation
-      branches: 
-        - 'main'
-      tags:
-        - '0.9.5.Final'
-        - '0.8.3.Final'
-```
-
-_NOTE: It's important that if the `url` given in the content sources is to GitHub that it be `https://github.com/...` and not `https://www.github.com/...` as there is a known problem with isomorphic-git that doesn't return the right information and causes Antora not to properly fetch the remote repository._ 
-
-When adding the blog post about the new release, this would be the ideal time to:
-
-1. Add the `series.yml` file if applicable (See CONTRIBUTING.md for more details)
-2. Add the `fully-qualified-version.yml` file (See CONTRIBUTING.md for more details)
-3. Align `playbook.yml` to the correct branches/tags
+How the playbooks change for a release (which branches are built, and which versions are labelled stable and devel) is described with the rest of the release steps in [RELEASE_PROCESS.md](./RELEASE_PROCESS.md#the-antora-playbooks).
