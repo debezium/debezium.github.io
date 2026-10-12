@@ -1,0 +1,469 @@
+---
+layout: post
+title:  Native Support for Debezium in Apache Beam
+date:   2026-10-21
+tags: [ apache-beam, streaming, batch, etl, integration ]
+author: ilyasahsan
+---
+
+https://beam.apache.org/[Apache Beam] has a built-in connector for Debezium called *DebeziumIO*.
+It lets you capture changes from your database and process them directly inside a Beam pipeline.
+You don't need to run Apache Kafka or Kafka Connect.
+
+In this post, we'll build an example pipeline that streams changes from MySQL into Google BigQuery.
+The complete example is available in the https://github.com/debezium/debezium-examples/tree/main/apache-beam[`debezium-examples`] repository.
+
++++<!-- more -->+++
+
+== What is DebeziumIO?
+
+DebeziumIO is a read connector in Apache Beam.
+It runs a Debezium connector inside your pipeline.
+Every time a row is inserted, updated, or deleted in your database, DebeziumIO turns that change into an event that the rest of your pipeline can use.
+
+It is available in Apache Beam 2.76.0 and supports Debezium 3.5.
+
+Because it is part of Beam, the pipeline can run on any Beam runner, for example:
+
+* https://beam.apache.org/documentation/runners/direct[Direct runner]
+* https://cloud.google.com/dataflow[Google Cloud Dataflow]
+* https://flink.apache.org/[Apache Flink]
+* https://spark.apache.org/[Apache Spark]
+
+Right now, it only supports these databases:
+
+* MySQL
+* PostgreSQL
+* SQL Server
+* Db2
+
+[NOTE]
+====
+DebeziumIO is still experimental, so there’s still room for improvement, and its API may change in future Beam releases.
+====
+
+== Example Pipeline
+
+[source.animated,mermaid]
+----
+graph LR
+    subgraph S[Source System]
+        DB[(MySQL)]
+    end
+    DB e1@-->|binlog / WAL| DC[DebeziumIO]
+    subgraph BEAM[Apache Beam]
+        DC e2@--> TS[Transform]
+        TS e3@-->|TableRow| BI[BigQueryIO]
+    end
+    subgraph T[Target System]
+        BQ[(BigQuery)]
+    end
+    BI e4@-->|sink| BQ
+    e1@{ animate: true }
+    e2@{ animate: true }
+    e3@{ animate: true }
+    e4@{ animate: true }
+----
+
+The example has only three parts:
+
+* **Source**: a MySQL database.
+* **Pipeline**: a Java application built with Apache Beam that uses DebeziumIO.
+* **Destination**: a Google BigQuery table.
+
+== Before you start
+
+You need:
+
+* Java 17
+* Gradle
+* Docker
+* A Google Cloud project with BigQuery enabled
+
+[TIP]
+====
+Just want to try it out?
+The https://github.com/debezium/debezium-examples/tree/main/apache-beam[`apache-beam` example] starts MySQL and a BigQuery emulator with Docker Compose, so you don't need a Google Cloud project.
+Follow the steps in its `README.md` to run the pipeline on your machine.
+====
+
+=== Start MySQL
+
+We use the example MySQL image from the Debezium tutorial.
+
+[source,bash]
+----
+docker run -it --rm --name mysql -p 3306:3306 \
+  -e MYSQL_ROOT_PASSWORD=debezium \
+  -e MYSQL_USER=mysqluser \
+  -e MYSQL_PASSWORD=mysqlpw \
+  quay.io/debezium/example-mysql:3.5.2.Final
+----
+
+=== Create BigQuery table
+
+We need to create the BigQuery table first because the pipeline requires it to already exist.
+
+[source,sql]
+----
+CREATE TABLE my-project.my-dataset.customers (
+  metadata STRING,
+  before STRING,
+  after STRING,
+  write_time NUMERIC
+);
+----
+
+== Build the pipeline
+
+=== Initialize Java Application
+
+Create a new Java project with Gradle:
+
+[source,bash]
+----
+gradle init --type basic --dsl kotlin --project-name debeziumio-example --no-incubating
+----
+
+Then add the Debezium and Apache Beam dependencies to `build.gradle.kts`:
+
+.build.gradle.kts
+[source,kotlin]
+----
+plugins {
+    java
+    application
+}
+
+application {
+    mainClass.set("org.example.Main")
+}
+
+val debeziumVersion = "3.5.2.Final"
+val beamVersion = "2.76.0"
+
+dependencies {
+    // Debezium connector for MySQL
+    implementation("io.debezium:debezium-connector-mysql:$debeziumVersion")
+
+    // Apache Beam
+    implementation("org.apache.beam:beam-sdks-java-core:$beamVersion")
+    implementation("org.apache.beam:beam-sdks-java-io-debezium:$beamVersion")
+    implementation("org.apache.beam:beam-sdks-java-io-google-cloud-platform:$beamVersion")
+    implementation("org.apache.beam:beam-runners-google-cloud-dataflow-java:$beamVersion")
+    runtimeOnly("org.apache.beam:beam-runners-direct-java:$beamVersion")
+}
+----
+
+The pipeline code goes in `src/main/java/org/example/Main.java`.
+The whole pipeline is a chain of three steps:
+
+[source,java]
+----
+public static void main(String[] args) {
+  Pipeline pipeline = Pipeline.create(PipelineOptionsFactory.fromArgs(args).withValidation().create());
+
+  pipeline
+      .apply("ReadDatabaseEvents", ...)   // Step 1: read change events from MySQL
+      .apply("TransformToTableRow", ...)  // Step 2: turn each event into a BigQuery row
+      .apply("WriteToBigQuery", ...);     // Step 3: write the rows to BigQuery
+
+  pipeline.run();
+}
+----
+
+Let's look at each step.
+
+=== Step 1: Read change events from MySQL
+
+[source,java]
+----
+// Step 1. Read change events with Debezium
+.apply("ReadDatabaseEvents", DebeziumIO.readAsJson()
+    .withConnectorConfiguration(ConnectorConfiguration.create()
+        .withConnectorClass(MySqlConnector.class)
+        .withHostName("localhost")
+        .withPort("3306")
+        .withUsername("debezium")
+        .withPassword("dbz")
+        .withConnectionProperty("database.server.id", "184054")
+        .withConnectionProperty("database.include.list", "inventory")
+        .withConnectionProperty("table.include.list", "inventory.customers")
+        .withConnectionProperty("include.schema.changes", "false")
+        .withConnectionProperty("snapshot.mode", "initial")
+        .withConnectionProperty("snapshot.locking.mode", "none")
+        .withConnectionProperty("tombstones.on.delete", "false")
+    )
+    .withFormatFunction(new SourceRecordJson.SourceRecordJsonMapper())
+    .withCoder(StringUtf8Coder.of())
+)
+----
+
+Here is what each setting does:
+
+[cols="2,3"]
+|===
+|Setting |What it does
+
+|`database.server.id`
+|A unique ID for this client. MySQL needs it to stream the binlog.
+
+|`database.include.list`
+|Only capture changes from these databases.
+
+|`table.include.list`
+|Only capture changes from these tables.
+
+|`include.schema.changes`
+|Don't send events for schema changes (DDL). We only want data changes.
+
+|`snapshot.mode`
+|`initial` means: first read all existing rows, then stream new changes.
+
+|`snapshot.locking.mode`
+|`none` means: don't lock tables during the snapshot. This helps on managed databases where the user is not allowed to lock tables. It is only safe if no schema changes happen while the snapshot runs.
+
+|`tombstones.on.delete`
+|Don't send an extra empty "tombstone" event after each delete. Kafka uses tombstones to clean up old messages, and we don't use Kafka here.
+
+|`withFormatFunction(...)`
+|DebeziumIO needs a serializable function that turns each change event (a `SourceRecord` object) into something the pipeline can use. `SourceRecordJsonMapper` is a ready-made function that turns it into a JSON string.
+
+|`withCoder(...)`
+|Tells Beam how to store the output. Our output is a string, so we use `StringUtf8Coder`.
+|===
+
+Here is an example of the JSON string this step produces for an update:
+
+[source,json]
+----
+{
+  "metadata": {
+    "connector": "mysql",
+    "version": "3.5.2.Final",
+    "name": "beam-debezium-connector",
+    "database": "inventory",
+    "schema": "mysql-bin.000003",
+    "table": "customers"
+  },
+  "before": {
+    "fields": {
+      "id": 1001,
+      "first_name": "Sally",
+      "last_name": "Thomas",
+      "email": "sally.thomas@acme.com"
+    }
+  },
+  "after": {
+    "fields": {
+      "id": 1001,
+      "first_name": "Sally Anne",
+      "last_name": "Thomas",
+      "email": "sally.thomas@acme.com"
+    }
+  }
+}
+----
+
+=== Step 2: Turn each event into a BigQuery row
+
+Next, we turn each JSON string into a BigQuery `TableRow` so it can be loaded into BigQuery.
+To keep things simple, we store `metadata`, `before`, and `after` as plain JSON strings.
+We also add a `table_id` field, which Step 3 uses to pick the target table.
+
+[NOTE]
+====
+This `TableRow` schema is simplified for the example. In a real project, adjust it to match your MySQL table schema.
+====
+
+[source,java]
+----
+// Step 2. Transform the records into TableRow
+.apply("TransformToTableRow", ParDo.of(new DoFn<String, TableRow>() {
+  @ProcessElement
+  public void processElement(ProcessContext c) throws IOException {
+    JsonNode payload = new ObjectMapper().readTree(c.element());
+    TableRow record = new TableRow()
+        .set("metadata", payload.get("metadata").toString())
+        .set("before", payload.get("before").toString())
+        .set("after", payload.get("after").toString())
+        .set("table_id", payload.get("metadata").get("table").asText())
+        .set("write_time", DateTimeUtils.currentTimeMillis());
+    c.output(record);
+  }
+}))
+----
+
+Each change becomes one row, like this:
+
+[source,json]
+----
+{
+  "metadata": "{\"connector\": \"mysql\", \"version\": \"3.5.2.Final\", \"name\": \"beam-debezium-connector\", \"database\": \"inventory\", \"schema\": \"mysql-bin.000003\", \"table\": \"customers\"}",
+  "before": "{\"fields\": {\"id\": 1001, \"first_name\": \"Sally\", \"last_name\": \"Thomas\", \"email\": \"sally.thomas@acme.com\"}}",
+  "after": "{\"fields\": {\"id\": 1001, \"first_name\": \"Sally Anne\", \"last_name\": \"Thomas\", \"email\": \"sally.thomas@acme.com\"}}",
+  "table_id": "customers",
+  "write_time": 1791790940612
+}
+----
+
+The `table_id` field is only used to pick the target table.
+The BigQuery table has no `table_id` column, so `ignoreUnknownValues()` in Step 3 drops it when writing.
+
+=== Step 3: Write the rows to BigQuery
+
+Finally, we write each row to BigQuery.
+
+[source,java]
+----
+// Step 3. Sink TableRow to BigQuery
+.apply("WriteToBigQuery", BigQueryIO.writeTableRows()
+    .to((SerializableFunction<ValueInSingleWindow<TableRow>, TableDestination>) input -> {
+      TableRow row = Objects.requireNonNull(Objects.requireNonNull(input).getValue());
+      TableReference tableReference = new TableReference()
+          .setProjectId("my-project")
+          .setDatasetId("my-dataset")
+          .setTableId(row.get("table_id").toString());
+      return new TableDestination(tableReference, "Customer names and emails");
+    })
+    .withoutValidation()
+    .ignoreUnknownValues()
+    .withCreateDisposition(BigQueryIO.Write.CreateDisposition.CREATE_NEVER)
+    .withWriteDisposition(BigQueryIO.Write.WriteDisposition.WRITE_APPEND)
+    .withMethod(BigQueryIO.Write.Method.STREAMING_INSERTS))
+----
+
+== Run the pipeline
+
+=== Run on your machine
+
+First, let your machine access Google Cloud:
+
+[source,bash]
+----
+gcloud auth application-default login
+----
+
+Then start the pipeline with the Direct runner:
+
+[source,bash]
+----
+./gradlew run --args="--runner=DirectRunner"
+----
+
+=== Run on Google Cloud Dataflow
+
+To run the same pipeline on Dataflow, you only need to change the arguments:
+
+[source,bash]
+----
+./gradlew run --args="\
+    --runner=DataflowRunner \
+    --project=my-project \
+    --region=asia-southeast2 \
+    --streaming \
+    --experiments=enable_streaming_engine \
+    --jobName=debezium-mysql-to-bq \
+    --tempLocation=gs://my-bucket/temp \
+    --stagingLocation=gs://my-bucket/staging \
+    --numWorkers=1 \
+    --maxNumWorkers=1"
+----
+
+== The result
+
+Here is the pipeline in the Google Cloud Dataflow console.
+You can see the same three steps from our code: `ReadDatabaseEvents`, `TransformToTableRow`, and `WriteToBigQuery`.
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-10-21-native-support-for-debezium-in-apache-beam/dataflow-job.png" style="max-width:100%;" class="responsive-image" alt="Dataflow job graph with three steps: ReadDatabaseEvents, TransformToTableRow, and WriteToBigQuery">
+</div>
+++++
+
+[NOTE]
+====
+In this run, the job reads from a MySQL database that the Dataflow workers can reach over the network.
+`localhost` only works with the Direct runner, so change `withHostName(...)` in Step 1 to your database's address when you run on Dataflow.
+====
+
+Once the job is running, the data from MySQL shows up in the BigQuery table:
+
+++++
+<div class="imageblock centered-image">
+    <img src="/assets/images/2026-10-21-native-support-for-debezium-in-apache-beam/bigquery-table.png" style="max-width:100%;" class="responsive-image" alt="BigQuery query results showing four customer rows with id, first_name, last_name, email, and write_time columns">
+</div>
+++++
+
+This table uses the same columns as the MySQL `customers` table, as suggested in the note in Step 2.
+The data is also deduplicated by `id`, so each customer has only one row: the latest one, based on `write_time`.
+
+== Room for improvement
+
+While building this example, I found a gap in DebeziumIO.
+Its `metadata` field keeps only some of the attributes from the Debezium `source` field:
+
+[cols="1,1",options="header"]
+|===
+|DebeziumIO `metadata` |Debezium `source`
+
+a|
+[source,json]
+----
+{
+  "connector": "mysql",
+  "version": "3.5.2.Final",
+  "name": "beam-debezium-connector",
+  "database": "inventory",
+  "schema": "mysql-bin.000003",
+  "table": "customers"
+}
+----
+
+a|
+[source,json]
+----
+{
+  "version": "3.5.2.Final",
+  "connector": "mysql",
+  "name": "tutorial",
+  "ts_ms": 1791689147000,
+  "snapshot": "false",
+  "db": "inventory",
+  "sequence": null,
+  "ts_us": 1791689147000000,
+  "ts_ns": 1791689147000000000,
+  "table": "customers",
+  "server_id": 223344,
+  "gtid": null,
+  "file": "mysql-bin.000003",
+  "pos": 796,
+  "row": 0,
+  "thread": 13,
+  "query": null
+}
+----
+|===
+
+The missing attributes include `pos` and `row`, which we need to remove duplicate data:
+
+* `pos` is the position of the change in the MySQL binlog file.
+* `row` is the row number inside that binlog event, because one event can change many rows.
+
+Together with the file name, they give each change a unique ID.
+Without `pos` and `row`, we can't reliably find and remove these duplicates in the data warehouse.
+
+DebeziumIO also leaves out `ts_ms`, which shows when the change was committed in the database.
+It is very useful for debugging.
+
+== Wrapping up
+
+DebeziumIO lets you run change data capture inside an Apache Beam pipeline, without Kafka or Kafka Connect.
+In this post, we:
+
+* captured changes from MySQL with DebeziumIO,
+* turned each change into a BigQuery row,
+* wrote the rows to BigQuery, on our own machine and on Dataflow,
+* looked at the metadata that DebeziumIO doesn't include yet.
+
+DebeziumIO is still experimental, so your feedback really helps.
