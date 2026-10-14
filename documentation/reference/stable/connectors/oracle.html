@@ -1012,13 +1012,35 @@ For more information about the error, and about the steps that you can take to r
 </td>
 <td class="content">
 <div class="paragraph">
-<p>During a table&#8217;s snapshot, it&#8217;s possible for Oracle to raise an ORA-01466 exception.
-This happens when a user modifies the schema of the table or adds, changes, or drops an index or related object associated with the table being snapshot.
-In the event this happens, the connector will stop and the initial snapshot will need to be taken from the beginning.</p>
+<p>The connector reads table data with flashback queries at the SCN that it determined at the start of the snapshot.
+Oracle raises an ORA-01466 exception for a flashback query when the table&#8217;s definition changed after that SCN, for example when a user modifies the schema of the table or adds, changes, or drops an index or related object associated with the table.
+Such a failure cannot be retried, because the same flashback query fails until the connector determines a new SCN; the connector stops and the initial snapshot must be restarted from the beginning.</p>
 </div>
 <div class="paragraph">
-<p>To remediate the problem, you can configure the <a href="#oracle-property-snapshot-database-errors-max-retries"><code>snapshot.database.errors.max.retries</code></a> property with a value greater than <code>0</code> so that the specific table&#8217;s snapshot will restart.
-While the entire snapshot will not start from the beginning when retrying, the specific table in question will be re-read from the beginning and the table&#8217;s topic will contain duplicate snapshot events.</p>
+<p>The default <a href="#oracle-property-snapshot-locking-mode"><code>snapshot.locking.mode</code></a> of <code>shared</code> holds a <code>ROW SHARE</code> lock on each captured table for the duration of the snapshot.
+The lock allows other sessions to read and write the tables, and prevents DDL that requires an exclusive table lock.
+However, it does not prevent all DDL operations on the tables while their data is being read.
+Oracle non-blocking DDL, such as <code>ALTER TABLE &#8230;&#8203; ADD COLUMN</code> in Oracle 23.3 and later, does not require an exclusive table lock, and can still change a table&#8217;s definition while the snapshot is in progress and cause an ORA-01466 exception.</p>
+</div>
+<div class="paragraph">
+<p>To mitigate this, evaluate one of the following options:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>Set <code>snapshot.locking.mode</code> to <code>extended</code>, which holds a <code>SHARE</code> lock on each captured table for the duration of the snapshot.
+The lock prevents all DDL, including non-blocking DDL, but it also blocks all writes to the captured tables until the snapshot completes.</p>
+</li>
+<li>
+<p>Keep the default <code>shared</code> locking mode, and ensure that no DDL is performed on the captured tables while the snapshot is in progress.</p>
+</li>
+<li>
+<p>Set the <a href="#oracle-property-snapshot-mode"><code>snapshot.mode</code></a> to <code>no_data</code> so that the initial snapshot captures only the table schemas, and then capture the historical data by using an <a href="#debezium-oracle-incremental-snapshots">incremental snapshot</a>, which reads the data in chunks and does not rely on flashback queries.</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>If you set <code>snapshot.locking.mode</code> to <code>none</code>, no DDL must occur on the captured tables while the snapshot is in progress.</p>
 </div>
 </td>
 </tr>
@@ -1055,7 +1077,7 @@ If you want the connector to capture data only from specific tables you can dire
 <i class="fa icon-note" title="Note"></i>
 </td>
 <td class="content">
-Debezium holds the locks for only a short time.
+Debezium holds the locks until the table data has been read in Step 6. The locks do not prevent other database clients from reading or writing to the tables, and do not prevent Oracle non-blocking DDL. To prevent all DDL, set the <a href="#oracle-property-snapshot-locking-mode"><code>snapshot.locking.mode</code></a> property to <code>extended</code>, which obtains a <code>SHARE MODE</code> lock that also blocks writes to the tables until the snapshot completes.
 </td>
 </tr>
 </table>
@@ -1086,10 +1108,6 @@ For more information about why snapshots persist schema information for tables t
 </div>
 </li>
 <li>
-<p>Release the locks obtained in Step 3.
-Other database clients can now write to any previously locked tables.</p>
-</li>
-<li>
 <p>At the SCN position that was read in Step 4, the connector scans the tables that are designated for capture (<code>SELECT * FROM &#8230;&#8203; AS OF SCN 123</code>).
 During the scan, the connector completes the following tasks:</p>
 <div class="olist loweralpha">
@@ -1107,7 +1125,7 @@ All <code>read</code> events contain the same SCN position, which is the SCN pos
 <p>Emits each <code>read</code> event to the Kafka topic for the source table.</p>
 </li>
 <li>
-<p>Releases data table locks, if applicable.</p>
+<p>Releases the locks obtained in Step 3.</p>
 </li>
 </ol>
 </div>
@@ -8555,7 +8573,16 @@ You can set the following values:</p>
 <dt class="hdlist1"><code>shared</code></dt>
 <dd>
 <p>Enables concurrent access to the table, but prevents any session from acquiring an exclusive table lock.
-The connector acquires a <code>ROW SHARE</code> level lock while it captures table schema.</p>
+The connector acquires a <code>ROW SHARE</code> level lock when it captures the table schema and holds it until the table data has been read.
+The lock prevents DDL that requires an exclusive table lock, but it does not prevent Oracle non-blocking DDL, such as <code>ALTER TABLE &#8230;&#8203; ADD COLUMN</code> in Oracle 23.3 and later, which can invalidate the flashback query that reads the data and cause an ORA-01466 exception.</p>
+</dd>
+<dt class="hdlist1"><code>extended</code></dt>
+<dd>
+<p>Prevents all DDL on the table, including Oracle non-blocking DDL, for the duration of the snapshot.
+The connector acquires a <code>SHARE</code> level lock when it captures the table schema and holds it until the table data has been read.
+Other sessions can read the table, but any write to the table is blocked until the snapshot completes.
+The connector waits up to the duration specified by the <a href="#oracle-property-snapshot-lock-timeout-ms"><code>snapshot.lock.timeout.ms</code></a> property, rounded down to whole seconds, to acquire each table lock.
+If a lock cannot be acquired in that time, the snapshot fails.</p>
 </dd>
 <dt class="hdlist1"><code>none</code></dt>
 <dd>
@@ -8579,6 +8606,23 @@ Use this setting only if no schema changes might occur during the creation of th
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>When <code>snapshot.locking.mode</code> is set as <code>custom</code>, use this setting to specify the name of the custom implementation provided in the <code>name()</code> method that is defined by the 'io.debezium.spi.snapshot.SnapshotLock' interface.
 For more information, see <a href="#connector-custom-snapshot">custom snapshotter SPI</a>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="oracle-property-snapshot-lock-timeout-ms"></a><a href="#oracle-property-snapshot-lock-timeout-ms"><code>snapshot.lock.timeout.ms</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>10000</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies the maximum amount of time (in milliseconds) to wait to obtain each table lock when performing a snapshot.
+The value is rounded down to whole seconds.
+If the connector cannot acquire a table lock in this interval, the snapshot fails.
+A value from <code>0</code> to <code>999</code> causes the snapshot to fail immediately if a table lock cannot be acquired.
+Set the value to <code>-1</code> to wait indefinitely.
+While the connector waits for a table lock, writes to that table are queued behind the pending lock request.
+Of the built-in <a href="#oracle-property-snapshot-locking-mode"><code>snapshot.locking.mode</code></a> options, this property applies only to <code>extended</code>.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -10627,19 +10671,6 @@ The property <code>internal.legacy.snapshot.max.threads</code> is a deprecated a
 </td>
 </tr>
 </table>
-</div></div></td>
-</tr>
-<tr>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><a id="oracle-property-snapshot-database-errors-max-retries"></a><a href="#oracle-property-snapshot-database-errors-max-retries"><code>snapshot.database.errors.max.retries</code></a></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p><code>0</code></p>
-</div></div></td>
-<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
-<p>Specifies the number of retry attempts to snapshot a table when a database error occurs.
-This configuration property currently only retries failures related to <code>ORA-01466</code> exceptions.
-By default, no additional retries will be performed.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -14438,7 +14469,7 @@ The XStream outbound server is a container root database (<code>CDB$ROOT</code>)
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/d8108c3458905f201a756267751a526af3a46c20">d8108c34</a></span>)
+            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/6f3b23a0ffd79f7000d3ef6ae19cdac5d3c5e0c2">6f3b23a0</a></span>)
             
         </div>
     </footer>
