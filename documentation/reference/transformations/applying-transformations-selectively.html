@@ -895,6 +895,126 @@ Use this predicate to apply an SMT to records based on the name of the source ta
 </div>
 </div>
 <div class="sect1">
+<h2 id="debezium-provided-predicates"><a class="anchor" href="#debezium-provided-predicates"></a>Debezium-provided predicates</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>In addition to the predicate types that Kafka Connect provides, Debezium provides the following predicate:</p>
+</div>
+<div id="field-value-matches" class="dlist">
+<dl>
+<dt class="hdlist1">FieldValueMatches</dt>
+<dd>
+<p>Matches a record when a value field, addressed by a dot path, matches a regular expression.
+The default Kafka Connect predicates can match on the topic name (<code>TopicNameMatches</code>) or on a header (<code>HasHeaderKey</code>), but neither can match on a <em>value</em> in the event.
+Use this predicate, in combination with a filter SMT, to retain or drop records based on the content of a field, without resorting to scripting.
+The fully-qualified type is <code>io.debezium.transforms.predicates.FieldValueMatches</code>.</p>
+<div class="paragraph">
+<p>The predicate matches against the field value as it appears in the record&#8217;s <code>Struct</code>, not against a serialized-JSON rendering of the value.</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 1. <code>FieldValueMatches</code> configuration properties</caption>
+<colgroup>
+<col style="width: 30%;">
+<col style="width: 20%;">
+<col style="width: 50%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Property</th>
+<th class="tableblock halign-left valign-top">Default</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>field</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The value field to test, addressed with dot notation.
+A bare name such as <code>status</code> targets a top-level field; a dotted name such as <code>after.status</code> descends into nested structs, for example to reach into a change event envelope.
+Every path segment except the last must resolve to a <code>STRUCT</code>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>pattern</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>A Java regular expression that is tested against the string form of the field value.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>match.mode</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>full</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies how the pattern is applied to the field value:<br>
+<code>full</code> requires the entire value to match the pattern.<br>
+<code>partial</code> matches when the pattern is found anywhere in the value.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>unevaluable.value</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>ignore</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies the outcome when the predicate cannot evaluate the pattern against the field, for example because the record value is not a struct, the path is absent, an intermediate path segment is not a struct, the field is <code>null</code>, or the field is not a textual scalar (a struct, map, list, or binary <code>byte[]</code>/<code>ByteBuffer</code> value):<br>
+<code>ignore</code> treats the record as not matching the predicate.<br>
+<code>fail</code> stops the connector by throwing an exception.</p>
+</div></div></td>
+</tr>
+</tbody>
+</table>
+<div class="paragraph">
+<p>The string form of the value is the Java <code>toString()</code> rendering of the raw field value, so for some logical types it might not be what you expect.
+<code>Decimal</code> fields, which connectors emit when <code>decimal.handling.mode</code> is set to <code>precise</code> (the default), render through <code>BigDecimal.toString()</code>.
+The result depends on the scale of the value, for example <code>10.50</code> rather than <code>10.5</code>, and can use scientific notation, for example <code>1E-7</code>.
+The <code>Date</code>, <code>Time</code>, and <code>Timestamp</code> logical types of Kafka Connect, which connectors emit when <code>time.precision.mode</code> is set to <code>connect</code>, are backed by <code>java.util.Date</code> and render through <code>Date.toString()</code>, for example <code>Mon Oct 05 14:30:00 UTC 2026</code>.
+That rendering depends on the default time zone of the JVM that runs the connector.
+To match these fields reliably, configure the connector to emit a deterministic representation, for example <code>decimal.handling.mode=string</code>, or the default <code>time.precision.mode</code>, in which temporal values are numeric epoch offsets and zoned timestamps are ISO-8601 strings.</p>
+</div>
+<div class="paragraph">
+<p>A record with a <code>null</code> value (a tombstone) is always treated as not matching, regardless of the <code>unevaluable.value</code> setting.
+Because Kafka Connect allows only one predicate per transformation, you cannot compose this predicate with <code>RecordIsTombstone</code> to shield tombstones from a <code>fail</code> policy; exempting them keeps <code>fail</code> usable on a change stream that contains deletes.
+This mirrors the <code>Filter</code> transformation, which never matches tombstones and so always retains them.</p>
+</div>
+<div class="paragraph">
+<p>The following example combines the <code>FieldValueMatches</code> predicate with the Kafka Connect <code>Filter</code> transformation to drop records in which the <code>after.status</code> field is <code>ARCHIVED</code>:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight nowrap"><code class="language-none hljs">transforms=filterArchived
+transforms.filterArchived.type=org.apache.kafka.connect.transforms.Filter
+transforms.filterArchived.predicate=IsArchived
+predicates=IsArchived
+predicates.IsArchived.type=io.debezium.transforms.predicates.FieldValueMatches
+predicates.IsArchived.field=after.status
+predicates.IsArchived.pattern=ARCHIVED</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Because the <code>Filter</code> transformation drops the records that its predicate matches, this configuration removes archived records.
+To instead keep <em>only</em> the archived records, add <code>transforms.filterArchived.negate=true</code>.</p>
+</div>
+</dd>
+</dl>
+</div>
+</div>
+</div>
+<div class="sect1">
 <h2 id="defining-smt-predicates"><a class="anchor" href="#defining-smt-predicates"></a>Defining SMT predicates</h2>
 <div class="sectionbody">
 <div class="paragraph">
@@ -950,6 +1070,9 @@ You specify a predicate alias, associate the alias with a transform, and then de
 </li>
 <li>
 <p>TopicNameMatches</p>
+<div class="paragraph">
+<p>Or specify the <a href="#field-value-matches"><code>FieldValueMatches</code></a> predicate that Debezium provides.</p>
+</div>
 <div class="paragraph">
 <p>For example:</p>
 </div>
@@ -1063,7 +1186,7 @@ consider configuring an SMT for the connector with a predicate that uses the <a 
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/ffffce4e0b22c54bfb955a1d252061a730af0d08">ffffce4e</a></span>)
+            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/954830494f466998fdad45a3be6d2120bb01ae6d">95483049</a></span>)
             
         </div>
     </footer>
