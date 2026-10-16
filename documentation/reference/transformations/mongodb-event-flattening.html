@@ -862,34 +862,41 @@ Each event message includes the following parts:</p>
 <dl>
 <dt class="hdlist1"><code>before</code> data</dt>
 <dd>
-<p>This field is present in environments that run MongoDB 6.0 and later when the <code>capture.mode</code> for the Debezium connector is set to one of the following values:</p>
-<div class="ulist">
-<ul>
-<li>
-<p><code>change_streams_with_pre_image</code>.</p>
-</li>
-<li>
-<p><code>change_streams_update_full_with_pre_image</code>.</p>
+<p>A JSON string that represents the document before the change.
+To request pre-images, set <code>capture.mode.pre.image</code> to <code>when_available</code> or <code>required</code>.
+Pre-images require MongoDB 6.0 or later and must be enabled separately for the captured collections before the changes occur.
+With <code>when_available</code>, the <code>before</code> value is null if the image is unavailable.
+With <code>required</code>, a missing pre-image for an update, replacement, or delete causes the connector to fail.</p>
 <div class="paragraph">
-<p>For more information, see <a href="../connectors/mongodb.html#mongodb-pre-image-support" class="xref page">MongoDB pre-image support</a></p>
-</div>
-</li>
-</ul>
+<p>For more information, see <a href="../connectors/mongodb.html#mongodb-property-capture-mode-pre-image" class="xref page"><code>capture.mode.pre.image</code></a>.</p>
 </div>
 </dd>
 <dt class="hdlist1"><code>after</code> data</dt>
 <dd>
-<p>JSON strings that represent the values that are present in a document after the current operation.
-The presence of an <code>after</code> field in an event message depends on the type of event and the connector configuration.
-A <code>create</code> event for a MongoDB <code>insert</code> operation always contain an <code>after</code> field, regardless of the <code>capture.mode</code> setting.
-For <code>update</code> events, the <code>after</code> field is present only when <code>capture.mode</code> is set to one of the following values:</p>
+<p>A JSON string that represents the full document retrieved for the event.
+Insert and replacement operations include the full document regardless of the image settings.
+For MongoDB update operations, <code>capture.mode.post.image</code> controls how the connector requests the full document:</p>
+<div class="openblock">
+<div class="content">
 <div class="ulist">
 <ul>
 <li>
-<p><code>change_streams_update_full</code></p>
+<p><code>off</code>: Does not request the full document.</p>
 </li>
 <li>
-<p><code>change_streams_update_full_with_pre_image</code>.</p>
+<p><code>lookup</code> (default): Requests the current full document by using a lookup.</p>
+</li>
+<li>
+<p><code>post_image</code>: Requests the document as it appeared immediately after the update, when available.</p>
+</li>
+<li>
+<p><code>post_image_required</code>: Requires the document as it appeared immediately after the update and causes the connector to fail if it is unavailable.</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>With <code>lookup</code> or <code>post_image</code>, the <code>after</code> value can be null if the document is unavailable.</p>
+</div>
 <div class="admonitionblock note">
 <table>
 <tr>
@@ -898,28 +905,38 @@ For <code>update</code> events, the <code>after</code> field is present only whe
 </td>
 <td class="content">
 <div class="paragraph">
-<p>The <code>after</code> value in a change event message does not necessarily represent the state of a document immediately following the event.
-The value is not calculated dynamically; instead, after the connector captures a change event, it  queries the collection to retrieve the current value of the document.</p>
+<p>With <code>capture.mode.post.image=lookup</code>, concurrent updates can cause the lookup to return a newer document state than the operation represented by the event.
+For example, the document retrieved for change <code>a</code> might already include subsequent changes <code>b</code> or <code>c</code>.</p>
 </div>
 <div class="paragraph">
-<p>For example, imagine a situation in which multiple operations, <code>a</code>, <code>b</code>, and <code>c</code> modify a document in quick succession.
-When the connector processes, change <code>a</code>, it queries the collection for the full document.
-In the meantime, changes <code>b</code> and <code>c</code> occur.
-When the connector receives a response to its query for the full document for change <code>a</code>, it might receive a version of the document that is based on the subsequent changes for <code>b</code> or <code>c</code>.
-For more information, see the documentation for the <a href="../connectors/mongodb.html#mongodb-property-capture-mode" class="xref page"><code>capture.mode</code></a> property.</p>
+<p>For more information, see <a href="../connectors/mongodb.html#mongodb-property-capture-mode-post-image" class="xref page"><code>capture.mode.post.image</code></a>.</p>
 </div>
 </td>
 </tr>
 </table>
 </div>
-</li>
-</ul>
+</div>
 </div>
 </dd>
 </dl>
 </div>
 </dd>
 </dl>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>With either required-image policy, <code>deployment</code> or <code>database</code> capture scope and regex filtering can cause missing-image errors for events from excluded collections.
+See <a href="../connectors/mongodb.html#mongodb-property-capture-mode-pre-image" class="xref page"><code>capture.mode.pre.image</code></a> for scope, filtering, retention, and restart considerations.</p>
+</div>
+</td>
+</tr>
+</table>
 </div>
 <div class="paragraph">
 <p>The following fragment shows the basic structure of a <code>create</code> change event that the connector emits after a MongoDB <code>insert</code> operation:</p>
@@ -1199,42 +1216,23 @@ To support sink connectors or other consumers that might require information abo
 </div>
 </div>
 <div class="paragraph">
-<p>In the preceding example, the <code>before</code> and <code>after</code> represent the state of the source document before and after the document was updated.
-These fields are present in the event message that a connector emits only if the <code>capture.mode</code> for the connector is set as described in the following list:</p>
+<p>In the preceding update event, the availability of the <code>before</code> and <code>after</code> values depends on the connector&#8217;s image settings and whether MongoDB can provide the requested images.</p>
 </div>
 <div class="dlist">
 <dl>
 <dt class="hdlist1"><code>before</code> field</dt>
 <dd>
-<p>Provides the state of the document before the change.
-This field is present only when <code>capture.mode</code> is set to one of the following values:</p>
-<div class="ulist">
-<ul>
-<li>
-<p><code>change_streams_with_pre_image</code></p>
-</li>
-<li>
-<p><code>change_streams_update_full_with_pre_image</code>.</p>
-</li>
-</ul>
-</div>
+<p>Requested when <code>capture.mode.pre.image</code> is <code>when_available</code> or <code>required</code>.</p>
 </dd>
 <dt class="hdlist1"><code>after</code> field</dt>
 <dd>
-<p>Provides the full state of the document after a change.
-This field is present only when <code>capture.mode</code> is set to one of the following values:</p>
-<div class="ulist">
-<ul>
-<li>
-<p><code>change_streams_update_full</code></p>
-</li>
-<li>
-<p><code>change_streams_update_full_with_pre_image</code>.</p>
-</li>
-</ul>
-</div>
+<p>Requested when <code>capture.mode.post.image</code> is <code>lookup</code>, <code>post_image</code>, or <code>post_image_required</code>.</p>
 </dd>
 </dl>
+</div>
+<div class="paragraph">
+<p>The optional image policies can produce null values when images are unavailable.
+The required image policies cause the connector to fail instead.</p>
 </div>
 <div class="paragraph">
 <p>Assuming a connector that is configured to capture full documents, when the <code>ExtractNewDocumentState</code> SMT receives an <code>update</code> message for an <code>$unset</code> event, the SMT re-encodes the message by representing the removed field has a <code>null</code> value, as shown in the following example:</p>
@@ -1673,7 +1671,7 @@ If a sink connector requires a "flat" message structure, but it receives a messa
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/188b9d62a0d7869aa91aa72928df8987b9dd83fd">188b9d62</a></span>)
+            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/b9fde4bd19bcca399f1aa49e6ab7d4e8afaafc9b">b9fde4bd</a></span>)
             
         </div>
     </footer>
