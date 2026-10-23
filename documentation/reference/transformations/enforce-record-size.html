@@ -801,6 +801,7 @@
 <div id="toctitle" class="title">Table of Contents</div>
 <ul class="sectlevel1">
 <li><a href="#example-basic-enforce-record-size-configuration">Example: Basic configuration</a></li>
+<li><a href="#enforce-record-size-claim-check">Storing oversized records by using the claim-check strategy</a></li>
 <li><a href="#enforce-record-size-how-it-works">How the SMT estimates record size</a></li>
 <li><a href="#enforce-record-size-compression-ratio-example">Example: Configuration with compression ratio</a></li>
 <li><a href="#enforce-record-size-min-field-size-example">Example: Protecting small fields from truncation</a></li>
@@ -809,15 +810,17 @@
 </ul>
 </div>
 <div class="paragraph">
-<p>The <code>EnforceRecordSize</code> SMT estimates the serialized size of each record and, if it exceeds the configured maximum, truncates eligible string and bytes columns proportionally to bring the record within the size limit.</p>
+<p>The <code>EnforceRecordSize</code> SMT estimates the serialized size of each record and applies a configured strategy if the record exceeds the maximum size.
+By default, the SMT truncates eligible string and bytes columns proportionally.
+Alternatively, the SMT can store the complete record externally and replace selected columns with claim-check markers.</p>
 </div>
 <div class="paragraph">
 <p>Some downstream systems, such as Apache Kafka brokers or sink connectors, impose a maximum message size limit.
 When Debezium captures a change event for a row that contains large string or bytes columns, the serialized record can exceed that limit, causing the connector to fail.</p>
 </div>
 <div class="paragraph">
-<p>The SMT truncates larger columns aggressively to comply with the threshold.
-If does not modify columns if their sizes are at or below the configured threshold.</p>
+<p>With the default strategy, the SMT truncates larger columns aggressively to comply with the threshold.
+It does not modify columns if their sizes are at or below the configured threshold.</p>
 </div>
 </div>
 </div>
@@ -841,6 +844,78 @@ transforms.EnforceRecordSize.max.bytes=1048576</code></pre>
 </div>
 </div>
 <div class="sect1">
+<h2 id="enforce-record-size-claim-check"><a class="anchor" href="#enforce-record-size-claim-check"></a>Storing oversized records by using the claim-check strategy</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>Use the <code>claim_check</code> strategy when downstream consumers require the complete value and truncation would cause data loss.
+When an event exceeds <code>max.bytes</code>, the SMT serializes the complete source record, including its source partition and offset, headers, key, and value, and writes it through an <code>OversizedRecordStorage</code> implementation.
+After the storage implementation acknowledges the write, the SMT copies the event and replaces each configured non-null string or unnamed bytes column in its <code>before</code> and <code>after</code> sections with a claim-check marker.
+The <code>claim.check.columns.include.list</code> entries are case-insensitive regular expressions that match either an unqualified column name, such as <code>payload</code>, or a topic-qualified name, such as <code>inventory.customers.payload</code>.
+Use a topic-qualified expression to scope claim-check replacement to a single topic.
+Patterns that do not match a column in the current record are ignored, allowing different patterns for different topics.
+If no pattern matches, the record passes through unchanged without a storage write or truncation, even if it exceeds <code>max.bytes</code>.
+Such a record can still exceed a downstream message size limit.</p>
+</div>
+<div class="paragraph">
+<p>The following example stores oversized records in Amazon S3:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-none hljs">transforms=EnforceRecordSize
+transforms.EnforceRecordSize.type=io.debezium.transforms.EnforceRecordSize
+transforms.EnforceRecordSize.max.bytes=1048576
+transforms.EnforceRecordSize.strategy=claim_check
+transforms.EnforceRecordSize.claim.check.columns.include.list=inventory[.]customers[.]payload
+transforms.EnforceRecordSize.claim.check.storage.class=io.debezium.storage.s3.S3OversizedRecordStorage
+transforms.EnforceRecordSize.claim.check.storage.base.path=s3://my-bucket/debezium/oversized
+transforms.EnforceRecordSize.claim.check.storage.region=us-west-1</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>By default, the S3 implementation uses the AWS default credentials provider chain, which resolves credentials from the environment, from an EC2 instance profile, or from web identity credentials for IAM roles for service accounts (IRSA).
+Prefer the default provider chain in production, so that no credentials appear in the connector configuration.
+To use static credentials, set both <code>claim.check.storage.access.key.id</code> and <code>claim.check.storage.secret.access.key</code>.
+When both properties are present, the S3 implementation uses them instead of the default provider chain.
+Kafka Connect stores the connector configuration and returns it from its REST API as plain text.
+If you must use a static secret access key, supply it through a Kafka Connect <code>ConfigProvider</code> placeholder, for example <code>${file:/opt/kafka/external-configuration/s3.properties:secret.access.key}</code>, rather than as a literal value.
+To use it, make the <code>debezium-storage-s3</code> artifact and its dependencies available on the same Kafka Connect plugin path as the connector.</p>
+</div>
+<div class="paragraph">
+<p>The S3 implementation only writes objects and never deletes them.
+Configure an S3 lifecycle rule on the bucket, or on the prefix in <code>claim.check.storage.base.path</code>, that expires objects after downstream consumers no longer need them.</p>
+</div>
+<div class="paragraph">
+<p>The marker is a JSON value that retains the column&#8217;s original string or unnamed bytes schema.
+For example:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-json hljs" data-lang="json">{
+  "__debezium_claim_check": true,
+  "version": 1,
+  "storage": "s3",
+  "uri": "s3://my-bucket/debezium/oversized/inventory.customers/offset-a1b2c3d4-sha256-e5f6.json",
+  "column": "payload",
+  "size_bytes": 2097152,
+  "sha256": "e5f6..."
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>A downstream consumer must recognize the marker, read the complete record from <code>uri</code>, verify it as needed by using <code>sha256</code>, and recover the value identified by <code>column</code>.</p>
+</div>
+<div class="paragraph">
+<p>The storage key is derived from the topic, from the source partition and offset, and from a hash of the serialized payload.
+If Kafka Connect retries the same in-memory record, for example after a transient producer failure, the SMT writes the same key again and storage does not create a second object.
+This guarantee does not extend to a connector restart.
+When the connector re-emits an event from a committed offset, the envelope carries new processing-time values, such as <code>ts_ms</code>, and possibly different headers, so the payload hash and the key change and storage receives a second object for the same source event.
+Objects that belong to the same source event share the <code>offset-</code> segment of the key.
+The SMT never deletes stored objects, so configure a retention policy in the storage service.
+The write is synchronous and fail-closed: if storage does not acknowledge the write, the SMT throws an exception and does not emit a marker record.</p>
+</div>
+</div>
+</div>
+<div class="sect1">
 <h2 id="enforce-record-size-how-it-works"><a class="anchor" href="#enforce-record-size-how-it-works"></a>How the SMT estimates record size</h2>
 <div class="sectionbody">
 <div class="paragraph">
@@ -850,7 +925,8 @@ The string size calculation assumes one byte per character, which understates mu
 </div>
 <div class="paragraph">
 <p>When the estimated size (adjusted by the optional <code>compression.ratio</code>) exceeds <code>max.bytes</code>, the SMT identifies all string and bytes fields in the <code>before</code> and <code>after</code> sections of the envelope that are larger than <code>min.field.size</code>.
-It then distributes the excess bytes proportionally across those fields, truncating larger fields more than smaller fields.</p>
+It then distributes the excess bytes proportionally across those fields, truncating larger fields more than smaller fields.
+This truncation behavior applies when <code>strategy</code> is set to its default value, <code>truncate</code>.</p>
 </div>
 </div>
 </div>
@@ -929,6 +1005,19 @@ It passes non-envelope records, such as schema change events or tombstones, unch
 <p>The SMT does not guarantee that the final serialized record is exactly at or below <code>max.bytes</code>, because it estimates size approximately and the actual serialized size depends on the converter (JSON, Avro, or Protobuf) and its associated overhead.
 To provide a safety margin, configure a conservative <code>max.bytes</code> value or adjust the <code>compression.ratio</code> setting.</p>
 </li>
+<li>
+<p>With the <code>claim_check</code> strategy, the SMT supports only string and bytes columns.
+It validates all configured column names before writing the record to storage.</p>
+</li>
+<li>
+<p>The <code>claim_check</code> strategy leaves the input record unchanged and returns a copied envelope that contains the markers.
+It emits that copy only after external storage acknowledges the complete record.</p>
+</li>
+<li>
+<p>The <code>claim_check</code> strategy deduplicates only in-process retries of the same record.
+After a connector restart, a re-emitted event is stored as a second object, and the SMT never deletes stored objects.
+Configure a retention policy in the storage service.</p>
+</li>
 </ul>
 </div>
 </div>
@@ -967,7 +1056,7 @@ To provide a safety margin, configure a conservative <code>max.bytes</code> valu
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>(Required) The maximum record size in bytes.
-If the estimated serialized size of a record (adjusted by <code>compression.ratio</code>) exceeds the specified limit, the transformation proportionally truncates values in string and bytes columns to conform to the limit</p>
+If the estimated serialized size of a record (adjusted by <code>compression.ratio</code>) exceeds the specified limit, the transformation applies the configured <code>strategy</code>.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -993,7 +1082,118 @@ For example, if serialization compresses raw record size by 50%, set this to <co
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>A non-negative number that specifies the maximum size of fields that are subject to truncation.
 The transformation does not truncate fields if their size is less than or equal to this value (in bytes).
-Only fields larger than this threshold are eligible for proportional truncation.</p>
+Only fields larger than this threshold are eligible for proportional truncation.
+This option does not apply to the <code>claim_check</code> strategy.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="enforce-record-size-strategy"></a><a href="#enforce-record-size-strategy"><code>strategy</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>truncate</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies the action to take when an event exceeds <code>max.bytes</code>.
+Set the value to <code>truncate</code> to proportionally truncate eligible columns.
+Set the value to <code>claim_check</code> to store the complete record externally and replace configured columns with durable references.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="enforce-record-size-claim-check-storage-class"></a><a href="#enforce-record-size-claim-check-storage-class"><code>claim.check.storage.class</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default value.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>The fully qualified name of an <code>OversizedRecordStorage</code> implementation.
+Required when <code>strategy</code> is set to <code>claim_check</code>.
+For S3, set the value to <code>io.debezium.storage.s3.S3OversizedRecordStorage</code>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="enforce-record-size-claim-check-columns"></a><a href="#enforce-record-size-claim-check-columns"><code>claim.check.columns.include.list</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default value.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>A comma-separated list of case-insensitive regular expressions that match string or unnamed bytes columns to replace with claim-check markers.
+Each expression is evaluated against the unqualified column name, such as <code>payload</code>, and the topic-qualified column name, such as <code>inventory.customers.payload</code>.
+To scope a column to a topic, use an expression such as <code>inventory[.]customers[.]payload</code>.
+Required when <code>strategy</code> is set to <code>claim_check</code>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="enforce-record-size-claim-check-s3-base-path"></a><a href="#enforce-record-size-claim-check-s3-base-path"><code>claim.check.storage.base.path</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default value.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>For <code>S3OversizedRecordStorage</code>, the S3 bucket and optional object prefix, in the form <code>s3://bucket/optional-prefix</code>.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="enforce-record-size-claim-check-s3-region"></a><a href="#enforce-record-size-claim-check-s3-region"><code>claim.check.storage.region</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default value.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>For <code>S3OversizedRecordStorage</code>, the AWS region in which the bucket is located.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="enforce-record-size-claim-check-s3-access-key-id"></a><a href="#enforce-record-size-claim-check-s3-access-key-id"><code>claim.check.storage.access.key.id</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default value.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Optional access key ID for <code>S3OversizedRecordStorage</code>.
+When this property and <code>claim.check.storage.secret.access.key</code> are both set, the S3 implementation uses static credentials.
+Omit both properties to use the AWS default credentials provider chain, which is the recommended option.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="enforce-record-size-claim-check-s3-secret-access-key"></a><a href="#enforce-record-size-claim-check-s3-secret-access-key"><code>claim.check.storage.secret.access.key</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default value.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Optional secret access key for <code>S3OversizedRecordStorage</code>.
+When this property and <code>claim.check.storage.access.key.id</code> are both set, the S3 implementation uses static credentials.
+Because the connector configuration is stored as plain text, supply this value through a Kafka Connect <code>ConfigProvider</code> placeholder rather than as a literal.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="enforce-record-size-claim-check-s3-endpoint"></a><a href="#enforce-record-size-claim-check-s3-endpoint"><code>claim.check.storage.endpoint</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default value.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>For <code>S3OversizedRecordStorage</code>, an optional absolute URI for a custom S3-compatible endpoint.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="enforce-record-size-claim-check-s3-force-path-style"></a><a href="#enforce-record-size-claim-check-s3-force-path-style"><code>claim.check.storage.force.path.style</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>false</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>For <code>S3OversizedRecordStorage</code>, specifies whether the S3 client uses path-style access.</p>
 </div></div></td>
 </tr>
 </tbody>
@@ -1008,7 +1208,7 @@ Only fields larger than this threshold are eligible for proportional truncation.
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/435128654563c4330421f23dbf88c4e7a52a7333">43512865</a></span>)
+            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/5e58453790871511bfb82d8e9f049b06b4f0a1f0">5e584537</a></span>)
             
         </div>
     </footer>
