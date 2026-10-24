@@ -1,12 +1,12 @@
 ---
 layout: post
 title: "Host-Based Pipeline Deployment for Debezium Platform"
-date: 2026-10-06
+date: 2026-11-09
 tags: [ debezium-platform, gsoc, docker, ansible, quarkus, cdc ]
 author: d1vyanshu-kumar
 ---
 
-:imagesdir: /assets/images/2026-10-06-host-based-pipeline-deployment
+:imagesdir: /assets/images/2026-11-09-host-based-pipeline-deployment
 
 The Debezium Platform deployment model was originally designed with Kubernetes as its primary target environment.
 Kubernetes remains a strong choice for teams that already operate a cluster, but not every organization needs one simply to run a small number of Debezium Server pipelines.
@@ -55,24 +55,34 @@ It deliberately does not try to recreate every Kubernetes capability on a collec
 
 == Run the local example
 
-The https://github.com/debezium/debezium-examples/pull/497[host-based PostgreSQL to HTTP example] provides a repeatable local walkthrough.
-It starts Stage, Conductor, the Conductor database, a PostgreSQL source, and a small HTTP receiver with Docker Compose.
-It then uses the same Linux machine as the target host through the SSH alias `localhost`.
-The example uses the default Ansible runtime, so it exercises real discovery, provisioning, container lifecycle management, and CDC rather than replacing those steps with a mock.
+The https://github.com/debezium/debezium-examples/tree/main/debezium-platform/postgresql-http-host-example[host-based PostgreSQL to HTTP example] provides a repeatable walkthrough.
+It starts Stage, Conductor, the Conductor database, a PostgreSQL source, and a small HTTP receiver with Docker Compose on the developer machine.
+It deploys the Debezium Server container to a separate, disposable Multipass virtual machine.
+The example uses the default Ansible runtime, so it exercises real host discovery, provisioning, container lifecycle management, and CDC rather than replacing those steps with a mock.
 
 [WARNING]
 ====
-This example is for a disposable Linux development machine or virtual machine, not for a production host.
-It uses Docker host networking so that `localhost` from the Conductor container means the Linux machine running Docker.
-Docker CE must already be installed for this local example because Compose starts Conductor with it; the provisioning playbook then recognizes those packages and performs the remaining host preparation. On a separate remote host, the playbook can install Docker CE when necessary.
-Docker Desktop on macOS and Windows does not provide the same `localhost` behavior for this example.
-On Apple Silicon macOS, run the example in a Linux ARM64 virtual machine such as Multipass; do not force an image architecture with Docker `platform:` settings or rely on QEMU emulation.
+The VM is the Ansible target. It is intentionally disposable because the provisioning playbook can add the Docker repository, install Docker packages, enable Docker, and update the target user's Docker group membership.
+Do not use the developer machine as the target.
 ====
 
-=== Prepare the local target
+=== Prepare the target VM
 
-You need a Linux machine with Docker Engine, Docker Compose, and an OpenSSH server.
-The local SSH user must accept key-based authentication and be allowed to run `sudo` without an interactive password prompt, because Ansible provisions the target host with elevated privileges.
+Install Docker Engine, the Docker Compose plugin, Multipass, OpenSSH client tools, `curl`, and Python 3 on the developer machine.
+The target VM needs an OpenSSH server and an SSH user that can run `sudo` without an interactive password prompt.
+The default Multipass `ubuntu` user meets those requirements.
+
+Create the target VM and export its address:
+
+[source,bash]
+----
+multipass launch 24.04 --name dbz-platform-host-example --cpus 4 --memory 8G --disk 30G
+multipass info dbz-platform-host-example
+
+export TARGET_VM=dbz-platform-host-example
+export TARGET_HOST_IP=<VM_IP>
+export TARGET_HOST_USER=ubuntu
+----
 
 Clone the examples repository and enter the example directory:
 
@@ -82,65 +92,73 @@ git clone https://github.com/debezium/debezium-examples.git
 cd debezium-examples/debezium-platform/postgresql-http-host-example
 ----
 
-The example defaults to current multi-architecture `nightly` Platform and Debezium Server images, which make local development verification possible on both AMD64 and ARM64 Linux hosts.
+The example defaults to current multi-architecture `nightly` Platform and Debezium Server images, which make local development verification possible on AMD64 and ARM64 developer machines.
 Nightly is a moving development tag, not a production version pin. Set `PLATFORM_VERSION` to a released tag only when that release publishes images for your host architecture.
 
-Create a dedicated key for the example and allow the current Linux user to use it for SSH access to the same machine:
+Create a dedicated key for the example and authorize it only in the target VM:
 
 [source,bash]
 ----
-ssh-keygen -t ed25519 -f "$HOME/.ssh/debezium-host-example" -N ''
-cat "$HOME/.ssh/debezium-host-example.pub" >> "$HOME/.ssh/authorized_keys"
-chmod 700 "$HOME/.ssh"
-chmod 600 "$HOME/.ssh/authorized_keys"
+export HOST_EXAMPLE_SSH_DIR="$PWD/.ssh"
+install -d -m 700 "$HOST_EXAMPLE_SSH_DIR"
+ssh-keygen -t ed25519 -f "$HOST_EXAMPLE_SSH_DIR/debezium-host-example" -N ''
+
+multipass transfer "$HOST_EXAMPLE_SSH_DIR/debezium-host-example.pub" \
+  "$TARGET_VM:/tmp/debezium-host-example.pub"
+multipass exec "$TARGET_VM" -- bash -c \
+  'install -d -m 700 ~/.ssh && cat /tmp/debezium-host-example.pub >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && rm /tmp/debezium-host-example.pub'
+
+sed -e "s/YOUR_LINUX_USER/${TARGET_HOST_USER}/" -e "s/TARGET_HOST_IP/${TARGET_HOST_IP}/" \
+  ssh-config.example > "$HOST_EXAMPLE_SSH_DIR/config"
+ssh-keyscan -H "$TARGET_HOST_IP" > "$HOST_EXAMPLE_SSH_DIR/known_hosts"
+chmod 600 "$HOST_EXAMPLE_SSH_DIR/config" "$HOST_EXAMPLE_SSH_DIR/debezium-host-example" "$HOST_EXAMPLE_SSH_DIR/known_hosts"
 ----
 
-Copy `ssh-config.example` to `$HOME/.ssh/config`, or merge its `Host localhost` entry with your existing SSH configuration.
-Replace `YOUR_LINUX_USER` with the account that will receive the provisioning commands.
-The entry must be named `localhost` exactly.
-Conductor reads the SSH configuration as its host inventory, and the Compose example mounts that directory read-only inside the Conductor container.
+The example directory now contains an isolated SSH configuration, key, and known-hosts file. It does not modify the user's normal `~/.ssh` configuration.
+Conductor reads that isolated configuration as its host inventory.
 
-Before continuing, verify that SSH and non-interactive privilege escalation work from the Linux host:
+Before continuing, verify that the same key, SSH alias, and non-interactive privilege escalation that Conductor will use work from the developer machine:
 
 [source,bash]
 ----
-ssh localhost 'sudo -n true'
+ssh -F "$HOST_EXAMPLE_SSH_DIR/config" \
+  -o "IdentityFile=$HOST_EXAMPLE_SSH_DIR/debezium-host-example" \
+  -o "UserKnownHostsFile=$HOST_EXAMPLE_SSH_DIR/known_hosts" \
+  host-example 'sudo -n true'
 ----
 
-If this command asks for a password or fails, configure the test user's `sudo` policy before running the example.
-Do not weaken the `sudo` policy of a shared or production machine for this demo.
-On first use, it also records the trusted local host key in `$HOME/.ssh/known_hosts`.
-Conductor can read that trusted key after the SSH directory is mounted read-only.
+If this command asks for a password or fails, stop and correct the target VM setup. Do not weaken the `sudo` policy of a shared or production machine for this demo.
 
 === Start Platform and deploy the pipeline
 
-Choose a non-loopback IP address for the Linux machine.
-The Debezium Server container uses the normal Docker bridge network, where `localhost` would mean the container itself rather than its host.
+Use the target VM's default gateway as the address of the developer machine.
+The Debezium Server container uses the normal Docker bridge network in the target VM, where `localhost` would mean the target VM rather than the developer machine.
 This address lets it reach the sample PostgreSQL source on port `5433` and the HTTP receiver on port `9900`.
 
 [source,bash]
 ----
-export HOST_IP=192.168.1.50
-export HOST_SSH_DIR="$HOME/.ssh"
+export HOST_IP="$(multipass exec "$TARGET_VM" -- ip route | awk '/default/ {print $3; exit}')"
+export PLATFORM_VERSION=nightly
+export DEBEZIUM_VERSION=3.7
 
 docker compose up --build -d
 ./wait-for-host.sh
 ./create-pipeline.sh
 ----
 
-The custom Conductor image includes the Ansible command-line tools needed by host mode.
 Compose starts the database, Conductor, Stage, the PostgreSQL source, and the receiver.
-The Conductor starts in host deployment mode, reads the mounted SSH configuration, sees the `localhost` entry, and begins provisioning it through Ansible.
-`wait-for-host.sh` waits for the `localhost` host record to become `READY`; a first run can take several minutes while packages and images are prepared.
+The custom Conductor image includes the Ansible command-line tools needed by host mode.
+The Conductor starts in host deployment mode, reads the mounted SSH configuration, sees the `host-example` entry, and begins provisioning the VM through Ansible.
+`wait-for-host.sh` waits for the `host-example` record to become `READY`; a first run can take several minutes while packages and images are prepared.
 `create-pipeline.sh` uses the Platform REST API to create the source connection, HTTP destination connection, source, destination, and pipeline, then waits for the associated host deployment to report `RUNNING`. The final verification inserts a new row and confirms that the host-deployed Debezium Server delivers its change event to the HTTP receiver.
-Conductor selects the ready `localhost` host, generates the Debezium Server configuration, and asks Ansible to create the container there.
-The Compose file enables PostgreSQL logical decoding for both databases: Conductor uses it to consume the outbox event that starts deployment, and the sample source uses it to expose change events to the deployed Debezium Server.
+Conductor selects the ready `host-example` VM, generates the Debezium Server configuration, and asks Ansible to create the container there.
+The Compose configuration enables PostgreSQL logical decoding for the Conductor database so that it can consume the outbox event that starts deployment. The Debezium PostgreSQL example image already enables logical replication and provides the sample source table.
 
-You can inspect the resulting container on the Linux host with:
+You can inspect the resulting container on the target VM with:
 
 [source,bash]
 ----
-docker ps
+multipass exec "$TARGET_VM" -- docker ps --filter 'name=debezium-pipeline-'
 ----
 
 Now verify a real change event:
@@ -154,8 +172,7 @@ The script inserts a row into the sample PostgreSQL database and waits until the
 This proves the full route, from PostgreSQL logical replication through the host-deployed Debezium Server container to the HTTP sink.
 
 Stage is available at http://localhost:3000 and Conductor is available at http://localhost:8081 while the example is running.
-When the example runs in a virtual machine, those addresses are local to that Linux machine; use its VM IP address from the macOS browser.
-When you are finished, run `./cleanup.sh`; it deletes the Platform pipeline before removing the Compose services and volumes.
+When you are finished, run `./cleanup.sh`; it waits for the asynchronous host undeploy to complete before removing the Compose services and volumes.
 The example README contains the complete prerequisites, troubleshooting commands, and cleanup behavior.
 
 == How host deployments are coordinated
