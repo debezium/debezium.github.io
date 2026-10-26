@@ -7,171 +7,121 @@ author: indrashukla
 ---
 :imagesdir: /assets/images/2026-10-21-alerting-in-the-debezium-platform
 
-The https://debezium.io/documentation/reference/stable/operations/debezium-platform.html[Debezium Platform] has been able to show you how your pipelines are doing for a while now.
-The monitoring dashboard tells you the event rate, the source lag, the queue utilization, whether the snapshot finished.
-It is genuinely useful, but it is passive: it only helps while somebody is looking at it.
-
-In his https://debezium.io/blog/2026/07/10/debezium-platform-status-update/[mid-year Platform update], Mario listed alerting as one of the next things we wanted to tackle, for exactly that reason.
+The https://debezium.io/documentation/reference/stable/operations/debezium-platform.html[Debezium Management Platform] has been able to show you how your pipelines are doing for a while now.
+The monitoring dashboard tells you the event rate, the source lag, the queue utilization, whether the snapshot finished, and so on.
+But it is passive as it only helps while somebody is looking at it.
+In his https://debezium.io/blog/2026/07/10/debezium-platform-status-update/[mid-year Platform update], Mario listed alerting as one of the next things we wanted to tackle.
 That work has now landed.
-The Platform can watch those same panels for you and tell you when one of them crosses a line you care about.
 
-This post walks through what alerting looks like in the Platform: how a rule is defined, how it moves from quiet to firing, where the notifications go, and what you can configure.
+The Platform can now watch those same panels for you and tell you when one of them crosses a line you care about.
+This post walks through what alerting looks like in the Platform, how a rule is defined, where notifications go, how an alert moves from quiet to firing, and where to review it all afterwards.
 
 +++<!-- more -->+++
 
 [id="monitoring-recap"]
-== First, a quick recap of monitoring
+== Quick recap of monitoring
 
-Alerting is built directly on top of monitoring, so it is worth spending a paragraph on where the numbers come from.
+Alerting is built on the monitoring panels, so it is worth recapping the path those numbers take.
 
 A pipeline in the Platform is a Debezium Server instance deployed by the Debezium operator.
-The Platform wires it up with the https://opentelemetry.io/docs/zero-code/java/agent/[OpenTelemetry Java Agent], which exports metrics over OTLP to an https://opentelemetry.io/docs/collector/[OpenTelemetry Collector].
-The collector re-exposes them in Prometheus format, Prometheus scrapes the collector, and the Conductor (the Platform backend) queries Prometheus with PromQL when the UI asks for a panel.
-
-Those panels are not hard-coded in the frontend.
-The Conductor ships a `panels.yml` of PromQL-backed panel definitions, each with an id, a title, a category (`streaming` or `snapshot`), a unit, and a visualization type.
-The UI renders whatever `/api/monitoring/panels` returns, which also means you can add your own panels or override a built-in one without touching the frontend.
-
-The design details are in https://github.com/debezium/debezium-design-documents/blob/main/DDD-38.md#ddd-38-pipeline-monitoring-for-debezium-platform[DDD-38: Pipeline Monitoring for Debezium Platform].
+The Platform wires it up with the OpenTelemetry Java Agent, which exports metrics over OTLP to an OpenTelemetry Collector.
+The collector re-exposes them in Prometheus format, Prometheus scrapes the collector, and the Conductor (Debezium Platform backend) queries Prometheus with PromQL when the UI asks for a panel.
 
 ++++
 <div class="imageblock centered-image" style="margin-left:0; margin-right:0;">
-    <img src="/assets/images/2026-10-21-alerting-in-the-debezium-platform/monitoring-dashboard.png" style="width:100%; max-width:100%;" class="responsive-image" alt="Pipeline monitoring tab showing the streaming panels">
+    <img src="/assets/images/2026-10-21-alerting-in-the-debezium-platform/pipeline-monitoring.gif" style="width:100%; max-width:100%;" class="responsive-image" alt="Pipeline monitoring dashboard scrolling through streaming panels such as connection status, source lag and event rates">
 </div>
 ++++
 
-Keep that chain in mind, because the point of the alerting design is that it reuses all of it.
+For more details, take a look at the https://debezium.io/documentation/reference/stable/operations/debezium-platform.html#_pipeline_monitoring[pipeline monitoring documentation].
 
 [id="alerting-overview"]
-== Alerting, built on the panels you already have
+== Alerting
 
-The obvious way to build alerting on Prometheus would be to let people write PromQL expressions.
-We deliberately did not do that.
+A rule takes a monitoring panel and adds a comparison and a threshold. Rules are evaluated *globally*: any pipeline that breaches the threshold gets its own incident, including pipelines created after the rule.
 
-The Platform exists to give you a pipeline without making you learn the stack underneath it, and that principle applies here too.
-An alert rule in the Platform does not reference a metric or an expression.
-It references *a monitoring panel you can already see in the UI*, and adds a comparison and a threshold on top of it.
-
-If you can read the Source Lag panel, you can write a rule about Source Lag.
-
-A few consequences of that choice:
-
-* No new infrastructure.
-  The whole alerting engine lives inside the Conductor and reuses the Prometheus instance and the PostgreSQL database the Platform already has.
-* Rules stay valid as panels evolve, because the rule stores the panel id and the engine resolves the query at evaluation time.
-* Custom panels are alertable too.
-  If you added your own panel through `monitoring.panels.additionalPanelsPath`, it shows up in the rule form's panel picker like any built-in one.
-
-Rules are evaluated *globally*: a rule fires for any pipeline that breaches the threshold, and each pipeline gets its own incident.
-You do not have to remember to attach the rule to new pipelines, because new pipelines are covered the moment they start reporting metrics.
-Per-pipeline scoping is a reasonable next step and the data model is ready for it, but it is not in this first iteration.
-
-The full design is in https://github.com/debezium/debezium-design-documents/blob/main/DDD-57.md[DDD-57: Alerting for Debezium Platform].
+You can find the full design in https://github.com/debezium/debezium-design-documents/blob/main/DDD-57.md[DDD-57: Alerting for Debezium Platform].
 
 [id="alert-rule"]
-== Anatomy of an alert rule
+=== Anatomy of an alert rule
 
-You will find a new *Alerts* section in the left navigation, with *Rules*, *Channels* and *History*.
+You will find a new *Alerts* section in the left navigation, with *Rules*, *Channels* and *Events*.
 
-The create-rule form is deliberately written as a sentence rather than a form of disconnected fields:
+++++
+<div class="imageblock centered-image" style="margin-left:0; margin-right:0;">
+    <img src="/assets/images/2026-10-21-alerting-in-the-debezium-platform/create-alert-rule.png" style="width:100%; max-width:100%;" class="responsive-image" alt="Create alert rule form with severity and the When, Reduce, Is and For fields">
+</div>
+++++
+
+In the alert rule form, the fields read as a sentence:
 
 [source]
 ----
 When    Source Lag          (panel)
 Reduce  last                (how to collapse the time series)
-Is      greater than  10    (operator and threshold)
+Is      greater than  10    (comparison)
 For     5 minutes           (how long it has to hold)
 ----
 
-Reading left to right: *when the last value of Source Lag is greater than 10 seconds for 5 minutes*.
-The form shows that sentence back to you as you build it, so you are never guessing what the rule will actually do.
+Read left to right, that is: *when the last value of Source Lag is greater than 10 seconds for 5 minutes*.
 
 The pieces:
 
-*Panel* -- picked from a dropdown grouped by *Streaming* and *Snapshot*, exactly as they are grouped on the monitoring tab.
+*When:* the monitoring panel, picked from a dropdown that groups panels into *Streaming* and *Snapshot*, exactly as on the monitoring tab.
 
-*Reduce* -- a panel is a time series, and a rule needs a single number.
+*Reduce:* a panel is a time series, and a rule needs a single number.
 The reduce function decides how to get one: `last`, `avg`, `min`, `max` or `sum`.
 `last` is the default and is what you want for gauges like lag, connection status or queue utilization.
 `avg` is the better choice for noisy rate panels, where a single spike should not wake anybody up.
 
-*Evaluation window* -- how much history the reduce function looks at, from 1 minute to 1 hour, 5 minutes by default.
+*Evaluation window:* how much history the reduce function looks at, from 1 minute to 1 hour, 5 minutes by default.
 It is ignored when reduce is `last`, and the form hides it in that case.
 
-*Operator and threshold* -- the comparison, with the panel's own unit shown next to the input, so you are entering seconds for a lag panel and a percentage for a utilization panel.
+*Is:* the comparison, an operator such as `greater than`, with the threshold beside it.
+Once a panel is selected, its unit is shown next to the number, so a lag panel is entered in seconds and a utilization panel in percent.
 
-*For* -- the noise suppression knob, and the one I would encourage you to actually use.
+*For:* the noise suppression knob, and the one worth getting right.
 The condition has to hold continuously for this long before the alert fires.
-Set it to *Immediately* and a single bad scrape pages you; set it to *5 minutes* and a transient blip resolves itself quietly.
+Set it to *Immediately* and the slightest breach raises an alert, set it to *5 minutes* and a transient blip resolves itself quietly.
 
-*Severity* -- *Critical*, *Warning* or *Info*.
+*Severity:* *Critical*, *Warning* or *Info*.
 Severity is shown with both a colour and an icon rather than colour alone, and it determines whether the alert contributes to the badge in the header.
 
-*Additional channels* -- where to notify, on top of the UI itself.
+*Additional channels:* where to notify, on top of the UI itself.
 
 ++++
 <div class="imageblock centered-image" style="margin-left:0; margin-right:0;">
-    <img src="/assets/images/2026-10-21-alerting-in-the-debezium-platform/create-alert-rule.png" style="width:100%; max-width:100%;" class="responsive-image" alt="Create alert rule form with panel picker, operator, threshold, duration and severity">
+    <img src="/assets/images/2026-10-21-alerting-in-the-debezium-platform/alert-rules-list.png" style="width:100%; max-width:100%;" class="responsive-image" alt="Alert rules list with severity, condition, an on/off switch and a firing dot beside pipeline-stalled">
 </div>
 ++++
 
-The rules list shows each rule with its formatted condition (`last > 10s for 5m`), its severity, an enable/disable toggle, and an indicator when the rule currently has a firing incident.
-Disabling a rule is the quick way to silence something during planned maintenance without losing its definition.
+A red dot in front of the name, as on *pipeline-stalled* in the screenshot above, means that rule has a firing incident.
+The status switch turns a rule off without deleting it, which is how you silence one during planned maintenance.
 
-++++
-<div class="imageblock centered-image" style="margin-left:0; margin-right:0;">
-    <img src="/assets/images/2026-10-21-alerting-in-the-debezium-platform/alert-rules-list.png" style="width:100%; max-width:100%;" class="responsive-image" alt="Alert rules list with condition, severity and enable toggle">
-</div>
-++++
-
-[id="lifecycle"]
-== From quiet to firing and back
-
-The Conductor runs an evaluation loop every 60 seconds by default.
-For each enabled rule it queries Prometheus, applies the reduce function, compares the result against the threshold for every pipeline reporting that metric, and moves that `(rule, pipeline)` pair through a small state machine:
-
-[cols="1,2", options="header"]
-|===
-|Transition |What happens
-
-|OK -> Pending
-|The condition is met for the first time. Nothing is sent yet; the engine just remembers when it started.
-
-|Pending -> OK
-|The condition cleared before the `for` duration elapsed. Silent reset, no notification. This is the case the `for` duration exists for.
-
-|Pending -> Firing
-|The condition held for the whole `for` duration. An incident is created and notifications go out.
-
-|Firing -> Resolved
-|The condition cleared. The incident is closed and a resolution notification goes out.
-
-|OK -> Firing
-|Same as above but with `for` set to *Immediately*, skipping the pending state.
-|===
-
-One behaviour worth calling out: when a pipeline pod disappears, its metrics go stale in Prometheus and the rule has no data to evaluate.
-Rather than treating missing data as "everything is fine", the engine keeps the last state.
-A firing alert stays firing, which is almost always what you want, because a pipeline that stopped reporting is usually the incident, not the end of it.
 
 [id="channels"]
-== Where the notifications go
+=== Where the notifications go
 
-Alerts always appear in the Platform UI.
-That part is not configurable and does not need to be set up, which means a freshly installed Platform gives you working alerting with zero notification configuration.
+Alerts always appear in the Platform UI, so a freshly installed Platform gives you working alerting with no notification configuration at all. On top of that there are two more channel types, managed from *Alerts -> Channels*:
 
-On top of that there are two channel types, managed from *Alerts -> Channels*:
+*Email:* a list of recipients and an optional subject prefix.
 
-*Email* -- a list of recipients and an optional subject prefix.
+*Webhook:* a URL, an HTTP method and optional headers, which is the integration point for Slack, PagerDuty, OpsGenie, Teams, or anything else that accepts a POST.
 
-*Webhook* -- a URL, an HTTP method and optional headers, which is the integration point for Slack, PagerDuty, OpsGenie, Teams, or anything else that accepts a POST.
-
-Channels are named and reusable: one channel can serve many rules, and one rule can notify through several channels.
-Each channel has a *Test* button that sends a sample notification and reports back, so you can find out that your SMTP credentials are wrong now rather than during an actual incident.
 
 ++++
 <div class="imageblock centered-image" style="margin-left:0; margin-right:0;">
-    <img src="/assets/images/2026-10-21-alerting-in-the-debezium-platform/notification-channels.png" style="width:100%; max-width:100%;" class="responsive-image" alt="Notification channels list with email and webhook channels and the test action">
+    <img src="/assets/images/2026-10-21-alerting-in-the-debezium-platform/alert-channel-create.png" style="width:100%; max-width:100%;" class="responsive-image" alt="Create notification channel dialog for an email channel, with recipients and a subject prefix">
+</div>
+++++
+
+
+Channels are reusable that several rules can share one, and one rule can notify through several.
+*Test*, in the actions menu, sends a sample notification and reports back, so a bad SMTP setup shows up before a real incident does.
+
+++++
+<div class="imageblock centered-image" style="margin-left:0; margin-right:0;">
+    <img src="/assets/images/2026-10-21-alerting-in-the-debezium-platform/notification-channels.png" style="width:100%; max-width:100%;" class="responsive-image" alt="Notification channels list with an email channel and the actions menu open on Test">
 </div>
 ++++
 
@@ -196,110 +146,75 @@ The webhook payload is intentionally flat and stable, with a `version` field so 
 
 The same shape is sent with `"status": "resolved"` when the incident closes, so a receiver can correlate the two.
 
-One security note, because it affects what you can configure.
-Webhook URLs are user-supplied and the Conductor runs inside your cluster, so an unvalidated webhook would be a convenient way to probe internal services.
-The webhook notifier therefore resolves the URL *at send time* and rejects loopback, private and link-local addresses by default.
-If your target genuinely is in-cluster -- an internal Slack relay, say -- you can opt out with `alerting.webhook.allowPrivateNetworks: true`.
+[id="alert-lifecycle"]
+== The life of an alert
+
+Saving a rule does not notify anyone by itself.
+Each time a pipeline crosses the line and comes back, that cycle is recorded as an incident.
+
+[id="lifecycle"]
+=== From quiet to firing and back
+
+The Conductor runs an evaluation loop every 60 seconds by default.
+For each enabled rule it queries Prometheus, applies the reduce function, compares the result against the threshold for every pipeline reporting that metric, and moves that `(rule, pipeline)` pair through a small state machine:
+
+[cols="1,2", options="header"]
+|===
+|Transition |What happens
+
+|OK -> Pending
+|The condition is met for the first time. Nothing is sent yet; the engine just remembers when it started.
+
+|Pending -> OK
+|The condition cleared before the `for` duration elapsed. Silent reset, no notification. This is exactly what the `for` duration is there for.
+
+|Pending -> Firing
+|The condition held for the whole `for` duration. An incident is created and notifications go out.
+
+|Firing -> Resolved
+|The condition cleared. The incident is closed and a resolution notification goes out.
+
+|OK -> Firing
+|Same as above but with `for` set to *Immediately*, skipping the pending state.
+|===
+
+A firing alert sends one notification, and a resolution sends one.
+There is no repeat while it stays firing.
 
 [id="history"]
-== Alert history
+=== Alert events
 
-Notifications tell you about the moment.
-The *History* page is for everything after that.
-
-Every fire/resolve cycle is recorded as an incident with its rule, pipeline, severity, the value that triggered it, the threshold it breached, when it fired, and how long it lasted.
-Rows expand to show the full detail, and the table can be filtered by severity, status, pipeline, rule and date range.
-Incidents that are still firing are pinned to the top, so the page opens on "what is broken right now" and the rest is history underneath.
-
-The pipeline name in each row links straight to that pipeline's monitoring dashboard, which is usually the next click anyway: you see that Source Lag fired, and you want to look at the chart.
+The table lists each incident newest first. Expand a row for the value, the threshold and the message, and the pipeline name links to that pipeline's monitoring dashboard.
+Filter by status or time range, and use *Manage columns* to choose which fields the table shows.
 
 ++++
 <div class="imageblock centered-image" style="margin-left:0; margin-right:0;">
-    <img src="/assets/images/2026-10-21-alerting-in-the-debezium-platform/alert-history.png" style="width:100%; max-width:100%;" class="responsive-image" alt="Alert history page with filters, firing incidents pinned at the top and an expanded row">
+    <img src="/assets/images/2026-10-21-alerting-in-the-debezium-platform/alert-history.gif" style="width:100%; max-width:100%;" class="responsive-image" alt="Alert events page filtered to firing incidents, with a row expanded and the Manage columns dialog">
 </div>
 ++++
 
 There is also a badge in the header, counting active Critical and Warning alerts across all pipelines.
-It takes the colour of the highest active severity -- red if anything critical is firing, amber if it is only warnings -- and clicking it drops you into the history page filtered to firing incidents.
-`Info` alerts are recorded but deliberately left out of the badge, so you can use that severity for things you want in the log without turning the header into a permanent distraction.
+It takes the colour of the highest active severity: *red* when a `Critical` alert is firing, *amber* when the highest is a `Warning`. Clicking the badge opens this page filtered to firing incidents.
+`Info` alerts are recorded but left out of the badge.
 
-Resolved incidents are cleaned up daily after a retention period of 30 days by default.
+A daily cleanup job removes resolved incidents older than the retention period, 30 days by default.
 Still-firing incidents are never purged, regardless of age.
-
-[id="configuration"]
-== What you configure at install time
-
-Rules and channels are created in the UI, not in Helm values.
-The chart configures the machinery underneath them:
-
-[source,yaml]
-----
-alerting:
-  evaluation:
-    interval: "60s"       # how often the evaluation loop runs
-  history:
-    retention: "30d"      # how long resolved incidents are kept
-    cleanup:
-      interval: "24h"
-  webhook:
-    allowPrivateNetworks: false
-    maxAttempts: 3        # retries with exponential backoff
-    connectTimeout: "5S"
-    readTimeout: "10S"
-  email:
-    host: ""              # leave empty to keep email disabled
-    port: 587
-    from: ""
-    startTls: "REQUIRED"
-    auth:
-      existingSecret: ""  # Secret with username and password keys
-----
-
-There is no `alerting.enabled` toggle, and that is on purpose: the evaluation loop is a no-op when no rules exist, so alerting costs nothing until you create your first rule.
-
-Email is the one piece that needs install-time configuration, since the SMTP transport has to come from somewhere.
-Point `alerting.email.host` at your server and reference a Kubernetes Secret with `username` and `password` keys:
-
-[source,shell]
-----
-kubectl create secret generic smtp-credentials \
-  --from-literal=username=myuser \
-  --from-literal=password=mypassword
-----
-
-If no SMTP host is configured, email channels report a clear error when you test them, rather than silently swallowing notifications.
 
 [id="try-it-out"]
 == Try it out
 
-The fastest way to see this end to end is the https://github.com/debezium/debezium-examples/tree/main/debezium-platform/platform-postgresql-kafka-monitoring-example[platform monitoring example] in the `debezium-examples` repository.
-It brings up a local minikube cluster with PostgreSQL, Kafka, the OpenTelemetry Collector, Prometheus and the Platform, seeds a pipeline, and includes scripts that deliberately make the panels move -- generating traffic, stalling the pipeline, replaying a snapshot, and breaking the source connection.
+If you want to see it running end to end you can follow the https://github.com/debezium/debezium-examples/tree/main/debezium-platform/platform-postgresql-kafka-monitoring-example[platform monitoring and alert example] in the `debezium-examples` repository.
+It brings up a local minikube cluster with PostgreSQL, Kafka, the OpenTelemetry Collector, Prometheus and the Platform, seeds a pipeline, and includes scripts that make the panels move by generating traffic, stalling the pipeline, replaying a snapshot, and breaking the source connection.
 
-Those same scripts are what you want for alerting, because an alert rule is hard to appreciate until you have watched one fire.
-A good first rule is on *Time Since Last Event*, with `last greater than 60` for 1 minute: start the traffic generator, watch the rule sit quietly, stop it, and watch the rule go pending and then firing while the panel climbs.
-Then insert a single row and watch it resolve.
-
-[id="whats-next"]
-== What is not there yet
-
-Worth being explicit about the edges of this first iteration:
-
-* No alert grouping, silencing windows or escalation policies.
-  Disabling a rule is the current workaround for planned maintenance.
-* No repeat notifications while an alert stays firing.
-  You get one notification when it fires and one when it resolves.
-* No raw PromQL rules.
-  Rules are panel-based, though you can reach any metric you like by defining a custom panel for it.
-* No per-pipeline rule scoping yet, as described above.
-* The UI polls rather than receiving pushed updates, so the badge and history can lag a firing alert by a few seconds.
+From there, create a rule, trip it with one of those scripts, and watch it resolve.
 
 [id="conclusion"]
 == Conclusion
 
 Monitoring answered "how is my pipeline doing?" as long as you were looking.
-Alerting answers it when you are not, using the same panels, the same metrics pipeline, and no extra infrastructure to run.
+Alerting answers it when you are not.
 
-Give it a try on the latest Platform images, and tell us which rules you end up writing -- the set of panels people actually alert on is the best input we can get for where to take this next, per-pipeline scoping included.
+Give it a try on the latest Platform images, and tell us which rules you end up writing.
 
 If you like the project, you can help with https://debezium.zulipchat.com/#narrow/channel/392459-community-platform[feedback], report issues at https://github.com/debezium/dbz/issues[issues], and add a https://github.com/debezium/debezium-platform[star] to the repository.
 
