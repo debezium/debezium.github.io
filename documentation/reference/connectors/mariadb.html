@@ -976,6 +976,23 @@ The connector rebuilds the table structures that existed at this point in time b
 <p>This database schema history topic is for internal connector use only.
 Optionally, the connector can also <a href="#mariadb-schema-change-topic">emit schema change events to a different topic that is intended for consumer applications</a>.</p>
 </div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>When the source server runs with <code>binlog_row_metadata=FULL</code> (available on MySQL 8.0 and later and on MariaDB 10.5 and later), the server writes the full column metadata (column names, types, character sets, <code>ENUM</code>/<code>SET</code> values, and the primary key) into the binlog.
+In this configuration, you can set <code>binlog.metadata.based.schema</code> to <code>true</code> to have the connector reconstruct the table schema directly from the binlog instead of creating and using a schema history topic.
+This is an opt-in mode; the connector fails fast at startup if <code>binlog_row_metadata</code> is not set to <code>FULL</code>.
+For the trade-offs between the two modes, see <a href="#mariadb-comparison-schema-history-binlog-metadata">the comparison below</a>.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
 <div class="paragraph">
 <p>When the MariaDB connector captures changes in a table to which a schema change tool such as <code>gh-ost</code> or <code>pt-online-schema-change</code> is applied, there are helper tables created during the migration process.
 You must configure the connector to capture changes that occur in these helper tables.
@@ -988,6 +1005,117 @@ If consumers do not need the records the connector generates for helper tables, 
 <p><a href="#mariadb-topic-names">Default names for topics</a> that receive Debezium event records.</p>
 </li>
 </ul>
+</div>
+<div class="sect4">
+<h5 id="mariadb-comparison-schema-history-binlog-metadata"><a class="anchor" href="#mariadb-comparison-schema-history-binlog-metadata"></a>Comparison between the schema history and the binlog metadata mode</h5>
+<div class="paragraph">
+<p>For schema attributes that are available from both sources, the two modes produce the same row values and keys.
+However, the modes differ in where the connector obtains the table schema, which schema attributes are available, and how the connector can recover or start from an earlier binlog position.</p>
+</div>
+<div class="ulist">
+<div class="title">Advantages of the schema history mode</div>
+<ul>
+<li>
+<p>The mode works without requiring the source server to support or enable <code>binlog_row_metadata=FULL</code>.</p>
+</li>
+<li>
+<p>The DDL statements in the schema history preserve schema attributes that are not present in binlog row metadata, including integer display widths, column default values, and column comments.</p>
+</li>
+<li>
+<p>Before the connector resumes streaming, it reconstructs the complete table structures that existed at the starting binlog position.
+As a result, a schema change event that occurs before the next row event for a table can include the corresponding <code>tableChanges</code> structure.</p>
+</li>
+</ul>
+</div>
+<div class="ulist">
+<div class="title">Limitations of the schema history mode</div>
+<ul>
+<li>
+<p>The connector requires a schema history topic and the corresponding <code>schema.history.internal.*</code> configuration, and it must recover the history before it resumes streaming.</p>
+</li>
+<li>
+<p>The history must contain the DDL statements that are required to reconstruct the schema at the connector&#8217;s starting binlog position.
+If a connector offset is manually seeded or rewound to a position that predates the available history, the connector cannot safely decode rows across intervening schema changes.
+The <a href="#mariadb-connector-snapshot-mode-options"><code>recovery</code> snapshot mode</a> rebuilds the history from the current table structures and cannot restore the schema that existed at an earlier binlog position.</p>
+</li>
+<li>
+<p>A schema change that is not written to the binlog, for example, an <code>ALTER TABLE</code> statement that runs with <code>sql_log_bin=OFF</code>, is not added to the schema history and can leave the connector&#8217;s in-memory schema out of date.</p>
+</li>
+</ul>
+</div>
+<div class="ulist">
+<div class="title">Advantages of the binlog metadata mode</div>
+<ul>
+<li>
+<p>The connector requires no schema history topic and no <code>schema.history.internal.*</code> settings; there is no history storage to provision, monitor, or recover.</p>
+</li>
+<li>
+<p>The connector restarts without a history recovery phase.</p>
+</li>
+<li>
+<p>Schema changes that are never written to the binlog, for example, an <code>ALTER TABLE</code> statement that runs with <code>sql_log_bin=OFF</code>, heal themselves as soon as the connector reads the next change for the table.</p>
+</li>
+<li>
+<p>The connector offset can be seeded or rewound across past DDL statements to a position that the binlog still retains, provided that the events contain full metadata and meet the key requirements below.
+The connector reconstructs the schema that was in effect at that position.</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<div class="title">Limitations of the binlog metadata mode</div>
+<p>The binlog metadata mode has the following limitations:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>The source server must support <code>binlog_row_metadata</code> and run with <code>binlog_row_metadata=FULL</code>.
+The connector fails at startup if full row metadata is not enabled.</p>
+</li>
+<li>
+<p>Each captured table must have a primary key reported in <code>TABLE_MAP</code> metadata or an explicit <a href="#mariadb-property-message-key-columns"><code>message.key.columns</code></a> mapping that selects existing columns in that table.
+A <code>UNIQUE</code> index whose columns are all <code>NOT NULL</code> can satisfy this requirement if the server reports it as the primary key.
+A nullable <code>UNIQUE</code> index alone does not satisfy the requirement.
+The connector validates captured tables before emitting snapshot data and whenever it rebuilds a streaming table schema from <code>TABLE_MAP</code> metadata, including after a restart or when replaying older events.
+If a table has no usable key, the connector stops with an error that identifies the table and suggests adding a primary key, configuring <code>message.key.columns</code>, or disabling this mode.
+The first <code>TABLE_MAP</code> after a snapshot or DDL statement must also select the same key columns as the snapshot or DDL schema.
+If different unique index candidates cause the selected keys to differ, add an explicit primary key or configure <code>message.key.columns</code>.</p>
+</li>
+<li>
+<p>Integer display width is not available, so <code>TINYINT(1)</code> cannot be distinguished from <code>TINYINT</code>.
+The default mapping (<code>INT8</code>) is identical in both modes, but the optional <code>TinyIntOneToBooleanConverter</code> relies on the column length.
+To use the converter in binlog metadata mode, set its <code>length.checker</code> option to <code>false</code> and configure an explicit selector for the columns to convert.</p>
+</li>
+<li>
+<p>Column default values are not part of the reconstructed schema, so the Kafka field schemas do not declare them.
+Row values are unaffected, because every change event carries the actual column values.
+As a consequence, a <code>NOT NULL</code> column with a <code>DEFAULT</code> value surfaces as a required field without a default: when such a column is added to a captured table, the Avro converter registers a schema that a schema registry rejects under the <code>BACKWARD</code> subject compatibility, and sink connectors that create or evolve tables do not receive the column default.
+Relaxing the subject compatibility, for example to <code>NONE</code>, avoids the rejection; adding the column as nullable avoids it as well.</p>
+</li>
+<li>
+<p><code>FLOAT(M,D)</code> columns (deprecated in MySQL 8.0.17) map to <code>FLOAT32</code> instead of <code>FLOAT64</code>, and nationalized character columns surface as plain <code>CHAR</code>/<code>VARCHAR</code>.</p>
+</li>
+<li>
+<p>Source column types propagated with <code>column.propagate.source.type</code> reflect the reconstructed types, without display width or precision, and column comments are not available.</p>
+</li>
+<li>
+<p>After a restart, a schema change event for a table whose structure has not been observed yet carries the DDL statement without the <code>tableChanges</code> structure; the table structure is restored as soon as the connector reads the next change for the table.</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>Even with row-based logging, the server writes DDL statements such as <code>CREATE TABLE</code> and <code>ALTER TABLE</code> to the binlog as SQL statements.
+These statements can describe unique indexes, but the <code>FULL</code> metadata in subsequent <code>TABLE_MAP</code> events does not include the complete list of unique or secondary indexes.
+If the connector starts reading after the DDL, the row metadata cannot recover a nullable unique index definition for key selection.
+This mode does not persist schema history, so a unique index learned from an earlier DDL statement is also unavailable after a restart until that DDL is read again.
+The key requirement prevents snapshot and streaming events from silently switching to a different or missing message key.
+An explicit <code>message.key.columns</code> mapping is retained in the connector configuration and can supply the same key after a restart.
+Choose columns that identify rows consistently; this setting does not enforce uniqueness in the database.</p>
+</div>
+<div class="paragraph">
+<div class="title">Choosing a mode</div>
+<p>Use the schema history mode if the source server cannot provide full binlog row metadata, if captured tables cannot meet the key requirement, or if consumers depend on attributes such as integer display widths, column default values, column comments, or fully populated <code>tableChanges</code> structures in schema change events.
+Use the binlog metadata mode when the source server provides full row metadata, captured tables meet the key requirement, and those attributes are not required, especially if you want to remove schema history storage and recovery or replay retained binlog events that meet these requirements.</p>
+</div>
 </div>
 </div>
 <div class="sect2">
@@ -6604,6 +6732,12 @@ If you do not set this property, the database uses the default value, <code>file
 <td class="tableblock halign-left valign-top"><p class="tableblock">The <code>binlog_row_image</code> must be set to <code>FULL</code> or <code>full</code>.</p></td>
 </tr>
 <tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>binlog_row_metadata</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Optional.
+Required to be set to <code>FULL</code> only when you enable the <code>binlog.metadata.based.schema</code> option, so that the connector can reconstruct the table schema directly from <code>TABLE_MAP</code> events in the binlog.
+For all other configurations, this variable can retain its default value.</p></td>
+</tr>
+<tr>
 <td class="tableblock halign-left valign-top"><p class="tableblock"><code>binlog_expire_logs_seconds</code></p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock">The <code>binlog_expire_logs_seconds</code> corresponds to deprecated system variable <code>expire_logs_days</code>.
 This is the number of seconds for automatic binlog file removal.
@@ -9335,6 +9469,48 @@ Set the value to <code>true</code> to enable a connector that has a read-only co
 </dd>
 </dl>
 </div>
+<div id="mariadb-property-binlog-metadata-based-schema" class="dlist">
+<dl>
+<dt class="hdlist1"><a href="#mariadb-property-binlog-metadata-based-schema"><code>binlog.metadata.based.schema</code></a></dt>
+<dd>
+<div class="dlist">
+<dl>
+<dt class="hdlist1">Default value</dt>
+<dd>
+<p><code>false</code></p>
+</dd>
+<dt class="hdlist1">Description</dt>
+<dd>
+<p>Specifies whether the connector reconstructs the table schema from the metadata that the server writes into the binlog when it runs with <code>binlog_row_metadata=FULL</code> (the <code>TABLE_MAP</code> events), instead of from a persisted schema history topic.</p>
+<div class="paragraph">
+<p>When set to <code>true</code>, the connector rebuilds each table&#8217;s schema (column names, types, character sets, <code>ENUM</code>/<code>SET</code> values, and the primary key) from the binlog itself, and it does not create or depend on a schema history topic.
+In this mode the connector does not persist schema history, so no <code>schema.history.internal.*</code> storage or connection settings are required.
+This is an opt-in mode that requires the source server to run with <code>binlog_row_metadata=FULL</code>, which is available on MySQL 8.0 and later and on MariaDB 10.5 and later.
+If the variable is not set to <code>FULL</code>, the connector fails fast at startup.</p>
+</div>
+<div class="paragraph">
+<p>Each captured table must have a primary key reported in <code>TABLE_MAP</code> metadata or a matching <a href="#mariadb-property-message-key-columns"><code>message.key.columns</code></a> mapping that selects existing columns.
+A nullable <code>UNIQUE</code> index alone is insufficient because its definition is not included in <code>TABLE_MAP</code> metadata, even with <code>binlog_row_metadata=FULL</code>.
+The connector rejects an unsupported table before emitting snapshot data or streaming rows from its reconstructed schema, including when resuming older binlog events.
+Add a primary key, configure an explicit message key, or disable this mode to capture such a table.</p>
+</div>
+<div class="paragraph">
+<p>Because the schema is read from the binlog itself, the connector correctly resumes streaming after a restart that occurs in the middle of a multi-row <code>INSERT</code> or <code>UPDATE</code> operation.</p>
+</div>
+<div class="paragraph">
+<p>This mode works with any <code>snapshot.mode</code>.
+For modes that do not snapshot data (for example <code>no_data</code>), a fresh connector records the current binlog position before it begins streaming, so it captures only changes that occur from that point forward, rather than replaying the earliest available binlog.</p>
+</div>
+<div class="paragraph">
+<p>The two modes are not fully equivalent: schema attributes that exist only in DDL statements (for example, column default values and the integer display width) are not part of the reconstructed schema.
+For the advantages and limitations of each mode, see <a href="#mariadb-comparison-schema-history-binlog-metadata">the comparison between the schema history and the binlog metadata mode</a>.</p>
+</div>
+</dd>
+</dl>
+</div>
+</dd>
+</dl>
+</div>
 <div id="mariadb-property-signal-data-collection" class="dlist">
 <dl>
 <dt class="hdlist1"><a href="#mariadb-property-signal-data-collection"><code>signal.data.collection</code></a></dt>
@@ -12032,7 +12208,7 @@ If the snapshot is disabled, the connector fails with an error.</p>
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/4824cb7269292996d3e40ddad11a7e1e113278fe">4824cb72</a></span>)
+            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/13fbd6ce9ad07d03b44b030e5ae1a4da02f34da8">13fbd6ce</a></span>)
             
         </div>
     </footer>
