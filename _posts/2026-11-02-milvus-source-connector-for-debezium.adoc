@@ -160,7 +160,7 @@ The order of those two reads is what makes the handoff safe. The checkpoint is t
 </div>
 ++++
 
-Milvus 2.5 stores that checkpoint under `meta/datacoord-meta/channel-cp/<vchannel>`, and the connector's default looks under `data-coord/checkpoint/binlog/channel/<pchannel>`, a key that does not exist. Out of the box it therefore finds no checkpoint, logs a warning, snapshots anyway, and starts streaming from the end of the channel, which is why the snapshot event in the walkthrough carries `"tso": 0`. A write that lands between the snapshot query and that seek would be missed. Pointing `milvus.etcd.checkpoint.path` at the real key produces the behaviour described above (checkpoint found, stream resumed from the following offset, the overlap replayed and absorbed). Fixing the default is the first item on the list at the end of this post.
+Milvus 2.5 stores that checkpoint under `meta/datacoord-meta/channel-cp/<vchannel>`, and the connector's default looks under `data-coord/checkpoint/binlog/channel/<pchannel>`, a key that does not exist. Out of the box it therefore finds no checkpoint, logs a warning, snapshots anyway, and starts streaming from the end of the channel, which is why the snapshot event in the walkthrough carries `"tso": 0`. A write that lands between the snapshot query and that seek would be missed. Pointing `milvus.etcd.checkpoint.path` at the real key produces the behaviour described above (checkpoint found, stream resumed from the following offset, the overlap replayed and absorbed). Fixing the default is on the list at the end of this post.
 
 === Streaming, timeticks, and strict TSO order
 
@@ -256,7 +256,7 @@ https://github.com/debezium/debezium-examples/blob/main/milvus-to-pgvector/sourc
 * `milvus.etcd.endpoints` with `milvus.etcd.root.path` for the checkpoint, and
 * `milvus.kafka.bootstrap.servers` with `milvus.pchannel.name` for the MQ.
 
-One setting needs a word, `milvus.wire.format=proto_single`: on 3.7.0.Beta2, the release the example pins, the `auto` default fails on the first streamed message, so the format is set explicitly. Auto-detection works from 3.7.0.CR1 onward, with one catch on a pchannel that has no data messages yet (see Limitations).
+`milvus.wire.format=proto_single` names the format Milvus 2.5 uses on Kafka, rather than leaving the `auto` default to probe the pchannel at startup. On a pchannel with no data messages yet that probe falls back to `msgpack_batch` and the first insert fails (see Limitations).
 
 Registering it puts four events on `milvus.default.products`, all `op=r`, one per seeded row, and the value schema types `embedding` as an array of floats carrying the name `io.debezium.data.FloatVector`. This is the payload of the first one:
 
@@ -373,14 +373,16 @@ For monitoring in production: The connector exposes snapshot and streaming metri
 
 == Limitations and What's Next
 
-The connector is incubating, and its edges deserve stating as plainly as its features:
+The connector is incubating. Its current limits, most serious first:
 
-* **Kafka only, as Milvus's MQ backend.** Deployments backed by Pulsar or RocksMQ are not supported as the connector reads the MQ directly, so it must speak the deployment's MQ. Milvus 2.6 has no MQ at all: supporting it means a Woodpecker implementation of `MilvusMessageConsumer` and a WAL offset type, and nothing else in the pipeline changes.
-* **Single task, single pchannel.** One connector instance consumes one pchannel, and `tasks.max` values above 1 are ignored.
-* **No** `op=u` **events.** A Milvus upsert surfaces as the delete+insert pair, not a synthesized update event. The configuration already accepts `milvus.upsert.mode=correlate` for exactly that purpose, but nothing reads the setting yet, so it is a no-op until the pairing is implemented in the ordering engine.
-* **PK-only** `before` **images on deletes.** Milvus does not publish the prior state of a deleted entity, so the connector cannot either.
-* **Collection DDL is not emitted.** Create/drop operations are tracked internally for ordering but not yet emitted as schema-change events.
-* **The default etcd checkpoint key does not match Milvus 2.5.** The snapshot runs without a checkpoint and streaming starts from the end of the channel. `milvus.etcd.checkpoint.path` can point at the real key for a known collection, but the default needs fixing in the connector.
+* **The default etcd checkpoint key does not match Milvus 2.5.** The connector looks under a key that does not exist, so the snapshot runs without a checkpoint, streaming starts from the end of the channel, and a write that lands in between is missed. `milvus.etcd.checkpoint.path` can be pointed at the `channel-cp` key the handoff section names, but that key is per vchannel, so it covers one known collection at a time. The default needs fixing in the connector.
+* **Streaming is not at-least-once across a crash.** The MQ offset advances as messages are polled, before their events clear the ordering buffer, so a crash while events are buffered loses them on restart. The window is the time events wait in the buffer. The offsets section has the detail.
+* **Kafka only, as Milvus's MQ backend.** The connector reads the MQ directly, so Pulsar and RocksMQ deployments are not supported, and neither is Milvus 2.6, which has no MQ.
+* **Single task, single pchannel.** One connector instance consumes one pchannel, and `tasks.max` values above 1 are ignored, so a Milvus deployment with more than one DML channel is only partly captured by one connector. The walkthrough configures Milvus with a single channel.
 * **Include and exclude lists apply to the snapshot only.** During streaming, every collection on the pchannel is captured.
-* **Offsets can run ahead of the ordering buffer.** A crash while events are buffered can drop them. See the offsets section above.
-* `milvus.wire.format=auto` **only works from 3.7.0.CR1.** In 3.7.0.Beta2 the detector exists but is not wired in, so on that release set `proto_single` (or `msgpack_batch`) explicitly. The fix landed as https://github.com/debezium/debezium-connector-milvus/pull/12[debezium/dbz#2530] and ships in CR1. CR1 has a smaller gap of its own. The probe reads the pchannel until it sees a message that is not a timetick, and if none shows up within five seconds, which is the case when the connector is registered before any collection exists, it assumes `msgpack_batch` and logs a warning. Milvus 2.5 on Kafka writes `proto_single`, so the first real insert fails with a mismatch error. Restarting the task once there is data on the channel fixes it, and so does setting the format explicitly. A later release will drop the probe and decide the format from the first data message during streaming, which removes the fallback.
+* **No** `op=u` **events.** A Milvus upsert surfaces as the delete+insert pair, not a synthesized update event. `milvus.upsert.mode=correlate` is accepted but nothing reads it yet, so it is a no-op.
+* **PK-only** `before` **images on deletes.** Milvus does not publish the prior state of a deleted entity, so the connector cannot either.
+* **Collection DDL is not emitted.** Create and drop operations are tracked for ordering but not emitted as schema-change events.
+* `milvus.wire.format=auto` **picks the wrong format on an empty pchannel.** If the connector is registered before any collection exists, the probe sees no data message and assumes `msgpack_batch`, and the first insert on Milvus 2.5 fails with a mismatch error. Set the format explicitly, as the walkthrough does, or restart the task once the channel has data.
+
+Next on the list are the checkpoint default, upsert correlation behind `milvus.upsert.mode=correlate`, schema-change events for collection DDL, and replacing the wire format probe with detection from the first data message during streaming. Milvus 2.6 is the larger item and comes down to a Woodpecker implementation of the consumer interface from the dissection.
