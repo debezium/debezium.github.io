@@ -838,6 +838,8 @@
 <li><a href="#putting-tables-in-capture-mode">Putting tables into capture mode</a></li>
 <li><a href="#_effect_of_db2_capture_agent_configuration_on_server_load_and_latency">Effect of Db2 capture agent configuration on server load and latency</a></li>
 <li><a href="#_db2_capture_agent_configuration_parameters">Db2 capture agent configuration parameters</a></li>
+<li><a href="#db2-change-table-pruning">Db2 Change Table Pruning</a></li>
+<li><a href="#enable-the-db2-capture-agent-to-prune-obsolete-cd-tables">Enable the Db2 capture agent to prune obsolete change data tables</a></li>
 </ul>
 </li>
 <li><a href="#db2-deploying-a-connector">Deployment</a>
@@ -5371,6 +5373,149 @@ You can adjust the values for these parameters to balance the configuration of t
 </ul>
 </div>
 </div>
+<div class="sect2">
+<h3 id="db2-change-table-pruning"><a class="anchor" href="#db2-change-table-pruning"></a>Db2 Change Table Pruning</h3>
+<div class="paragraph">
+<p>Change data tables grow continuously unless processed records are removed.
+Review how pruning works and how to ensure that pruning continues in a Debezium environment.</p>
+</div>
+<div class="paragraph">
+<p>The IBM Db2 capture agent (ASNCDC) creates SQL records in change data (CD) tables to represent changes that occur in monitored source tables.
+Typically, for each source table that Debezium captures, the capture agent creates a corresponding CD table.
+Debezium captures event records from CD tables and emits corresponding change event messages that represent them to Apache Kafka topics.
+After Debezium processes a record from the CD table, the record is no longer needed, but Db2 does not automatically delete the processed rows.
+Without intervention, the CD tables continuously accumulate records until they consume all available disk space.
+To prevent uncontrolled table growth, reduce storage requirements, and help maintain replication and database performance, it&#8217;s important to implement a pruning strategy.</p>
+</div>
+<div class="paragraph">
+<p>In deployments where Debezium does not consume change event records, pruning is controlled by the Db2 Apply agent, which reads the change tables and replicates data to a set of prune tables at the configured destination.
+After the Apply agent updates the target prune tables it notifies the <strong>Capture</strong> agent that the records have been successfully replicated, and the data can be removed from the change tables.</p>
+</div>
+<div class="paragraph">
+<p>In a Debezium environment, because the <strong>Apply</strong> agent is not required to read the CD tables, users sometimes stop the agent to conserve processing resources.
+Stopping the agent also stops the associated <strong>prune</strong> function, which can lead to unwanted CD table growth.
+To avoid this situation, you must configure Db2 so that the prune thread is able to identify the records that need pruning.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="enable-the-db2-capture-agent-to-prune-obsolete-cd-tables"><a class="anchor" href="#enable-the-db2-capture-agent-to-prune-obsolete-cd-tables"></a>Enable the Db2 capture agent to prune obsolete change data tables</h3>
+<div class="paragraph">
+<p>Specific control table settings are required to enable pruning in Debezium Db2 connector deployments.
+Verify the control table configuration that the pruning process requires.</p>
+</div>
+<div class="paragraph">
+<p>For more information about the <code>IBMSNAP_*</code> control tables and their use in your environment, see the <a href="https://www.ibm.com/docs/en/idr/11.4.0?topic=structures-tables-capture-control-server">IBM Db2 documentation</a>.</p>
+</div>
+<div class="olist arabic">
+<div class="title">Procedure</div>
+<ol class="arabic">
+<li>
+<p>Verify the <code>IBMSNAP_REGISTER</code> configuration.</p>
+<div class="paragraph">
+<p>Confirm that the following conditions are met:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>The source table is registered in the <code>IBMSNAP_REGISTER</code> control table.</p>
+</li>
+<li>
+<p>The change data tables are correctly defined.</p>
+</li>
+<li>
+<p>The <code>CD_SYNCHPOINT_OLD</code> column contains a non-null value.</p>
+</li>
+</ul>
+</div>
+</li>
+<li>
+<p>Verify the <code>IBMSNAP_PRUNCNTL</code> configuration.</p>
+<div class="paragraph">
+<p>Confirm that the following conditions are met:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>The source table is registered in the <code>IBMSNAP_PRUNCNTL</code> control table.</p>
+</li>
+<li>
+<p>The table name and schema name match the corresponding values in <code>IBMSNAP_REGISTER</code>.</p>
+</li>
+<li>
+<p>The associated change data tables are correctly specified.</p>
+</li>
+<li>
+<p>The <code>MAP_ID</code> value is unique.</p>
+</li>
+</ul>
+</div>
+</li>
+<li>
+<p>Verify the <code>IBMSNAP_PRUNE_SET</code> configuration.</p>
+<div class="paragraph">
+<p>Confirm that the following conditions are met:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>The source table is registered in the <code>IBMSNAP_PRUNE_SET</code> control table.</p>
+</li>
+<li>
+<p>The <code>APPLY_QUAL</code> value matches the corresponding value in the other control tables.</p>
+</li>
+<li>
+<p>The <code>SET_NAME</code> value matches the corresponding value in the other control tables.</p>
+</li>
+<li>
+<p>The <code>TARGET_SERVER</code> value is unique.</p>
+<div class="admonitionblock important">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-important" title="Important"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>If the <code>IBMSNAP_PRUNE_SET</code> table contains multiple rows that use the same <code>APPLY_QUAL</code> and <code>SET_NAME</code> values, the capture agent does not prune change data until the synchronization point for every associated <code>TARGET_SERVER</code> advances beyond the records that are eligible for removal.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+</li>
+</ul>
+</div>
+</li>
+<li>
+<p>Verify the <code>IBMSNAP_CAPPARMS</code> configuration.</p>
+<div class="paragraph">
+<p>Confirm that the following condition is met:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>The <code>PRUNE_INTERVAL</code> value specifies the interval, in seconds, at which the Db2 capture agent runs the prune process.</p>
+</li>
+</ul>
+</div>
+</li>
+</ol>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>Configuration of Db2 capture agent parameters is beyond the scope of this documentation.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+</div>
 </div>
 </div>
 <div class="sect1">
@@ -7429,6 +7574,120 @@ If 0, no timespan limit will apply.
 One second is not allowed as this can result in an infinite loop.  Recommended non-zero default is 120 seconds.</p>
 </div></div></td>
 </tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="db2-property-update-capture-table-prune-ind"></a><a href="#db2-property-update-capture-table-prune-ind"><code>update.capture.table.prune.ind</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>false (disabled)</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>A switch that specifies whether the connector instance or the IBM DB2 Apply agent updates the prune table.
+Set the value to <code>true</code> if you want the connector to update the prune table.
+After the connector reads data from the change tables, it then updates the prune table.
+The IBM Capture agent then prunes the change table to remove records that the connector read.</p>
+</div>
+<div class="paragraph">
+<p>To use this property you must also configure the related <code>update.capture.table.prune</code> properties.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="db2-property-update-capture-table-prune-set-name"></a><a href="#db2-property-update-capture-table-prune-set-name">update.capture.table.prune.set.name</a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies the prune set name that the connector uses when it updates the prune table for this instance.
+ This setting only applies if you enable <code>update.capture.table.prune.ind</code> so that the connector updates the prune table.
+ Set the value to any non-empty string.
+ If <code>update.capture.table.prune.ind</code> is disabled, do not specify a prune set name for this property.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="db2-property-update-capture-table-prune-min-interval"></a><a href="#db2-property-update-capture-table-prune-min-interval">update.capture.table.prune.min.interval.ms</a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>10000 (10 seconds)</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies the minimum interval, in milliseconds, that the connector instance allows between updates to the prune point for the prune set.</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="db2-property-update-capture-table-prune-lsn-decrement"></a><a href="#db2-property-update-capture-table-prune-lsn-decrement">update.capture.table.prune.lsn.decrement</a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>true (enabled)
+Specifies whether the connector decrements the prune LSN by one before updating the prune table.</p>
+</div>
+<div class="paragraph">
+<p>When enabled, the connector preserves the last processed LSN in the change tables.
+Preserving this record helps prevent the connector from running unnecessary snapshots when the last processed LSN is removed in the change table.</p>
+</div>
+<div class="paragraph">
+<p>This setting applies only when <code>update.capture.table.prune.ind</code> is enabled.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="db2-property-update-capture-table-prune-apply-qual"></a><a href="#db2-property-update-capture-table-prune-apply-qual">update.capture.table.prune.apply.qual</a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies the Apply qualifier (<code>APPLY_QUAL</code>) that the connector uses when updating the prune table.</p>
+</div>
+<div class="paragraph">
+<p>The value identifies the connector instance as a consumer of change-table data and enables the IBM Capture agent to track the connector&#8217;s progress for pruning.</p>
+</div>
+<div class="paragraph">
+<p>When Debezium reads the change tables and streams records from them to Kafka, it acts as an Apply Agent.
+However, as an external system, Debezium is unknown to the internal Db2 cleanup system.
+The unique name that you specify represents Debezium to Db2 so that it correctly identifies the connector instance when it processes a change event record.
+By assigning this <code>apply-qual</code> name, you enable the database to track which read operations correspond to the specific connector instance, helping to prevent the database from deleting data before the instance can read it.</p>
+</div>
+<div class="paragraph">
+<p>This setting applies only when <code>update.capture.table.prune.ind</code> is enabled.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="db2-property-update-capture-table-prune-target-server"></a><a href="#db2-property-update-capture-table-prune-target-server">update.capture.table.prune.target.server</a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies the name of the target server for the subscription set.</p>
+</div>
+<div class="paragraph">
+<p>This property specifies the target database for the connector&#8217;s Apply agent.
+This setting applies only when <code>update.capture.table.prune.ind</code> is enabled.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="db2-property-update-capture-table-prune-procedure-override-name"></a><a href="#db2-property-update-capture-table-prune-procedure-override-name">update.capture.table.prune.procedure.override.name</a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>No default</p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Specifies the name of the prepared statement that the connector uses instead of issuing direct SQL update statements.</p>
+</div>
+<div class="paragraph">
+<p>Use this property when database administrators require control over the update implementation.</p>
+</div>
+<div class="paragraph">
+<p>This setting applies only when <code>update.capture.table.prune.ind</code> is enabled.</p>
+</div></div></td>
+</tr>
 </tbody>
 </table>
 </div>
@@ -9019,7 +9278,7 @@ Restart the connector to see updated column names in change events.</p>
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/c55edb02b4715c558abc76858aff535bf2eec7ef">c55edb02</a></span>)
+            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/0d3b40de61f850cac94b3fc327f47f40691da3c2">0d3b40de</a></span>)
             
         </div>
     </footer>
