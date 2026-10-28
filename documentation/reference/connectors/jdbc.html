@@ -814,6 +814,7 @@
 <li><a href="#jdbc-schema-evolution">Schema evolution</a></li>
 <li><a href="#jdbc-quoting-case-sensitivity">Quoting and case sensitivity</a></li>
 <li><a href="#jdbc-connection-idle-timeouts">Connection Idle Timeouts</a></li>
+<li><a href="#jdbc-sink-batching-and-buffering">Batching and buffering</a></li>
 <li><a href="#jdbc-singlestore-targets">SingleStore sink targets</a></li>
 <li><a href="#jdbc-starrocks-targets">StarRocks sink targets</a></li>
 <li><a href="#jdbc-cockroachdb-targets">CockroachDB sink targets</a></li>
@@ -936,6 +937,9 @@ The connector supports idempotent write operations by using upsert semantics and
 </li>
 <li>
 <p><a href="#jdbc-connection-idle-timeouts">Connection idle timeouts</a></p>
+</li>
+<li>
+<p><a href="#jdbc-sink-batching-and-buffering">Batching and buffering</a></p>
 </li>
 <li>
 <p><a href="#jdbc-singlestore-targets">SingleStore sink targets</a></p>
@@ -1427,7 +1431,30 @@ Setting <code>tasks.max=1</code> is not sufficient to restore ordering between r
 <p>Retain the default value (<code>false</code>) of the <a href="#jdbc-property-use-reduction-buffer"><code>use.reduction.buffer</code></a> property.
 Reduction by primary key can remove intermediate row states that are required to satisfy secondary unique constraints.</p>
 </dd>
-<dt class="hdlist1">Batch size set to <code>1</code></dt>
+<dt class="hdlist1">Disable deduplication buffer</dt>
+<dd>
+<p>Disable deduplication buffer by setting <a href="#jdbc-property-buffer-mode"><code>buffer.mode</code></a> to <code>passthrough</code>.
+Deduplication by primary key can remove intermediate row states that are required to satisfy secondary unique constraints.</p>
+</dd>
+</dl>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>Deduplication buffer was introduced with the sink framework (as the default) in Debezium version 3.8.0.Alpha1 and newer versions, or when enabling the sink framework mode (<code>internal.enable.sces=true</code>) in older versions of Debezium.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1">Batch size set to <code>1</code> (does not apply to all dialects)</dt>
 <dd>
 <p>Set the value of the <a href="#jdbc-property-batch-size"><code>batch.size</code></a> property to <code>1</code> if any batches might contain multiple events for a primary key that is not defined in the destination table.</p>
 <div class="paragraph">
@@ -1615,6 +1642,48 @@ After you apply the configuration, the connection pool begins to assess unused c
 </div>
 </div>
 <div class="sect2">
+<h3 id="jdbc-sink-batching-and-buffering"><a class="anchor" href="#jdbc-sink-batching-and-buffering"></a>Batching and buffering</h3>
+<div class="paragraph">
+<p>Starting with Debezium version 3.8.0.Alpha1, the JDBC sink connector uses a shared sink connector framework that introduces a buffer and batch processing layer.
+The connector buffers incoming records and groups them into batches before writing them to the destination database.
+The <a href="#jdbc-property-batch-size"><code>batch.size</code></a> property controls the maximum number of records per batch.</p>
+</div>
+<div class="paragraph">
+<p>The way records are buffered depends on two factors: whether the connector is configured with a primary key (<a href="#jdbc-property-primary-key-mode"><code>primary.key.mode</code></a> is not <code>none</code>) and the <a href="#jdbc-property-buffer-mode"><code>buffer.mode</code></a> setting.</p>
+</div>
+<div class="paragraph">
+<p>When a primary key is configured (keyed mode), the connector tracks records by their key within the buffer.
+In <code>deduplication</code> mode (the default), if multiple records share the same key within a batch window, the connector keeps only the most recent record for each key (last-write-wins).
+This reduces the number of SQL statements and avoids redundant writes when a row is updated multiple times in rapid succession.
+In <code>passthrough</code> mode, the connector preserves all records.
+When a duplicate key is encountered, the connector flushes the current buffer contents into a completed batch before adding the new record, ensuring that each individual batch contains no duplicate keys while still processing every event in <code>passthrough</code> mode.</p>
+</div>
+<div class="paragraph">
+<p>When no primary key is configured (keyless mode), each record receives a unique internal sequence number regardless of the batch mode setting.
+Because no two records share a key, no deduplication or batch splitting occurs, and both modes behave identically.
+Records with a <code>null</code> key value are treated as keyless.</p>
+</div>
+<div class="paragraph">
+<p>Truncate events receive special handling in both modes.
+In <code>deduplication</code> mode, a truncate event removes all pending records for the affected table from the buffer before the truncate is enqueued, because the downstream truncate will clear the table anyway.
+In <code>passthrough</code> mode, all pending records are flushed into completed batches before the truncate is enqueued, ensuring that pre-truncate data is written to the destination before the table is cleared.</p>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>This functionality is part of the sink connector framework introduced in Debezium version 3.8.0.Alpha1.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+</div>
+<div class="sect2">
 <h3 id="jdbc-singlestore-targets"><a class="anchor" href="#jdbc-singlestore-targets"></a>SingleStore sink targets</h3>
 <div class="paragraph">
 <p>To write to SingleStore, configure <a href="#jdbc-property-connection-url"><code>connection.url</code></a> with a SingleStore JDBC URL, for example, <code>jdbc:singlestore://&lt;_host_&gt;:3306/&lt;_database_&gt;</code>.
@@ -1755,7 +1824,7 @@ Setting <code>flush.max.retries</code> to <code>0</code> disables the retries so
 <p>When the connector fails to write a record to the target database for a reason that is not transient, for example, because the record violates a constraint, by default the failure stops the connector task.</p>
 </div>
 <div class="paragraph">
-<p>When the shared change event sink framework is enabled (<code>internal.enable.sces</code> is set to <code>true</code>), the connector can instead route the failing records to the errant record reporter that the Kafka Connect runtime provides (<a href="https://cwiki.apache.org/confluence/display/KAFKA/KIP-610%3A+Error+Reporting+in+Sink+Connectors">KIP-610</a>).
+<p>Starting with Debezium 3.8.0.Alpha1 where the sink framework is enabled by default, or in Debezium versions prior 3.8.0.Alpha1 when the shared change event sink framework is enabled (<code>internal.enable.sces</code> is set to <code>true</code>), the connector can route the failing records to the ErrantRecordReporter that the Kafka Connect runtime provides (see <a href="https://cwiki.apache.org/confluence/display/KAFKA/KIP-610%3A+Error+Reporting+in+Sink+Connectors">KIP-610</a>).
 When a batch fails with a non-transient error, the connector retries the records in the batch one at a time to isolate the failing records, routes only those records to the reporter, and continues to process the remaining records.
 Transient failures, such as failures that result from communication problems with the database, are not routed to the reporter; the connector retries them, based on the values of the <a href="#jdbc-property-flush-max-retries"><code>flush.max.retries</code></a> and <a href="#jdbc-property-flush-retry-delay-ms"><code>flush.retry.delay.ms</code></a> properties.</p>
 </div>
@@ -3745,6 +3814,24 @@ This setting enables the connector to combine multiple events for a primary key 
 <div class="paragraph">
 <p>The task then stops.</p>
 </div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>This issue is fixed in the sink connector framework mode (the default) in Debezium version 3.8.0.Alpha1 and newer versions or when enabling the sink framework mode (<code>internal.enable.sces=true</code>) in older versions of Debezium.</p>
+</div>
+<div class="paragraph">
+<p>In <code>deduplication</code> mode (<a href="#jdbc-property-buffer-mode"><code>buffer.mode=deduplication</code></a>) it was working before,
+in <code>passthrough</code> mode (<a href="#jdbc-property-buffer-mode"><code>buffer.mode=passthrough</code></a>) batches are split on duplicate keys and the issue does not occur.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
 <div class="paragraph">
 <p>For more information about how the connector&#8217;s use of the UNNEST function improves write performance for PostgreSQL and CockroachDB databases, see the following resources:</p>
 </div>
@@ -3825,6 +3912,51 @@ You can also configure the connector’s underlying consumer’s <code><em>max.p
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="jdbc-property-buffer-mode"></a><a href="#jdbc-property-buffer-mode"><code>buffer.mode</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>deduplication</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Controls how records with the same key are handled within a batch.
+The following options are available:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1"><code>deduplication</code></dt>
+<dd>
+<p>(Default) Records with the same key are deduplicated within a batch using last-write-wins semantics.
+If multiple events share the same key, only the most recent event is kept.
+When no primary key is configured (<a href="#jdbc-property-primary-key-mode"><code>primary.key.mode</code></a> is <code>none</code>), each record receives a unique sequence number, so no deduplication occurs.</p>
+</dd>
+<dt class="hdlist1"><code>passthrough</code></dt>
+<dd>
+<p>All events are preserved without deduplication.
+When duplicate keys are encountered, the current batch contents are flushed before the new record is added, ensuring that each batch contains no duplicate keys.
+When no primary key is configured, each record receives a unique sequence number and the buffer behaves identically to <code>deduplication</code> mode.</p>
+</dd>
+</dl>
+</div>
+<div class="paragraph">
+<p>For more details on how batching works, see <a href="#jdbc-sink-batching-and-buffering">Batching and buffering</a>.</p>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>This property is part of the sink connector framework introduced in Debezium version 3.8.0.Alpha1.</p>
+</div>
+</td>
+</tr>
+</table>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p><a id="jdbc-property-use-reduction-buffer"></a><a href="#jdbc-property-use-reduction-buffer"><code>use.reduction.buffer</code></a></p>
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
@@ -3854,6 +3986,46 @@ Reduction by primary key can remove intermediate row states that are required to
 </div>
 <div class="paragraph">
 <p>To optimize query processing in a PostgreSQL sink database when the reduction buffer is enabled, you must also enable the database to execute the batched queries by adding the <code>reWriteBatchedInserts</code> parameter to the JDBC connection URL.</p>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>This property is deprecated and has no effect in Debezium version 3.8.0.Alpha1 and newer versions or when using the sink framework mode. Replaced by <a href="#jdbc-property-buffer-mode"><code>buffer.mode</code></a>.</p>
+</div>
+</td>
+</tr>
+</table>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="jdbc-property-cloud-events-schema-name-pattern"></a><a href="#jdbc-property-cloud-events-schema-name-pattern"><code>cloud.events.schema.name.pattern</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>.*CloudEvents\\.Envelope$</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>A regular expression pattern that the connector uses to identify CloudEvents messages by matching the schema name of incoming records.
+When a record&#8217;s schema name matches this pattern, the connector treats the record as a CloudEvents envelope and extracts the payload accordingly.</p>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>This property is part of the sink connector framework introduced in Debezium version 3.8.0.Alpha1.</p>
+</div>
+</td>
+</tr>
+</table>
 </div></div></td>
 </tr>
 <tr>
@@ -4074,7 +4246,7 @@ Quoting behavior is dialect-specific, and varies among different types of databa
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/b3fe285536294ea4d40ca799986bd6cf0340fbcb">b3fe2855</a></span>)
+            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/635cdf1132d5c719835df4b2961c75584c5b7e24">635cdf11</a></span>)
             
         </div>
     </footer>
