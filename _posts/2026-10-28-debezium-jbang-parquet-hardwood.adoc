@@ -1,0 +1,320 @@
+---
+layout: post
+title:  "CDC Pipelines with JBang: write parquet files with Hardwood"
+date:   2026-10-28
+tags: [ community, quarkus, quarkus-extensions, parquet, jbang, hardwood ]
+author: gpanice
+---
+
+Modern data platforms are inherently complex because they require reading data from multiple systems while ensuring observability, security, governance, reliability, scalability, and many other cross-cutting concerns that quickly compound as the platform grows.
+But what if you just want to read the changes from a database and write them somewhere, today, in one file, without asking your platform team for anything?
+
++++<!-- more -->+++
+
+In this blog post we are going to build with a single JBang script a CDC Pipeline from PostgreSQL using the Debezium Quarkus extension and writes them straight to https://parquet.apache.org/[Apache Parquet] using https://hardwood.dev/[Hardwood], a lightweight Parquet library for the JVM.
+
+[source.animated,mermaid]
+----
+graph LR
+    subgraph S[Source System]
+        DB[(PostgreSQL)]
+    end
+    DB e1@-->|WAL| DC[Debezium Quarkus Extension]
+    subgraph JBang[JBang]
+        DC e2@-->|Capturing| HD[Hardwood]
+    end
+    subgraph T[Target System]
+        PQ[(Parquet)]
+    end
+    HD e3@-->|save| PQ
+    e1@{ animate: true }
+    e2@{ animate: true }
+    e3@{ animate: true }
+----
+
+== JBang: Unleash the power of Java
+
+If you've written Java for more than five minutes, you know the ritual: create a project, pick Maven or Gradle, tweak the build file, create `src/main/java`, import in your IDE, write some code and be already exhausted.
+
+JBang https://www.jbang.dev/documentation/guide/latest/index.html[short-circuits all of that], taking the best from other languages (like python).
+
+Another key benefit is that JBang and Quarkus work together https://quarkus.io/guides/scripting[remarkably well]: JBang can bootstrap a full Quarkus application from a single file, including CDI, lifecycle events, and configuration.
+
+This means you can run a Debezium Engine with proper dependency injection, health checks, and graceful shutdown, from something that "looks like a script".
+
+== The Debezium Quarkus extension
+
+The https://debezium.io/documentation/reference/stable/integrations/quarkus-debezium-engine-extension.html[Debezium Quarkus extensions], wrap the Debezium engine and integrates it into the Quarkus lifecycle, giving you a set of annotation like `@Capturing` to get CDC events in your application.
+The configuration options available are the same as for the Debezium Connector and like Debezium Server, you can https://debezium.io/documentation/reference/stable/configuration/storage.html[configure] the storage for the offset.
+
+You have the power of Debezium Engine with the Quarkus developer experience.
+
+== Hardwood
+
+https://hardwood.dev/[Hardwood] is a minimal Parquet writer written in pure Java.
+No Hadoop dependencies, no transitive dependency tree that pulls in half of the https://en.wikipedia.org/wiki/Apache_Hadoop[Hadoop ecosystem], just a small library that writes valid Parquet files with the column types you declare.
+
+[NOTE]
+====
+Please keep in mind that Hardwood introduced the Write feature in the 1.1.0.Beta1
+====
+
+== Prerequisite
+
+You should have installed in your system JBang or you can install it with https://sdkman.io/[SDKMAN!] or with:
+
+[source,shell]
+----
+curl -Ls https://sh.jbang.dev | bash -s - app setup
+----
+
+== The setup
+
+Let's use a `docker-compose` with PostgreSQL:
+
+[source,yaml]
+----
+services:
+  postgres:
+    image: quay.io/debezium/postgres:18
+    ports:
+      - 5432:5432
+    environment:
+      - POSTGRES_USER=debezium
+      - POSTGRES_PASSWORD=dbz
+      - POSTGRES_DB=inventory
+    volumes:
+      - ./init-scripts:/docker-entrypoint-initdb.d
+----
+
+The init script creates a `customers` table and seeds it with three rows:
+
+[source,sql]
+----
+CREATE SCHEMA inventory;
+
+CREATE TABLE inventory.customers (
+    id INT PRIMARY KEY,
+    first_name VARCHAR(100) NOT NULL,
+    last_name VARCHAR(100) NOT NULL,
+    email VARCHAR(100) NOT NULL
+);
+
+INSERT INTO inventory.customers (id, first_name, last_name, email) VALUES
+(1,'Alice', 'Smith', 'alice.smith@example.com'),
+(2,'Bob', 'Johnson', 'bob.johnson@example.com'),
+(3,'Charlie', 'Brown', 'charlie.brown@example.com');
+----
+
+Start it with `docker compose up -d`.
+
+== The code
+
+Here is the entire CDC Pipeline using JBang:
+
+[source,java]
+----
+///usr/bin/env jbang "$0" "$@" ; exit $?
+//DEPS io.quarkus.platform:quarkus-bom:3.28.4@pom
+//DEPS io.quarkus:quarkus-arc
+//DEPS io.debezium.quarkus:debezium-quarkus-postgres:3.7.0.Final
+//DEPS org.apache.kafka:kafka-clients:4.2.0
+//DEPS dev.hardwood:hardwood-core:1.1.0.Beta1
+//FILES application.properties
+//JAVAC_OPTIONS -parameters
+//JAVA_OPTIONS -Djava.util.logging.manager=org.jboss.logmanager.LogManager
+//JAVA 21+
+
+import dev.hardwood.OutputFile;
+import dev.hardwood.metadata.LogicalType;
+import dev.hardwood.metadata.PhysicalType;
+import dev.hardwood.metadata.RepetitionType;
+import dev.hardwood.schema.FileSchema;
+import dev.hardwood.writer.ParquetFileWriter;
+import dev.hardwood.writer.RowWriter;
+
+import io.debezium.runtime.Capturing;
+import io.debezium.runtime.CapturingEvent;
+import io.debezium.runtime.CapturingEvent.Create;
+import io.debezium.runtime.CapturingEvent.Read;
+import io.quarkus.runtime.StartupEvent;
+
+import jakarta.annotation.PreDestroy;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.event.Observes;
+
+import org.apache.kafka.connect.data.Struct;
+import org.apache.kafka.connect.source.SourceRecord;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+
+@ApplicationScoped
+public class DebeziumParquet {
+
+  private static final Path OUTPUT_DIR = Path.of("parquet-output");
+
+  private static final FileSchema SCHEMA = FileSchema.builder("customers")
+      .addColumn("id", PhysicalType.INT32, RepetitionType.REQUIRED)
+      .addColumn("first_name", PhysicalType.BYTE_ARRAY, RepetitionType.REQUIRED,
+          new LogicalType.StringType())
+      .addColumn("last_name", PhysicalType.BYTE_ARRAY, RepetitionType.REQUIRED,
+          new LogicalType.StringType())
+      .addColumn("email", PhysicalType.BYTE_ARRAY, RepetitionType.REQUIRED,
+          new LogicalType.StringType())
+      .build();
+
+  private ParquetFileWriter parquetFile;
+  private RowWriter rowWriter;
+
+  void onStart(@Observes StartupEvent event) throws IOException {
+    Files.createDirectories(OUTPUT_DIR);
+    parquetFile = ParquetFileWriter.create(OutputFile.of(OUTPUT_DIR.resolve("customers.parquet")), SCHEMA);
+    rowWriter = parquetFile.rowWriter();
+  }
+
+  @PreDestroy
+  void cleanup() throws Exception {
+    parquetFile.close();
+  }
+
+  @Capturing
+  public void capture(CapturingEvent<SourceRecord, SourceRecord> event) throws IOException {
+    if (event instanceof Read<SourceRecord, SourceRecord> e) {
+      Struct after = ((Struct) e.record().value()).getStruct("after");
+
+      rowWriter.writeRow(row -> row
+          .setInt("id", after.getInt32("id"))
+          .setString("first_name", after.getString("first_name"))
+          .setString("last_name", after.getString("last_name"))
+          .setString("email", after.getString("email")));
+    }
+  }
+}
+----
+
+Let us walk through the pieces of this code.
+
+=== The JBang header
+
+The first line, `///usr/bin/env jbang "$0" "$@" ; exit $?`, it makes the file executable as a shell script that delegates to JBang.
+The `//DEPS` lines declare Maven coordinates, and JBang resolves them on the first run.
+Notice `quarkus-bom` imported as a POM (`@pom`): this gives us Quarkus' dependency management without a build file.
+The `//FILES` directive tells JBang to include `application.properties` alongside the compiled class which Quarkus picks it up automatically.
+
+=== The Parquet schema
+
+Hardwood's `FileSchema` is defined statically and strings are physically stored as `BYTE_ARRAY`, this is how Parquet https://github.com/apache/parquet-format/blob/master/LogicalTypes.md[distinguishes] raw bytes from UTF-8 text.
+The schema is intentionally simple here, but Hardwood should support nested groups, optional fields, and all the Parquet physical and logical types.
+
+=== The capture method
+
+The `@Capturing` annotation registers this method as the event handler for the embedded Debezium engine.
+The `CapturingEvent` type hierarchy uses sealed classes to model the CDC event types: `Read`, `Create`, `Update`, `Delete`. You can see in the code pattern-matching on `Read` because we are interested only on snapshot events and our configuration is `initial_only`, which means Debezium should stop right after the snapshot without streaming new events.
+
+Inside the handler, we extract the `after` struct from the event value and write it to the Parquet file through Hardwood's `RowWriter`.
+
+=== The configuration
+
+The `application.properties` keeps the Debezium and datasource configuration:
+
+[source,properties]
+----
+# Debezium CDC configuration
+quarkus.debezium.offset.storage=org.apache.kafka.connect.storage.MemoryOffsetBackingStore
+quarkus.debezium.name=hardwood-cdc
+quarkus.debezium.topic.prefix=dbz
+quarkus.debezium.plugin.name=pgoutput
+quarkus.debezium.snapshot.mode=initial_only
+
+# Datasource configuration
+quarkus.datasource.db-kind=postgresql
+quarkus.datasource.username=debezium
+quarkus.datasource.password=dbz
+quarkus.datasource.jdbc.url=jdbc:postgresql://localhost:5432/inventory
+quarkus.datasource.jdbc.max-size=16
+----
+
+== Running it
+
+With the database running, you can run the script with:
+
+[source,bash]
+----
+jbang DebeziumParquet.java
+----
+
+JBang downloads the dependencies on the first run and Debezium connects to PostgreSQL inside Quarkus, reads the three customer rows via the initial snapshot, writes them to `parquet-output/customers.parquet`, and the application keeps running.
+
+You can inspect the output with any Parquet reader like https://duckdb.org/[DuckDB]:
+
+[source,sql]
+----
+duckdb -c "SELECT * FROM 'parquet-output/customers.parquet'"
+----
+
+[source,text]
+----
+┌───────┬────────────┬───────────┬─────────────────────────────┐
+│  id   │ first_name │ last_name │            email            │
+│ int32 │  varchar   │  varchar  │           varchar           │
+├───────┼────────────┼───────────┼─────────────────────────────┤
+│     1 │ Alice      │ Smith     │ alice.smith@example.com     │
+│     2 │ Bob        │ Johnson   │ bob.johnson@example.com     │
+│     3 │ Charlie    │ Brown     │ charlie.brown@example.com   │
+└───────┴────────────┴───────────┴─────────────────────────────┘
+----
+
+Three rows, columnar, compressed, queryable by any tool in the modern data stack powered by Debezium.
+
+== Where to go from here
+
+This example captures `Read` events only, which is the initial snapshot.
+Handling ongoing changes is a matter of adding branches to the pattern match:
+
+[source,java]
+----
+@Capturing
+public void capture(CapturingEvent<SourceRecord, SourceRecord> event)
+    throws IOException {
+  switch (event) {
+    case Read<SourceRecord, SourceRecord> e -> writeRow(e.record());
+    case Create<SourceRecord, SourceRecord> e -> writeRow(e.record());
+    default -> {} // updates and deletes need a different strategy
+  }
+}
+----
+
+Another improvement is to use the new start/stop APIs to shutdown the engine when the snapshot is completed
+
+[source,java]
+----
+  @Inject
+  DebeziumConnectorsRegistry registry;
+
+void onSnapshotCompleted(@Observes SnapshotCompleted event) {
+    registry.stop(EngineManifest.DEFAULT);
+    Quarkus.asyncExit();
+}
+----
+
+[NOTE]
+====
+The 3.7 release introduced the Engine start/stop APIs, but it's ongoing the integration with Quarkus, and we suggest to use the latest available Debezium version
+====
+
+Depending on your non-functional requirements, you would also want to:
+
+- Replace `MemoryOffsetBackingStore` with a persistent store (file-based or database-backed), so restarts resume from the last captured position
+- Rotate Parquet files by size or time interval, rather than writing everything into a single file
+- Error handling for schema evolution
+- ...
+
+The point of this exercise was not to build a production system, but to show that CDC does not have to start with a week of infrastructure work, but it can be a 5 mins work (without any IA agent).
+
+The full source code is available at https://github.com/debezium/debezium-examples[debezium-examples].
+
+== What's next?
+
+As we enter the era of AI agents, we can build a data engineering Swiss Army knife for Claude, Bob, or any other AI assistant. Powered by JBang scripts, it can simplify data exploration and analysis before data ingestion pipelines are deployed to production.
