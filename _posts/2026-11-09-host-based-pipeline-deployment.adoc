@@ -1,0 +1,237 @@
+---
+layout: post
+title: "Host-Based Pipeline Deployment for Debezium Platform"
+date: 2026-11-09
+tags: [ debezium-platform, gsoc, docker, ansible, quarkus, cdc ]
+author: d1vyanshu-kumar
+---
+
+:imagesdir: /assets/images/2026-11-09-host-based-pipeline-deployment
+
+The Debezium Platform deployment model was originally designed with Kubernetes as its primary target environment.
+Kubernetes remains a strong choice for teams that already operate a cluster, but not every organization needs one simply to run a small number of Debezium Server pipelines.
+For teams that run workloads on virtual machines, bare-metal servers, or cloud instances, a lighter deployment path can reduce operational overhead while retaining a central place to define and manage pipelines.
+
+Host-based pipeline deployment adds that path to the Debezium Platform.
+It lets the Platform place Debezium Server containers on SSH-accessible hosts while preserving the existing Kubernetes operator deployment model.
+
+In this article, we look at the host-based deployment model, run its local example, and explain the choices behind its two container runtimes.
+
++++<!-- more -->+++
+
+== The deployment model
+
+The Platform has the same user-facing role in both deployment models.
+Users create sources, destinations, transforms, connections, and pipelines in Stage or through the Platform API.
+The Conductor then turns that pipeline definition into a running Debezium Server instance.
+
+The difference is the environment that receives the deployment.
+In Kubernetes mode, Conductor works with the Debezium Operator and Kubernetes to manage the workload.
+In host mode, Conductor discovers SSH-accessible machines, prepares a selected machine through Ansible, and runs the Debezium Server container there.
+
+image::architecture-overview.svg[image,caption="Figure 1: The Platform supports Kubernetes and host-based deployment paths. In host mode, Ansible is the default way to manage containers, while the Host Agent is an optional HTTP-based runtime.",width=1200,role=centered-image]
+
+The two paths are complementary.
+Kubernetes mode delegates scheduling and workload management to a Kubernetes cluster and the Debezium Operator.
+Host mode is useful when the machines already exist and SSH is the operational boundary an organization uses to manage them.
+It deliberately does not try to recreate every Kubernetes capability on a collection of servers.
+
+[cols="1,2,2",options="header"]
+|===
+| | Kubernetes deployment | Host-based deployment
+
+| Target environment
+| A Kubernetes cluster managed by the Debezium Operator.
+| SSH-accessible bare-metal machines, virtual machines, or cloud instances.
+
+| Container lifecycle
+| Kubernetes reconciles the desired workload state.
+| Ansible manages Docker by default; the optional Host Agent exposes the same lifecycle over HTTP.
+
+| Operational trade-off
+| Requires a Kubernetes environment and its operational model.
+| Requires operators to maintain SSH access, host operating systems, and Docker on the target machines.
+|===
+
+== Run the local example
+
+The https://github.com/debezium/debezium-examples/tree/main/debezium-platform/postgresql-http-host-example[host-based PostgreSQL to HTTP example] provides a repeatable walkthrough.
+It starts Stage, Conductor, the Conductor database, a PostgreSQL source, and a small HTTP receiver with Docker Compose on the developer machine.
+It deploys the Debezium Server container to a separate, disposable Multipass virtual machine.
+The example uses the default Ansible runtime, so it exercises real host discovery, provisioning, container lifecycle management, and CDC rather than replacing those steps with a mock.
+
+[WARNING]
+====
+The VM is the Ansible target. It is intentionally disposable because the provisioning playbook can add the Docker repository, install Docker packages, enable Docker, and update the target user's Docker group membership.
+Do not use the developer machine as the target.
+====
+
+=== Prepare the target VM
+
+Install Docker Engine, the Docker Compose plugin, Multipass, OpenSSH client tools, `curl`, and Python 3 on the developer machine.
+The target VM needs an OpenSSH server and an SSH user that can run `sudo` without an interactive password prompt.
+The default Multipass `ubuntu` user meets those requirements.
+
+Create the target VM and export its address:
+
+[source,bash]
+----
+multipass launch 24.04 --name dbz-platform-host-example --cpus 4 --memory 8G --disk 30G
+multipass info dbz-platform-host-example
+
+export TARGET_VM=dbz-platform-host-example
+export TARGET_HOST_IP=<VM_IP>
+export TARGET_HOST_USER=ubuntu
+----
+
+Clone the examples repository and enter the example directory:
+
+[source,bash]
+----
+git clone https://github.com/debezium/debezium-examples.git
+cd debezium-examples/debezium-platform/postgresql-http-host-example
+----
+
+The example defaults to current multi-architecture `nightly` Platform and Debezium Server images, which make local development verification possible on AMD64 and ARM64 developer machines.
+Nightly is a moving development tag, not a production version pin. Set `PLATFORM_VERSION` to a released tag only when that release publishes images for your host architecture.
+
+Create a dedicated key for the example and authorize it only in the target VM:
+
+[source,bash]
+----
+export HOST_EXAMPLE_SSH_DIR="$PWD/.ssh"
+install -d -m 700 "$HOST_EXAMPLE_SSH_DIR"
+ssh-keygen -t ed25519 -f "$HOST_EXAMPLE_SSH_DIR/debezium-host-example" -N ''
+
+multipass transfer "$HOST_EXAMPLE_SSH_DIR/debezium-host-example.pub" \
+  "$TARGET_VM:/tmp/debezium-host-example.pub"
+multipass exec "$TARGET_VM" -- bash -c \
+  'install -d -m 700 ~/.ssh && cat /tmp/debezium-host-example.pub >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && rm /tmp/debezium-host-example.pub'
+
+sed -e "s/YOUR_LINUX_USER/${TARGET_HOST_USER}/" -e "s/TARGET_HOST_IP/${TARGET_HOST_IP}/" \
+  ssh-config.example > "$HOST_EXAMPLE_SSH_DIR/config"
+ssh-keyscan -H "$TARGET_HOST_IP" > "$HOST_EXAMPLE_SSH_DIR/known_hosts"
+chmod 600 "$HOST_EXAMPLE_SSH_DIR/config" "$HOST_EXAMPLE_SSH_DIR/debezium-host-example" "$HOST_EXAMPLE_SSH_DIR/known_hosts"
+----
+
+The example directory now contains an isolated SSH configuration, key, and known-hosts file. It does not modify the user's normal `~/.ssh` configuration.
+Conductor reads that isolated configuration as its host inventory.
+
+Before continuing, verify that the same key, SSH alias, and non-interactive privilege escalation that Conductor will use work from the developer machine:
+
+[source,bash]
+----
+ssh -F "$HOST_EXAMPLE_SSH_DIR/config" \
+  -o "IdentityFile=$HOST_EXAMPLE_SSH_DIR/debezium-host-example" \
+  -o "UserKnownHostsFile=$HOST_EXAMPLE_SSH_DIR/known_hosts" \
+  host-example 'sudo -n true'
+----
+
+If this command asks for a password or fails, stop and correct the target VM setup. Do not weaken the `sudo` policy of a shared or production machine for this demo.
+
+=== Start Platform and deploy the pipeline
+
+Use the target VM's default gateway as the address of the developer machine.
+The Debezium Server container uses the normal Docker bridge network in the target VM, where `localhost` would mean the target VM rather than the developer machine.
+This address lets it reach the sample PostgreSQL source on port `5433` and the HTTP receiver on port `9900`.
+
+[source,bash]
+----
+export HOST_IP="$(multipass exec "$TARGET_VM" -- ip route | awk '/default/ {print $3; exit}')"
+export PLATFORM_VERSION=nightly
+export DEBEZIUM_VERSION=3.7
+
+docker compose up --build -d
+./wait-for-host.sh
+./create-pipeline.sh
+----
+
+Compose starts the database, Conductor, Stage, the PostgreSQL source, and the receiver.
+The custom Conductor image includes the Ansible command-line tools needed by host mode.
+The Conductor starts in host deployment mode, reads the mounted SSH configuration, sees the `host-example` entry, and begins provisioning the VM through Ansible.
+`wait-for-host.sh` waits for the `host-example` record to become `READY`; a first run can take several minutes while packages and images are prepared.
+`create-pipeline.sh` uses the Platform REST API to create the source connection, HTTP destination connection, source, destination, and pipeline, then waits for the associated host deployment to report `RUNNING`. The final verification inserts a new row and confirms that the host-deployed Debezium Server delivers its change event to the HTTP receiver.
+Conductor selects the ready `host-example` VM, generates the Debezium Server configuration, and asks Ansible to create the container there.
+The Compose configuration enables PostgreSQL logical decoding for the Conductor database so that it can consume the outbox event that starts deployment. The Debezium PostgreSQL example image already enables logical replication and provides the sample source table.
+
+You can inspect the resulting container on the target VM with:
+
+[source,bash]
+----
+multipass exec "$TARGET_VM" -- docker ps --filter 'name=debezium-pipeline-'
+----
+
+Now verify a real change event:
+
+[source,bash]
+----
+./verify.sh
+----
+
+The script inserts a row into the sample PostgreSQL database and waits until the HTTP receiver records that row's unique value.
+This proves the full route, from PostgreSQL logical replication through the host-deployed Debezium Server container to the HTTP sink.
+
+Stage is available at http://localhost:3000 and Conductor is available at http://localhost:8081 while the example is running.
+When you are finished, run `./cleanup.sh`; it waits for the asynchronous host undeploy to complete before removing the Compose services and volumes.
+The example README contains the complete prerequisites, troubleshooting commands, and cleanup behavior.
+
+== How host deployments are coordinated
+
+Host mode begins with an SSH configuration file, which acts as a small, operator-maintained inventory.
+Conductor detects concrete host entries, records them, and asks Ansible to prepare new or changed hosts.
+Only hosts whose provisioning completes successfully are eligible for a pipeline deployment.
+
+When a user deploys a pipeline, Conductor chooses a ready host and an available server port, records the intended deployment, and then starts the remote container.
+It protects that allocation from concurrent deployment requests, while keeping slow remote work such as image pulling outside the database operation.
+This prevents two deployments from claiming the same host resources without making other requests wait for network work to finish.
+
+The Platform maps the pipeline definition to Debezium Server configuration and stores a SHA-256 hash of that configuration.
+The status poller later checks whether the container is running and whether the deployed configuration still matches the expected hash.
+It can therefore distinguish a running deployment, a failed container, and configuration drift.
+
+== Choose a container runtime
+
+Host deployment is enabled with one property, and the container runtime is selected with another:
+
+[source,properties]
+----
+# Enable host-based deployment
+pipeline.deployment.mode=host
+
+# Default: execute lifecycle commands through Ansible and SSH
+pipeline.host.container-runtime=ansible
+
+# Optional: use the Host Agent HTTP API instead
+# pipeline.host.container-runtime=agent
+----
+
+`ansible` is the default runtime.
+It is the simplest path when SSH and Ansible are already part of the operating model: Conductor uses Ansible to create directories, write configuration, run Docker commands, and retrieve logs.
+
+The optional `agent` runtime keeps the same Conductor lifecycle flow but moves local Docker and filesystem operations behind a small Host Agent service.
+Ansible installs that Agent only when the Agent runtime is selected.
+The service runs on the remote machine, accepts authenticated lifecycle requests from Conductor, and reports local container state and the configuration hash.
+
+Agent mode also requires `platform.host.agent-version` and a Maven repository containing that exact Agent artifact.
+At the time of this post, configure `platform.host.agent-maven-repository-url` with an operator-managed repository that contains the Agent; the provisioning playbook otherwise attempts Maven Central.
+The local example uses the default Ansible runtime and therefore does not require an Agent artifact repository.
+
+The Agent uses a bearer token unique to each provisioned host.
+Its HTTP API validates request data before invoking Docker, and its OpenAPI document is available from the Agent at `/q/openapi`.
+The Agent is intentionally not a second control plane: it has no database and does not decide pipeline state.
+Conductor retains ownership of scheduling, lifecycle state, and deployment records.
+
+== Limitations and future work
+
+Host mode adds a new deployment target; it is not a transparent replacement for every Kubernetes-specific behavior.
+For example, in-process pipeline signals are not available in host mode because that signal channel depends on co-location with the Debezium Server process in the operator environment.
+
+The local example has a deliberate boundary.
+It demonstrates the control plane and default Ansible runtime against a real local Linux host with a disposable PostgreSQL source and HTTP receiver.
+Production deployments must supply their own source and destination configuration, protect credentials, and apply their operating system's access controls.
+
+Potential next steps include richer host monitoring, additional provisioning backends, and placement policies for installations with several hosts.
+Those are follow-up design areas rather than capabilities claimed by the current implementation.
+
+Host-based deployment was developed as a Google Summer of Code 2026 project under the mentorship of Mario Fiore Vitale and Giovanni Panice.
+The original design is described in https://github.com/debezium/debezium-design-documents/pull/45[DDD-41], and the project work is tracked in https://github.com/debezium/dbz/issues/2085[DBZ-2085].
