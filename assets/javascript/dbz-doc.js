@@ -2,8 +2,8 @@
    Debezium long-form content behaviour
    --------------------------------------------------------------------------
    Progressive enhancement for Asciidoctor output: a table of contents built
-   from the document's own headings, copy buttons on code blocks, and scroll
-   containers around wide tables.
+   from the document's own headings, copy buttons on code blocks, tabs for
+   alternative code blocks, and scroll containers around wide tables.
 
    All of it is additive. With JavaScript off the post still reads correctly;
    the rail simply stays empty and is hidden.
@@ -159,6 +159,104 @@
     window.addEventListener('scroll', schedule, { passive: true });
     window.addEventListener('resize', schedule);
     update();
+  }
+
+  /* -------------------------------------------------------------- code tabs */
+
+  // Alternative code blocks are grouped in an open block with the dbz-tabs
+  // role, and each block's title becomes its tab:
+  //
+  //   [.dbz-tabs]
+  //   --
+  //   .Kafka Connect
+  //   [source,json]
+  //   ----
+  //   ...
+  //   ----
+  //   --
+  //
+  // Without JavaScript the blocks stack under their titles, which still reads.
+  var tabGroups = [];
+
+  function buildTabs() {
+    Array.prototype.forEach.call(doc.querySelectorAll('.openblock.dbz-tabs > .content'),
+      function (content, groupIndex) {
+        var blocks = Array.prototype.filter.call(content.children, function (el) {
+          return el.classList.contains('listingblock') || el.classList.contains('literalblock');
+        });
+        if (blocks.length < 2) return;
+
+        var prefix = 'dbz-tabs-' + groupIndex;
+        var list = document.createElement('div');
+        list.className = 'dbz-tabs__list';
+        list.setAttribute('role', 'tablist');
+
+        var tabs = blocks.map(function (block, i) {
+          // The title moves into the tab, so hide the original rather than
+          // show the same label twice.
+          var title = block.querySelector(':scope > .title');
+          var tab = document.createElement('button');
+          tab.type = 'button';
+          tab.className = 'dbz-tabs__tab';
+          tab.id = prefix + '-tab-' + i;
+          tab.setAttribute('role', 'tab');
+          tab.textContent = title ? title.textContent.trim() : 'Example ' + (i + 1);
+          if (title) title.hidden = true;
+
+          // Keep an author-supplied anchor id; only invent one when missing.
+          if (!block.id) block.id = prefix + '-panel-' + i;
+          block.classList.add('dbz-tabs__panel');
+          block.setAttribute('role', 'tabpanel');
+          block.setAttribute('aria-labelledby', tab.id);
+          tab.setAttribute('aria-controls', block.id);
+
+          list.appendChild(tab);
+          return tab;
+        });
+
+        var group = {
+          tabs: tabs,
+          select: function (index, focus) {
+            tabs.forEach(function (tab, i) {
+              var on = i === index;
+              tab.setAttribute('aria-selected', on ? 'true' : 'false');
+              tab.tabIndex = on ? 0 : -1;
+              blocks[i].hidden = !on;
+            });
+            if (focus) tabs[index].focus();
+          }
+        };
+
+        tabs.forEach(function (tab, i) {
+          tab.addEventListener('click', function () { selectEverywhere(tab.textContent); });
+
+          // Arrow keys move between tabs, as the WAI-ARIA tabs pattern expects.
+          tab.addEventListener('keydown', function (event) {
+            var next = null;
+            if (event.key === 'ArrowRight') next = (i + 1) % tabs.length;
+            else if (event.key === 'ArrowLeft') next = (i - 1 + tabs.length) % tabs.length;
+            else if (event.key === 'Home') next = 0;
+            else if (event.key === 'End') next = tabs.length - 1;
+            if (next === null) return;
+            event.preventDefault();
+            group.select(next, true);
+          });
+        });
+
+        content.insertBefore(list, content.firstChild);
+        group.select(0, false);
+        tabGroups.push(group);
+      });
+  }
+
+  // Picking "Debezium Server" in one group switches every group on the page
+  // that offers the same label, so a reader is not toggling each one.
+  function selectEverywhere(label) {
+    tabGroups.forEach(function (group) {
+      group.tabs.forEach(function (tab, i) {
+        if (tab.textContent === label) group.select(i, false);
+      });
+    });
   }
 
   /* ------------------------------------------------------------ copy button */
@@ -397,6 +495,7 @@
     if (!doc) return;
 
     wrapTables();
+    buildTabs();
     addCopyButtons();
     buildToc();
     railDocToc();
