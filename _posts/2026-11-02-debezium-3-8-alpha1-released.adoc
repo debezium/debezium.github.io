@@ -1,0 +1,876 @@
+---
+layout: post
+title:  Debezium 3.8.0.Alpha1 Released
+date:   2026-11-02 05:00
+tags:   [ releases, mongodb, mysql, mariadb, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox, spanner, jdbc, informix, ibmi, cockroachdb, yashandb, elasticsearch ]
+author: ccranfor
+extraClasses: release-v2
+---
+
+As the leaves fall and November gets underway, we're pleased to announce **Debezium 3.8.0.Alpha1**, the first preview release of the 3.8 series.
+
+This release introduces a new Elasticsearch sink connector.
+It also brings snapshot progress monitoring to Debezium Platform, a new default mode for the JDBC sink, and improvements across many connectors.
+There are also many bug fixes and a few breaking changes to review before upgrading.
+
+Read on for the full details!
+
++++<!-- more -->+++
+
+* link:#breaking-changes[Breaking changes]
+* link:#new-features-and-improvements[New features and improvements]
+* link:#other-changes[Other changes]
+
+[id="breaking-changes"]
+== Breaking changes
+
+With any new release of software, there can be breaking changes.
+This release is no exception, so let's discuss the major changes you should be aware of before upgrading to **Debezium 3.8.0.Alpha1**
+
+=== Debezium for MySQL
+
+==== `REAL` columns are now emitted as `FLOAT64`
+
+MySQL and MariaDB treat `REAL` as a synonym for `DOUBLE` unless the `REAL_AS_FLOAT` SQL mode is enabled.
+Debezium already emitted these columns as `FLOAT64` during snapshots, but when a table's DDL was captured while streaming, the column was emitted as `FLOAT32`, silently truncating values to about seven significant digits.
+
+The connectors now map `REAL` to `FLOAT64` in all cases, so the schema is stable across snapshot and streaming, and no precision is lost.
+Default values for `REAL` columns are emitted as doubles accordingly.
+
+If your consumers or Schema Registry subjects expect a `float` schema for these columns, they will now see `double`, so check your compatibility settings before upgrading.
+Tables captured before this change keep their recorded schema until the table model is rebuilt by a new snapshot or a later DDL statement on that table.
+If you previously used the `JdbcSinkDataTypesConverter` with `treat.real.as.double` as a workaround, it is no longer needed.
+(https://github.com/debezium/dbz/issues/2217[dbz#2217])
+
+=== Debezium for PostgreSQL
+
+==== `NULL` elements are preserved in `ENUM` arrays
+
+A PostgreSQL `ENUM` array containing a `NULL` element, such as `ARRAY['plain', NULL]`, previously failed schema validation.
+The entire array was then emitted as `null`, and if the column was declared `NOT NULL`, the connector stopped.
+
+The element schema for `ENUM` arrays is now optional, matching how all other array types are handled, so values like `["plain", null]` are preserved.
+
+Because the array element schema changes from required to optional, consumers using Avro and Schema Registry will see a new schema version for affected columns.
+(https://github.com/debezium/dbz/issues/2771[dbz#2771])
+
+==== `VARBIT(1)` columns are now emitted as bits
+
+PostgreSQL accepts an empty bit string (`B''`) as a valid, non-null value in a `VARBIT(1)` column.
+Debezium mapped these columns to a boolean, so an empty value was emitted as `null`, and a `NOT NULL` column caused capture to stop.
+
+`VARBIT` columns of any length are now consistently mapped to the `io.debezium.data.Bits` semantic type, a `BYTES` schema.
+This keeps `B''`, `B'0'`, `B'1'`, and SQL `NULL` distinct from one another.
+Fixed-length `BIT(1)` columns are not affected and are still emitted as booleans.
+
+If you capture `VARBIT(1)` or `BIT VARYING(1)` columns, the field schema changes from `BOOLEAN` to `BYTES`, so update any consumers or sink mappings that rely on a boolean value.
+(https://github.com/debezium/dbz/issues/2772[dbz#2772])
+
+=== Debezium Server
+
+==== Kafka sink delivery timeout now defers to the producer
+
+The Kafka sink had two settings that controlled how long to wait for record delivery: the producer's own `delivery.timeout.ms` and the sink's `wait.message.delivery.timeout.ms`.
+Depending on how the two were set, the sink could fail a batch while the producer was still retrying, or the sink setting would never take effect at all.
+
+The default for `wait.message.delivery.timeout.ms` is now `0`, which means the sink waits for the producer to finish and relies solely on the producer's `delivery.timeout.ms`.
+
+If you relied on the previous 30 second default, configure the timeout through `debezium.sink.kafka.producer.delivery.timeout.ms` instead, or set `wait.message.delivery.timeout.ms` explicitly to restore the old behavior.
+(https://github.com/debezium/dbz/issues/2597[dbz#2597])
+
+==== Zerobus sink event filter removed
+
+The Databricks Zerobus sink introduced in 3.7 shipped with its own event filter, configured through the `+debezium.sink.zerobus.filter.*+` properties.
+Debezium's standard mechanisms already cover the same cases, so the sink-specific filter has been removed.
+
+If you configured `+debezium.sink.zerobus.filter.*+` properties, migrate them to the standard equivalents:
+
+* To skip operations, use `skipped.operations`, and use `snapshot.mode=no_data` to skip snapshot read events.
+* To filter by topic or header, use the `Filter` transformation with the `TopicNameMatches` or `HasHeaderKey` predicates.
+* To filter by value, use the `Filter` transformation with the new `FieldValueMatches` predicate.
+
+Note that `HasHeaderKey` only checks whether a header is present, so there is currently no direct replacement for matching on a header value.
+(https://github.com/debezium/dbz/issues/2915[dbz#2915])
+
+[id="new-features-and-improvements"]
+== New Features and Improvements
+
+The following covers all new features and improvements, grouped by connector component area.
+
+[cols="25%,25%,25%,25%"]
+|===
+|link:#new-features-and-improvements-debezium-core[Debezium Core]
+|link:#new-features-and-improvements-debezium-mongodb[Debezium for MongoDB]
+|link:#new-features-and-improvements-debezium-mysql[Debezium for MySQL]
+|link:#new-features-and-improvements-debezium-oracle[Debezium for Oracle]
+
+|link:#new-features-and-improvements-debezium-postgresql[Debezium for PostgreSQL]
+|link:#new-features-and-improvements-debezium-sqlserver[Debezium for SQL Server]
+|link:#new-features-and-improvements-debezium-jdbc[Debezium JDBC sink]
+|link:#new-features-and-improvements-debezium-elasticsearch[Debezium Elasticsearch sink]
+
+|link:#new-features-and-improvements-debezium-quarkus-extension[Debezium Quarkus Extensions]
+|link:#new-features-and-improvements-debezium-platform[Debezium Platform]
+|link:#new-features-and-improvements-debezium-server[Debezium Server]
+|link:#new-features-and-improvements-debezium-spanner[Debezium for Spanner]
+
+|link:#new-features-and-improvements-debezium-yashandb[Debezium for YashanDB]
+|link:#new-features-and-improvements-container-images[Container Images]
+|link:#new-features-and-improvements-debezium-examples[Debezium Examples]
+|
+
+|===
+
+[id="new-features-and-improvements-debezium-core"]
+=== Debezium Core
+
+==== Claim-check storage for oversized events
+
+A change event can exceed the Kafka producer or broker message size limit when columns hold very large values.
+Until now, the options were to raise transport limits, truncate the large values with the `EnforceRecordSize` transformation, or exclude the columns entirely and lose their data.
+
+The `EnforceRecordSize` transformation now offers an opt-in `claim_check` strategy that works with any connector.
+When an event exceeds `max.bytes`, the complete original record is written to external storage, and the configured columns in the emitted event are replaced with a small marker that points to the stored object.
+The marker is only emitted after the write succeeds, so a failed write never results in a reference to data that wasn't stored.
+
+Storage is pluggable, and Debezium ships with an Amazon S3 implementation.
+The following example stores oversized records from the `inventory.customers` table in S3:
+
+[source]
+----
+transforms=EnforceRecordSize
+transforms.EnforceRecordSize.type=io.debezium.transforms.EnforceRecordSize
+transforms.EnforceRecordSize.max.bytes=1048576
+transforms.EnforceRecordSize.strategy=claim_check
+transforms.EnforceRecordSize.claim.check.columns.include.list=inventory[.]customers[.]payload
+transforms.EnforceRecordSize.claim.check.storage.class=io.debezium.storage.s3.S3OversizedRecordStorage
+transforms.EnforceRecordSize.claim.check.storage.base.path=s3://my-bucket/debezium/oversized
+transforms.EnforceRecordSize.claim.check.storage.region=us-west-1
+----
+
+The `debezium-storage-s3` artifact must be on the same plugin path as the connector.
+Debezium never deletes stored objects, so configure a retention policy, such as an S3 lifecycle rule, to expire them once consumers no longer need them.
+(https://github.com/debezium/dbz/issues/2379[dbz#2379])
+
+==== Signal data collection is validated up front
+
+The `signal.data.collection` setting is now validated when the connector configuration is validated, for the MySQL, MariaDB, PostgreSQL, SQL Server, Oracle, and MongoDB connectors.
+Misconfigurations are reported immediately rather than surfacing later when a signal is sent.
+
+The validation checks that the table or collection exists and that the value uses the form the connector expects.
+If the form is wrong, the error message names the exact value to use instead.
+For relational connectors, it also checks that the table resolves to at least three columns after column filters are applied.
+(https://github.com/debezium/dbz/issues/2633[dbz#2633])
+
+==== New `StringifyFields` transformation
+
+Some sinks store flexible data in JSON text columns and reject native struct, array, or map values.
+Examples include Databricks Delta `VARIANT` columns and PostgreSQL `JSON` and `JSONB` columns.
+
+The new `StringifyFields` transformation serializes selected fields to JSON strings and changes their type to `STRING`, while the rest of the record stays strongly typed.
+Fields can be addressed by a dot path, such as `after.payload`, which makes it easy to handle nested data, for example after a MongoDB document is flattened with `ExtractNewDocumentState`.
+
+The following example serializes the nested `payload` field in a change event:
+
+[source]
+----
+transforms=stringify
+transforms.stringify.type=io.debezium.transforms.StringifyFields
+transforms.stringify.fields=after.payload,before.payload
+----
+
+Because the `before` and `after` fields share the same schema, a nested path inside the envelope must be listed under both.
+For a top-level field, such as one produced by a flattening transformation, list the field name on its own, for example `fields=properties`.
+(https://github.com/debezium/dbz/issues/2903[dbz#2903])
+
+[id="new-features-and-improvements-debezium-mongodb"]
+=== Debezium for MongoDB
+
+==== Resume tokens in event source metadata
+
+MongoDB change events now include an optional `source.resume_token` field that contains the full resume token as a JSON string, formatted according to the `json.serialization.mode` setting.
+Consumers can use this token with MongoDB's `resumeAfter` to pick up a change stream from a specific event.
+
+The token is only present for streaming events, and snapshot records carry a null value.
+For split events that are reassembled, the token of the final fragment is exposed.
+(https://github.com/debezium/dbz/issues/718[dbz#718])
+
+==== Readable starting timestamps
+
+Starting capture from a point in time previously required `capture.start.op.time`, which expects a packed 64-bit BSON timestamp that is easy to confuse with a Unix timestamp.
+
+The new `capture.start.timestamp` property accepts readable values instead, including Unix seconds, ISO-8601 timestamps such as `2026-09-11T00:00:00Z`, and BSON Timestamp Extended JSON.
+It applies when the connector starts without a stored offset, and stored offsets still take precedence.
+MongoDB must still retain the requested position in the oplog.
+(https://github.com/debezium/dbz/issues/2610[dbz#2610])
+
+==== Independent and required pre- and post-image policies
+
+The MongoDB connector previously requested pre- and post-images with MongoDB's `whenAvailable` policy, so a missing image went unnoticed.
+For workloads that depend on complete document states, this could silently produce incomplete events.
+
+Pre- and post-images are now configured independently with two new properties, and each one can be marked as required.
+When a required image is unavailable, for example because image recording was disabled on a collection or the retained images expired, the connector fails visibly instead of emitting an incomplete event.
+
+[cols="30%,35%,35%",options="header"]
+|===
+|Property
+|Value
+|Behavior
+
+.3+|`capture.mode.pre.image`
+|`off` (default)
+|Pre-images are not requested.
+
+|`when_available`
+|Pre-images are included when MongoDB has them.
+
+|`required`
+|The connector fails if a pre-image is unavailable.
+
+.4+|`capture.mode.post.image`
+|`off`
+|Update events do not include the full document.
+
+|`lookup` (default)
+|The full document is retrieved with a separate lookup.
+
+|`post_image`
+|Post-images are included when MongoDB has them.
+
+|`post_image_required`
+|The connector fails if a post-image is unavailable.
+|===
+
+For example, the following configuration requires both images:
+
+[source]
+----
+capture.mode.pre.image=required
+capture.mode.post.image=post_image_required
+----
+
+Images must be enabled on the captured collections with `changeStreamPreAndPostImages`, which requires MongoDB 6.0 or later.
+
+With these new properties, `capture.mode` and `capture.mode.full.update.type` are now deprecated.
+Existing configurations keep working and map to the new properties as follows:
+
+[cols="40%,30%,30%",options="header"]
+|===
+|`capture.mode`
+|Pre-image
+|Post-image
+
+|_Not set_
+|`off`
+|`lookup`
+
+|`change_streams`
+|`off`
+|`off`
+
+|`change_streams_update_full`
+|`off`
+|Value of `capture.mode.full.update.type`
+
+|`change_streams_with_pre_image`
+|`when_available`
+|`off`
+
+|`change_streams_update_full_with_pre_image`
+|`when_available`
+|Value of `capture.mode.full.update.type`
+|===
+
+The `capture.mode.full.update.type` property defaults to `lookup`.
+If you set either new property explicitly, including to `off`, it takes precedence over the deprecated settings for that image only.
+(https://github.com/debezium/dbz/issues/2688[dbz#2688])
+
+==== `query.fetch.size` applies to change streams
+
+The `query.fetch.size` property is now honored when opening MongoDB change streams, letting you tune how many change stream documents are fetched per server response.
+This setting is independent of `snapshot.fetch.size` and `max.batch.size`.
+
+When the property is omitted or set to `0`, the connector keeps its current behavior and lets the driver decide.
+(https://github.com/debezium/dbz/issues/2690[dbz#2690])
+
+==== Lower latency after idle periods
+
+When the connector's internal buffer was empty, the streaming consumer slept between polls, so an event arriving during that sleep waited until the sleep finished.
+
+The consumer is now woken as soon as a buffered event becomes available, reducing latency for events that arrive after an idle period.
+(https://github.com/debezium/dbz/issues/2754[dbz#2754])
+
+==== Required images work with regex collection filters
+
+With a required image policy, the connector previously failed when an excluded collection without image recording changed, as long as it was within the change stream scope.
+This affected the default `filters.match.mode=regex` with `capture.scope` set to `deployment` or `database`.
+
+Excluded collections are now filtered out before MongoDB looks up images, so only the collections you capture need image recording enabled.
+(https://github.com/debezium/dbz/issues/2881[dbz#2881])
+
+[id="new-features-and-improvements-debezium-mysql"]
+=== Debezium for MySQL
+
+==== Schema from binlog metadata without a schema history topic
+
+When the server runs with `binlog_row_metadata=FULL`, available in MySQL 8.0 and later and MariaDB 10.5 and later, every binlog event carries complete column metadata for the table it changes.
+
+The new opt-in `binlog.metadata.based.schema` property lets the MySQL and MariaDB connectors rebuild table schemas directly from that metadata.
+When enabled, the connector no longer needs a schema history topic, which removes the bootstrap, recovery, and operational overhead of managing one.
+The connector fails fast at startup if `binlog_row_metadata` is not set to `FULL`.
+(https://github.com/debezium/dbz/issues/978[dbz#978])
+
+[id="new-features-and-improvements-debezium-oracle"]
+=== Debezium for Oracle
+
+==== Column reselection uses the physical standby
+
+When the connector is configured with `capture.mode=physical_standby`, the `ReselectColumnsPostProcessor` now automatically queries the standby database through the secondary connection.
+Previously, reselection queries always went to the primary database, even though the connector was otherwise reading from the standby.
+
+No additional configuration is needed, and this keeps reselection load off the primary.
+Other capture modes continue to query the primary database as before.
+(https://github.com/debezium/dbz/issues/2444[dbz#2444])
+
+==== Faster transaction cache event counting
+
+The transaction cache previously recomputed the count of all events across all transactions every time an event was processed, which took a noticeable share of event processing time.
+It now keeps a running count, removing that overhead from the hot path.
+(https://github.com/debezium/dbz/issues/2777[dbz#2777])
+
+==== Faster eldest transaction lookup
+
+Finding the eldest transaction in the cache runs on every commit.
+Its implementation has been streamlined, which improves throughput for workloads with many interleaved transactions that each contain only a few events.
+(https://github.com/debezium/dbz/issues/2780[dbz#2780])
+
+==== Heartbeats for quiet tables with unbuffered LogMiner
+
+With the unbuffered LogMiner adapter, the connector did not emit periodic heartbeats when the captured tables received no changes, even though the database itself remained active.
+As a result, the connector's offset could not advance.
+
+Unbuffered LogMiner now emits heartbeats on quiet streams just like the buffered adapter, so the safe recovery position can be checkpointed as it advances.
+(https://github.com/debezium/dbz/issues/2781[dbz#2781])
+
+[id="new-features-and-improvements-debezium-postgresql"]
+=== Debezium for PostgreSQL
+
+==== Text array column defaults
+
+Adding a `text[]` or `varchar[]` column with a default value, such as `DEFAULT '{}'`, previously dropped the default from the generated schema.
+This broke Avro and Schema Registry compatibility checks and could stop the connector.
+
+Default values for these array columns are now parsed and included in the schema.
+(https://github.com/debezium/dbz/issues/1269[dbz#1269])
+
+==== Faster `pgoutput` string decoding
+
+String decoding for `pgoutput` messages has been optimized to avoid unnecessary copies and allocations.
+Benchmarks show roughly 1.4 to 2 times higher throughput for the length-prefixed strings found on the hot path, and up to 4.6 times for null-terminated strings, while also reducing garbage collection pressure.
+(https://github.com/debezium/dbz/issues/2710[dbz#2710])
+
+[id="new-features-and-improvements-debezium-sqlserver"]
+=== Debezium for SQL Server
+
+==== Non-blocking reads from CDC tables
+
+Queries that read directly from SQL Server CDC tables now use `WITH (NOLOCK)`.
+This keeps Debezium's reads from blocking the SQL Server capture job or production workloads.
+
+This follows Microsoft's guidance for CDC.
+Because CDC change tables contain only committed, insert-only data, these reads cannot see uncommitted changes.
+(https://github.com/debezium/dbz/issues/2334[dbz#2334])
+
+==== Faster change timestamps in function query mode
+
+In the default `data.query.mode=function`, the change query computed each row's commit timestamp by calling a SQL Server function once per row.
+Function mode now resolves timestamps the same way as direct mode already does, avoiding the per-row function cost on high-volume tables without changing which rows are returned.
+(https://github.com/debezium/dbz/issues/2693[dbz#2693])
+
+==== Debug logging of captured CDC tables
+
+The connector already logged CDC-enabled tables that were excluded by its filters, but nothing listed the tables it actually captures.
+It now logs the CDC-enabled tables on the include list at `DEBUG` level, which makes it easier to troubleshoot why a table isn't being captured.
+(https://github.com/debezium/dbz/issues/2712[dbz#2712])
+
+[id="new-features-and-improvements-debezium-jdbc"]
+=== Debezium JDBC sink
+
+==== Resilient schema evolution with multiple tasks
+
+When several sink tasks consumed from a multi-partition topic with schema evolution enabled, they could all try to add the same missing column at once.
+The first task succeeded, while the others failed with a "column already exists" error and stopped.
+
+The sink now handles this race gracefully, so tasks keep processing records instead of failing.
+(https://github.com/debezium/dbz/issues/2302[dbz#2302])
+
+==== Shared Sink Framework is now the default
+
+The JDBC sink connector now uses the Shared Sink Framework by default.
+The framework adds a common buffering and batch processing layer, which deduplicates records by primary key within a batch and can route failing records to the Kafka Connect errant record reporter.
+Documentation for the new configuration options has been added as well.
+
+The new `buffer.mode` property controls how records with the same key are handled within a batch, and it replaces the deprecated `use.reduction.buffer` property, which no longer has any effect.
+Its default is `deduplication`, which keeps only the most recent event for each key, similar to enabling the old reduction buffer.
+If you did not previously set `use.reduction.buffer=true`, set `buffer.mode=passthrough` to keep the same behavior as before, where every change event is written to the database:
+
+[source]
+----
+buffer.mode=passthrough
+----
+
+If you run into problems with the new mode, you can switch the connector back to the legacy mode with the following setting:
+
+[source]
+----
+internal.enable.sces=false
+----
+
+If you need to fall back, please let us know about the problem so we can address it.
+(https://github.com/debezium/dbz/issues/2512[dbz#2512])
+
+==== `MULTIPOLYGON` support for SingleStore
+
+The SingleStore JDBC sink previously rejected `MULTIPOLYGON` values, so spatial data from sources such as PostGIS could not be written to a SingleStore `GEOGRAPHY` column.
+These values are now converted to SingleStore's `POLYGON` representation, which can describe multiple regions and holes.
+(https://github.com/debezium/dbz/issues/2880[dbz#2880])
+
+==== Optional polygon repair for SingleStore
+
+SingleStore limits coordinates to eight decimal places and validates polygons on insert, so some source geometries are rejected after rounding or because they self-intersect.
+In one migration, about 8% of records failed for this reason.
+
+The new `dialect.singlestore.geometry.repair.enabled` option, disabled by default, rounds coordinates and repairs invalid polygons before writing them.
+Repair may change boundaries, holes, or regions, so enable it only when that tradeoff is acceptable.
+(https://github.com/debezium/dbz/issues/2909[dbz#2909])
+
+[id="new-features-and-improvements-debezium-elasticsearch"]
+=== Debezium Elasticsearch sink
+
+==== New Elasticsearch sink connector
+
+Debezium now includes a sink connector for Elasticsearch that consumes events from Kafka topics and writes them as documents to Elasticsearch indices.
+It works with native Debezium change events, flattened events, and plain structured events, and it preserves the meaning of Debezium's logical types.
+For example, decimals are written as numbers, temporal values as ISO-8601 strings, JSON columns as embedded objects, geometry as GeoJSON, and vectors as arrays.
+
+Every write and delete is addressed by a stable document ID, derived from the record key by default.
+If an event is delivered more than once after a restart or rebalance, it updates the same document rather than creating a duplicate.
+The connector supports Elasticsearch 8.x and 9.x clusters, while OpenSearch and other forks are not supported.
+
+The connector runs in Kafka Connect, and Debezium Server also includes it as a built-in `elasticsearch` sink.
+The following examples show a basic configuration for each:
+
+[.dbz-tabs]
+--
+.Kafka Connect
+[source,json]
+----
+{
+    "name": "elasticsearch-connector",
+    "config": {
+        "connector.class": "io.debezium.connector.elasticsearch.ElasticsearchSinkConnector",
+        "tasks.max": "1",
+        "connection.url": "https://elasticsearch:9200",
+        "connection.auth.mode": "basic",
+        "connection.username": "elastic",
+        "connection.password": "changeme",
+        "topics": "inventory.customers",
+        "collection.name.format": "customers",
+        "write.method": "upsert",
+        "primary.key.mode": "record_key",
+        "mapping.mode": "create_if_absent"
+    }
+}
+----
+
+.Debezium Server
+[source,properties]
+----
+debezium.sink.type=elasticsearch
+debezium.sink.elasticsearch.connection.url=https://elasticsearch:9200
+debezium.sink.elasticsearch.connection.auth.mode=basic
+debezium.sink.elasticsearch.connection.username=elastic
+debezium.sink.elasticsearch.connection.password=changeme
+debezium.sink.elasticsearch.write.method=upsert
+debezium.sink.elasticsearch.primary.key.mode=record_key
+----
+--
+
+In Debezium Server, any connector property can be set with the `debezium.sink.elasticsearch.` prefix.
+The dead letter queue is a Kafka Connect feature, so in Debezium Server a record that Elasticsearch rejects stops the server instead, ensuring no event is committed past a failed write.
+
+The connector is currently incubating, so we encourage you to try it out and share your feedback, but it is not yet recommended for production use.
+Configuration properties, defaults, and behavior may change in future releases.
+(https://github.com/debezium/dbz/issues/819[dbz#819])
+
+[id="new-features-and-improvements-debezium-quarkus-extension"]
+=== Debezium Quarkus Extensions
+
+==== Debezium components as CDI beans
+
+Debezium normally creates pluggable components, such as topic naming strategies, post-processors, and custom converters, from class names in the configuration or through Java's `ServiceLoader`.
+In a Quarkus application, you can now define these components as CDI beans instead, so they can take part in dependency injection like the rest of your application.
+
+When the Debezium Engine Quarkus extension finds a bean of a supported type, it uses that bean automatically, with no additional configuration.
+If a class is also configured for the same component, such as `topic.naming.strategy`, the bean takes precedence.
+Supported types include `TopicNamingStrategy`, `PostProcessor`, `CustomConverter`, `HeartbeatFactory`, `SchemaHistory`, and `TransactionMetadataFactory`.
+
+For example, the following bean adds a custom prefix to every topic name:
+
+.PrefixTopicNamingStrategy.java
+[source,java]
+----
+@ApplicationScoped
+public class PrefixTopicNamingStrategy implements TopicNamingStrategy<DataCollectionId> {
+
+    @Override
+    public void configure(Properties props) {
+    }
+
+    @Override
+    public String dataChangeTopic(DataCollectionId id) {
+        return "inventory." + id.identifier();
+    }
+
+    @Override
+    public String schemaChangeTopic() {
+        return "inventory.schema-changes";
+    }
+
+    @Override
+    public String heartbeatTopic() {
+        return "inventory.heartbeat";
+    }
+
+    @Override
+    public String transactionTopic() {
+        return "inventory.transaction";
+    }
+
+    @Override
+    public String sanitizedTopicName(String topicName) {
+        return topicName;
+    }
+}
+----
+
+When your application runs more than one engine, annotate the bean with `@Engine("<engine-id>")` to apply it to a single engine.
+A bean with the `@Engine` annotation takes precedence over a bean without one, which applies to all engines.
+(https://github.com/debezium/dbz/issues/1349[dbz#1349])
+
+[id="new-features-and-improvements-debezium-platform"]
+=== Debezium Platform
+
+==== Snapshot progress monitoring
+
+Debezium Platform can now show the progress of initial and incremental snapshots.
+(https://github.com/debezium/dbz/issues/2536[dbz#2536])
+
+==== Duplicate an existing transform
+
+Creating a transform similar to an existing one previously meant re-entering its class, configuration, and predicate.
+You can now duplicate a transform, which opens the create form pre-filled with a unique name, while the original stays unchanged.
+
+In the pipeline designer, you can either reuse an existing transform or create a copy that is attached only to the current pipeline.
+(https://github.com/debezium/dbz/issues/2644[dbz#2644])
+
+video::https://github.com/user-attachments/assets/ac104935-48a6-4004-8568-da863503ea3e[width=700,title="Duplicating an existing transform",align="center"]
+
+==== Snapshot progress on Overview and a new Snapshots tab
+
+The pipeline overview page now shows a snapshot card while a snapshot is running, with the snapshot type, overall progress, completed tables, and elapsed time.
+
+A new Snapshots tab in the pipeline details page shows a per-table breakdown with status, progress, and rows scanned, along with the reason for any skipped or failed tables.
+Progress updates are streamed live, and a badge appears on the tab while a snapshot is active.
+(https://github.com/debezium/dbz/issues/2724[dbz#2724])
+
+video::https://github.com/user-attachments/assets/29e4d3bf-318b-4216-965c-9c8af8893986[width=700,title="Snapshot progress on the Overview and Snapshots tab",align="center"]
+
+==== Host deployment example
+
+A new runnable example in Debezium Examples demonstrates host-based pipeline deployment on a Linux VM.
+It walks through letting Conductor discover and provision the VM, creating a PostgreSQL to HTTP pipeline, and verifying a change event end to end.
+(https://github.com/debezium/dbz/issues/2855[dbz#2855])
+
+[id="new-features-and-improvements-debezium-server"]
+=== Debezium Server
+
+==== NATS offset and schema history storage
+
+A new `debezium-storage-nats` module lets Debezium store connector offsets and schema history in NATS JetStream.
+If you already use NATS, for example as a Debezium Server sink, you can keep Debezium's state there too, without running Kafka or another storage service.
+
+Offsets are stored in a NATS Object Store bucket, and schema history is stored in a JetStream stream.
+Multiple connectors can share the same offset bucket, and the schema history stream is created automatically if it does not exist.
+
+The following example configures both stores:
+
+[source]
+----
+offset.storage=io.debezium.storage.nats.offset.NatsOffsetBackingStore
+offset.storage.nats.url=nats://localhost:4222
+offset.storage.nats.bucket.name=debezium-offsets
+
+schema.history.internal=io.debezium.storage.nats.history.NatsSchemaHistory
+schema.history.internal.nats.url=nats://localhost:4222
+schema.history.internal.nats.stream.name=debezium-schema-history
+schema.history.internal.nats.subject=debezium.schema.history
+----
+
+In Debezium Server, prefix these properties with `debezium.source.`.
+The `debezium-storage-nats` artifact must be on the classpath, and both stores support user and password or token authentication, as well as TLS.
+(https://github.com/debezium/dbz/issues/1079[dbz#1079])
+
+[id="new-features-and-improvements-debezium-spanner"]
+=== Debezium for Spanner
+
+==== Change streams for placement tables
+
+The Spanner connector now supports change streams for placement tables.
+(https://github.com/debezium/dbz/issues/1415[dbz#1415])
+
+[id="new-features-and-improvements-debezium-yashandb"]
+=== Debezium for YashanDB
+
+==== Advanced YStream client options
+
+The YashanDB connector previously exposed only a subset of the YStream client's options, so using any other option required a new connector release.
+
+The new `ystream.additional.properties` setting accepts a list of `name=value` entries that are passed to the YStream client, and a dedicated `ystream.fault.tolerance` property has been added.
+Dedicated connector properties take precedence when both configure the same option, and invalid entries are rejected with a clear error.
+(https://github.com/debezium/dbz/issues/2861[dbz#2861])
+
+[id="new-features-and-improvements-container-images"]
+=== Container Images
+
+==== Fedora 44 base image
+
+The Debezium container images have been upgraded to the Fedora 44 base image.
+(https://github.com/debezium/dbz/issues/2774[dbz#2774])
+
+[id="new-features-and-improvements-debezium-examples"]
+=== Debezium Examples
+
+==== JBang and Hardwood Parquet example
+
+A new example shows how to build a CDC pipeline with a single JBang script that uses the Debezium Quarkus extension and Hardwood.
+It captures snapshot events from PostgreSQL and writes them to Apache Parquet files.
+You can find the example in the https://github.com/debezium/debezium-examples/tree/main/jbang/hardwood-jbang[debezium-examples repository].
+(https://github.com/debezium/dbz/issues/2963[dbz#2963])
+
+[id="other-changes"]
+== Other fixes
+
+// [Debezium Core, Debezium for MongoDB]
+* Connector fails when using `cursor.pipeline` (https://github.com/debezium/dbz/issues/79[dbz#79])
+// [Debezium for MySQL]
+* Improved MySQL DDL parsing of character set changes and more accurate column schema defaults after DDL changes (https://github.com/debezium/dbz/issues/373[dbz#373], https://github.com/debezium/dbz/issues/2751[dbz#2751], https://github.com/debezium/dbz/issues/2755[dbz#2755], https://github.com/debezium/dbz/issues/2763[dbz#2763], https://github.com/debezium/dbz/issues/2764[dbz#2764], https://github.com/debezium/dbz/issues/2765[dbz#2765], https://github.com/debezium/dbz/issues/2766[dbz#2766], https://github.com/debezium/dbz/issues/2767[dbz#2767], https://github.com/debezium/dbz/issues/2768[dbz#2768], https://github.com/debezium/dbz/issues/2829[dbz#2829])
+// [Debezium for SQL Server]
+* Using `message.key.columns` with `column.include.list` causes a "data row is smaller than a column index" error (https://github.com/debezium/dbz/issues/488[dbz#488])
+// [Debezium for MySQL]
+* MySQL GTID fixes for replicating GTID transactions and resuming from offsets without a GTID set (https://github.com/debezium/dbz/issues/694[dbz#694], https://github.com/debezium/dbz/issues/2852[dbz#2852])
+// [Debezium for MySQL]
+* `TIME` types are not read on AWS Aurora when `snapshot.fetch.size` is set (https://github.com/debezium/dbz/issues/1015[dbz#1015])
+// [Debezium for Oracle]
+* `XMLTYPE` tables fail to be snapshotted (https://github.com/debezium/dbz/issues/1160[dbz#1160])
+// [Debezium for SQL Server]
+* Connector uses incorrect columns for sorting changes (https://github.com/debezium/dbz/issues/1327[dbz#1327])
+// [Debezium Core]
+* Values are omitted from JSON objects in nested arrays (https://github.com/debezium/dbz/issues/1332[dbz#1332])
+// [Debezium Core]
+* Correct parsing and quoting of table and type identifiers that contain quote or bracket characters (https://github.com/debezium/dbz/issues/1377[dbz#1377], https://github.com/debezium/dbz/issues/2828[dbz#2828], https://github.com/debezium/dbz/issues/2841[dbz#2841], https://github.com/debezium/dbz/issues/2858[dbz#2858])
+// [Debezium for SQL Server]
+* Availability group read-only intent is not supported due to explicit snapshot isolation level (https://github.com/debezium/dbz/issues/1387[dbz#1387])
+// [Debezium Core]
+* State leaks from an aborted incremental snapshot to the next one (https://github.com/debezium/dbz/issues/1563[dbz#1563])
+// [Debezium for IBMi]
+* CDC events are stamped with the sequence number of the previous journal entry instead of the current one (https://github.com/debezium/dbz/issues/2441[dbz#2441])
+// [Debezium Server]
+* The `format.header` option only accepts `json` (https://github.com/debezium/dbz/issues/2520[dbz#2520])
+// [Debezium for Cassandra]
+* Cassandra 5 CDC fixes for upgrade and restore scenarios, single-node keyspaces, and keyspace replication changes (https://github.com/debezium/dbz/issues/2540[dbz#2540], https://github.com/debezium/dbz/issues/2736[dbz#2736], https://github.com/debezium/dbz/issues/2792[dbz#2792])
+// [Debezium JDBC sink]
+* Upserts to SQL Server with a `VARCHAR` primary key degrade performance (https://github.com/debezium/dbz/issues/2554[dbz#2554])
+// [Debezium Server]
+* Redis sink halts on an inaccurate memory estimate because the memory threshold is never reconciled (https://github.com/debezium/dbz/issues/2557[dbz#2557])
+// [Debezium for PostgreSQL]
+* PostgreSQL fixes for `TIME(p)` array precision, pre-1582 and BC dates, and consistent infinity dates (https://github.com/debezium/dbz/issues/2559[dbz#2559], https://github.com/debezium/dbz/issues/2664[dbz#2664], https://github.com/debezium/dbz/issues/2721[dbz#2721])
+// [Debezium for MongoDB]
+* `ExtractNewDocumentState` SMT fails for arrays of regular expressions (https://github.com/debezium/dbz/issues/2562[dbz#2562])
+// [Debezium for PostgreSQL]
+* `pgoutput` resolves a cross-schema domain as the wrong built-in type when names collide (https://github.com/debezium/dbz/issues/2612[dbz#2612])
+// [Debezium Core]
+* `TimezoneConverter` fixes for hyphenated include and exclude lists and explicit null timestamps (https://github.com/debezium/dbz/issues/2667[dbz#2667], https://github.com/debezium/dbz/issues/2723[dbz#2723])
+// [Debezium for MongoDB]
+* MongoDB incremental snapshots no longer skip documents after a restart, and their thread pool is shut down (https://github.com/debezium/dbz/issues/2677[dbz#2677], https://github.com/debezium/dbz/issues/2717[dbz#2717])
+// [Debezium Platform]
+* Debezium Platform UI fixes for navigation, theme changes, Table Explorer selection, and event and alert filtering (https://github.com/debezium/dbz/issues/2682[dbz#2682], https://github.com/debezium/dbz/issues/2729[dbz#2729], https://github.com/debezium/dbz/issues/2879[dbz#2879], https://github.com/debezium/dbz/issues/2883[dbz#2883], https://github.com/debezium/dbz/issues/2936[dbz#2936], https://github.com/debezium/dbz/issues/2937[dbz#2937])
+// [Debezium for PostgreSQL]
+* Snapshot throughput regression for `timestamp` and `timestamptz` columns read as text (https://github.com/debezium/dbz/issues/2686[dbz#2686])
+// [Debezium for Vitess]
+* VStream silently stops after a few heartbeats with `vitess-grpc-client` 23.0.0-rc1 (https://github.com/debezium/dbz/issues/2699[dbz#2699])
+// [Debezium Core]
+* `GeometryFormatTransformer` and `SwapGeometryCoordinates` fixes for format handling and null map values (https://github.com/debezium/dbz/issues/2706[dbz#2706], https://github.com/debezium/dbz/issues/2896[dbz#2896], https://github.com/debezium/dbz/issues/2904[dbz#2904])
+// [Debezium Core]
+* Ensure connector cleanup runs when coordinator shutdown fails (https://github.com/debezium/dbz/issues/2709[dbz#2709])
+// [Debezium Core]
+* Retriable task startup failure does not clean up allocated resources in SQL Server (https://github.com/debezium/dbz/issues/2714[dbz#2714])
+// [Debezium for Spanner]
+* Mutable key range related properties (https://github.com/debezium/dbz/issues/2715[dbz#2715])
+// [Debezium for MongoDB]
+* Invalid validation of the MongoDB connection (https://github.com/debezium/dbz/issues/2716[dbz#2716])
+// [Debezium Quarkus Extensions]
+* `getShortIdentifier()` can produce colliding synthetic bean names (https://github.com/debezium/dbz/issues/2726[dbz#2726])
+// [Debezium Server]
+* `NullPointerException` when calling the signal API (https://github.com/debezium/dbz/issues/2732[dbz#2732])
+// [Debezium Core]
+* `SerializerType.withName` fails in the Turkish locale (https://github.com/debezium/dbz/issues/2737[dbz#2737])
+// [Debezium for MySQL]
+* Connector skips rows after a restart when XA transactions are used (https://github.com/debezium/dbz/issues/2738[dbz#2738])
+// [Debezium Server]
+* Debezium Server distribution restores the missing Apicurio converter and serde, and SMTs no longer fail with `NoClassDefFoundError` (https://github.com/debezium/dbz/issues/2740[dbz#2740], https://github.com/debezium/dbz/issues/2791[dbz#2791], https://github.com/debezium/dbz/issues/2978[dbz#2978])
+// [Debezium Core]
+* Outbox Event Router keeps the record when JSON payload expansion fails and preserves W3C baggage (https://github.com/debezium/dbz/issues/2743[dbz#2743], https://github.com/debezium/dbz/issues/2753[dbz#2753])
+// [Debezium for MariaDB]
+* Improved MariaDB DDL parsing of column `COLLATE` clauses and more accurate column schema defaults after DDL changes (https://github.com/debezium/dbz/issues/2763[dbz#2763], https://github.com/debezium/dbz/issues/2764[dbz#2764], https://github.com/debezium/dbz/issues/2891[dbz#2891])
+// [Debezium for PostgreSQL]
+* `LTREE` arrays containing `NULL` elements lose the entire value (https://github.com/debezium/dbz/issues/2770[dbz#2770])
+// [Debezium for Oracle]
+* XStream task fails after a restart (https://github.com/debezium/dbz/issues/2782[dbz#2782])
+// [Debezium Server]
+* Pub/Sub sink fixes for quoted message attributes and hangs when ordering is enabled (https://github.com/debezium/dbz/issues/2783[dbz#2783], https://github.com/debezium/dbz/issues/2897[dbz#2897])
+// [Debezium JDBC sink]
+* JDBC sink fixes for `record_header` primary key fields and primitive record keys (https://github.com/debezium/dbz/issues/2795[dbz#2795], https://github.com/debezium/dbz/issues/2917[dbz#2917])
+// [Debezium for Oracle]
+* Table resolution by object ID fails on physical standbys when the dictionary file is out of sync (https://github.com/debezium/dbz/issues/2798[dbz#2798])
+// [Debezium for SQL Server]
+* Tables with two capture instances sharing a `start_lsn` are silently dropped because the instance filter is applied too late (https://github.com/debezium/dbz/issues/2800[dbz#2800])
+// [Debezium for SQL Server]
+* `datetime2` values are shifted forward during the spring-forward daylight saving time change (https://github.com/debezium/dbz/issues/2805[dbz#2805])
+// [embedded-engine]
+* `AsyncEmbeddedEngine` can miss a polling task that starts right before `close()` (https://github.com/debezium/dbz/issues/2816[dbz#2816])
+// [Debezium Platform]
+* `connection.timeout` is ignored by the Milvus destination and MongoDB source validators (https://github.com/debezium/dbz/issues/2819[dbz#2819])
+// [Debezium Platform]
+* Stopping and resuming an incremental snapshot does not work (https://github.com/debezium/dbz/issues/2824[dbz#2824])
+// [Debezium for Informix]
+* Streaming schema refresh drops tables from other owners when capturing multiple schemas (https://github.com/debezium/dbz/issues/2831[dbz#2831])
+// [Debezium for MariaDB, Debezium for MySQL]
+* `ZeroDateFallbackConverter` emits null for temporal columns in the first record after a schema build when the parsed default is null (https://github.com/debezium/dbz/issues/2845[dbz#2845])
+// [Debezium for Oracle]
+* Oracle DDL parser now preserves the scale of `+NUMBER(*,s)+` columns (https://github.com/debezium/dbz/issues/2853[dbz#2853])
+// [Debezium for Oracle]
+* LogMiner on RAC silently skips change events at a capped log boundary SCN when another redo thread has an event at the same SCN (https://github.com/debezium/dbz/issues/2862[dbz#2862])
+// [Debezium for SQL Server]
+* Schema history recovery skips every non-snapshot change when the stored offset has a NULL `change_lsn` (https://github.com/debezium/dbz/issues/2867[dbz#2867])
+// [Debezium Core, Debezium for PostgreSQL]
+* `unavailable.value.placeholder` with invalid hex passes validation but fails or produces wrong bytes at runtime (https://github.com/debezium/dbz/issues/2868[dbz#2868])
+// [Debezium for SQL Server]
+* Incremental snapshot emits duplicate rows or drops the last row for `datetime` primary keys (https://github.com/debezium/dbz/issues/2871[dbz#2871])
+// [Debezium Core]
+* `column.truncate.to.N.chars` can split a surrogate pair, producing invalid Unicode (https://github.com/debezium/dbz/issues/2873[dbz#2873])
+// [embedded-engine]
+* Async engine does not commit offsets of records dropped by a transformation in batch mode (https://github.com/debezium/dbz/issues/2877[dbz#2877])
+// [Debezium for PostgreSQL]
+* Changes are lost on restart when `lsn_events_processed` is 1 or when the offset is stored at a transactional logical message (https://github.com/debezium/dbz/issues/2889[dbz#2889])
+// [Debezium Server]
+* HTTP sink uses incorrect OAuth2 option names, causing crashes and ignored properties (https://github.com/debezium/dbz/issues/2907[dbz#2907])
+// [Debezium for MariaDB, Debezium for MySQL]
+* Snapshots shift `DATETIME` values and mishandle invalid dates (https://github.com/debezium/dbz/issues/2921[dbz#2921])
+// [Debezium for Oracle]
+* Nine-digit `INTERVAL` fractional seconds are incorrectly scaled in numeric mode (https://github.com/debezium/dbz/issues/2945[dbz#2945])
+// [Debezium Core]
+* Schema build at connector start is quadratic with many tables (https://github.com/debezium/dbz/issues/2982[dbz#2982])
+// [Debezium for MongoDB]
+* Connection string masking leaves percent-encoded credentials unmasked in logs (https://github.com/debezium/dbz/issues/2983[dbz#2983])
+
+In total, https://github.com/orgs/debezium/projects/5/views/6?query=sort%3Aupdated-desc+is%3Aopen&filterQuery=status%3AReleased+iteration%3A3.8.0.Alpha1[206 issues] were resolved in Debezium 3.8.0.Alpha1.
+The list of changes can also be found in our link:/releases/3.8/release-notes#release-3-8-0-alpha1[release notes].
+
+A big thank you to all the contributors from the community who worked diligently on this release:
+ +
+https://github.com/Abhishek-Gawande[Abhishek Gawande],
+https://github.com/abolfazlmadanii[Abolfazl Madani],
+https://github.com/Ansari4003[Afajal Ansari],
+https://github.com/akshat08[Akshat Sapra],
+https://github.com/Akshatvyas05[Akshat Vyas],
+https://github.com/AlvarVG[Alvar Viana Gomez],
+https://github.com/alyelmorsy-dataengineer[Aly Ayman],
+https://github.com/anilabhabaral[Anilabha Baral],
+https://github.com/anton-rino-bosco[Anton Rino Bosco],
+https://github.com/dosedaf[Ayodya Enhanayoan],
+https://github.com/bahaa[Bahaa Zaid],
+https://github.com/battmush[battmush],
+https://github.com/bhuvan-somisetty[Bhuvan Somisetty],
+https://github.com/Binayak490-cyber[Binayak Das],
+https://github.com/bitthal-ladiwal[Bitthal Ladiwal],
+https://github.com/Aangbaeck[Björn Ångbäck],
+https://github.com/chiselko6[chiselko6],
+https://github.com/Naros[Chris Cranford],
+https://github.com/zerafachris[Christopher Zerafa],
+https://github.com/daniilzabludovsky[Daniil Zabludovsky],
+https://github.com/dm03514[Danny Mican],
+https://github.com/drshooby[David Shubov],
+https://github.com/dilraj-vyas[Dilraj Vyas],
+https://github.com/d1vyanshu-kumar[Divyanshu Kumar],
+https://github.com/EderJCosta[Éder Júlio Costa],
+https://github.com/evanvolgas[Evan Volgas],
+https://github.com/exgoya[exgoya],
+https://github.com/forestbupt[forestbupt],
+https://github.com/glitke-dev[Gennadi Litke],
+https://github.com/g-zemlianyi[Georgii Zemlianyi],
+https://github.com/kmos[Giovanni Panice],
+https://github.com/indraraj[Indra Shukla],
+https://github.com/moggaa[Jaeyeon Park],
+https://github.com/janwaleed09[Jan Mohr],
+https://github.com/jasonspeck[Jason Speck],
+https://github.com/anjeongkyun[Jeongkyun An],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/joaofix[João Almeida],
+https://github.com/JosipVukoja[Josip Vukoja],
+https://github.com/kartikangiras[Kartik Angiras],
+https://github.com/kawata-t[kawata-t],
+https://github.com/KGaneshDatta[KGaneshDatta],
+https://github.com/KMohnishM[Kodukulla Mohnish Mythreya],
+Barnabas Kralik,
+https://github.com/kurtisleyIN[Kurtis Ley],
+https://github.com/nrkljo[Lars M. Johansson],
+https://github.com/mly-zju[Lingyang Ma],
+https://github.com/MV-GH[Maarten Vercruysse],
+https://github.com/MarBruhn[Marcel Bruhn],
+https://github.com/mfvitale[Mario Fiore Vitale],
+https://github.com/mhejnas[Matt Hejnas],
+https://github.com/mcrauwel[Matthias Crauwels],
+https://github.com/minleejae[Minjae Lee],
+https://github.com/MoMoUsama[Mohamed Elkholy],
+https://github.com/DDINGJOO[MyungJoo Song],
+https://github.com/nickchomey[Nick Chomey],
+https://github.com/nkokitkar[Nikita Kokitkar],
+https://github.com/NiteeshK21[Niteesh Kumar Pandey],
+https://github.com/omkarmehta06[Omkar Mehta],
+https://github.com/PranavRKris[Pranav R],
+https://github.com/ragulshanmugam[Ragul Shanmugam],
+https://github.com/rk3rn3r[René Kerner],
+https://github.com/roldanbob[Robert Roldan],
+https://github.com/sangeet259[Sangeet Mishra],
+https://github.com/100maygupta[Saumay Gupta],
+https://github.com/kinolaev[Sergei Nikolaev],
+https://github.com/siddhantcvdi[Siddhant Chaturvedi],
+https://github.com/sudeepshm[Sudeep HM],
+https://github.com/Thiagoag[Thiago Garcia],
+https://github.com/twthorn[Thomas Thornton],
+https://github.com/TimurRakhmatullin86[Timur Rakhmatullin],
+https://github.com/tommyk-gears[Tommy Karlsson],
+https://github.com/vaibhav8a[Vaibhav Srivastava],
+https://github.com/vetruvet[Val Trubachev],
+https://github.com/vsantonastaso[Vincenzo Santonastaso],
+https://github.com/viragtripathi[Virag Tripathi],
+https://github.com/vjuranek[Vojtech Juranek],
+https://github.com/wagnercsantos[Wagner Santos],
+https://github.com/wbaker23[Will Baker],
+https://github.com/anlowee[xiaochong],
+https://github.com/yashisrivastava-confluent[Yashi Srivastava],
+https://github.com/ZdravkoDonev-redis[Zdravko Donev],
+https://github.com/PDGGK[Zihan Dai], and
+https://github.com/Tlinian[林石培]!
