@@ -4323,7 +4323,7 @@ With this property enabled, the connector can capture the following data types:<
 </dd>
 <dt class="hdlist1"><code>Extended strings</code></dt>
 <dd>
-<p><code>VARCHAR2</code>, <code>NVARCHAR2</code>, and <code>RAW</code> columns that exceed the legacy maximum lengths when the database parameter <code>max_string_size</code> is set to <code>EXTENDED</code>.
+<p><code>VARCHAR2</code> and <code>NVARCHAR2</code> columns that exceed the legacy maximum length of 4000 bytes when the database parameter <code>max_string_size</code> is set to <code>EXTENDED</code>.
 For more information about how the connector supports extended strings, see <a href="#support-for-extended-max-string-size">Extended max string size</a>.</p>
 </dd>
 </dl>
@@ -7718,7 +7718,54 @@ Once the database is updated to <code>EXTENDED</code> string support, that canno
 </table>
 </div>
 <div class="paragraph">
-<p>For the Debezium Oracle connector, when the database parameter <code>max_string_size</code> is <code>EXTENDED</code>, the <code>lob.enabled</code> connector configuration option should be set to <code>true</code> to capture changes made to <code>VARCHAR2</code> and <code>NVARCHAR2</code> fields that have string lengths that exceed 4000 bytes or <code>RAW</code> fields with more than 2000 bytes.</p>
+<p>For the Debezium Oracle connector, when the database parameter <code>max_string_size</code> is <code>EXTENDED</code>, the <code>lob.enabled</code> connector configuration option should be set to <code>true</code> to capture changes made to <code>VARCHAR2</code> and <code>NVARCHAR2</code> fields that have string lengths that exceed 4000 bytes.
+The connector does not support extended <code>RAW</code> fields with more than 2000 bytes.</p>
+</div>
+<div class="paragraph">
+<p>To decide whether a <code>VARCHAR2</code> or <code>NVARCHAR2</code> column is an extended string column, the connector compares the maximum length of the column in bytes, as reported by the <code>DATA_LENGTH</code> column of the <code>ALL_TAB_COLUMNS</code> view, with the 4000 byte limit, and not the declared length of the column.
+For a column that uses character length semantics, such as <code>VARCHAR2(2000 CHAR)</code>, and for every <code>NVARCHAR2</code> column, the maximum byte length depends on the character set.
+For example, in a database that uses the <code>AL32UTF8</code> character set, a <code>VARCHAR2(2000 CHAR)</code> column can store up to 8000 bytes, and so the connector treats it as an extended string column.</p>
+</div>
+<div class="paragraph">
+<p>When the connector reads the definition of a table from the database, for example during a snapshot, it uses the byte length that the database reports.
+When the connector parses the DDL for a table that is created or altered while it streams changes, it calculates the byte length from the declared length and the character set, with the following limitations:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>For a <code>VARCHAR2</code> column that does not specify <code>CHAR</code> or <code>BYTE</code>, the connector uses the value of the <code>NLS_LENGTH_SEMANTICS</code> parameter, which it reads when it starts.
+The connector reads this parameter, <code>max_string_size</code>, and the character sets from the pluggable database when <a href="#oracle-property-database-pdb-name"><code>database.pdb.name</code></a> is set, because these settings can differ between the root container and a pluggable database.
+The connector cannot detect a session that sets a different value for <code>NLS_LENGTH_SEMANTICS</code> when it creates or alters a table.</p>
+</li>
+<li>
+<p>For a <code>VARCHAR2</code> column with character length semantics in a database whose character set is multibyte but not Unicode, such as <code>ZHS16GBK</code> or <code>JA16SJIS</code>, the connector estimates the bytes for each character from the number of bits in the character set name, for example 2 bytes for <code>ZHS16GBK</code>.
+If the estimate is larger than the actual width, the connector might treat a column that cannot exceed 4000 bytes as an extended string column, which only affects how its changes are mined.
+When <code>lob.enabled</code> is <code>true</code>, the connector logs a warning at startup with the estimate that it uses.</p>
+</li>
+</ul>
+</div>
+<div class="admonitionblock important">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-important" title="Important"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>Earlier versions of the connector compared the declared length of a column with these limits.
+As a result, they did not capture changes to <code>VARCHAR2</code> columns that use character length semantics or to <code>NVARCHAR2</code> columns whose byte length exceeds 4000 bytes, and emitted the values of such columns as <code>null</code>.
+The schema history that earlier versions recorded does not include the byte length of columns.
+If the database parameter <code>max_string_size</code> is <code>EXTENDED</code>, after you upgrade the connector, run a snapshot with <a href="#oracle-property-snapshot-mode"><code>snapshot.mode</code></a> set to <code>recovery</code> to rebuild the schema history topic.</p>
+</div>
+<div class="paragraph">
+<p>Until you rebuild the schema history, the connector continues to use the declared length for columns that were recorded by an earlier version.
+It logs a warning for each table that has such a column that is not detected as an extended string column, but whose declared length could exceed 4000 bytes with character length semantics.
+A DDL statement corrects only the columns that it redefines with a data type, for example, <code>ALTER TABLE &#8230;&#8203; MODIFY (c1 VARCHAR2(2000 CHAR))</code>, or all columns of a table that is dropped and re-created.
+Other DDL changes, such as <code>ALTER TABLE &#8230;&#8203; ADD</code>, do not correct the existing columns of the table.</p>
+</div>
+</td>
+</tr>
+</table>
 </div>
 <div class="paragraph">
 <p>When set to <code>EXTENDED</code>, Oracle performs an implicit conversion of the character data in-flight when the byte length of the string data exceeds the legacy maximums.
@@ -14589,7 +14636,7 @@ The XStream outbound server is a container root database (<code>CDB$ROOT</code>)
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/3fc8ae7b21ceb017b720685e4891f4fd99fdd17c">3fc8ae7b</a></span>)
+            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/78cdf6af4081a88b65fd83a700f7e25e1d3da64a">78cdf6af</a></span>)
             
         </div>
     </footer>
