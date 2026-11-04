@@ -59,10 +59,16 @@ task :antora_nav do
   generate_antora_nav
 end
 
+desc 'Build only the Community Showcase slide decks from _showcase'
+task :showcase do
+  build_showcase
+end
+
 desc 'Build and preview the site locally in development mode'
 task :preview do
   generate_antora_nav
   run_antora
+  build_showcase
   clone_versions
   create_context7_files()
 
@@ -80,6 +86,7 @@ task :build, [:environment] do |task, args|
 
   generate_antora_nav
   run_antora
+  build_showcase
   system 'bundle install'
   exit 1 unless $?.success?
 
@@ -444,6 +451,55 @@ def run_antora()
     puts "Antora failed"
     exit -1
   end
+end
+
+# Build the Community Showcase slide decks (a small Marp project vendored in
+# _showcase) and publish the rendered output as static files under
+# community/showcase, next to the landing page community/showcase/index.html.
+#
+# Unlike the Antora docs - which are written straight into _site/documentation
+# and preserved with keep_files - the decks are copied into the Jekyll *source*
+# tree so Jekyll itself copies them into the site. That way they are published
+# identically by `jekyll build` and `jekyll serve` (keep_files is only consulted
+# by the cleaner, and relying on it for a nested path proved brittle under
+# serve). The generated episodes/, authors/ and showcase/ directories are
+# git-ignored; rebuilding them is part of every rake run.
+#
+# The episode-list landing page is rendered by Jekyll from the same Marp sources
+# (see _plugins/showcase.rb and _layouts/showcase.html); this step only produces
+# the standalone slide decks and their image assets.
+def build_showcase()
+  require 'fileutils'
+  dir = '_showcase'
+  unless File.directory?(dir)
+    msg "Skipping showcase build: #{dir} not found", :warn
+    return
+  end
+
+  puts "Building Community Showcase slide decks"
+  # The canonical build image (debezium/website-builder) ships Node and yarn but
+  # no npm - Antora itself is installed there as a yarn global package - so prefer
+  # yarn, and fall back to npm for developer machines that only have npm.
+  if system("command -v yarn > /dev/null 2>&1")
+    build = "yarn install --non-interactive --frozen-lockfile && yarn build"
+  elsif system("command -v npm > /dev/null 2>&1")
+    build = "npm install --no-audit --no-fund && npm run build"
+  else
+    msg "Skipping showcase build: neither yarn nor npm is available", :warn
+    exit -1
+  end
+
+  unless system("cd #{dir} && #{build}")
+    msg "Showcase build failed", :warn
+    exit -1
+  end
+
+  dest = "community/showcase"
+  # Clear only the generated subdirectories; the hand-written index.html stays.
+  %w[episodes showcase].each { |sub| FileUtils.rm_rf(File.join(dest, sub)) }
+  FileUtils.mkdir_p(dest)
+  FileUtils.cp_r(Dir.glob("#{dir}/public/*"), dest)
+  puts "Community Showcase slide decks published to #{dest}"
 end
 # Print a message to STDOUT
 def msg(text, level = :info)
