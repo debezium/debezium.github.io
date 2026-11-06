@@ -80,6 +80,17 @@ function parseEpisode(content) {
 //   light   -> accent (Lightning Session)
 //   regular -> brand  (Regular Session)
 //   special -> warn   (Special Session, a talk that fills the whole episode)
+// Author bios (shared with the blog) can run long. Cap the slide subtitle near
+// 145 characters, ending on a sentence boundary: the last period at or before
+// 145, or - when the first sentence alone is longer than that - the first
+// period after 145. Kept in step with short_bio in _plugins/showcase.rb.
+function truncateBio(bio, limit = 145) {
+  if (!bio || bio.length <= limit) return bio || ''
+  let idx = bio.lastIndexOf('.', limit)
+  if (idx === -1) idx = bio.indexOf('.', limit)
+  return idx === -1 ? bio : bio.slice(0, idx + 1)
+}
+
 function sessionStyle(type) {
   if (type === 'light') {
     return { colorClass: 'accent', colorVar: 'var(--dbz-accent-strong)', borderColor: 'var(--dbz-accent)', label: 'Lightning Session' }
@@ -127,7 +138,7 @@ function renderAgenda(episode, authors) {
 <div style="font-size:0.6em;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:${colorVar};margin-bottom:14px;">${label}</div>
 <img src="/assets/images/${author.avatar}" style="width:120px;height:120px;border-radius:50%;object-fit:cover;border:3px solid ${borderColor};margin-bottom:14px;" />
 <div style="font-weight:700;font-size:1.1em;color:var(--dbz-text);">${author.name}</div>
-<div style="color:var(--dbz-muted);font-size:0.82em;margin:4px 0 14px 0;">${author.bio}</div>
+<div style="color:var(--dbz-muted);font-size:0.82em;margin:4px 0 14px 0;">${truncateBio(author.bio)}</div>
 <div style="font-size:0.88em;color:${colorVar};font-weight:600;">${s.talk}</div>
 </div>`
   }).join('\n')
@@ -151,7 +162,7 @@ function renderSpeaker(type, episode, authors) {
 <img src="/assets/images/${author.avatar}" style="width:80px;height:80px;border-radius:50%;object-fit:cover;border:2px solid ${borderColor};flex-shrink:0;" />
 <div>
 <div style="font-weight:700;font-size:0.95em;color:var(--dbz-text);">${author.name}</div>
-<div style="color:var(--dbz-muted);font-size:0.72em;">${author.bio}</div>
+<div style="color:var(--dbz-muted);font-size:0.72em;">${truncateBio(author.bio)}</div>
 </div>
 </div>\n`
 }
@@ -195,7 +206,7 @@ function renderEpisodes(episodes, authors) {
 <div style="min-width:0;">
 <div style="font-size:0.55em;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:${colorVar};margin-bottom:4px;">${label}</div>
 <div style="font-weight:700;font-size:0.88em;color:var(--dbz-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${s.talk}</div>
-<div style="font-size:0.72em;color:var(--dbz-muted);margin-top:2px;">${author.name} — ${author.bio}</div>
+<div style="font-size:0.72em;color:var(--dbz-muted);margin-top:2px;">${author.name} — ${truncateBio(author.bio)}</div>
 </div>
 </div>`
     }).join('\n')
