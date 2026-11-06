@@ -64,9 +64,13 @@ function mdLinks(text) {
 function parseEpisode(content) {
   const ep = { sessions: [] }
   for (const line of content.trim().split('\n')) {
-    const session = line.match(/^(light|regular|special):\s*(\w+)\s*\|\s*(.+)$/)
+    // A session may be co-presented: its speaker field is one author id, or
+    // several separated by commas (`light: ccranfor, aandreakis | Talk`), the
+    // same convention co-authored blog posts use for `author:`.
+    const session = line.match(/^(light|regular|special):\s*([\w,\s-]+?)\s*\|\s*(.+)$/)
     if (session) {
-      ep.sessions.push({ type: session[1], nick: session[2], talk: session[3].trim() })
+      const nicks = session[2].split(',').map(n => n.trim()).filter(Boolean)
+      ep.sessions.push({ type: session[1], nicks, talk: session[3].trim() })
       continue
     }
     const m = line.match(/^(\w+):\s*(.+)$/)
@@ -128,17 +132,24 @@ function renderAgenda(episode, authors) {
   const hasSpecial = episode.sessions.some(s => s.type === 'special')
 
   const cards = episode.sessions.map(s => {
-    const author = authors[s.nick]
-    if (!author) return `<div class="card"><p>Unknown author: ${s.nick}</p></div>`
+    const speakers = s.nicks.map(n => authors[n]).filter(Boolean)
+    if (speakers.length === 0) return `<div class="card"><p>Unknown author: ${s.nicks.join(', ')}</p></div>`
 
     const { colorClass, colorVar, borderColor, label } = sessionStyle(s.type)
     const cardStyle = `display:flex;flex-direction:column;align-items:center;text-align:center;padding:24px 22px;${hasSpecial ? 'max-width:560px;' : ''}`
 
-    return `<div class="card ${colorClass}" style="${cardStyle}">
-<div style="font-size:0.6em;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:${colorVar};margin-bottom:14px;">${label}</div>
-<img src="/assets/images/${author.avatar}" style="width:120px;height:120px;border-radius:50%;object-fit:cover;border:3px solid ${borderColor};margin-bottom:14px;" />
+    // Co-presented talks lay their speakers side by side with smaller avatars.
+    const multi = speakers.length > 1
+    const avatar = multi ? 92 : 120
+    const speakerBlocks = speakers.map(author => `<div style="display:flex;flex-direction:column;align-items:center;${multi ? 'flex:1;min-width:0;max-width:240px;' : ''}">
+<img src="/assets/images/${author.avatar}" style="width:${avatar}px;height:${avatar}px;border-radius:50%;object-fit:cover;border:3px solid ${borderColor};margin-bottom:14px;" />
 <div style="font-weight:700;font-size:1.1em;color:var(--dbz-text);">${author.name}</div>
 <div style="color:var(--dbz-muted);font-size:0.82em;margin:4px 0 14px 0;">${truncateBio(author.bio)}</div>
+</div>`).join('\n')
+
+    return `<div class="card ${colorClass}" style="${cardStyle}">
+<div style="font-size:0.6em;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:${colorVar};margin-bottom:14px;">${label}</div>
+<div style="display:flex;justify-content:center;gap:24px;align-items:flex-start;width:100%;">${speakerBlocks}</div>
 <div style="font-size:0.88em;color:${colorVar};font-weight:600;">${s.talk}</div>
 </div>`
   }).join('\n')
@@ -153,18 +164,21 @@ function renderAgenda(episode, authors) {
 function renderSpeaker(type, episode, authors) {
   const session = episode.sessions.find(s => s.type === type)
   if (!session) return `<p>Unknown session type: ${type}</p>\n`
-  const author = authors[session.nick]
-  if (!author) return `<p>Unknown author: ${session.nick}</p>\n`
+  const speakers = session.nicks.map(n => authors[n]).filter(Boolean)
+  if (speakers.length === 0) return `<p>Unknown author: ${session.nicks.join(', ')}</p>\n`
 
   const { borderColor } = sessionStyle(type)
 
-  return `<h2>Debezium</h2>\n<h3>${session.talk}</h3>\n<div style="display:flex;align-items:center;gap:18px;margin-top:24px;">
+  // One row per speaker, stacked, so a co-presented talk lists both.
+  const rows = speakers.map(author => `<div style="display:flex;align-items:center;gap:18px;">
 <img src="/assets/images/${author.avatar}" style="width:80px;height:80px;border-radius:50%;object-fit:cover;border:2px solid ${borderColor};flex-shrink:0;" />
 <div>
 <div style="font-weight:700;font-size:0.95em;color:var(--dbz-text);">${author.name}</div>
 <div style="color:var(--dbz-muted);font-size:0.72em;">${truncateBio(author.bio)}</div>
 </div>
-</div>\n`
+</div>`).join('\n')
+
+  return `<h2>Debezium</h2>\n<h3>${session.talk}</h3>\n<div style="display:flex;flex-direction:column;gap:18px;margin-top:24px;">\n${rows}\n</div>\n`
 }
 
 function loadAllEpisodes() {
@@ -198,15 +212,19 @@ function renderEpisodes(episodes, authors) {
   let detailCards = ''
   if (latest) {
     detailCards = latest.sessions.map(s => {
-      const author = authors[s.nick]
-      if (!author) return ''
+      const speakers = s.nicks.map(n => authors[n]).filter(Boolean)
+      if (speakers.length === 0) return ''
       const { colorClass, colorVar, borderColor, label } = sessionStyle(s.type)
+      // One speaker: name plus trimmed bio. Co-presented: just the names.
+      const meta = speakers.length === 1
+        ? `${speakers[0].name} — ${truncateBio(speakers[0].bio)}`
+        : speakers.map(a => a.name).join(', ')
       return `<div class="card ${colorClass}" style="display:flex;align-items:center;gap:16px;padding:16px 18px;margin-bottom:10px;">
-<img src="/assets/images/${author.avatar}" style="width:70px;height:70px;border-radius:50%;object-fit:cover;border:2px solid ${borderColor};flex-shrink:0;" />
+<img src="/assets/images/${speakers[0].avatar}" style="width:70px;height:70px;border-radius:50%;object-fit:cover;border:2px solid ${borderColor};flex-shrink:0;" />
 <div style="min-width:0;">
 <div style="font-size:0.55em;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:${colorVar};margin-bottom:4px;">${label}</div>
 <div style="font-weight:700;font-size:0.88em;color:var(--dbz-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${s.talk}</div>
-<div style="font-size:0.72em;color:var(--dbz-muted);margin-top:2px;">${author.name} — ${truncateBio(author.bio)}</div>
+<div style="font-size:0.72em;color:var(--dbz-muted);margin-top:2px;">${meta}</div>
 </div>
 </div>`
     }).join('\n')
