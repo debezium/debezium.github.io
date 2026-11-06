@@ -90,14 +90,24 @@ module Jekyll
       ep = { 'sessions' => [], 'dir' => dir_name }
       m[1].strip.each_line do |line|
         line = line.rstrip
-        if (s = line.match(/^(light|regular|special):\s*(\w+)\s*\|\s*(.+)$/))
-          author = authors[s[2]]
+        # A session may be co-presented: its speaker field is one author id, or
+        # several separated by commas (`light: ccranfor, aandreakis | Talk`),
+        # mirroring the comma-separated `author:` field of co-authored blog
+        # posts. Each id is resolved against _data/authors.yaml into 'speakers'.
+        if (s = line.match(/^(light|regular|special):\s*([\w,\s-]+?)\s*\|\s*(.+)$/))
+          nicks = s[2].split(',').map(&:strip).reject(&:empty?)
+          speakers = nicks.map do |nick|
+            author = authors[nick]
+            {
+              'nick'   => nick,
+              'author' => author,
+              'bio'    => short_bio(author && author['bio'])
+            }
+          end
           ep['sessions'] << {
-            'type'   => s[1],
-            'nick'   => s[2],
-            'talk'   => s[3].strip,
-            'author' => author,
-            'bio'    => short_bio(author && author['bio'])
+            'type'     => s[1],
+            'talk'     => s[3].strip,
+            'speakers' => speakers
           }
         elsif (kv = line.match(/^(\w+):\s*(.+)$/))
           ep[kv[1]] = kv[2].strip
