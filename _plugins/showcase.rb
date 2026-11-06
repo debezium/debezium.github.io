@@ -91,11 +91,13 @@ module Jekyll
       m[1].strip.each_line do |line|
         line = line.rstrip
         if (s = line.match(/^(light|regular|special):\s*(\w+)\s*\|\s*(.+)$/))
+          author = authors[s[2]]
           ep['sessions'] << {
             'type'   => s[1],
             'nick'   => s[2],
             'talk'   => s[3].strip,
-            'author' => authors[s[2]]
+            'author' => author,
+            'bio'    => short_bio(author && author['bio'])
           }
         elsif (kv = line.match(/^(\w+):\s*(.+)$/))
           ep[kv[1]] = kv[2].strip
@@ -106,6 +108,20 @@ module Jekyll
       ep['upcoming']     = upcoming?(ep)
       ep['display_date'] = display_date(ep)
       ep
+    end
+
+    # Author bios (shared with the blog) can run long. Cap the showcase subtitle
+    # near 145 characters, ending on a sentence boundary: the last period at or
+    # before 145, or - when the first sentence alone is longer than that - the
+    # first period after 145. Kept in step with truncateBio() in the Marp
+    # engine.mjs so slides and the landing trim identically.
+    BIO_LIMIT = 145
+
+    def short_bio(bio)
+      return nil if bio.nil?
+      return bio if bio.length <= BIO_LIMIT
+      idx = bio.rindex('.', BIO_LIMIT) || bio.index('.', BIO_LIMIT)
+      idx ? bio[0..idx] : bio
     end
 
     # Reproduces formatDate(): "October 2026" + day 27 -> "October 27, 2026".
