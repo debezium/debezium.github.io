@@ -4122,6 +4122,64 @@ The following example shows a possible Ehcache configuration:</p>
 </div>
 </div>
 </div>
+<div class="sect3">
+<h4 id="oracle-event-buffering-reread-transactions"><a class="anchor" href="#oracle-event-buffering-reread-transactions"></a>Re-reading in-progress transactions</h4>
+<div class="paragraph">
+<p>Oracle LogMiner does not always return rows in SCN order.
+For example, when a statement writes an out-of-line <code>CLOB</code>, <code>BLOB</code>, or <code>XMLTYPE</code> value, LogMiner returns the row for that statement only after the statement completes, and the row retains the SCN at which the statement started.
+By the time that LogMiner returns the row, the connector might already have read rows with higher SCNs from other transactions.
+When <a href="#oracle-property-log-mining-buffer-reread-transactions"><code>log.mining.buffer.reread.transactions</code></a> is set to <code>true</code>, the connector re-reads the in-progress transactions on the next mining step, so that it captures such rows.</p>
+</div>
+<div class="paragraph">
+<p>When this property is set to <code>false</code>, the connector advances the read position to the last row that it read, in the following configurations:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p><a href="#oracle-property-lob-enabled"><code>lob.enabled</code></a> is set to <code>false</code>, which is the default.</p>
+</li>
+<li>
+<p><a href="#oracle-property-log-mining-buffer-deferred-transaction-start"><code>log.mining.buffer.deferred.transaction.start</code></a> is set to <code>true</code>.
+In this configuration, the mining window also advances block-by-block rather than remaining pinned to the oldest in-progress transaction.</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>Advancing the read position reduces the volume of data that the connector reads on each mining step, which can improve performance in environments with many or large in-progress transactions.</p>
+</div>
+<div class="admonitionblock warning">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-warning" title="Warning"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>When this property is set to <code>false</code>, the connector can silently lose change events.
+If a mining step ends while a statement that writes an out-of-line LOB or XML value is still running, and the connector reads rows of other transactions with higher SCNs during that step, the next mining step does not read the row of the statement.
+The connector does not emit a change event for the statement and does not log a warning.
+The transaction is otherwise emitted normally, so the loss is difficult to detect.</p>
+</div>
+<div class="paragraph">
+<p>The risk applies to any <code>INSERT</code> or <code>UPDATE</code> on a captured table that has an out-of-line LOB or XML column, even when <code>lob.enabled</code> is <code>false</code> and the connector does not emit LOB values.
+If the transaction later rolls back to a savepoint that undoes such a statement, the connector can also discard an earlier change to the same row in that transaction.
+The risk increases with the size of LOB values, which lengthens the time that the statement runs, and with the volume of concurrent activity in the database.</p>
+</div>
+<div class="paragraph">
+<p>Set this property to <code>false</code> only if you have confirmed that the captured tables do not store LOB or XML values out-of-line, or if you can tolerate the loss of change events.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="paragraph">
+<p>When <code>lob.enabled</code> is set to <code>true</code>, the connector always re-reads the in-progress transactions, and this property has no effect.</p>
+</div>
+<div class="paragraph">
+<p>When <a href="#oracle-property-log-mining-window-max-ms"><code>log.mining.window.max.ms</code></a> advances the mining window past the oldest in-progress transaction and <a href="#oracle-property-lob-enabled"><code>lob.enabled</code></a> is set to <code>false</code>, the connector does not re-read any in-progress transaction during that mining step, and it advances the read position as if this property is set to <code>false</code>.
+The <code>log.mining.window.max.ms</code> property does not apply when <a href="#oracle-property-log-mining-buffer-deferred-transaction-start"><code>log.mining.buffer.deferred.transaction.start</code></a> is set to <code>true</code>, so the mining window remains pinned to the oldest in-progress transaction while the connector re-reads in-progress transactions.</p>
+</div>
+</div>
 </div>
 <div class="sect2">
 <h3 id="low-change-frequency-offset-management"><a class="anchor" href="#low-change-frequency-offset-management"></a>Low change frequency offset management</h3>
@@ -9575,6 +9633,10 @@ When set to <code>true</code>, the connector stores only lightweight transaction
 </div>
 <div class="paragraph">
 <p>This option cannot be enabled when <a href="#oracle-property-lob-enabled"><code>lob.enabled</code></a> is set to <code>true</code>.</p>
+</div>
+<div class="paragraph">
+<p>By default, while transactions are in progress, the mining window is pinned to the oldest in-progress transaction because <a href="#oracle-property-log-mining-buffer-reread-transactions"><code>log.mining.buffer.reread.transactions</code></a> is set to <code>true</code>.
+To retain the block-by-block sliding mining window of deferred transaction start behavior, set <code>log.mining.buffer.reread.transactions</code> to <code>false</code>, after you review the risks that are described in <a href="#oracle-event-buffering-reread-transactions">Re-reading in-progress transactions</a>.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -9609,6 +9671,21 @@ When set to <code>0</code>, the connector retains the deferred metadata until a 
 <div class="paragraph">
 <p>Use this setting with deferred transaction start behavior to bound the amount of memory used by transactions that never progress beyond <code>START</code>.
 This setting does not affect transactions that have already been promoted into the main transaction cache.</p>
+</div></div></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><a id="oracle-property-log-mining-buffer-reread-transactions"></a><a href="#oracle-property-log-mining-buffer-reread-transactions"><code>log.mining.buffer.reread.transactions</code></a></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p><code>true</code></p>
+</div></div></td>
+<td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
+<p>Boolean value that specifies whether each mining step re-reads the buffered LogMiner transactions from the start of the oldest in-progress transaction while transactions are in progress.</p>
+</div>
+<div class="paragraph">
+<p>Setting this property to <code>false</code> can reduce the volume of data that the connector reads, but can cause the connector to silently lose change events.
+Before you change this property, review the risks that are described in <a href="#oracle-event-buffering-reread-transactions">Re-reading in-progress transactions</a>.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -13870,7 +13947,7 @@ The XStream outbound server is a container root database (<code>CDB$ROOT</code>)
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/fa584529e5fbf18b9c730cac20f82cf2a198439c">fa584529</a></span>)
+            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/42632d5446d539c27ad7271749dfd123f7ce7159">42632d54</a></span>)
             
         </div>
     </footer>
