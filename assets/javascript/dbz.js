@@ -752,6 +752,23 @@
     });
   }
 
+  /* ------------------------------------------------- Maven Central links */
+
+  // Maven Central refuses downloads that carry a Referer from another site and
+  // serves a block page instead. Asciidoctor has no way to put rel="noreferrer"
+  // on a link, so links in AsciiDoc blog posts get it here, only when they
+  // point at Maven Central, leaving every other outbound link as it is.
+  // _antora/supplemental_ui/js/dbz-antora.js does the same for the
+  // documentation.
+  function initMavenCentralLinks() {
+    Array.prototype.forEach.call(
+      document.querySelectorAll('a[href^="https://repo1.maven.org/"]'),
+      function (link) {
+        link.relList.add('noreferrer', 'noopener');
+      }
+    );
+  }
+
   /* ----------------------------------------------------------------- boot */
 
   function init() {
@@ -763,6 +780,7 @@
     initTabs();
     initBackToTop();
     initBlogSearch();
+    initMavenCentralLinks();
   }
 
   if (document.readyState === 'loading') {
