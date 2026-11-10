@@ -1042,7 +1042,12 @@ The Debezium CDC connector in conjunction with the Outbox Event Router will be m
 <div class="paragraph">
 <p>The reactive extension provides the application with the same <code>io.debezium.outbox.quarkus.ExportedEvent</code> interface as the non-reactive variant, but it also provides the <code>DebeziumOutboxHandler</code> class.
 Injecting the <code>DebeziumOutboxHandler</code> bean into an application provides a method for quickly persisting an <code>ExportedEvent</code> to the outbox table.
-The following example shows an invocation that uses the same <code>ExportedEvent</code> as in the earlier example:</p>
+To apply the outbox pattern correctly, the outbox event must be written in the same transaction as the application&#8217;s own changes, so that both are either committed or rolled back together.</p>
+</div>
+<div class="paragraph">
+<p>To make sure that the outbox event is written in your transaction, pass the reactive session of that transaction to <code>persistToOutbox</code>.
+The handler then writes the event by using that session, and does not begin or commit a transaction of its own.
+The following example shows an invocation with Hibernate Reactive with Panache that uses the same <code>ExportedEvent</code> as in the earlier example:</p>
 </div>
 <div class="listingblock">
 <div class="title">OrderService.java</div>
@@ -1056,17 +1061,32 @@ public class OrderService {
     @Inject
     OrderRepository orderRepository;
 
-    @Inject
-    Event&lt;ExportedEvent&lt;?, ?&gt;&gt; event;
-
-    @ReactiveTransactional
+    @WithTransaction
     public Uni&lt;Order&gt; addOrder(Order order) {
         return orderRepository.persistAndFlush(order)
-        .call(debeziumOutboxHandler.persistToOutbox(new OrderCreatedEvent(Instant.now(), order)));
-
+                .call(() -&gt; Panache.getSession()
+                        .chain(session -&gt; debeziumOutboxHandler.persistToOutbox(new OrderCreatedEvent(Instant.now(), order), session)));
     }
 }</code></pre>
 </div>
+</div>
+<div class="paragraph">
+<p>If you use Hibernate Reactive without Panache, pass the session that the <code>Mutiny.SessionFactory</code> provides to your transaction:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-java hljs" data-lang="java">public Uni&lt;Order&gt; addOrder(Order order) {
+    return sessionFactory.withTransaction((session, tx) -&gt; session.persist(order)
+            .chain(() -&gt; debeziumOutboxHandler.persistToOutbox(new OrderCreatedEvent(Instant.now(), order), session))
+            .replaceWith(order));
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>You can also call <code>persistToOutbox</code> without a session.
+In this case, if a session and transaction were opened by <code>Mutiny.SessionFactory</code> in the current Vert.x context, for example, by <code>Mutiny.SessionFactory#withTransaction</code>, the outbox event is written in that transaction.
+The session that Hibernate Reactive with Panache manages is not guaranteed to be found in this way, so pass the session explicitly when you use Panache.
+If no session and transaction are active, the handler writes the event in a new session and commits it in a transaction of its own.</p>
 </div>
 <div class="admonitionblock note">
 <table>
@@ -1076,7 +1096,7 @@ public class OrderService {
 </td>
 <td class="content">
 <div class="paragraph">
-<p>The <code>persistToOutbox</code> method returns a Uni; therefore, it must be observed by a subscriber ito receive the result.
+<p>The <code>persistToOutbox</code> method returns a Uni; therefore, it must be observed by a subscriber to receive the result.
 For more information about using the Mutiny library to build reactive applications, see the <a href="https://quarkus.io/guides/mutiny-primer">Quarkus Mutiny primer</a>.</p>
 </div>
 </td>
@@ -1585,7 +1605,7 @@ See <a href="/documentation/reference/integrations/tracing">tracing documentatio
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/82227d48cd38672f8b7dfd6b21ce988079e3573c">82227d48</a></span>)
+            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/048d74b0016119d9de5eab29fb8152ecd9d49507">048d74b0</a></span>)
             
         </div>
     </footer>
