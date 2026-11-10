@@ -1,0 +1,297 @@
+---
+layout: post
+title:  Debezium 3.7.1.Final Released
+date:   2026-11-09
+tags:   [ releases, mongodb, mysql, mariadb, postgres, sqlserver, cassandra, oracle, db2, vitess, outbox, spanner, jdbc, informix, ibmi, cockroachdb, yashandb, ingres, tidb, milvus, sqlite, cli, elasticsearch ]
+author: ccranfor
+extraClasses: release-v2
+---
+
+We're pleased to announce **Debezium 3.7.1.Final**, the first maintenance release of the 3.7 series, focused on stability and reliability.
+
+This release resolves a number of cases where change events could be skipped or duplicated after a connector restart, and it restores pieces of the Debezium Server distribution that went missing in 3.7.0.Final.
+It also brings updated database drivers that address several recently published CVEs.
+If you use the Oracle connector, be sure to review the breaking changes before upgrading.
+
+Read on for the full details!
+
++++<!-- more -->+++
+
+* link:#breaking-changes[Breaking changes]
+* link:#new-features-and-improvements[New features and improvements]
+* link:#other-changes[Other changes]
+
+[id="breaking-changes"]
+== Breaking changes
+
+With any new release of software, there can be breaking changes.
+This release is no exception, so let's discuss the major changes you should be aware of before upgrading to **Debezium 3.7.1.Final**
+
+=== Debezium for Oracle
+
+==== Snapshot locks are held for the whole snapshot
+
+The Oracle connector now holds its table locks until the snapshot has finished reading the data, rather than releasing them once the table schemas were captured.
+This protects an initial snapshot from most schema changes made while it runs, which is the usual cause of an `ORA-01466` failure that forces the snapshot to start over.
+
+The `snapshot.database.errors.max.retries` property has been removed, because retrying could never succeed.
+The connector reads every table at the position it recorded when the snapshot began, and Oracle rejects that query for as long as the table's definition is newer than that position.
+Each retry therefore failed in exactly the same way.
+
+With the default `snapshot.locking.mode` of `shared`, other sessions can still read and write the captured tables during the snapshot, so most deployments will not notice a difference.
+Schema changes that need exclusive access to a table now wait until the snapshot completes.
+Some non-blocking schema changes, such as `ALTER TABLE ... ADD COLUMN` on Oracle 23.3 and later, are still allowed by this lock and can still interrupt a snapshot.
+
+For environments where that is a concern, a new `extended` locking mode prevents all schema changes on the captured tables.
+The trade-off is that writes to those tables are also blocked until the snapshot completes, so it is best suited to snapshots taken in a maintenance window.
+The connector waits up to `snapshot.lock.timeout.ms` for each table lock, and fails the snapshot if a lock cannot be obtained in that time.
+
+[source,properties]
+----
+snapshot.locking.mode=extended
+snapshot.lock.timeout.ms=10000
+----
+
+When upgrading, remove `snapshot.database.errors.max.retries` from your connector configuration if you had set it.
+If you run schema changes against captured tables on a schedule, plan them outside of the initial snapshot.
+You can also set `snapshot.mode` to `no_data` and load the existing data with an incremental snapshot, which does not rely on a single point-in-time read.
+(https://github.com/debezium/dbz/issues/2787[dbz#2787])
+
+[id="new-features-and-improvements"]
+== New Features and Improvements
+
+The following covers all new features and improvements, grouped by connector component area.
+
+[cols="25%,25%,25%,25%"]
+|===
+|link:#new-features-and-improvements-debezium-core[Debezium Core]
+|link:#new-features-and-improvements-debezium-mongodb[Debezium for MongoDB]
+|link:#new-features-and-improvements-debezium-mysql[Debezium for MySQL]
+|link:#new-features-and-improvements-debezium-oracle[Debezium for Oracle]
+
+|link:#new-features-and-improvements-debezium-server[Debezium Server]
+|
+|
+|
+
+|===
+
+[id="new-features-and-improvements-debezium-core"]
+=== Debezium Core
+
+==== MariaDB Connector/J upgraded to 3.5.11
+
+The MariaDB driver that ships with the MariaDB connector and the JDBC sink has been upgraded to 3.5.11.
+This picks up the fixes for CVE-2026-119210, CVE-2026-119276, CVE-2026-119280, and CVE-2026-119281, which were published at the end of October.
+
+The new driver version also fixes a defect where the database password could be exposed through the connection URL reported by the driver.
+No configuration changes are required.
+(https://github.com/debezium/dbz/issues/2998[dbz#2998])
+
+[id="new-features-and-improvements-debezium-mongodb"]
+=== Debezium for MongoDB
+
+==== MongoDB driver upgraded to 5.14
+
+The MongoDB connector now ships with version 5.14.0 of the MongoDB Java driver, up from 5.9.2.
+The upgrade keeps the connector current with the driver's latest fixes and requires no configuration changes.
+(https://github.com/debezium/dbz/issues/3022[dbz#3022])
+
+[id="new-features-and-improvements-debezium-mysql"]
+=== Debezium for MySQL
+
+==== MySQL Connector/J upgraded to 26.10.0
+
+The MySQL driver that ships with the MySQL connector and the JDBC sink has been upgraded from 9.1.0 to 26.10.0.
+The previous version was affected by CVE-2025-30706, and the newest 9.x driver carries several more recent CVEs, so the upgrade moves directly to the 26.x line.
+
+Most deployments need no changes, but there are two things worth knowing.
+Starting with 26.7.0, the driver's release notes list MySQL Server 8.4 and later as supported.
+MySQL 8.0 is no longer in that documented range, although the driver does not reject it and the connector's tests continue to pass against it.
+
+The driver also now requires SSL keystores to be local files.
+The connector's own SSL settings already work this way, so this only matters if you pass custom `+driver.*+` properties that point at a remote keystore URL.
+(https://github.com/debezium/dbz/issues/3015[dbz#3015])
+
+[id="new-features-and-improvements-debezium-oracle"]
+=== Debezium for Oracle
+
+==== Column reselection uses the physical standby
+
+When the Oracle connector streams from a physical standby, the `ReselectColumnsPostProcessor` now runs its queries against the standby as well.
+Previously those queries always went to the primary database, even though the standby was already handling everything else for streaming.
+
+This keeps the extra read load of reselecting column values off the primary, which is often the reason for capturing from a standby in the first place.
+The behavior applies automatically when `capture.mode` is set to `physical_standby`, and other capture modes continue to use the primary connection.
+(https://github.com/debezium/dbz/issues/2444[dbz#2444])
+
+[id="new-features-and-improvements-debezium-server"]
+=== Debezium Server
+
+==== Apache Pulsar client upgraded to 4.2.5
+
+Debezium Server now packages version 4.2.5 of the Apache Pulsar client, up from 4.2.1.
+The older client bundled Bouncy Castle 1.84 libraries that security scanners flagged for a number of CVEs, including certificate validation issues.
+The new client bundles Bouncy Castle 1.86, which resolves those findings for the Pulsar libraries.
+
+The Pulsar sink's configuration and runtime behavior are unchanged.
+(https://github.com/debezium/dbz/issues/2799[dbz#2799])
+
+[id="other-changes"]
+== Other fixes
+
+// [Debezium for MySQL]
+* Cannot replicate GTID transaction (https://github.com/debezium/dbz/issues/694[dbz#694])
+// [Debezium for MySQL]
+* TIME types cannot be read on AWS Aurora when `snapshot.fetch.size` is set (https://github.com/debezium/dbz/issues/1015[dbz#1015])
+// [Debezium Core]
+* State leaks from an aborted incremental snapshot to the next (https://github.com/debezium/dbz/issues/1563[dbz#1563])
+// [Debezium for Oracle]
+* Concatenated XML in a single Kafka message (https://github.com/debezium/dbz/issues/2159[dbz#2159])
+// [Debezium for PostgreSQL]
+* Arrays of `TIME(p)` lose fractional seconds for p > 3 and throw `DateTimeException` when the JVM `user.timezone` is not UTC (https://github.com/debezium/dbz/issues/2559[dbz#2559])
+// [Debezium for PostgreSQL]
+* Snapshot changes pre-1582 and BC values for `DATE` and for arrays of temporal types (https://github.com/debezium/dbz/issues/2664[dbz#2664])
+// [Debezium for Oracle]
+* Allow including INTERNAL events for rollbacks to savepoint when `lob.enabled=false` (https://github.com/debezium/dbz/issues/2666[dbz#2666])
+// [Debezium for PostgreSQL]
+* Snapshot throughput regression on `timestamp` and `timestamptz` columns caused by reading them as text (https://github.com/debezium/dbz/issues/2686[dbz#2686])
+// [Debezium Core]
+* Ensure connector cleanup runs when the coordinator shutdown fails (https://github.com/debezium/dbz/issues/2709[dbz#2709])
+// [Debezium Core]
+* SQL Server retriable task startup failure does not clean up allocated resources (https://github.com/debezium/dbz/issues/2714[dbz#2714])
+// [Debezium for PostgreSQL]
+* Infinity dates emit inconsistent values across snapshot, pgoutput, and decoderbufs (https://github.com/debezium/dbz/issues/2721[dbz#2721])
+// [Debezium Server]
+* NullPointerException when calling the signal API (https://github.com/debezium/dbz/issues/2732[dbz#2732])
+// [Debezium for MySQL]
+* Rows are skipped after a restart when XA transactions are used (https://github.com/debezium/dbz/issues/2738[dbz#2738])
+// [Debezium Core, Debezium Server]
+* SMTs in the Debezium Server 3.7.0.Final image fail with `NoClassDefFoundError: io/debezium/transforms/SmtManager` (https://github.com/debezium/dbz/issues/2740[dbz#2740])
+// [outbox]
+* Outbox Event Router fails the task when `table.expand.json.payload` expansion fails instead of emitting the record unchanged (https://github.com/debezium/dbz/issues/2743[dbz#2743])
+// [Debezium Core]
+* Outbox Event Router drops W3C baggage from the propagated tracing context (https://github.com/debezium/dbz/issues/2753[dbz#2753])
+// [Debezium for PostgreSQL]
+* LTREE arrays containing NULL elements lose the entire value (https://github.com/debezium/dbz/issues/2770[dbz#2770])
+// [Debezium for Oracle]
+* Oracle XStream task fails after a restart (https://github.com/debezium/dbz/issues/2782[dbz#2782])
+// [Debezium Server]
+* Pub/Sub message attributes include JSON quotes when `debezium.format.header.schemas.enable=false` (https://github.com/debezium/dbz/issues/2783[dbz#2783])
+// [Debezium for PostgreSQL]
+* Embedded engine with `JdbcOffsetBackingStore` fails with ClassCastException in `TransactionContext.load` when `provide.transaction.metadata=true` (https://github.com/debezium/dbz/issues/2786[dbz#2786])
+// [Debezium JDBC sink]
+* `primary.key.fields` does not work for `record_header` primary keys (https://github.com/debezium/dbz/issues/2795[dbz#2795])
+// [Debezium for Oracle]
+* Table cannot be resolved for an object ID on physical standbys when the dictionary file is out of sync (https://github.com/debezium/dbz/issues/2798[dbz#2798])
+// [Debezium for SQL Server]
+* `capture.instance` include/exclude filter is applied after the `start_lsn` de-duplication, silently dropping a table with two capture instances that share a `start_lsn` (https://github.com/debezium/dbz/issues/2800[dbz#2800])
+// [Debezium Server]
+* Debezium Server 3.7 silently ignores a `connector.class` that is not part of the distribution build, so external connectors in `lib/` or `EXTRA_CONNECTOR` no longer start (https://github.com/debezium/dbz/issues/2801[dbz#2801])
+// [Debezium for SQL Server]
+* `datetime2` values are shifted forward during the spring-forward daylight saving time transition (https://github.com/debezium/dbz/issues/2805[dbz#2805])
+// [Debezium Platform]
+* Stopping and resuming an incremental snapshot does not work on Debezium Platform (https://github.com/debezium/dbz/issues/2824[dbz#2824])
+// [Debezium Quarkus Extensions]
+* Native image build fails because `HttpNotificationChannel` is not registered for reflection (https://github.com/debezium/dbz/issues/2840[dbz#2840])
+// [Debezium Core]
+* `JsonTableChangeSerializer` does not persist table-level comments (https://github.com/debezium/dbz/issues/2848[dbz#2848])
+// [Debezium for MySQL]
+* Connector cannot resume from an offset without a GTID set when the server uses GTIDs (https://github.com/debezium/dbz/issues/2852[dbz#2852])
+// [Debezium for Oracle]
+* LogMiner on RAC silently skips change events at a capped log boundary SCN when another redo thread has an event at the same SCN (https://github.com/debezium/dbz/issues/2862[dbz#2862])
+// [Debezium for SQL Server]
+* Schema history recovery skips every non-snapshot change when the stored offset has a NULL `change_lsn` (https://github.com/debezium/dbz/issues/2867[dbz#2867])
+// [Debezium for SQL Server]
+* Incremental snapshot emits duplicate rows or drops the last row for `datetime` primary keys (https://github.com/debezium/dbz/issues/2871[dbz#2871])
+// [Debezium for PostgreSQL]
+* Changes are lost on restart when `lsn_events_processed` is 1, or when the offset is stored at a transactional logical message (https://github.com/debezium/dbz/issues/2889[dbz#2889])
+// [Debezium for PostgreSQL]
+* With decoderbufs, a BEGIN sharing the stored LSN uses up an `lsn_events_processed` skip and re-emits a processed row (https://github.com/debezium/dbz/issues/2894[dbz#2894])
+// [Debezium Core]
+* SwapGeometryCoordinates SMT throws NullPointerException on MAP fields with null values (https://github.com/debezium/dbz/issues/2896[dbz#2896])
+// [Debezium for Oracle]
+* With the OpenLogReplicator adapter, all rows in a transaction get the same `source.scn` (https://github.com/debezium/dbz/issues/2912[dbz#2912])
+// [Debezium JDBC sink]
+* ClassCastException in `keyAsStruct` for primitive record keys with `primary.key.mode=record_key` (https://github.com/debezium/dbz/issues/2917[dbz#2917])
+// [Debezium for PostgreSQL]
+* Connector opens an extra idle JDBC connection per task for the bean registry even when no post-processor is configured (https://github.com/debezium/dbz/issues/2924[dbz#2924])
+// [Debezium for Oracle]
+* Nine-digit `INTERVAL` fractional seconds are incorrectly scaled in numeric mode (https://github.com/debezium/dbz/issues/2945[dbz#2945])
+// [Debezium JDBC sink]
+* `connection.pool.timeout` is interpreted as milliseconds instead of seconds (https://github.com/debezium/dbz/issues/2950[dbz#2950])
+// [Debezium for Oracle]
+* Heartbeat JDBC connection loses its PDB container after a reconnect because `alter session set container` is not replayed (https://github.com/debezium/dbz/issues/2972[dbz#2972])
+// [Debezium for SQL Server]
+* `unavailable.value.placeholder` should not replace NULL in the after image (`+__$operation = 4+`) of max-type columns (https://github.com/debezium/dbz/issues/2974[dbz#2974])
+// [Debezium Core]
+* Schema build at connector start is quadratic with many tables because `FieldNameSelector` caches by `Column` (https://github.com/debezium/dbz/issues/2982[dbz#2982])
+// [Debezium for MongoDB]
+* Connection string masking leaves percent-encoded credentials unmasked in logs (https://github.com/debezium/dbz/issues/2983[dbz#2983])
+// [Debezium Server]
+* Debezium Server 3.7 keeps running after the engine has failed instead of exiting (https://github.com/debezium/dbz/issues/3010[dbz#3010])
+// [Debezium Core]
+* GeometryFormatTransformer fixes (https://github.com/debezium/dbz/issues/2706[dbz#2706], https://github.com/debezium/dbz/issues/2904[dbz#2904])
+// [Debezium Core]
+* TimezoneConverter fixes (https://github.com/debezium/dbz/issues/2667[dbz#2667], https://github.com/debezium/dbz/issues/2723[dbz#2723])
+// [Debezium for MySQL, Debezium for PostgreSQL]
+* `unavailable.value.placeholder` with an invalid `hex:` value is not rejected by validation and fails or produces wrong bytes at runtime (https://github.com/debezium/dbz/issues/2868[dbz#2868], https://github.com/debezium/dbz/issues/2990[dbz#2990])
+// [Debezium for Oracle]
+* Oracle transaction cache performance improvements (https://github.com/debezium/dbz/issues/2777[dbz#2777], https://github.com/debezium/dbz/issues/2780[dbz#2780])
+// [Debezium Server]
+* Apicurio converter and serde missing from the Debezium Server distributions (https://github.com/debezium/dbz/issues/2791[dbz#2791], https://github.com/debezium/dbz/issues/2978[dbz#2978])
+// [Debezium for Cassandra]
+* Cassandra 5 CDC fixes (https://github.com/debezium/dbz/issues/2540[dbz#2540], https://github.com/debezium/dbz/issues/2736[dbz#2736], https://github.com/debezium/dbz/issues/2792[dbz#2792])
+// [Debezium for MariaDB]
+* MariaDB DDL parsing fixes (https://github.com/debezium/dbz/issues/2891[dbz#2891])
+// [Debezium for MySQL]
+* MySQL DDL parsing fixes (https://github.com/debezium/dbz/issues/373[dbz#373], https://github.com/debezium/dbz/issues/2755[dbz#2755])
+// [Debezium for Oracle]
+* Oracle DDL parsing fixes (https://github.com/debezium/dbz/issues/2853[dbz#2853])
+
+In total, https://github.com/orgs/debezium/projects/5/views/6?query=sort%3Aupdated-desc+is%3Aopen&filterQuery=status%3AReleased+stable-iteration%3A3.7.1.Final[87 issues] were resolved in Debezium 3.7.1.Final.
+The list of changes can also be found in our link:/releases/3.7/release-notes#release-3.7.1-final[release notes].
+
+A big thank you to all the contributors from the community who worked diligently on this release:
+ +
+https://github.com/chiselko6[Alex Limontov],
+https://github.com/AlvarVG[Alvar Viana],
+https://github.com/anton-rino-bosco[Anton Rino Bosco],
+https://github.com/dosedaf[Ayodya Enhanayoan],
+https://github.com/battmush[battmush],
+https://github.com/bhuvan-somisetty[Bhuvan Somisetty],
+https://github.com/bitthal-ladiwal[Bitthal Ladiwal],
+https://github.com/Aangbaeck[Björn Ångbäck],
+https://github.com/Naros[Chris Cranford],
+https://github.com/daniilzabludovsky[Daniil Zabludovsky],
+https://github.com/dm03514[Danny Mican],
+https://github.com/dilraj-vyas[Dilraj Vyas],
+https://github.com/d1vyanshu-kumar[Divyanshu Kumar],
+https://github.com/dongmin132[Dongmin Kim],
+https://github.com/evanvolgas[Evan Volgas],
+https://github.com/glitke-dev[Gennadi Litke],
+https://github.com/kmos[Giovanni Panice],
+https://github.com/moggaa[Jaeyeon Park],
+https://github.com/janwaleed09[Jan Mohr],
+https://github.com/jpechane[Jiri Pechanec],
+https://github.com/joaofix[João Almeida],
+https://github.com/mly-zju[Lingyang Ma],
+https://github.com/MV-GH[Maarten Vercruysse],
+https://github.com/MarBruhn[Marcel Bruhn],
+https://github.com/marmichalski[Marcin Michalski],
+https://github.com/mfvitale[Mario Fiore Vitale],
+https://github.com/mhejnas[Matt Hejnas],
+https://github.com/mcrauwel[Matthias Crauwels],
+https://github.com/minleejae[Minjae Lee],
+https://github.com/MoMoUsama[Mohamed Elkholy],
+https://github.com/nkokitkar[Nikita Kokitkar],
+https://github.com/NiteeshK21[Niteesh Kumar Pandey],
+https://github.com/roldanbob[Robert Roldan],
+https://github.com/sangeet259[Sangeet Mishra],
+https://github.com/kinolaev[Sergei Nikolaev],
+https://github.com/Thiagoag[Thiago Garcia],
+https://github.com/tommyk-gears[Tommy Karlsson],
+https://github.com/viragtripathi[Virag Tripathi],
+https://github.com/wbaker23[Will Baker],
+https://github.com/yashisrivastava-confluent[Yashi Srivastava], and
+https://github.com/ZdravkoDonev-redis[Zdravko Donev]!
