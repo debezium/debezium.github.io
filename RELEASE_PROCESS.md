@@ -139,6 +139,13 @@ Every connector plug-in with a downloadable archive needs an entry:
 
 The `artifact` must match the Maven Central artifact name exactly: the download link is built as `https://repo1.maven.org/maven2/io/debezium/<artifact>/<version>/<artifact>-<version>-plugin.tar.gz`. A typo produces a broken download link, not a build error.
 
+Maven Central download links must not send a `Referer` header.
+Central rejects downloads whose `Referer` is another site, such as debezium.io, and shows a page saying it "is not intended to be used as a free CDN" instead of the file.
+Any `<a>` in a Jekyll template that points at `repo1.maven.org` therefore needs `rel="noreferrer noopener"`, as in `_includes/dbz/release-list.html`.
+Links written in AsciiDoc, both in blog posts and in the documentation, are rendered by Asciidoctor, which cannot set `rel`.
+For those, the site scripts add it at page load to every link that starts with `https://repo1.maven.org/`: `assets/javascript/dbz.js` on the Jekyll pages, including blog posts, and `_antora/supplemental_ui/js/dbz-antora.js` in the documentation.
+A "direct download" link in a release announcement is therefore covered automatically, as long as it uses that exact URL prefix.
+
 ### `connectors` in the release data: which downloads each release offers
 
 A release's download list combines the series-level `connectors:` list in `series.yml` with any `connectors:` list in the release's own file:
