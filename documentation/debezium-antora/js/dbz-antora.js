@@ -172,12 +172,29 @@
     });
   }
 
+  /* ------------------------------------------------- Maven Central links */
+
+  // Maven Central refuses downloads that carry a Referer from another site and
+  // serves a block page instead. Asciidoctor has no way to put rel="noreferrer"
+  // on a link, so it is added here, only to links that point at Maven Central,
+  // leaving every other outbound link as it is. assets/javascript/dbz.js does
+  // the same on the Jekyll side.
+  function initMavenCentralLinks() {
+    Array.prototype.forEach.call(
+      document.querySelectorAll('a[href^="https://repo1.maven.org/"]'),
+      function (link) {
+        link.relList.add('noreferrer', 'noopener');
+      }
+    );
+  }
+
   /* ------------------------------------------------------------------ init */
 
   function init() {
     initThemeToggle();
     initDropdowns();
     initDrawer();
+    initMavenCentralLinks();
   }
 
   if (document.readyState === 'loading') {
