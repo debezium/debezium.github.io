@@ -1,20 +1,63 @@
 name: Surge.sh Preview Teardown
 
 on:
-  pull_request_target:
-    # when using teardown: 'true', add default event types + closed event type
-    types: [closed]
+  # Runs with a write token and the Surge secret: never check out or run pull request code, and treat artifacts
+  # as untrusted.
+  workflow_run:
+    workflows: ["Receive Closed PR"]
+    types:
+      - completed
+
+permissions:
+  contents: read
+  pull-requests: write
 
 jobs:
-  preview:
+  teardown:
     runs-on: ubuntu-latest
+    if: github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success'
     steps:
-      - uses: afc163/surge-preview@v1
-        id: preview_step
+      - name: download pr artifact
+        uses: dawidd6/action-download-artifact@v20
         with:
-          surge_token: ${{ secrets.SURGE_TOKEN }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          teardown: 'true'
-          failOnError: 'false'
-          build: |
-            echo Deleting from surge.sh
+          run_id: ${{ github.event.workflow_run.id }}
+          name: pr
+          allow_forks: true
+
+      # The artifact is produced by the pull request, so only accept a closed pull request
+      # whose head commit the triggering run was started for.
+      - name: save PR id
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          PR_ID=$(head -c 16 pr-id.txt | tr -d '[:space:]')
+          if ! [[ "$PR_ID" =~ ^[0-9]{1,9}$ ]]; then
+            echo "Error: pr-id.txt contains invalid PR number"
+            exit 1
+          fi
+          PR_STATE=$(gh api "repos/$GH_REPO/pulls/$PR_ID" --jq '.state + " " + .head.sha')
+          if [[ "$PR_STATE" != "closed $RUN_HEAD_SHA" ]]; then
+            echo "Pull request #$PR_ID ($PR_STATE) does not match closed run head $RUN_HEAD_SHA, skipping."
+            exit 0
+          fi
+          echo "id=$PR_ID" >> $GITHUB_OUTPUT
+
+      - name: teardown surge service
+        if: steps.pr.outputs.id != ''
+        continue-on-error: true
+        run: |
+          npx surge teardown https://debezium-debezium-github-io-preview-pr-${{ steps.pr.outputs.id }}.surge.sh --token ${{ secrets.SURGE_TOKEN }}
+
+      - name: update status comment
+        if: steps.pr.outputs.id != ''
+        uses: marocchino/sticky-pull-request-comment@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          header: surge-preview
+          number: ${{ steps.pr.outputs.id }}
+          message: |
+            :boom: PR Preview has been torn down.
