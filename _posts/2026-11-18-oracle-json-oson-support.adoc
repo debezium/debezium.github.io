@@ -1,0 +1,191 @@
+---
+layout: post
+title: "Capturing Oracle JSON (OSON) changes with Debezium"
+date: 2026-11-18
+tags: [ oracle, logminer, json ]
+author: ccranfor
+---
+
+Oracle Database 21c introduced a native `JSON` data type, stored internally in Oracle's binary JSON format called OSON.
+For a long time, tables with a `JSON` column were a blind spot for the Debezium Oracle connector.
+Starting with Debezium 3.7.0.Alpha1, the Oracle connector can capture changes to `JSON` columns when using the LogMiner adapter.
+
+This feature comes with a prerequisite that is quite different from what most Oracle connector users are used to.
+In this post, we explain why we added `JSON` support, how it works, and why the database needs to be configured the way it does.
+
++++<!-- more -->+++
+
+== Background
+
+Before Oracle 21c, applications that stored JSON in Oracle typically used a `VARCHAR2`, `CLOB`, or `BLOB` column with an `IS JSON` check constraint.
+From Debezium's perspective, those columns are just character or binary data, and the connector has always handled them that way.
+
+The native `JSON` type is different.
+Oracle stores the value in OSON, a binary format optimized for querying and partial updates, and the Oracle JDBC driver reports the column with the generic JDBC type `1111` (`Types.OTHER`).
+Before 3.7, this caused a few problems for users (see https://github.com/debezium/dbz/issues/1872[dbz#1872]):
+
+* During a snapshot, the connector did not know how to map the column and logged that no converter was available for it.
+* The only workaround was to use a snapshot select override that wrapped the column in `JSON_SERIALIZE(...)`, combined with a custom converter.
+* During streaming, values arrived as raw `HEXTORAW('...')` expressions, if they arrived at all.
+
+That last point was the clue that led to the actual feature, and also to the prerequisite.
+
+== What LogMiner does with JSON
+
+Oracle LogMiner does not support the `JSON` data type.
+On a typical database, changes to a `JSON` column are not reconstructed into the SQL that LogMiner provides in `V$LOGMNR_CONTENTS`, so there is nothing for Debezium to capture.
+
+This changes when the database initialization parameter https://docs.oracle.com/en/database/oracle/oracle-database/26/refrn/ENABLE_GOLDENGATE_REPLICATION.html[`ENABLE_GOLDENGATE_REPLICATION`] is set to `TRUE`.
+With that parameter enabled, Oracle writes the additional information that GoldenGate needs into the redo logs, and LogMiner can then reconstruct `JSON` column values.
+The user who reported dbz#1872 already had this parameter enabled on their database, which is why they saw `HEXTORAW` values in the first place.
+
+When the parameter is enabled, the `JSON` values that LogMiner returns take one of a few shapes:
+
+* A value with a `/* JSON */` hint in front of it, for example `/* JSON */ '{"name":"Debezium"}'`.
+* A binary OSON payload encoded as a `HEXTORAW('...')` function call.
+* An `EMPTY_CLOB()` or `EMPTY_BLOB()` placeholder, or a `UNISTR(...)` expression for values with non-ASCII characters.
+
+Like other large objects, `JSON` values can also be written to the redo logs through separate LOB operations, not inline in the `INSERT` or `UPDATE` statement.
+
+== How Debezium handles it
+
+The following diagram shows the path that a change to a `JSON` column takes through the connector.
+
+[source,mermaid]
+----
+graph LR
+    APP[Application] -->|INSERT / UPDATE| DB[(Oracle 21c+)]
+    DB -->|redo logs with GoldenGate data| LM[LogMiner]
+    LM -->|"/* JSON */ ... or HEXTORAW('...')"| P[DML parser]
+    P --> C[JSON value converter]
+    C -->|io.debezium.data.Json string| K[Change event]
+----
+
+The connector makes several changes to support this flow:
+
+* The LogMiner DML parser recognizes the `/* JSON */` hint inside column values, so the hint does not break the parsing of the rest of the statement.
+* The value converter removes the hint, decodes `HEXTORAW` OSON payloads with the Oracle JSON library, and converts the result to its textual JSON form.
+`EMPTY_CLOB()`, `EMPTY_BLOB()`, and `UNISTR(...)` values are handled the same way as they are for character LOBs.
+* The column is mapped to a `string` field with the semantic type `io.debezium.data.Json`, the same type that other Debezium connectors use for JSON data.
+* During snapshots, the connector reads the column as an Oracle JSON object and emits the same textual JSON form, so snapshot and streaming events are consistent and no select override or custom converter is needed.
+* `JSON` columns are treated like LOB columns.
+This means they follow the same rules for LOB mining and for the unavailable value placeholder.
+
+== Why the prerequisites exist
+
+We normally try to keep the list of database prerequisites for the Oracle connector short, and setting `ENABLE_GOLDENGATE_REPLICATION` is not something we ask for lightly.
+However, there is currently no other way for LogMiner to provide `JSON` column changes.
+Debezium cannot reconstruct the value on its own, because without that parameter the information is not available in the redo logs as seen through LogMiner.
+
+[IMPORTANT]
+====
+Oracle support for `JSON` data types is a premium feature that is only available through a GoldenGate license.
+Before you enable `ENABLE_GOLDENGATE_REPLICATION`, check with your Oracle representative how it affects your licensing.
+====
+
+That is why this feature is opt-in, and why the Debezium documentation states the licensing note so clearly.
+If your database already has the parameter enabled, for example because GoldenGate is used elsewhere in your organization, the Oracle connector can now take advantage of it.
+
+You may wonder about the XStream adapter, which already requires a GoldenGate license.
+Unfortunately, the XStream adapter cannot capture `JSON` columns.
+The Oracle OCI driver that XStream depends on fails to read the metadata of tables that contain a `JSON` column, and reports an error similar to:
+
+----
+ORA-17001: Internal error ... accessor type: 119
+----
+
+This applies to all Oracle 21.x and 23.x drivers that we tested, through version 23.26.1.
+Because this is a limitation of the Oracle driver, not of Debezium, we decided to document it rather than work around it.
+If a future driver version resolves this problem, we will revisit XStream support.
+
+== Requirements and configuration
+
+To capture changes from tables with `JSON` columns, make sure that:
+
+* The database is Oracle 21c or later, with tables that use the native `JSON` type.
+* The connector uses the LogMiner adapter (`database.connection.adapter=logminer`), which is the default.
+* The database initialization parameter `ENABLE_GOLDENGATE_REPLICATION` is set to `TRUE`, and your licensing permits it.
+* LOB support is enabled in the connector with `lob.enabled=true`, because `JSON` values can be written to the redo logs as LOB operations.
+
+For example, a database administrator can enable the parameter with:
+
+[source,sql]
+----
+ALTER SYSTEM SET ENABLE_GOLDENGATE_REPLICATION=TRUE SCOPE=BOTH;
+----
+
+And the relevant part of the connector configuration looks like this:
+
+[source,json]
+----
+{
+  "connector.class": "io.debezium.connector.oracle.OracleConnector",
+  "database.connection.adapter": "logminer",
+  "lob.enabled": "true",
+  "table.include.list": "DEBEZIUM.CUSTOMER_PROFILES"
+}
+----
+
+Given a table such as:
+
+[source,sql]
+----
+CREATE TABLE customer_profiles (
+  id NUMBER(9) PRIMARY KEY,
+  profile JSON
+);
+
+INSERT INTO customer_profiles VALUES (1, '{"name":"Debezium","tags":["cdc","oracle"]}');
+----
+
+The connector emits a change event in which the `PROFILE` field is a string with the semantic type `io.debezium.data.Json`:
+
+[source,json]
+----
+{
+  "schema": {
+    "type": "struct",
+    "fields": [
+      {
+        "type": "struct",
+        "field": "after",
+        "optional": true,
+        "fields": [
+          { "type": "int32", "field": "ID", "optional": false },
+          { "type": "string", "field": "PROFILE", "optional": true, "name": "io.debezium.data.Json", "version": 1 }
+        ]
+      }
+    ]
+  },
+  "payload": {
+    "after": {
+      "ID": 1,
+      "PROFILE": "{\"name\":\"Debezium\",\"tags\":[\"cdc\",\"oracle\"]}"
+    },
+    "op": "c"
+  }
+}
+----
+
+The example above is shortened to the relevant fields.
+
+Because `JSON` columns are treated like LOBs, an `UPDATE` that does not change the `JSON` column usually does not include its value in the redo logs.
+In that case, the connector emits the value of the `unavailable.value.placeholder` configuration option (by default `__debezium_unavailable_value`) for the column, just as it does for `CLOB` and `BLOB` columns.
+Consumers should be prepared to handle this placeholder, for example by using the reselect columns post processor or by keeping the last known value.
+
+== Limitations and feedback
+
+The `JSON` support in the Oracle connector is currently incubating.
+Depending on the feedback we receive, the exact semantics and configuration might change in future releases.
+To summarize the current limitations:
+
+* Only the LogMiner adapter is supported. The XStream adapter cannot capture `JSON` columns because of the OCI driver limitation described above.
+* The database must have `ENABLE_GOLDENGATE_REPLICATION` set to `TRUE`, which has licensing implications.
+* The value is emitted as a JSON string, not as a structured Kafka Connect type.
+* Unchanged `JSON` values in `UPDATE` events can be emitted as the unavailable value placeholder.
+
+For the complete reference, see the link:/documentation/reference/stable/connectors/oracle.html#oracle-json-types[JSON types] section of the Oracle connector documentation.
+The original feature request is tracked as https://github.com/debezium/dbz/issues/1884[dbz#1884].
+
+If you try this feature, we would love to hear from you.
+Let us know about your experience, problems, or ideas in our https://debezium.zulipchat.com/#narrow/stream/302529-users[Zulip chat] or by opening an issue in the https://github.com/debezium/dbz/issues[issue tracker].
