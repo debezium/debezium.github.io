@@ -1,16 +1,59 @@
 name: Surge.sh Preview
 
 on:
+  # Runs with a write token and the Surge secret: never check out or run pull request code, and treat artifacts
+  # and pull request metadata as untrusted.
   workflow_run:
     workflows: ["Receive PR"]
     types:
+      - requested
       - completed
 
 permissions:
   contents: read
   pull-requests: write
-      
+
 jobs:
+  start:
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.event == 'pull_request' && github.event.action == 'requested'
+    steps:
+      # The PR artifact does not exist yet, so look up the open pull request whose head is the triggering commit
+      - name: find PR id
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          HEAD_OWNER: ${{ github.event.workflow_run.head_repository.owner.login }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if ! [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Error: invalid head commit"
+            exit 1
+          fi
+          PR_ID=$(gh api -X GET "repos/$GH_REPO/pulls" -f state=open -f head="$HEAD_OWNER:$HEAD_BRANCH" \
+            --jq ".[] | select(.head.sha == \"$HEAD_SHA\") | .number" | head -n 1)
+          if [[ -z "$PR_ID" ]]; then
+            echo "No open pull request found for $HEAD_SHA, nothing to do."
+          elif ! [[ "$PR_ID" =~ ^[0-9]+$ ]]; then
+            echo "Error: invalid PR number"
+            exit 1
+          fi
+          echo "id=$PR_ID" >> $GITHUB_OUTPUT
+
+      - name: create status comment
+        if: steps.pr.outputs.id != ''
+        uses: marocchino/sticky-pull-request-comment@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          header: surge-preview
+          number: ${{ steps.pr.outputs.id }}
+          message: |
+            ⚡️ Deploying PR Preview...
+            <img src="https://user-images.githubusercontent.com/507615/90240294-8d2abd00-de5b-11ea-8140-4840a0b2d571.gif" width="300" />
+
   success:
     runs-on: ubuntu-latest
     if: github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success'
