@@ -1,0 +1,64 @@
+name: Surge.sh Preview Sweep
+
+on:
+  # Backstop for the event-driven teardown: removes previews whose pull request is closed but were missed, for
+  # example when the "Receive Closed PR" run awaited approval. Never reads anything from pull requests.
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    outputs:
+      ids: ${{ steps.teardown.outputs.ids }}
+    steps:
+      - name: teardown previews of closed pull requests
+        id: teardown
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SURGE_TOKEN: ${{ secrets.SURGE_TOKEN }}
+        run: |
+          PREFIX=debezium-debezium-github-io-preview-pr-
+          PREVIEWS=$(npx surge list --token "$SURGE_TOKEN")
+          DOMAINS=$(echo "$PREVIEWS" | grep -oE "${PREFIX}[0-9]{1,9}\.surge\.sh" | sort -u || true)
+          echo "Found previews: ${DOMAINS:-none}"
+          TORN_DOWN=()
+          for DOMAIN in $DOMAINS; do
+            PR_ID=${DOMAIN#"$PREFIX"}
+            PR_ID=${PR_ID%.surge.sh}
+            STATE=$(gh api "repos/$GH_REPO/pulls/$PR_ID" --jq .state || echo unknown)
+            if [[ "$STATE" == "closed" ]]; then
+              echo "Tearing down $DOMAIN"
+              if npx surge teardown "https://$DOMAIN" --token "$SURGE_TOKEN"; then
+                TORN_DOWN+=("$PR_ID")
+              else
+                echo "::warning::Teardown failed for $DOMAIN"
+              fi
+            fi
+          done
+          echo "ids=$(printf '%s\n' "${TORN_DOWN[@]}" | jq -cs .)" >> $GITHUB_OUTPUT
+
+  comment:
+    needs: sweep
+    if: needs.sweep.outputs.ids != '' && needs.sweep.outputs.ids != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pr: ${{ fromJSON(needs.sweep.outputs.ids) }}
+    steps:
+      - name: update status comment
+        uses: marocchino/sticky-pull-request-comment@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          header: surge-preview
+          number: ${{ matrix.pr }}
+          message: |
+            :boom: PR Preview has been torn down.
