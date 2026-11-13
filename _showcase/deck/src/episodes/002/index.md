@@ -32,24 +32,71 @@ special: gsoc2026 | GSoC 2026 Projects Showcase
 
 ---
 
-## Debezium
+<!-- _class: sq sq-cover -->
 
-### Source Connector for Milvus
+<style>
+/* cover */
+section.sq-cover { justify-content: center; padding-top: 40px; }
+section.sq-cover .cover { display: grid; grid-template-columns: 1.3fr 1fr; gap: 36px; align-items: center; }
+section.sq-cover .thesis { display: flex; flex-direction: column; gap: 14px; }
+section.sq-cover .term { border-radius: 14px; overflow: hidden; border: 1px solid var(--dbz-border-strong); background: var(--dbz-bg-deep); box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5); }
+section.sq-cover .term.ev { border-color: rgba(145, 212, 67, 0.55); box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5), 0 0 50px rgba(145, 212, 67, 0.12); }
+section.sq-cover .term .bar { display: flex; justify-content: space-between; padding: 9px 16px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--dbz-muted); background: var(--dbz-surface-2); }
+section.sq-cover .term pre { margin: 0; padding: 14px 18px; border: 0; border-radius: 0; background: transparent; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 16px; line-height: 1.55; color: var(--dbz-text); white-space: pre; }
+section.sq-cover .k { color: var(--dbz-accent-strong); } section.sq-cover .s { color: var(--dbz-warn); } section.sq-cover .n { color: #A98BF5; } section.sq-cover .g { color: var(--dbz-brand-strong); } section.sq-cover .m { color: var(--dbz-muted); }
+section.sq-cover .arrow { align-self: center; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--dbz-muted); }
 
-<div style="display:flex;flex-direction:column;gap:18px;margin-top:24px;">
-    <div style="display:flex;align-items:center;gap:18px;">
-        <img src="/assets/images/kartik.jpg" style="width:80px;height:80px;border-radius:50%;object-fit:cover;border:2px solid var(--dbz-accent);flex-shrink:0;" />
-    <div>
-    <div style="font-weight:700;font-size:0.95em;color:var(--dbz-text);">Kartik Angiaris</div>
-        <div style="color:var(--dbz-muted);font-size:0.72em;">GSoC Student</div>
-        </div>
-    </div>
+section.sq-cover h1 { margin: 0; font-size: 64px; line-height: 0.98; font-weight: 800; letter-spacing: -0.04em; }
+section.sq-cover .people { display: flex; align-items: center; gap: 48px; margin-top: 56px; }
+section.sq-cover .speaker { display: flex; align-items: center; gap: 22px; }
+section.sq-cover .speaker img { width: 116px; height: 116px; border-radius: 50%; object-fit: cover; padding: 4px; background: linear-gradient(135deg, var(--dbz-brand), var(--dbz-accent)); }
+section.sq-cover .who b { display: block; font-size: 32px; font-weight: 700; letter-spacing: -0.01em; color: var(--dbz-text); }
+section.sq-cover .who span { display: block; margin-top: 4px; font-size: 19px; color: var(--dbz-muted); }
+section.sq-cover .mentors { display: flex; flex-direction: column; gap: 14px; padding-left: 48px; border-left: 1px solid var(--dbz-border); }
+section.sq-cover .mentor { display: flex; align-items: center; gap: 14px; font-size: 19px; color: var(--dbz-text); font-weight: 600; }
+section.sq-cover .mentor img { width: 48px; height: 48px; border-radius: 50%; object-fit: cover; border: 1px solid var(--dbz-border-strong); }
+section.sq-cover .mentor small { display: block; font-size: 15px; font-weight: 400; color: var(--dbz-muted); }
+
+/* overrides (kept last so they win) */
+section.sq-cover .people { margin-top: 40px; flex-direction: column; align-items: flex-start; gap: 28px; }
+section.sq-cover .mentors { padding-left: 0; border-left: 0; flex-direction: row; flex-wrap: wrap; gap: 12px 32px; }
+section.sq-cover .mentors .label { flex-basis: 100%; }
+</style>
+
+<div class="cover">
+<div>
+<div class="eyebrow">GSoC 2026</div>
+<h1>Source connector<br>for <em>Milvus</em></h1>
+<div class="people">
+<div class="speaker"><img src="/assets/images/kartik.jpg" alt="Kartik Angiras" /><div class="who"><b>Kartik Angiras</b><span>Speaker &amp; contributor · GSoC 2026</span></div></div>
+<div class="mentors">
+<div class="label">Mentored by</div>
+<div class="mentor"><img src="/assets/images/ccranfor.jpg" alt="Chris Cranford" /><div>Chris Cranford<small>Senior Principal Software Engineer, IBM</small></div></div>
+<div class="mentor"><img src="/assets/images/gpanice.jpg" alt="Giovanni Panice" /><div>Giovanni Panice<small>Senior Software Engineer, IBM</small></div></div>
+</div>
+</div>
+</div>
+<div class="thesis">
+<div class="term"><div class="bar"><span>Milvus</span><span>Upsert</span></div><pre><span class="k">curl -X POST</span> milvus.debezium.io/v2/vectordb/entities/insert
+<span class="k">-H 'Content-Type: application/json'</span>
+<span class="k">-d</span> '{"collectionName": "products", 
+"data": [{"pk": 1005, "name":"camping stove", 
+"category": "outdoor", "price": 59.99, 
+"embedding": [0.1, 0.3, 0.3, 0.5]}]}'</pre>
+</div>
+<div class="arrow">↓ debezium milvus connector</div>
+<div class="term ev"><div class="bar"><span>topic · milvus.default.products</span><span>Event out</span></div><pre>{
+  <span class="g">"op"</span>: <span class="s">"c"</span>,
+  <span class="g">"before"</span>: <span class="m">null</span>,
+  <span class="g">"after"</span>: { <span class="g">"pk"</span>: <span class="n">1005</span>, <span class="g">"price"</span>: <span class="s">"59.99"</span> },
+  <span class="g">"source"</span>: { <span class="g">"connector"</span>: <span class="s">"milvus"</span>, <span class="g">"collection"</span>: <span class="s">"products"</span> }
+}</pre></div>
+</div>
 </div>
 
 ---
 
 ## What is Milvus
-
 
 ---
 
@@ -545,19 +592,49 @@ section.sq table.aff, section.sq table.log { display: table; width: 100%; }
 
 ---
 
+<!-- _class: sq sq-cover -->
 
-## Debezium
+<style>
+/* cover */
+section.sq-cover { justify-content: center; padding-top: 40px; }
+section.sq-cover .cover { display: grid; grid-template-columns: 1.3fr 1fr; gap: 36px; align-items: center; }
+section.sq-cover .thesis { display: flex; flex-direction: column; gap: 14px; }
+section.sq-cover .term { border-radius: 14px; overflow: hidden; border: 1px solid var(--dbz-border-strong); background: var(--dbz-bg-deep); box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5); }
+section.sq-cover .term.ev { border-color: rgba(145, 212, 67, 0.55); box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5), 0 0 50px rgba(145, 212, 67, 0.12); }
+section.sq-cover .term .bar { display: flex; justify-content: space-between; padding: 9px 16px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--dbz-muted); background: var(--dbz-surface-2); }
+section.sq-cover .term pre { margin: 0; padding: 14px 18px; border: 0; border-radius: 0; background: transparent; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 16px; line-height: 1.55; color: var(--dbz-text); white-space: pre; }
+section.sq-cover .k { color: var(--dbz-accent-strong); } section.sq-cover .s { color: var(--dbz-warn); } section.sq-cover .n { color: #A98BF5; } section.sq-cover .g { color: var(--dbz-brand-strong); } section.sq-cover .m { color: var(--dbz-muted); }
+section.sq-cover .arrow { align-self: center; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--dbz-muted); }
 
-### Host-Based Deployment for Debezium Platform
+section.sq-cover h1 { margin: 0; font-size: 64px; line-height: 0.98; font-weight: 800; letter-spacing: -0.04em; }
+section.sq-cover .people { display: flex; align-items: center; gap: 48px; margin-top: 56px; }
+section.sq-cover .speaker { display: flex; align-items: center; gap: 22px; }
+section.sq-cover .speaker img { width: 116px; height: 116px; border-radius: 50%; object-fit: cover; padding: 4px; background: linear-gradient(135deg, var(--dbz-brand), var(--dbz-accent)); }
+section.sq-cover .who b { display: block; font-size: 32px; font-weight: 700; letter-spacing: -0.01em; color: var(--dbz-text); }
+section.sq-cover .who span { display: block; margin-top: 4px; font-size: 19px; color: var(--dbz-muted); }
+section.sq-cover .mentors { display: flex; flex-direction: column; gap: 14px; padding-left: 48px; border-left: 1px solid var(--dbz-border); }
+section.sq-cover .mentor { display: flex; align-items: center; gap: 14px; font-size: 19px; color: var(--dbz-text); font-weight: 600; }
+section.sq-cover .mentor img { width: 48px; height: 48px; border-radius: 50%; object-fit: cover; border: 1px solid var(--dbz-border-strong); }
+section.sq-cover .mentor small { display: block; font-size: 15px; font-weight: 400; color: var(--dbz-muted); }
 
-<div style="display:flex;flex-direction:column;gap:18px;margin-top:24px;">
-    <div style="display:flex;align-items:center;gap:18px;">
-        <img src="/assets/images/divyanshu.jpg" style="width:80px;height:80px;border-radius:50%;object-fit:cover;border:2px solid var(--dbz-accent);flex-shrink:0;" />
-    <div>
-    <div style="font-weight:700;font-size:0.95em;color:var(--dbz-text);">Divyanshu Kumar</div>
-        <div style="color:var(--dbz-muted);font-size:0.72em;">GSoC Student</div>
-        </div>
-    </div>
+/* overrides (kept last so they win) */
+section.sq-cover .people { margin-top: 40px; flex-direction: column; align-items: flex-start; gap: 28px; }
+section.sq-cover .mentors { padding-left: 0; border-left: 0; flex-direction: row; flex-wrap: wrap; gap: 12px 32px; }
+section.sq-cover .mentors .label { flex-basis: 100%; }
+</style>
+
+<div class="cover">
+<div>
+<div class="eyebrow">GSoC 2026</div>
+<h2>Host-Based Deployment for <em>Debezium Platform</em></h2>
+<div class="people">
+<div class="speaker"><img src="/assets/images/divyanshu.jpg" alt="Divyanshu Kumar" /><div class="who"><b>Divyanshu Kumar</b><span>Speaker &amp; contributor · GSoC 2026</span></div></div>
+<div class="mentors">
+<div class="label">Mentored by</div>
+<div class="mentor"><img src="/assets/images/mario.jpg" alt="Mario Fiore Vitale" /><div>Mario Fiore Vitale<small>Senior Software Engineer, IBM</small></div></div>
+<div class="mentor"><img src="/assets/images/gpanice.jpg" alt="Giovanni Panice" /><div>Giovanni Panice<small>Senior Software Engineer, IBM</small></div></div>
+</div>
+</div>
 </div>
 
 ---
@@ -596,7 +673,8 @@ Host deployment adds SSH-managed Linux machines as deployment targets for Debezi
 <div class="wide-narrow">
 <div>
 
-Stage and the Platform API keep the same pipeline model. Conductor can now place the generated Debezium Server container on a selected virtual machine, bare-metal server, or cloud instance.
+Stage and the Platform API keep the same pipeline model. Conductor can now place the generated Debezium Server container
+on a selected virtual machine, bare-metal server, or cloud instance.
 
 The existing Kubernetes and Operator path remains available.
 
@@ -646,7 +724,8 @@ Stage and the Platform API define pipelines. Conductor selects the deployment en
 </div>
 </div>
 
-> Host mode removes the need to operate a Kubernetes cluster. The operator remains responsible for SSH access, the host operating system, capacity, and maintenance.
+> Host mode removes the need to operate a Kubernetes cluster. The operator remains responsible for SSH access, the host
+> operating system, capacity, and maintenance.
 
 ---
 
@@ -716,7 +795,8 @@ Host deployment adds another target. Teams can continue using the Platform and O
 
 #### The host stays under operator control
 
-Ansible prepares Docker and runs Debezium Server. The operator controls SSH access, the host operating system, secrets, network policy, and capacity.
+Ansible prepares Docker and runs Debezium Server. The operator controls SSH access, the host operating system, secrets,
+network policy, and capacity.
 
 </div>
 
@@ -729,7 +809,8 @@ Ansible prepares Docker and runs Debezium Server. The operator controls SSH acce
 
 #### Publish the Host Agent artifact
 
-Agent mode already works. Until its Uber JAR is published to Maven Central, users host it in an accessible Maven repository and configure its version and repository URL.
+Agent mode already works. Until its Uber JAR is published to Maven Central, users host it in an accessible Maven
+repository and configure its version and repository URL.
 
 </div>
 
@@ -737,7 +818,8 @@ Agent mode already works. Until its Uber JAR is published to Maven Central, user
 
 #### Monitoring and placement can grow
 
-Future work can add host health in Stage, richer monitoring, and placement rules for installations with several available hosts.
+Future work can add host health in Stage, richer monitoring, and placement rules for installations with several
+available hosts.
 
 </div>
 
@@ -746,24 +828,56 @@ Future work can add host health in Stage, richer monitoring, and placement rules
 
 ---
 
-## Debezium
+<!-- _class: sq sq-cover -->
 
-### Debezium CLI
+<style>
+/* cover */
+section.sq-cover { justify-content: center; padding-top: 40px; }
+section.sq-cover .cover { display: grid; grid-template-columns: 1.3fr 1fr; gap: 36px; align-items: center; }
+section.sq-cover .thesis { display: flex; flex-direction: column; gap: 14px; }
+section.sq-cover .term { border-radius: 14px; overflow: hidden; border: 1px solid var(--dbz-border-strong); background: var(--dbz-bg-deep); box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5); }
+section.sq-cover .term.ev { border-color: rgba(145, 212, 67, 0.55); box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5), 0 0 50px rgba(145, 212, 67, 0.12); }
+section.sq-cover .term .bar { display: flex; justify-content: space-between; padding: 9px 16px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--dbz-muted); background: var(--dbz-surface-2); }
+section.sq-cover .term pre { margin: 0; padding: 14px 18px; border: 0; border-radius: 0; background: transparent; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 16px; line-height: 1.55; color: var(--dbz-text); white-space: pre; }
+section.sq-cover .k { color: var(--dbz-accent-strong); } section.sq-cover .s { color: var(--dbz-warn); } section.sq-cover .n { color: #A98BF5; } section.sq-cover .g { color: var(--dbz-brand-strong); } section.sq-cover .m { color: var(--dbz-muted); }
+section.sq-cover .arrow { align-self: center; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--dbz-muted); }
 
-<div style="display:flex;flex-direction:column;gap:18px;margin-top:24px;">
-    <div style="display:flex;align-items:center;gap:18px;">
-        <img src="/assets/images/gsoc.png" style="width:80px;height:80px;border-radius:50%;object-fit:cover;border:2px solid var(--dbz-accent);flex-shrink:0;" />
-    <div>
-    <div style="font-weight:700;font-size:0.95em;color:var(--dbz-text);">Binayak Das</div>
-        <div style="color:var(--dbz-muted);font-size:0.72em;">GSoC Student</div>
-        </div>
-    </div>
+section.sq-cover h1 { margin: 0; font-size: 64px; line-height: 0.98; font-weight: 800; letter-spacing: -0.04em; }
+section.sq-cover .people { display: flex; align-items: center; gap: 48px; margin-top: 56px; }
+section.sq-cover .speaker { display: flex; align-items: center; gap: 22px; }
+section.sq-cover .speaker img { width: 116px; height: 116px; border-radius: 50%; object-fit: cover; padding: 4px; background: linear-gradient(135deg, var(--dbz-brand), var(--dbz-accent)); }
+section.sq-cover .who b { display: block; font-size: 32px; font-weight: 700; letter-spacing: -0.01em; color: var(--dbz-text); }
+section.sq-cover .who span { display: block; margin-top: 4px; font-size: 19px; color: var(--dbz-muted); }
+section.sq-cover .mentors { display: flex; flex-direction: column; gap: 14px; padding-left: 48px; border-left: 1px solid var(--dbz-border); }
+section.sq-cover .mentor { display: flex; align-items: center; gap: 14px; font-size: 19px; color: var(--dbz-text); font-weight: 600; }
+section.sq-cover .mentor img { width: 48px; height: 48px; border-radius: 50%; object-fit: cover; border: 1px solid var(--dbz-border-strong); }
+section.sq-cover .mentor small { display: block; font-size: 15px; font-weight: 400; color: var(--dbz-muted); }
+
+/* overrides (kept last so they win) */
+section.sq-cover .people { margin-top: 40px; flex-direction: column; align-items: flex-start; gap: 28px; }
+section.sq-cover .mentors { padding-left: 0; border-left: 0; flex-direction: row; flex-wrap: wrap; gap: 12px 32px; }
+section.sq-cover .mentors .label { flex-basis: 100%; }
+</style>
+
+<div class="cover">
+<div>
+<div class="eyebrow">GSoC 2026</div>
+<h2><em>Debezium</em> CLI</h2>
+<div class="people">
+<div class="speaker"><img src="/assets/images/gsoc.png" alt="Binayak Das" /><div class="who"><b>Binayak Das</b><span>Speaker &amp; contributor · GSoC 2026</span></div></div>
+<div class="mentors">
+<div class="label">Mentored by</div>
+<div class="mentor"><img src="/assets/images/gpanice.jpg" alt="Giovanni Panice" /><div>Giovanni Panice<small>Senior Software Engineer, IBM</small></div></div>
+<div class="mentor"><img src="/assets/images/mario.jpg" alt="Mario Fiore Vitale" /><div>Mario Fiore Vitale<small>Senior Software Engineer, IBM</small></div></div>
 </div>
+</div>
+</div>
+
+</div></div>
 
 ---
 
 ## Debezium CLI
-
 
 ---
 
@@ -772,7 +886,6 @@ Future work can add host health in Stage, richer monitoring, and placement rules
 ---
 
 ## Build: from dbz.yaml to an image, no Docker
-
 
 ---
 
