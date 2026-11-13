@@ -54,6 +54,9 @@ npm run start
 PORT=5001 marp --html -ps deck/src
 ```
 
+Slides reference images as `/assets/images/...` (the website's image folder). `start` first symlinks that folder to
+`deck/src/assets/images` (git-ignored) so the preview server can serve it.
+
 Open <http://localhost:5001/> and browse to your episode, for example <http://localhost:5001/episodes/002/>.
 Saving `index.md` refreshes the browser.
 
