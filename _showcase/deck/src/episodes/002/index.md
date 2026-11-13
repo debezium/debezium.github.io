@@ -1235,9 +1235,9 @@ section.sq-cover .mentors .label { flex-basis: 100%; }
 <div class="cover">
 <div>
 <div class="eyebrow">GSoC 2026</div>
-<h2><em>Debezium</em> CLI</h2>
+<h1>The <em>Debezium</em><br>CLI</h1>
 <div class="people">
-<div class="speaker"><img src="/assets/images/gsoc.png" alt="Binayak Das" /><div class="who"><b>Binayak Das</b><span>Speaker &amp; contributor · GSoC 2026</span></div></div>
+<div class="speaker"><img src="/assets/images/binayak.jpg" alt="Binayak Das" /><div class="who"><b>Binayak Das</b><span>Speaker &amp; contributor · GSoC 2026</span></div></div>
 <div class="mentors">
 <div class="label">Mentored by</div>
 <div class="mentor"><img src="/assets/images/gpanice.jpg" alt="Giovanni Panice" /><div>Giovanni Panice<small>Senior Software Engineer, IBM</small></div></div>
@@ -1245,32 +1245,282 @@ section.sq-cover .mentors .label { flex-basis: 100%; }
 </div>
 </div>
 </div>
-
-</div></div>
-
----
-
-## Debezium CLI
-
----
-
-## CDC tooling was scattered
-
----
-
-## Build: from dbz.yaml to an image, no Docker
+<div class="thesis">
+<div class="term"><div class="bar"><span>terminal</span><span>Zero install</span></div><pre><span class="m">$</span> <span class="k">jbang</span> debezium@debezium init \
+    <span class="k">--source</span> <span class="s">postgres</span> <span class="k">--sink</span> <span class="s">kafka</span>
+<span class="m">$</span> <span class="k">debezium</span> build <span class="k">--image</span>
+<span class="m">$</span> <span class="k">debezium</span> pipeline create <span class="k">-f</span> pipeline.yaml</pre></div>
+<div class="arrow">↓ one cli · 12 commands</div>
+<div class="term ev"><div class="bar"><span>debezium platform</span><span>Pipeline out</span></div><pre><span class="g">ID</span>  <span class="g">NAME</span>           <span class="g">SOURCE</span>       <span class="g">DESTINATION</span>
+<span class="n">1</span>   demo-pipeline  demo-source  demo-kafka
+<span class="m"># built without docker, run from the terminal</span></pre></div>
+</div>
+</div>
 
 ---
 
-## Platform: operate pipelines from your terminal
+<!-- _class: sq cli -->
+
+<style>
+/* Debezium CLI slides. Builds on the shared section.sq layout of the SQLite slides; everything here is scoped to section.sq.cli. */
+section.sq.cli { --cli-build: 72, 191, 224; --cli-plat: 145, 212, 67; --cli-bad: 240, 122, 138; --cli-warn: 240, 168, 40; --cli-purple: 169, 139, 245; }
+section.sq.cli .lede code { color: var(--dbz-accent-strong); }
+section.sq.cli .cmdbar { display: flex; align-items: center; justify-content: space-between; padding: 14px 22px; border-radius: 12px; background: var(--dbz-bg-deep); border: 1px solid var(--dbz-border-strong); font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 22px; color: var(--dbz-text); }
+section.sq.cli .cmdbar b { color: var(--dbz-brand-strong); font-weight: 600; } section.sq.cli .cmdbar small { font-size: 15px; color: var(--dbz-muted); }
+section.sq.cli .panes { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+section.sq.cli .pane { display: flex; flex-direction: column; gap: 14px; padding: 18px 22px 20px; border-radius: 16px; background: var(--dbz-surface); border: 1px solid var(--dbz-border); }
+section.sq.cli .pane.b { border-color: rgba(var(--cli-build), 0.5); box-shadow: 0 0 40px rgba(var(--cli-build), 0.07); }
+section.sq.cli .pane.p { border-color: rgba(var(--cli-plat), 0.5); box-shadow: 0 0 40px rgba(var(--cli-plat), 0.07); }
+section.sq.cli .pane.b > .label { color: var(--dbz-accent-strong); } section.sq.cli .pane.p > .label { color: var(--dbz-brand-strong); }
+section.sq.cli .pane p { margin: 0; font-size: 17px; color: var(--dbz-muted); }
+section.sq.cli .steps { display: flex; align-items: center; gap: 8px; }
+section.sq.cli .steps .node { padding: 10px 12px; font-size: 16px; font-family: 'JetBrains Mono', ui-monospace, monospace; }
+section.sq.cli .pane.b .steps .node { border-color: rgba(var(--cli-build), 0.55); background: rgba(var(--cli-build), 0.08); }
+section.sq.cli .pane.p .steps .node { border-color: rgba(var(--cli-plat), 0.55); background: rgba(var(--cli-plat), 0.08); }
+section.sq.cli .steps .edge { min-width: 18px; }
+/* electric arrows (slide: The Debezium CLI) */
+@keyframes cli-zap { 0% { background-position: 0 0; } 100% { background-position: 40px 0; } }
+section.sq.cli .steps .edge i { height: 3px; border-radius: 2px; background: repeating-linear-gradient(90deg, #FFFFFF 0 10px, #FFC8F0 10px 20px); background-size: 40px 3px; animation: cli-zap 0.6s linear infinite; box-shadow: 0 0 6px #FF5CE1, 0 0 14px rgba(255, 92, 225, 0.8); }
+section.sq.cli .steps .edge i::after { top: -6px; border-left: 11px solid #FFFFFF; border-top: 7px solid transparent; border-bottom: 7px solid transparent; filter: drop-shadow(0 0 5px #FF5CE1) drop-shadow(0 0 10px rgba(255, 92, 225, 0.85)); }
+section.sq.cli .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; padding-top: 18px; border-top: 1px solid var(--dbz-border); }
+section.sq.cli .stats b { display: block; font-size: 46px; line-height: 1; font-weight: 800; letter-spacing: -0.03em; color: transparent; background: linear-gradient(90deg, var(--dbz-brand), var(--dbz-accent)); -webkit-background-clip: text; background-clip: text; }
+section.sq.cli .stats span { display: block; margin-top: 6px; font-size: 17px; color: var(--dbz-muted); }
+
+/* before → now */
+section.sq.cli .ba { flex: 1; display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: 1fr auto 1fr; gap: 0 24px; }
+section.sq.cli .card { display: flex; flex-direction: column; gap: 8px; padding: 18px 20px; border-radius: 14px; border: 1px solid var(--dbz-border); background: var(--dbz-surface); }
+section.sq.cli .card.bad { border-color: rgba(var(--cli-bad), 0.5); background: rgba(var(--cli-bad), 0.06); }
+section.sq.cli .card.good { border-color: rgba(var(--cli-plat), 0.55); background: rgba(var(--cli-plat), 0.07); }
+section.sq.cli .card .label { font-size: 12px; } section.sq.cli .card.bad .label { color: #F07A8A; } section.sq.cli .card.good .label { color: var(--dbz-brand-strong); }
+section.sq.cli .card b { font-size: 24px; line-height: 1.15; color: var(--dbz-text); }
+section.sq.cli .card p { margin: 0; font-size: 17px; line-height: 1.45; color: var(--dbz-muted); }
+section.sq.cli .card p code { font-size: 0.9em; }
+section.sq.cli .down { display: flex; justify-content: center; padding: 6px 0 14px; }
+@keyframes cli-zap-v { 0% { background-position: 0 0; } 100% { background-position: 0 40px; } }
+section.sq.cli .down i { position: relative; display: block; width: 3px; height: 30px; border-radius: 2px; background: repeating-linear-gradient(180deg, #FFF8A0 0 10px, #FFD400 10px 20px); background-size: 3px 40px; animation: cli-zap-v 0.6s linear infinite; box-shadow: 0 0 6px #FFE600, 0 0 14px rgba(255, 220, 0, 0.75); }
+section.sq.cli .down i::after { content: ''; position: absolute; bottom: -10px; left: -6px; border-top: 11px solid #FFF35C; border-left: 7.5px solid transparent; border-right: 7.5px solid transparent; filter: drop-shadow(0 0 5px #FFE600) drop-shadow(0 0 10px rgba(255, 220, 0, 0.85)); }
+
+/* build */
+section.sq.cli .yaml { flex: none; width: 320px; align-self: center; }
+section.sq.cli .yaml pre { font-size: 16px; line-height: 1.6; padding: 14px 18px; }
+section.sq.cli .yaml .key { color: var(--dbz-accent-strong); } section.sq.cli .yaml .val { color: var(--dbz-text); } section.sq.cli .yaml .env { color: var(--dbz-warn); }
+section.sq.cli .vflow { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 0; }
+section.sq.cli .vstep { display: flex; align-items: center; gap: 14px; padding: 11px 16px; border-radius: 10px; border: 1px solid var(--dbz-border-strong); background: var(--dbz-surface); }
+section.sq.cli .vstep .cmd { width: 128px; flex-shrink: 0; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 16px; font-weight: 600; color: var(--dbz-accent-strong); }
+section.sq.cli .vstep span { font-size: 16px; line-height: 1.35; color: var(--dbz-muted); } section.sq.cli .vstep span b { color: var(--dbz-text); font-weight: 600; }
+section.sq.cli .vstep.hot { border-color: rgba(var(--cli-build), 0.6); background: rgba(var(--cli-build), 0.08); }
+section.sq.cli .vgap { height: 14px; margin-left: 64px; border-left: 2px solid var(--sq-line); }
+section.sq.cli .layers { width: 250px; flex-shrink: 0; align-self: center; display: flex; flex-direction: column; gap: 8px; }
+section.sq.cli .layer { padding: 10px 14px; border-radius: 8px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 15px; color: var(--dbz-text); border: 1px solid; }
+section.sq.cli .layer.l1 { border-color: rgba(var(--cli-warn), 0.6); background: rgba(var(--cli-warn), 0.08); }
+section.sq.cli .layer.l2 { border-color: rgba(var(--cli-purple), 0.6); background: rgba(var(--cli-purple), 0.08); }
+section.sq.cli .layer.l3 { border-color: rgba(var(--cli-plat), 0.6); background: rgba(var(--cli-plat), 0.08); }
+section.sq.cli .layer.l4 { border-color: rgba(var(--cli-build), 0.6); background: rgba(var(--cli-build), 0.08); }
+section.sq.cli .layers p { margin: 6px 0 0; font-size: 15px; line-height: 1.45; color: var(--dbz-muted); }
+section.sq.cli .layers p b { color: var(--dbz-brand-strong); }
+
+/* platform */
+section.sq.cli .plat { flex: 1; display: flex; flex-direction: column; gap: 22px; }
+section.sq.cli .plat .flow .node { font-size: 18px; }
+section.sq.cli .envs { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 15px; text-align: left; border-color: rgba(var(--cli-warn), 0.55); background: rgba(var(--cli-warn), 0.07); }
+section.sq.cli .envs i { font-style: normal; color: var(--dbz-brand-strong); }
+section.sq.cli .plat .edge i { background: #FFD43B; }
+section.sq.cli .plat .edge i::after { border-left-color: #FFD43B; }
+section.sq.cli .ends { display: flex; flex-direction: column; gap: 12px; }
+section.sq.cli .chips { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+section.sq.cli .cmdcard { padding: 14px 16px; border-radius: 12px; background: var(--dbz-surface); border: 1px solid var(--dbz-border); }
+section.sq.cli .cmdcard code { display: block; font-size: 16px; color: var(--dbz-brand-strong); background: none; padding: 0; }
+section.sq.cli .cmdcard span { display: block; margin-top: 6px; font-size: 15px; line-height: 1.4; color: var(--dbz-muted); }
+section.sq-demo .player .bar span .sep { margin: 0; padding: 0 4px; color: #FFD43B; font-weight: 800; }
+section.sq.cli .cmdcard code .sep { display: inline; margin: 0; padding: 0 3px; font-size: inherit; color: #FFD43B; }
+
+/* cheat sheet: one table, coloured group chips like the SQLite storage classes */
+section.sq.cli table.cmds { display: table; width: 100%; border-collapse: separate; border-spacing: 0; font-size: 16px; border: 1px solid var(--dbz-border); border-radius: 12px; overflow: hidden; }
+section.sq.cli table.cmds th { padding: 8px 16px; text-align: left; font-size: 13px; font-weight: 600; letter-spacing: 0.04em; color: var(--dbz-muted); background: var(--dbz-surface-2); border: 0; }
+section.sq.cli table.cmds td { padding: 5px 16px; color: var(--dbz-muted); background: var(--dbz-surface); border: 0; border-top: 1px solid var(--dbz-border); vertical-align: middle; }
+section.sq.cli table.cmds td + td, section.sq.cli table.cmds th + th { border-left: 1px solid var(--dbz-border); }
+section.sq.cli table.cmds td.c { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 17px; font-weight: 700; color: var(--dbz-text); white-space: nowrap; }
+section.sq.cli table.cmds td.s { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 14px; color: var(--dbz-accent-strong); white-space: nowrap; }
+section.sq.cli .grp { display: inline-block; min-width: 118px; padding: 2px 10px; border-radius: 6px; text-align: center; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; font-weight: 700; letter-spacing: 0.06em; color: var(--dbz-on-fill); }
+section.sq.cli .sep { padding: 0 3px; color: #FFD43B; font-weight: 800; }
+section.sq.cli .grp.b { background: var(--dbz-accent); } section.sq.cli .grp.e { background: var(--dbz-warn); } section.sq.cli .grp.p { background: var(--dbz-brand); }
+
+/* road ahead: a staircase */
+section.sq.cli .stairs { flex: 1; display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; align-items: end; }
+section.sq.cli .stair { display: flex; flex-direction: column; gap: 8px; padding: 18px 18px 20px; border-radius: 14px 14px 0 0; background: var(--dbz-surface); border: 1px solid var(--dbz-border); border-bottom: 3px solid var(--sq-line); }
+section.sq.cli .stair:nth-child(1) { min-height: 150px; border-bottom-color: var(--dbz-brand); }
+section.sq.cli .stair:nth-child(2) { min-height: 210px; border-color: rgba(var(--cli-bad), 0.55); border-bottom-color: #F07A8A; background: rgba(var(--cli-bad), 0.06); }
+section.sq.cli .stair:nth-child(3) { min-height: 270px; }
+section.sq.cli .stair:nth-child(4) { min-height: 330px; }
+section.sq.cli .stair .label { font-size: 12px; } section.sq.cli .stair:nth-child(1) .label { color: var(--dbz-brand-strong); } section.sq.cli .stair:nth-child(2) .label { color: #F07A8A; }
+section.sq.cli .nowtag { display: flex; align-items: center; gap: 10px; }
+section.sq.cli .nowtag .ver { padding: 2px 10px; border-radius: 6px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 14px; font-weight: 800; color: var(--dbz-on-fill); background: linear-gradient(135deg, var(--dbz-brand), var(--dbz-accent)); }
+section.sq.cli .nowtag .live { display: flex; align-items: center; gap: 6px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--dbz-brand-strong); }
+section.sq.cli .nowtag .live i { width: 8px; height: 8px; border-radius: 50%; background: var(--dbz-brand); box-shadow: 0 0 0 4px rgba(145, 212, 67, 0.25); }
+section.sq.cli .stair.here { position: relative; overflow: visible; }
+section.sq.cli .pin-here { position: absolute; top: -50px; left: 50%; transform: translateX(-50%); white-space: nowrap; padding: 6px 14px; border-radius: 10px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 14px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: var(--dbz-on-fill); background: var(--dbz-brand); box-shadow: 0 8px 24px rgba(145, 212, 67, 0.3); }
+section.sq.cli .pin-here::after { content: ''; position: absolute; bottom: -8px; left: 50%; margin-left: -8px; border-top: 8px solid var(--dbz-brand); border-left: 8px solid transparent; border-right: 8px solid transparent; }
+section.sq.cli .stair b { font-size: 22px; line-height: 1.2; color: var(--dbz-text); }
+section.sq.cli .stair p { margin: 0; font-size: 16px; line-height: 1.45; color: var(--dbz-muted); }
+section.sq.cli .cta { margin-top: 30px; }
+section.sq.cli .cta a { text-decoration: none; }
+section.sq.cli .cta span a { color: var(--dbz-on-fill); }
+</style>
+
+## The *Debezium* CLI
+
+<p class="lede">One zero-install command for the whole CDC pipeline lifecycle. No local Maven, no Docker daemon.</p>
+
+<div class="body" style="flex-direction:column;gap:20px;">
+<div class="cmdbar"><span><span style="color:var(--dbz-muted)">$</span> <b>jbang debezium@debezium</b></span><small>Java <span class="sep">|</span> Quarkus <span class="sep">|</span> picocli <span class="sep">|</span> native build</small></div>
+<div class="panes">
+<div class="pane b"><div class="label">Build subsystem <span class="sep">|</span> runs locally</div><div class="steps"><div class="node">init</div><div class="edge"><i></i></div><div class="node">validate</div><div class="edge"><i></i></div><div class="node">build</div><div class="edge"><i></i></div><div class="node">push</div></div><p>From a dbz.yaml file to a container image.</p></div>
+<div class="pane p"><div class="label">Platform subsystem <span class="sep">|</span> REST</div><div class="steps"><div class="node">switch</div><div class="edge"><i></i></div><div class="node">catalog</div><div class="edge"><i></i></div><div class="node">connection</div><div class="edge"><i></i></div><div class="node">pipeline</div></div><p>Operates Debezium Platform from the terminal.</p></div>
+</div>
+<div class="stats"><div><b>12</b><span>CLI commands</span></div><div><b>100%</b><span>merged upstream in debezium/jbang-catalog</span></div><div><b>0</b><span>tools to install: JBang fetches everything</span></div></div>
+</div>
 
 ---
 
-## Watch it run: from scaffold to running pipeline
+<!-- _class: sq cli -->
+
+## CDC tooling was *scattered*
+
+<p class="lede">Before the CLI, every step needed a different tool. Now there is <b>one file and one command</b>.</p>
+
+<div class="body">
+<div class="ba">
+<div class="card bad"><div class="label">Before</div><b>Scattered config</b><p>JSON for Kafka Connect, properties for Debezium Server, YAML for the Operator.</p></div>
+<div class="card bad"><div class="label">Before</div><b>Heavy builds</b><p>Local Maven, a Dockerfile and a root Docker daemon, often blocked in CI.</p></div>
+<div class="card bad"><div class="label">Before</div><b>Blind spots</b><p>Hand-written REST calls and database logins just to check a connector.</p></div>
+<div class="down"><i></i></div><div class="down"><i></i></div><div class="down"><i></i></div>
+<div class="card good"><div class="label">Now</div><b>One dbz.yaml</b><p>A single declarative file, validated offline before anything runs.</p></div>
+<div class="card good"><div class="label">Now</div><b>Daemonless builds</b><p>Jib layers an OCI image without Docker, also in rootless CI.</p></div>
+<div class="card good"><div class="label">Now</div><b>Ops in the terminal</b><p><code>catalog</code>, <code>connection</code> and <code>pipeline</code> answer it in one line.</p></div>
+</div>
+</div>
 
 ---
 
-## The road ahead for the CLI
+<!-- _class: sq cli -->
+
+## Build: from *dbz.yaml* to an image, no Docker
+
+<div class="body" style="margin-top:28px;gap:24px;">
+<div class="tlog yaml"><div class="tbar"><i></i><i></i><i></i><span>dbz.yaml</span></div><pre><span class="key">source</span>:
+  <span class="key">type</span>: <span class="val">postgres</span>
+  <span class="key">config</span>:
+    <span class="key">database.user</span>:
+      <span class="env">${DBZ_DB_USER}</span>
+    <span class="key">topic.prefix</span>: <span class="val">cdc</span>
+<span class="key">sink</span>:
+  <span class="key">type</span>: <span class="val">kafka</span>
+<span class="key">build</span>:
+  <span class="key">image</span>:
+    <span class="key">name</span>: <span class="val">debezium-server</span></pre></div>
+<div class="vflow">
+<div class="vstep"><div class="cmd">init</div><span>Scaffolds dbz.yaml from <b>templates</b>: Postgres, MySQL, MongoDB…</span></div>
+<div class="vgap"></div>
+<div class="vstep"><div class="cmd">validate</div><span>Catches <b>unset ${ENV} vars</b> and missing required fields, offline</span></div>
+<div class="vgap"></div>
+<div class="vstep hot"><div class="cmd">build --image</div><span><b>Eclipse Aether</b> resolves the JARs, <b>Google Jib</b> layers the image</span></div>
+<div class="vgap"></div>
+<div class="vstep"><div class="cmd">push</div><span>To Docker Hub, GHCR, Quay or a <b>local registry</b></span></div>
+</div>
+<div class="layers"><div class="label">Layered OCI image</div>
+<div class="layer l1">config + entrypoint</div>
+<div class="layer l2">connector + sink JARs</div>
+<div class="layer l3">Debezium core JARs</div>
+<div class="layer l4">base JRE</div>
+<p><b>No Docker daemon.</b> Only changed layers are re-uploaded, so it works in rootless CI and Kubernetes pods.</p>
+</div>
+</div>
 
 ---
 
+<!-- _class: sq cli -->
+
+## Platform: operate pipelines *from your terminal*
+
+<p class="lede">Environments live in <code>~/.dbz/config.yaml</code>, so the same CLI targets dev, staging or prod.</p>
+
+<div class="body">
+<div class="plat">
+<div class="flow">
+<div class="node envs">~/.dbz/config.yaml<br><i>✓ dev</i><br>staging<br>prod</div>
+<div class="edge">switch<i></i></div>
+<div class="node">debezium CLI<small>terminal or CI</small></div>
+<div class="edge">REST<i></i></div>
+<div class="node conn">Debezium Platform<small>conductor API</small></div>
+<div class="edge">deploys<i></i></div>
+<div class="ends"><div class="node">Source DBs<small>Postgres · MySQL · Oracle</small></div><div class="node">Destinations<small>Kafka · Redis · Pulsar</small></div></div>
+</div>
+<div class="chips">
+<div class="cmdcard"><code>catalog get</code><span>Every property a connector accepts, without the docs</span></div>
+<div class="cmdcard"><code>connection</code><span>Validate credentials, discover live tables</span></div>
+<div class="cmdcard"><code>source <span class="sep">|</span> destination <span class="sep">|</span> transform</code><span>Manage each piece from small YAML files</span></div>
+<div class="cmdcard"><code>pipeline</code><span>Create, list, inspect, delete, logs and signals</span></div>
+</div>
+</div>
+</div>
+
+---
+
+<!-- _class: sq cli -->
+
+## The *12 commands* at a glance
+
+<p class="lede" style="margin-top:8px;font-size:19px;">All available today, each with <code>--help</code>. <b>crud</b> = list <span class="sep">|</span> get <span class="sep">|</span> create <span class="sep">|</span> update <span class="sep">|</span> delete</p>
+
+<div class="body" style="margin-top:16px;">
+<table class="cmds">
+<thead><tr><th>group</th><th>command</th><th>subcommands / flags</th><th>what it does</th></tr></thead>
+<tbody>
+<tr><td><span class="grp b">BUILD</span></td><td class="c">init</td><td class="s">--source <span class="sep">|</span> --sink</td><td>Scaffold a dbz.yaml from a template</td></tr>
+<tr><td><span class="grp b">BUILD</span></td><td class="c">validate</td><td class="s">--config</td><td>Check config and ${ENV} vars offline</td></tr>
+<tr><td><span class="grp b">BUILD</span></td><td class="c">build</td><td class="s">--image</td><td>Server zip, or a layered OCI image</td></tr>
+<tr><td><span class="grp b">BUILD</span></td><td class="c">push</td><td class="s">--registry</td><td>Publish the image to any registry</td></tr>
+<tr><td><span class="grp e">ENV</span></td><td class="c">config</td><td class="s">get <span class="sep">|</span> set</td><td>Platform URL, registry, base image</td></tr>
+<tr><td><span class="grp e">ENV</span></td><td class="c">switch</td><td class="s">dev <span class="sep">|</span> staging <span class="sep">|</span> prod</td><td>Point the CLI at another environment</td></tr>
+<tr><td><span class="grp p">PLATFORM</span></td><td class="c">catalog</td><td class="s">list <span class="sep">|</span> get</td><td>Connectors and every property they accept</td></tr>
+<tr><td><span class="grp p">PLATFORM</span></td><td class="c">connection</td><td class="s">crud <span class="sep">|</span> validate <span class="sep">|</span> collections</td><td>Test credentials, discover live tables</td></tr>
+<tr><td><span class="grp p">PLATFORM</span></td><td class="c">source</td><td class="s">crud <span class="sep">|</span> verify-signals</td><td>What to capture</td></tr>
+<tr><td><span class="grp p">PLATFORM</span></td><td class="c">destination</td><td class="s">crud</td><td>Where the change events go</td></tr>
+<tr><td><span class="grp p">PLATFORM</span></td><td class="c">transform</td><td class="s">crud</td><td>Reshape events on the way</td></tr>
+<tr><td><span class="grp p">PLATFORM</span></td><td class="c">pipeline</td><td class="s">crud <span class="sep">|</span> logs <span class="sep">|</span> signal</td><td>Wire it together and operate it</td></tr>
+</tbody>
+</table>
+</div>
+
+---
+
+<!-- _class: sq sq-demo -->
+
+## Watch it run: from scaffold to *running pipeline*
+
+<div class="body">
+<div class="player">
+<div class="bar"><i></i><i></i><i></i><span>demo <span class="sep">|</span> debezium cli <span class="sep">|</span> 12 commands</span></div>
+<div class="screen"><iframe src="https://drive.google.com/file/d/1uwMWKux4H1eHig46D82L4n0gxcmY6VDW/preview" title="Debezium CLI demo: from scaffold to running pipeline" allow="autoplay; fullscreen" allowfullscreen></iframe></div>
+</div>
+</div>
+
+---
+
+<!-- _class: sq cli -->
+
+## The road ahead for the *CLI*
+
+<p class="lede">Version one is merged. Each next step builds on the same commands.</p>
+
+<div class="body" style="flex-direction:column;gap:0;">
+<div class="stairs">
+<div class="stair here"><div class="pin-here">You are here</div><div class="label" style="color:var(--dbz-brand-strong)">Till now <span class="sep" style="padding:0 4px;">|</span> v1</div><b>12 commands</b><p>Build and platform subsystems, merged upstream.</p></div>
+<div class="stair"><div class="label">Next up</div><b>MCP server</b><p>The CLI as tools for AI assistants like Claude Code. <a href="https://github.com/debezium/dbz/issues/2412">dbz#2412</a></p></div>
+<div class="stair"><div class="label">Next</div><b>Interactive TUI</b><p>Live lag, throughput and pipeline status in the terminal.</p></div>
+<div class="stair"><div class="label">Exploring</div><b>Operator CRDs</b><p>Generate and sync Debezium resources straight from dbz.yaml.</p></div>
+</div>
+<div class="cta">Want to help and discuss? <span><a href="https://debezium.zulipchat.com/#narrow/channel/392459-community-platform">Zulip · #community-platform</a></span></div>
+</div>
+
+---
