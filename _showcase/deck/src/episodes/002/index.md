@@ -96,35 +96,408 @@ section.sq-cover .mentors .label { flex-basis: 100%; }
 
 ---
 
-## What is Milvus
+<!-- _class: sq mv -->
+
+<style>
+/* Milvus connector slides. Builds on the shared section.sq layout of the SQLite slides; everything here is scoped to section.sq.mv. */
+section.sq.mv { --mv-ins: 72, 191, 224; --mv-ups: 169, 139, 245; --mv-ok: 145, 212, 67; --mv-tso: 240, 168, 40; --mv-bad: 240, 122, 138; }
+section.sq.mv .node { font-size: 17px; padding: 10px 14px; }
+section.sq.mv .node.c-ins { border-color: rgba(var(--mv-ins), 0.6); background: rgba(var(--mv-ins), 0.10); }
+section.sq.mv .node.c-ups { border-color: rgba(var(--mv-ups), 0.6); background: rgba(var(--mv-ups), 0.12); }
+section.sq.mv .node.c-ok { border-color: rgba(var(--mv-ok), 0.6); background: rgba(var(--mv-ok), 0.10); }
+section.sq.mv .node.c-tso { border-color: rgba(var(--mv-tso), 0.6); background: rgba(var(--mv-tso), 0.10); }
+section.sq.mv .node.c-bad { border-color: rgba(var(--mv-bad), 0.6); background: rgba(var(--mv-bad), 0.12); }
+section.sq.mv .node.c-grey { border-color: var(--dbz-border-strong); background: var(--dbz-surface-2); }
+section.sq.mv .node.c-file { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 15px; color: var(--sq-text); border-color: rgba(var(--mv-tso), 0.45); background: rgba(var(--mv-tso), 0.06); }
+section.sq.mv .vedge { position: relative; height: 40px; }
+section.sq.mv .vedge i { position: absolute; left: 50%; top: 3px; bottom: 7px; width: 2px; margin-left: -1px; background: var(--sq-line); }
+section.sq.mv .vedge i::after { content: ''; position: absolute; bottom: -8px; left: -5px; border-top: 9px solid var(--sq-line); border-left: 6px solid transparent; border-right: 6px solid transparent; }
+section.sq.mv .vedge span { position: absolute; left: calc(50% + 12px); top: 50%; transform: translateY(-55%); white-space: nowrap; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; color: var(--dbz-muted); }
+section.sq.mv .tag { white-space: nowrap; padding: 4px 10px; border-radius: 999px; text-align: center; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; font-weight: 600; }
+section.sq.mv .tag.ok { color: var(--dbz-brand-strong); border: 1px solid rgba(var(--mv-ok), 0.5); background: rgba(var(--mv-ok), 0.08); }
+section.sq.mv .tag.no { color: var(--dbz-muted); border: 1px dashed var(--dbz-border-strong); }
+section.sq.mv .doc { margin-top: 0; }
+
+/* milvus logo (white tile, so it reads on the dark theme) */
+section.sq img.mv-logo { display: block; width: 64px; height: 64px; margin: 0 auto 12px; border-radius: 16px; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45); }
+
+/* what is milvus */
+section.sq.mv .mv-ops { flex: 1; padding-right: 56px; display: grid; grid-template-columns: 110px repeat(3, 1fr); grid-template-rows: auto 52px auto auto; gap: 8px 18px; align-items: center; align-content: center; }
+section.sq.mv .mv-ops > .label { font-size: 11px; }
+section.sq.mv .mv-ops .node { text-align: center; }
+section.sq.mv .mv-ops .vedge { height: 100%; }
+section.sq.mv .mv-logflow { flex: 0 0 330px; display: flex; flex-direction: column; align-items: stretch; justify-content: center; gap: 0; padding: 18px 22px; border-radius: 16px; border: 1px dashed var(--dbz-border-strong); }
+section.sq.mv .mv-logflow .node { text-align: center; }
+section.sq.mv .mv-logflow .label { margin-bottom: 10px; text-align: center; font-size: 11px; }
+section.sq.mv .mv-logflow .doc { margin-top: 18px; align-self: center; font-size: 14px; }
+
+/* architecture */
+section.sq.mv .mv-layers { flex: 0.85; min-width: 0; display: flex; flex-direction: column; gap: 14px; justify-content: center; }
+section.sq.mv .layer { position: relative; padding: 24px 12px 10px; border-radius: 12px; border: 1px dashed var(--dbz-border-strong); }
+section.sq.mv .layer > .label { position: absolute; top: 6px; left: 12px; font-size: 11px; }
+section.sq.mv .layer + .layer::before { content: ''; position: absolute; top: -15px; left: 50%; width: 2px; height: 14px; background: var(--sq-line); }
+section.sq.mv .layer .row { display: flex; gap: 10px; justify-content: center; }
+section.sq.mv .layer .node { flex: 1; font-size: 16px; padding: 8px 10px; }
+section.sq.mv .layer .node.solo { flex: 0 1 200px; }
+section.sq.mv .mv-coll { flex: 1.05; min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 10px; }
+section.sq.mv table.mv-tbl, section.sq.mv table.cmp { display: table; }
+section.sq.mv table tr { background: transparent; }
+section.sq.mv table.mv-tbl { width: 100%; border-collapse: separate; border-spacing: 0; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13.5px; }
+section.sq.mv table.mv-tbl th { padding: 9px 10px; text-align: left; font-size: 13px; font-weight: 600; color: var(--dbz-accent-strong); background: var(--dbz-surface-2); border: 0; }
+section.sq.mv table.mv-tbl td { padding: 8px 10px; color: var(--dbz-text); background: var(--dbz-surface); border: 0; border-top: 1px solid var(--dbz-border); white-space: nowrap; }
+section.sq.mv table.mv-tbl thead th:first-child { border-top-left-radius: 12px; } section.sq.mv table.mv-tbl thead th:last-child { border-top-right-radius: 12px; }
+section.sq.mv table.mv-tbl .vec { color: #C6B2FF; background: #1B1C33; }
+section.sq.mv table.mv-tbl th.vec { background: #2A2648; }
+section.sq.mv table.mv-tbl tfoot td { padding: 8px 0 0; background: transparent; border: 0; border-top: 2px solid var(--dbz-accent); text-align: center; font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--dbz-accent-strong); }
+section.sq.mv table.mv-tbl tfoot td.vec { border-top-color: #A98BF5; color: #C6B2FF; background: transparent; }
+
+/* fan-out tweaks */
+section.sq.mv .fan { grid-template-columns: 220px 1fr 230px 1fr 290px; grid-template-rows: auto 300px; }
+section.sq.mv .fan .chip { padding: 8px 14px; font-size: 17px; }
+section.sq.mv .fan .chip small { display: block; font-size: 13px; color: var(--dbz-muted); }
+section.sq.mv .hub small + b + small { margin-top: 6px; font-size: 11px; color: var(--dbz-muted); }
+
+/* data path */
+section.sq.mv .mv-path { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 18px; }
+section.sq.mv .node.read { color: var(--dbz-on-fill); background: linear-gradient(135deg, var(--dbz-brand), var(--dbz-accent)); border: 0; }
+section.sq.mv .node.read small { color: rgba(7, 15, 22, 0.7); }
+section.sq.mv .lane { position: relative; display: grid; grid-template-columns: 165px 1fr 165px 1fr 165px 1fr 165px; align-items: center; padding: 28px 16px 14px; border-radius: 14px; border: 1px dashed var(--dbz-border-strong); }
+section.sq.mv .lane > .label { position: absolute; top: 7px; left: 16px; font-size: 11px; }
+section.sq.mv .lane .edge { min-width: 0; padding: 0 10px; font-size: 12px; }
+section.sq.mv .lane .node { padding: 10px 10px; font-size: 16px; }
+section.sq.mv .lane .node small { font-size: 13px; }
+
+/* ordering */
+section.sq.mv .mv-order { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 22px; }
+section.sq.mv .arrival { position: relative; padding: 28px 18px 16px; border-radius: 14px; border: 1px dashed var(--dbz-border-strong); }
+section.sq.mv .arrival > .label { position: absolute; top: 7px; left: 18px; font-size: 11px; }
+section.sq.mv .arrival .flow .node { flex: 1; }
+section.sq.mv .arrival .flow .edge { flex: 0 0 34px; min-width: 34px; }
+section.sq.mv .outcomes { display: grid; grid-template-columns: 1.7fr 1fr 1fr; gap: 16px; }
+section.sq.mv .card { display: flex; flex-direction: column; gap: 10px; padding: 16px 18px; border-radius: 14px; background: var(--dbz-surface); border: 1px solid var(--dbz-border); }
+section.sq.mv .card.ok { border-color: rgba(var(--mv-ok), 0.55); box-shadow: 0 0 40px rgba(var(--mv-ok), 0.07); }
+section.sq.mv .card.bad { border-color: rgba(var(--mv-bad), 0.55); }
+section.sq.mv .card .label { font-size: 12px; }
+section.sq.mv .card.ok .label { color: var(--dbz-brand-strong); } section.sq.mv .card.bad .label { color: var(--sq-blob); }
+section.sq.mv .card b { font-size: 20px; line-height: 1.25; color: var(--dbz-text); }
+section.sq.mv .card p { margin: 0; font-size: 16px; line-height: 1.45; color: var(--dbz-muted); }
+section.sq.mv .card .flow .node { flex: 1; font-size: 15px; padding: 8px 10px; }
+section.sq.mv .card .flow .edge { flex: 0 0 26px; min-width: 26px; }
+section.sq.mv .verdict { display: inline-flex; align-self: flex-start; align-items: center; gap: 8px; padding: 5px 12px; border-radius: 8px; font-size: 16px; font-weight: 700; }
+section.sq.mv .verdict.ok { color: var(--dbz-on-fill); background: var(--dbz-brand); }
+section.sq.mv .verdict.bad { color: var(--dbz-on-fill); background: var(--sq-blob); }
+
+/* upsert */
+section.sq.mv .mv-seq { flex: 1.25; min-width: 0; display: flex; flex-direction: column; gap: 14px; justify-content: center; }
+section.sq.mv .mv-seq .flow .node { flex: 1; }
+section.sq.mv .mv-seq .flow .edge { flex: 0 0 auto; min-width: 70px; }
+section.sq.mv .alt { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+section.sq.mv .evs { display: flex; flex-direction: column; gap: 6px; }
+section.sq.mv .ev { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-radius: 8px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 15px; color: var(--dbz-text); background: var(--dbz-surface-2); }
+section.sq.mv .ev .op { width: 26px; }
+section.sq.mv .op.t { background: var(--sq-null); }
+section.sq.mv .mv-cmp { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 10px; }
+section.sq.mv table.cmp { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 17px; }
+section.sq.mv table.cmp th { padding: 10px 14px; text-align: left; font-size: 14px; font-weight: 600; letter-spacing: 0.04em; color: var(--dbz-muted); background: var(--dbz-surface-2); border: 0; }
+section.sq.mv table.cmp th.m { color: var(--dbz-accent-strong); }
+section.sq.mv table.cmp td { padding: 10px 14px; color: var(--dbz-text); background: var(--dbz-surface); border: 0; border-top: 1px solid var(--dbz-border); }
+section.sq.mv table.cmp td.m { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 15px; color: #FFC2CB; background: #1E1825; }
+section.sq.mv table.cmp thead th:first-child { border-top-left-radius: 12px; } section.sq.mv table.cmp thead th:last-child { border-top-right-radius: 12px; }
+
+/* why */
+section.sq.mv .mv-why { flex: 1.15; min-width: 0; display: flex; flex-direction: column; justify-content: center; align-items: stretch; }
+section.sq.mv .mv-why .root { align-self: center; }
+section.sq.mv .opts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px 12px; }
+section.sq.mv .opts .node { text-align: center; font-size: 15px; padding: 8px 6px; }
+section.sq.mv .opts .vedge { height: 26px; }
+section.sq.mv .merge { height: 18px; margin: 4px 12.5% 0; border: 2px solid var(--sq-line); border-top: 0; border-radius: 0 0 10px 10px; }
+section.sq.mv .merge + .vedge { height: 22px; }
+section.sq.mv .fan-in { height: 26px; margin: 0 12.5% 4px; border: 2px solid var(--sq-line); border-bottom: 0; border-radius: 10px 10px 0 0; position: relative; }
+section.sq.mv .fan-in::before { content: ''; position: absolute; left: 50%; top: -18px; width: 2px; height: 16px; background: var(--sq-line); }
+section.sq.mv .mv-why .stackc { display: flex; flex-direction: column; align-items: center; }
+section.sq.mv .mv-why .stackc .node { min-width: 280px; }
+section.sq.mv .adopt { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 10px; }
+section.sq.mv .adopt img { width: 100%; border-radius: 14px; border: 1px solid var(--dbz-border-strong); }
+section.sq.mv .adopt .src { margin-top: 0; font-size: 14px; }
+
+/* what's next */
+section.sq.mv .why25 { display: flex; align-items: center; gap: 12px; margin-bottom: 34px; }
+section.sq.mv .why25 .node { font-size: 16px; }
+section.sq.mv .why25 .edge { min-width: 110px; }
+section.sq.mv .why25 .because { display: flex; gap: 8px; flex-wrap: wrap; margin-left: 8px; }
+section.sq.mv .why25 .because span { padding: 4px 12px; border-radius: 999px; font-size: 15px; color: var(--dbz-muted); border: 1px solid var(--dbz-border-strong); }
+section.sq.mv .road { grid-template-columns: repeat(3, 1fr); }
+section.sq.mv .cta { margin-top: 44px; }
+</style>
+
+## Milvus is an open-source *vector database*
+
+<p class="lede">A collection stores entities: scalar fields plus an <b>embedding vector</b>. Every write is recorded in a log and stamped with a timestamp from the <b>TSO</b>, the timestamp oracle.</p>
+
+<div class="body">
+<div class="mv-ops">
+<div class="label">Operation</div>
+<div class="node c-ins">insert</div>
+<div class="node c-ups">upsert</div>
+<div class="node c-grey">search</div>
+<div></div>
+<div class="vedge"><i></i><span>vector + fields</span></div>
+<div class="vedge"><i></i><span>same pk, new vector</span></div>
+<div class="vedge"><i></i><span>top k by similarity</span></div>
+<div class="label">Collection change</div>
+<div class="node c-ins">New vector entity</div>
+<div class="node c-ups">Delete plus insert</div>
+<div class="node c-grey">No change</div>
+<div></div>
+<div class="tag ok">recorded in the log</div>
+<div class="tag ok">recorded in the log</div>
+<div class="tag no">nothing recorded</div>
+</div>
+<div class="mv-logflow">
+<img class="mv-logo" src="/assets/images/showcase/002/milvus/milvus-logo.png" alt="Milvus logo" />
+<div class="label">Inside Milvus</div>
+<div class="node c-tso">TSO</div>
+<div class="vedge"><i></i><span>stamps entries</span></div>
+<div class="node c-ok">Log</div>
+<div class="vedge"><i></i><span>streamed to</span></div>
+<div class="node read">CDC reader</div>
+<a class="doc" href="https://github.com/debezium/debezium-design-documents/pull/48">Design document · debezium-design-documents#48 ↗</a>
+</div>
+</div>
 
 ---
 
-## What is Milvus
+<!-- _class: sq mv -->
+
+## Inside Milvus: a *distributed* vector database
+
+<p class="lede">Proxies, coordinators and worker nodes sit on shared storage. The <b>log broker</b> carries every write, and that is where change data capture starts.</p>
+
+<div class="body">
+<div class="mv-layers">
+<div class="layer"><div class="label">Access layer</div><div class="row"><div class="node c-grey solo">Proxies</div></div></div>
+<div class="layer"><div class="label">Coordinators</div><div class="row"><div class="node c-ups">Root coord</div><div class="node c-ups">Data coord</div><div class="node c-ups">Query coord</div></div></div>
+<div class="layer"><div class="label">Worker nodes</div><div class="row"><div class="node c-ins">Query node</div><div class="node c-ins">Data node</div><div class="node c-ins">Index node</div></div></div>
+<div class="layer"><div class="label">Storage</div><div class="row"><div class="node c-tso">etcd</div><div class="node c-tso">MinIO or S3</div><div class="node c-ok">Log broker</div></div></div>
+</div>
+<div class="mv-coll">
+<div class="label">products collection</div>
+<table class="mv-tbl">
+<thead><tr><th>pk</th><th>name</th><th>category</th><th>price</th><th class="vec">embedding</th></tr></thead>
+<tbody>
+<tr><td>1001</td><td>trail running shoes</td><td>outdoor</td><td>89.99</td><td class="vec">[0.1, 0.2, 0.3, 0.4]</td></tr>
+<tr><td>1002</td><td>cast iron skillet</td><td>kitchen</td><td>34.50</td><td class="vec">[0.9, 0.1, 0.2, 0.3]</td></tr>
+<tr><td>1003</td><td>wireless headphones</td><td>electronics</td><td>129.00</td><td class="vec">[0.2, 0.8, 0.1, 0.5]</td></tr>
+<tr><td>1004</td><td>building blocks</td><td>toys</td><td>24.99</td><td class="vec">[0.4, 0.4, 0.9, 0.1]</td></tr>
+</tbody>
+<tfoot><tr><td colspan="4">scalar fields</td><td class="vec">vector field</td></tr></tfoot>
+</table>
+</div>
+</div>
 
 ---
 
-## Working on Milvus
+<!-- _class: sq mv -->
+
+## Every collection, *streamed* to any sink
+
+<p class="lede">The connector reads the <b>pchannels</b> Milvus already writes and emits one topic per collection, so each downstream system gets the same ordered changes.</p>
+
+<div class="body">
+<div class="fan">
+<div class="label" style="grid-column:1;">Why capture changes</div><div class="label" style="grid-column:5;">Sinks</div>
+<div class="chips"><div class="chip">Hybrid search</div><div class="chip">Vectors plus SQL</div><div class="chip">RAG freshness</div><div class="chip">Right to erasure</div><div class="chip">Model rollout</div></div>
+<svg viewBox="0 0 100 300" preserveAspectRatio="none"><line x1="0" y1="30" x2="100" y2="150"/><line x1="0" y1="90" x2="100" y2="150"/><line x1="0" y1="150" x2="100" y2="150"/><line x1="0" y1="210" x2="100" y2="150"/><line x1="0" y1="270" x2="100" y2="150"/></svg>
+<div class="hub"><div><small>Debezium</small><b>Milvus source</b><small>reads pchannels · topic per collection</small></div></div>
+<svg class="out" viewBox="0 0 100 300" preserveAspectRatio="none"><line x1="0" y1="150" x2="100" y2="38"/><line x1="0" y1="150" x2="100" y2="113"/><line x1="0" y1="150" x2="100" y2="188"/><line x1="0" y1="150" x2="100" y2="263"/></svg>
+<div class="chips out"><div class="chip">Elasticsearch<small>keyword + vector search</small></div><div class="chip">Postgres pgvector<small>join vectors with SQL</small></div><div class="chip">Redis<small>cache fresh RAG results</small></div><div class="chip">S3<small>audit log of deletes</small></div></div>
+</div>
+</div>
 
 ---
 
-## Complexity of Milvus
+<!-- _class: sq mv -->
+
+## How a write *travels* through Milvus
+
+<p class="lede">Each shard of a collection is a virtual channel (vchannel) carried on a physical channel (<b>pchannel</b>). The connector reads the pchannel, before writes are split into segments.</p>
+
+<div class="body">
+<div class="mv-path">
+<div class="flow">
+<div class="node c-ins">products collection</div>
+<div class="edge">shard 0<i></i></div>
+<div class="node c-ups">vchannel</div>
+<div class="edge">carried on<i></i></div>
+<div class="node read">pchannel<small>read by Debezium</small></div>
+</div>
+<div class="lane"><span class="label">inserts</span>
+<div class="node c-tso">Growing segment<small>per partition</small></div>
+<div class="edge">size or idle limit<i></i></div>
+<div class="node c-tso">Sealed segment</div>
+<div class="edge">flushed<i></i></div>
+<div class="node c-file">Field binlogs<small>and stats</small></div>
+<div class="edge">index node, later<i></i></div>
+<div class="node c-file">Index files</div>
+</div>
+<div class="lane"><span class="label">deletes</span>
+<div class="node c-tso">L0 segment</div>
+<div class="edge">flushed<i></i></div>
+<div class="node c-file">Delta logs</div>
+</div>
+</div>
+</div>
 
 ---
 
-## Why and Use Cases
+<!-- _class: sq mv -->
+
+## Arrival order is *not* commit order
+
+<p class="lede">Proxies stamp each write with a TSO, but writes reach the pchannel in any order. A <b>TimeTick</b> promises that everything up to its timestamp has arrived.</p>
+
+<div class="body">
+<div class="mv-order">
+<div class="arrival"><span class="label">Arrival order on one pchannel · collection products</span>
+<div class="flow">
+<div class="node c-ups">delete pk 7<small>TSO 105 · via proxy 2</small></div>
+<div class="edge"><i></i></div>
+<div class="node c-ins">insert pk 7<small>TSO 101 · via proxy 1</small></div>
+<div class="edge"><i></i></div>
+<div class="node c-ins">insert pk 9<small>TSO 112</small></div>
+<div class="edge"><i></i></div>
+<div class="node c-tso">TimeTick 110</div>
+</div>
+</div>
+<div class="outcomes">
+<div class="card ok">
+<div class="label">Debezium · emitted in TSO order, up to 110</div>
+<div class="flow"><div class="node c-ok">insert pk 7 @ 101</div><div class="edge"><i></i></div><div class="node c-ok">delete pk 7 @ 105</div></div>
+<div class="verdict ok">✓ pk 7 deleted</div>
+</div>
+<div class="card">
+<div class="label">Above 110</div>
+<b>insert pk 9 @ 112</b>
+<p>Held until the next TimeTick says it is safe to emit.</p>
+</div>
+<div class="card bad">
+<div class="label">Naive sink · arrival order</div>
+<b>Delete, then insert</b>
+<div class="verdict bad">✕ pk 7 comes back</div>
+</div>
+</div>
+</div>
+</div>
 
 ---
 
-## Pipeline Demo
+<!-- _class: sq mv -->
+
+## An upsert is a delete *plus* an insert
+
+<p class="lede">Both halves share one TSO, so their order has to come from the log. And in Milvus 2.5 that log is an <b>internal queue</b>, not a public API.</p>
+
+<div class="body">
+<div class="mv-seq">
+<div class="flow">
+<div class="node c-grey">App</div>
+<div class="edge">upsert 1005<i></i></div>
+<div class="node c-ins">Milvus</div>
+<div class="edge">same TSO t<i></i></div>
+<div class="node c-ok">pchannel<small>delete + insert</small></div>
+</div>
+<div class="alt">
+<div class="card ok">
+<div class="label">Log order kept</div>
+<div class="evs"><div class="ev"><span class="op d">d</span>key only</div><div class="ev"><span class="op t">t</span>tombstone</div><div class="ev"><span class="op c">c</span>full row</div></div>
+<div class="verdict ok">✓ 1005 exists</div>
+</div>
+<div class="card bad">
+<div class="label">Insert emitted first</div>
+<div class="evs"><div class="ev"><span class="op c">c</span>full row</div><div class="ev"><span class="op d">d</span>key only</div><div class="ev"><span class="op t">t</span>tombstone</div></div>
+<div class="verdict bad">✕ 1005 deleted</div>
+</div>
+</div>
+</div>
+<div class="mv-cmp">
+<div class="label">Reading the log</div>
+<table class="cmp">
+<thead><tr><th>Typical database</th><th class="m">Milvus 2.5</th></tr></thead>
+<tbody>
+<tr><td>Log for readers</td><td class="m">Internal queue</td></tr>
+<tr><td>Documented interface</td><td class="m">Internal protos</td></tr>
+<tr><td>One log position</td><td class="m">Offset plus etcd key</td></tr>
+<tr><td>The database itself</td><td class="m">Kafka, etcd, gRPC, MinIO</td></tr>
+</tbody>
+</table>
+</div>
+</div>
 
 ---
 
-## Pipeline Demo
+<!-- _class: sq mv -->
+
+## Every workaround *loses* changes
+
+<p class="lede">When an entity changes, teams pick one of four options today, and each one breaks a downstream copy. One ordered stream fixes all four.</p>
+
+<div class="body">
+<div class="mv-why">
+<div class="stackc"><div class="node c-ins">An entity changes</div></div>
+<div class="fan-in"></div>
+<div class="opts">
+<div class="node c-grey">Dual writes</div><div class="node c-grey">Batch export</div><div class="node c-grey">milvus-cdc</div><div class="node c-grey">Nothing</div>
+<div class="vedge"><i></i></div><div class="vedge"><i></i></div><div class="vedge"><i></i></div><div class="vedge"><i></i></div>
+<div class="node c-bad">Divergent copies</div><div class="node c-bad">Deletes invisible</div><div class="node c-bad">Milvus targets only</div><div class="node c-bad">Ghost entities</div>
+</div>
+<div class="merge"></div>
+<div class="stackc">
+<div class="vedge"><i></i></div>
+<div class="node c-ups">Open community requests</div>
+<div class="vedge"><i></i><span>one ordered stream</span></div>
+<div class="node read">Debezium Milvus source</div>
+</div>
+</div>
+<div class="adopt">
+<div class="label">Milvus in production</div>
+<img src="/assets/images/showcase/002/milvus/milvus-adopters.png" alt="Companies running Milvus in production, including Salesforce, Walmart, Zillow, Reddit, Accenture, NVIDIA, eBay, Cisco, Roblox, Airtable, Bosch and IBM" />
+<div class="src">Source: milvus.io</div>
+</div>
+</div>
 
 ---
 
-## What’s next
+<!-- _class: sq sq-demo -->
+
+## Pipeline demo: *Milvus to pgvector*
+
+<div class="body">
+<div class="player">
+<div class="bar"><i></i><i></i><i></i><span>demo · milvus connector</span></div>
+<div class="screen"><iframe src="https://drive.google.com/file/d/1zH1dpBRTu80YBP2jGSFDGmTVYq2ZaIiQ/preview" title="Milvus connector demo: inserts, upserts and deletes in Milvus streamed to pgvector" allow="autoplay; fullscreen" allowfullscreen></iframe></div>
+</div>
+</div>
+
+---
+
+<!-- _class: sq mv -->
+
+## What's next for the *Milvus connector*
+
+<div class="body" style="flex-direction:column;justify-content:center;gap:0;">
+<div class="why25">
+<div class="node c-ok">Milvus 2.5<small>log on Kafka</small></div>
+<div class="edge">the only change<i></i></div>
+<div class="node c-ups">Milvus 2.6<small>log on Woodpecker</small></div>
+<div class="because"><span>2.6 WAL protos still changing</span><span>milvus-cdc reads the 2.5 queue</span><span>Most deployments run 2.5</span></div>
+</div>
+<div class="road">
+<div class="mile now"><div class="pin"></div><div class="label">Today</div><b>Built against Milvus 2.5</b><p>Reads the log that Milvus 2.5 keeps on Kafka.</p></div>
+<div class="mile"><div class="pin"></div><div class="label">Next</div><b>A Woodpecker consumer for Milvus 2.6</b><p>Read the same log from Woodpecker, the new log store in 2.6.</p></div>
+<div class="mile"><div class="pin"></div><div class="label">Try it</div><b>milvus-to-pgvector example</b><p>A runnable Milvus to pgvector pipeline: <a href="https://github.com/debezium/debezium-examples/tree/main/milvus-to-pgvector">debezium-examples/milvus-to-pgvector ↗</a></p></div>
+</div>
+<div class="cta">Questions or want to contribute? Join the Milvus channel <span>debezium.zulipchat.com</span></div>
+</div>
 
 ---
 
