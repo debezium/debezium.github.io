@@ -182,6 +182,7 @@ A source looks like this:
 
 - `id` matches the connector id in `connectors.yml`.
 - `href` is the reference documentation. Only add it once the page is published: a source without `href` shows as an unlinked chip and its card has no documentation link. That is better than a link to a page that does not exist yet.
+- `since` is for a connector whose reference page is new in a series that has no stable release yet, so the page is missing from the stable docs. Keep the `/stable/` `href` and add the series, quoted, such as `since: "3.8"`. Until that series has a stable release, the link goes to that series' docs instead. Once it does, the link goes back to `/stable/` on its own, so there is nothing to change when the series goes final. The Elasticsearch sink, new in 3.8, works this way. Destinations take `since` as well.
 - `status` is `ga` or `incubating`. Sources are grouped with stable ones first and incubating ones second, alphabetical by name within each group, so place the entry accordingly. When a connector graduates, as CockroachDB did in 3.7, change its status and move it into the stable group.
 - `compat` is only needed when the test matrix uses a different id, or covers the connector under several ids. PostgreSQL uses `compat: [postgresql]`, and Cassandra uses `compat: [cassandra-4, cassandra-5]` because it is tested per Cassandra version. Without `compat`, the `id` is used. If none of the ids match the latest stable series, the card says it is not covered by the test matrix, so check this whenever a card shows that message.
 
