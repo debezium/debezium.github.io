@@ -918,6 +918,7 @@
 <li><a href="#debezium-oracle-connector-custom-converters-number-to-boolean"><code>NUMBER(1)</code> to Boolean</a></li>
 <li><a href="#debezium-oracle-connector-custom-converters-number-to-zero-scale"><code>NUMBER</code> To Zero Scale</a></li>
 <li><a href="#debezium-oracle-connector-custom-converters-raw-to-string"><code>RAW</code> to String</a></li>
+<li><a href="#debezium-oracle-connector-custom-converters-zero-date-fallback">Zero date fallback</a></li>
 </ul>
 </li>
 <li><a href="#setting-up-oracle">Setting up Oracle</a>
@@ -6759,6 +6760,32 @@ If a column may contain BC values at nanosecond precision, use <code>time.precis
 </table>
 </div>
 </div>
+<div class="sect3">
+<h4 id="oracle-temporal-types-zero-dates"><a class="anchor" href="#oracle-temporal-types-zero-dates"></a>Zero dates</h4>
+<div class="paragraph">
+<p>Oracle does not permit SQL to store a <code>DATE</code>, <code>TIMESTAMP</code>, <code>TIMESTAMP WITH TIME ZONE</code>, or <code>TIMESTAMP WITH LOCAL TIME ZONE</code> value with a month or day of <code>0</code>, but some applications that use the Oracle Call Interface (OCI) can write such values, for example, <code>0000-00-00 00:00:00</code>, directly in their internal form.
+Because these zero dates do not represent a valid point in time, the connector emits them in the same way as an absent value:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>If the column is optional, the connector emits <code>null</code>.</p>
+</li>
+<li>
+<p>If the column is <code>NOT NULL</code> and has a default value, the connector emits the column default value.</p>
+</li>
+<li>
+<p>If the column is <code>NOT NULL</code> and has no default value, the connector emits the epoch, <code>1970-01-01 00:00:00</code>, in the representation of the configured <code>time.precision.mode</code>.</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>Only a month or day of <code>0</code> identifies a zero date; values with a zero year and a valid month and day are emitted as described in <a href="#oracle-temporal-types-bc-era">BC era and pre-Gregorian dates</a>.
+During snapshots, the connector logs a warning for each zero date that it reads.
+To silence these warnings, set the level of the <code>io.debezium.connector.oracle.OracleConnection.ZeroDates</code> logger to <code>ERROR</code>.
+To replace zero dates in <code>DATE</code> and <code>TIMESTAMP</code> columns with a value of your choice, use the <a href="#debezium-oracle-connector-custom-converters-zero-date-fallback">zero date fallback converter</a>.</p>
+</div>
+</div>
 </div>
 <div class="sect2">
 <h3 id="oracle-rowid-types"><a class="anchor" href="#oracle-rowid-types"></a>ROWID types</h3>
@@ -7005,6 +7032,9 @@ To add a <code>CustomConverter</code> to the connector, follow the instructions 
 <li>
 <p><a href="#debezium-oracle-connector-custom-converters-raw-to-string"><code>RAW</code> to String</a></p>
 </li>
+<li>
+<p><a href="#debezium-oracle-connector-custom-converters-zero-date-fallback">Zero date fallback</a></p>
+</li>
 </ul>
 </div>
 <div class="sect2">
@@ -7103,6 +7133,90 @@ For example, if the database encoding is <code>WE8ISO8859P1</code>, this field w
 </tr>
 </tbody>
 </table>
+</div>
+<div class="sect2">
+<h3 id="debezium-oracle-connector-custom-converters-zero-date-fallback"><a class="anchor" href="#debezium-oracle-connector-custom-converters-zero-date-fallback"></a>Zero date fallback</h3>
+<div class="paragraph">
+<p>By default, the connector emits an Oracle <a href="#oracle-temporal-types-zero-dates">zero date</a> in the same way as an absent value: <code>null</code> for an optional column, the column default for a <code>NOT NULL</code> column with a default value, or the epoch otherwise.
+To replace zero dates with a value of your choice, you can configure Debezium to use the <code>ZeroDateFallbackConverter</code>.
+The converter applies to <code>DATE</code> and <code>TIMESTAMP</code> columns; it does not apply to <code>TIMESTAMP WITH TIME ZONE</code> or <code>TIMESTAMP WITH LOCAL TIME ZONE</code> columns, which always use the default zero date handling.
+The converter emits <code>DATE</code> and <code>TIMESTAMP(0 - 3)</code> columns as <code>io.debezium.time.Timestamp</code>, <code>TIMESTAMP(4 - 6)</code> columns as <code>io.debezium.time.MicroTimestamp</code>, and <code>TIMESTAMP(7 - 9)</code> columns as <code>io.debezium.time.NanoTimestamp</code>, regardless of the <code>time.precision.mode</code>.
+The following example shows how to add the <code>ZeroDateFallbackConverter</code> to the connector configuration:</p>
+</div>
+<div class="listingblock">
+<div class="title">Example: <code>ZeroDateFallbackConverter</code> configuration</div>
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-none hljs">converters=zero-date
+zero-date.type=io.debezium.connector.oracle.converters.ZeroDateFallbackConverter
+zero-date.selector=.*.MY_TABLE.*
+zero-date.fallback.date=NULL
+zero-date.column.ORCLPDB1.MYSCHEMA.MY_TABLE.CREATED.fallback=1900-01-01 00:00:00</code></pre>
+</div>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<caption class="title">Table 12. ZeroDateFallbackConverter configuration properties</caption>
+<colgroup>
+<col style="width: 10%;">
+<col style="width: 20%;">
+<col style="width: 70%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Property</th>
+<th class="tableblock halign-left valign-top">Default</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>target.types</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>DATE,TIMESTAMP</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">A comma-separated list of the column types that the converter processes.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>fallback.date</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>NULL</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The value that the converter emits for a zero date or a <code>NULL</code> value in a <code>DATE</code> column.
+If set to <code>NULL</code>, the converter emits <code>null</code> and makes the field optional.
+Otherwise, specify a UTC value in the format <code>yyyy-MM-dd</code> or <code>yyyy-MM-dd HH:mm:ss</code>.
+The field&#8217;s default value is set to the specified value, overriding any column default, and for <code>NOT NULL</code> columns the field remains required.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>fallback.timestamp</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>NULL</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The value that the converter emits for a zero date or a <code>NULL</code> value in a <code>TIMESTAMP</code> column, in the same format as <code>fallback.date</code>, optionally with fractional seconds.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>column.&lt;database&gt;.&lt;schema&gt;.&lt;table&gt;.&lt;column&gt;.fallback</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><em>n/a</em></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Overrides the type-level fallback for a single column.
+The database, schema, table, and column names in the property key are case-sensitive, and must match the names exactly as they are stored in the Oracle data dictionary, for example, <code>ORCLPDB1.MYSCHEMA.MY_TABLE.CREATED</code> for objects created with unquoted identifiers.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>selector</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>.*</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">A comma-separated list of regular expressions, matched against <code>&lt;database&gt;.&lt;schema&gt;.&lt;table&gt;.&lt;column&gt;</code>, that specifies the columns that the converter processes.
+The regular expressions are matched case-insensitively.</p></td>
+</tr>
+</tbody>
+</table>
+<div class="admonitionblock important">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-important" title="Important"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>The converter cannot always distinguish a zero date from a <code>NULL</code> value, so it replaces every <code>NULL</code> value in a selected column with the configured fallback, during snapshots and streaming alike.
+If you configure a value other than <code>NULL</code>, genuine <code>NULL</code> values in optional columns are also emitted as that value.
+Because the default <code>selector</code> (<code>.*</code>) selects every <code>DATE</code> and <code>TIMESTAMP</code> column, combining it with a value other than <code>NULL</code> affects all optional temporal columns.
+To avoid this, use the <code>selector</code> to restrict the converter to <code>NOT NULL</code> columns.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
 </div>
 </div>
 </div>
@@ -11144,7 +11258,7 @@ Set the property to one of the following values:</p>
 <p>The following table describes the <code>schema.history.internal</code> properties for configuring the Debezium connector.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 12. Connector database schema history configuration properties</caption>
+<caption class="title">Table 13. Connector database schema history configuration properties</caption>
 <colgroup>
 <col style="width: 33%;">
 <col style="width: 17%;">
@@ -11367,7 +11481,7 @@ schema.history.internal.consumer.ssl.key.password=test1234</code></pre>
 <p>The following table describes the Kafka <code>signal</code> properties.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 13. Kafka signals configuration properties</caption>
+<caption class="title">Table 14. Kafka signals configuration properties</caption>
 <colgroup>
 <col style="width: 33%;">
 <col style="width: 17%;">
@@ -11462,7 +11576,7 @@ For example, the connector passes properties such as <code>signal.consumer.secur
 <p>The following table describes properties that you can use to configure the Debezium sink <code>notification</code> channel.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 14. Sink notification configuration properties</caption>
+<caption class="title">Table 15. Sink notification configuration properties</caption>
 <colgroup>
 <col style="width: 33%;">
 <col style="width: 17%;">
@@ -12268,7 +12382,7 @@ Available when <a href="#oracle-property-statistics-metrics-enabled"><code>stati
 <p>The Debezium Oracle connector also provides the following additional streaming metrics:</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 15. Descriptions of additional streaming metrics</caption>
+<caption class="title">Table 16. Descriptions of additional streaming metrics</caption>
 <colgroup>
 <col style="width: 45%;">
 <col style="width: 25%;">
@@ -13211,7 +13325,7 @@ The message does not contain the update to the schema.
 Instead, it contains the complete new schema structure.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 16. Action parameters</caption>
+<caption class="title">Table 17. Action parameters</caption>
 <colgroup>
 <col style="width: 25%;">
 <col style="width: 75%;">
@@ -13310,7 +13424,7 @@ Instead, it contains the complete new schema structure.</p>
 After the connector&#8217;s commit SCN advances beyond the DDL change, to prevent unparseable DDL statements from being skipped unexpectedly, return the connector configuration to its previous state.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 17. Example of a logging record</caption>
+<caption class="title">Table 18. Example of a logging record</caption>
 <colgroup>
 <col style="width: 10%;">
 <col style="width: 90%;">
@@ -13807,7 +13921,7 @@ It applies to the source, alongside <code>format</code>, rather than within it.<
 The connector receives no value for it, and the field is <code>null</code> in the change event, so a missing flag looks like missing data rather than a configuration problem.</p>
 </div>
 <table class="tableblock frame-all grid-all stretch">
-<caption class="title">Table 18. OpenLogReplicator flags used by Debezium</caption>
+<caption class="title">Table 19. OpenLogReplicator flags used by Debezium</caption>
 <colgroup>
 <col style="width: 35%;">
 <col style="width: 15%;">
@@ -14745,7 +14859,7 @@ The XStream outbound server is a container root database (<code>CDB$ROOT</code>)
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/7c53a8fe06386392cd6c7e19301f318f1cd2fb9c">7c53a8fe</a></span>)
+            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/d7b50d85e9b44f865bbdb4fe1a478911ca9a820c">d7b50d85</a></span>)
             
         </div>
     </footer>
