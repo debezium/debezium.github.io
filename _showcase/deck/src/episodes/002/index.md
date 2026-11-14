@@ -1151,6 +1151,14 @@ A new PostgreSQL row reached the HTTP receiver.
 
 ## Current boundaries and future direction
 
+<style scoped>
+.contact-link {
+  margin: 12px 0 0;
+  font-size: 16px;
+  color: var(--dbz-muted);
+}
+</style>
+
 <div class="cols">
 <div>
 
@@ -1198,6 +1206,8 @@ available hosts.
 
 </div>
 </div>
+
+<p class="contact-link">More about my work: <a href="https://divyanshukumar.me">divyanshukumar.me</a></p>
 
 ---
 
