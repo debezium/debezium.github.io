@@ -1524,3 +1524,152 @@ section.sq.cli .cta span a { color: var(--dbz-on-fill); }
 </div>
 
 ---
+
+<!-- _class: sq sq-qna -->
+
+<style>
+section.sq-qna {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 52px 72px 48px;
+}
+section.sq-qna .eyebrow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 0 10px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--dbz-accent-strong);
+}
+section.sq-qna .eyebrow::before {
+  content: '';
+  width: 10px;
+  height: 10px;
+  margin-right: 12px;
+  border-radius: 2px;
+  background: linear-gradient(135deg, var(--dbz-brand), var(--dbz-accent));
+}
+section.sq-qna h1 {
+  margin: 0 0 32px;
+  text-align: center;
+  font-size: 64px;
+  line-height: 1;
+  font-weight: 800;
+  letter-spacing: -0.035em;
+  color: transparent;
+  background: linear-gradient(90deg, var(--dbz-brand), var(--dbz-accent));
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+section.sq-qna h1 em {
+  font-style: normal;
+  color: transparent;
+  background: linear-gradient(90deg, var(--dbz-brand), var(--dbz-accent));
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+
+section.sq-qna .speakers-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 18px;
+  margin-bottom: 28px;
+}
+section.sq-qna .speaker-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 24px 16px 22px;
+  border-radius: 16px;
+  background: var(--dbz-surface);
+  border: 1px solid var(--dbz-border);
+}
+section.sq-qna .speaker-card img {
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 3px solid var(--dbz-brand);
+  margin-bottom: 14px;
+}
+section.sq-qna .speaker-card .name {
+  font-weight: 700;
+  font-size: 18px;
+  color: var(--dbz-text);
+  line-height: 1.2;
+}
+section.sq-qna .speaker-card .tag {
+  display: inline-block;
+  margin-top: 10px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--dbz-surface-2);
+  color: var(--dbz-accent-strong);
+  border: 1px solid var(--dbz-border-strong);
+}
+
+section.sq-qna .footer-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 14px 22px;
+  border-radius: 12px;
+  background: var(--dbz-bg-deep);
+  border: 1px solid var(--dbz-border-strong);
+}
+section.sq-qna .footer-bar .links {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 14px;
+  color: var(--dbz-muted);
+}
+section.sq-qna .footer-bar .links a {
+  color: var(--dbz-accent-strong);
+  text-decoration: none;
+}
+</style>
+
+<div class="eyebrow">Debezium Community Showcase · Episode #002</div>
+<h1><em>Q&amp;A</em></h1>
+
+<div class="speakers-grid">
+  <div class="speaker-card">
+    <img src="/assets/images/kartik.jpg" alt="Kartik Angiras" />
+    <div class="name">Kartik Angiras</div>
+    <div class="tag">Milvus Connector</div>
+  </div>
+  <div class="speaker-card">
+    <img src="/assets/images/siddhant.jpeg" alt="Siddhant Chaturvedi" />
+    <div class="name">Siddhant Chaturvedi</div>
+    <div class="tag">SQLite Connector</div>
+  </div>
+  <div class="speaker-card">
+    <img src="/assets/images/divyanshu.jpg" alt="Divyanshu Kumar" />
+    <div class="name">Divyanshu Kumar</div>
+    <div class="tag">Host-Based Platform</div>
+  </div>
+  <div class="speaker-card">
+    <img src="/assets/images/binayak.jpg" alt="Binayak Das" />
+    <div class="name">Binayak Das</div>
+    <div class="tag">Debezium CLI</div>
+  </div>
+</div>
+
+<div class="footer-bar">
+  <div class="links">
+    <span>Chat: <a href="https://debezium.zulipchat.com">debezium.zulipchat.com</a></span>
+    <span>GitHub: <a href="https://github.com/debezium">github.com/debezium</a></span>
+    <span>Web: <a href="https://debezium.io">debezium.io</a></span>
+  </div>
+</div>
