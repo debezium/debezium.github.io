@@ -276,11 +276,12 @@ def antora_nav_versions(kind)
   seen_stable = false
   rows = []
 
-  # The nightly docs are built from main and published by clone_versions under
-  # reference/nightly/. They have no release page, so only the documentation
-  # list gets them, first, matching _includes/dbz/nav-versions.html.
+  # The nightly docs are built from main and published at the root of
+  # reference/, with no version segment. They have no release page, so only
+  # the documentation list gets them, first, matching
+  # _includes/dbz/nav-versions.html.
   if kind != 'releases'
-    rows << { 'version' => 'nightly', 'href' => '/documentation/reference/nightly/', 'label' => 'nightly', 'stable' => false }
+    rows << { 'version' => 'nightly', 'href' => '/documentation/reference/', 'label' => 'nightly', 'stable' => false }
   end
 
   versions.each do |version|
