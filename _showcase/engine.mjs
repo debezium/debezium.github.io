@@ -138,11 +138,13 @@ function renderAgenda(episode, authors) {
     const { colorClass, colorVar, borderColor, label } = sessionStyle(s.type)
     const cardStyle = `display:flex;flex-direction:column;align-items:center;text-align:center;padding:24px 22px;${hasSpecial ? 'max-width:560px;' : ''}`
 
+    const DEFAULT_AVATAR = 'color_debezium_64px.png'
+    const avatarSrc = author => `/assets/images/${author.avatar || DEFAULT_AVATAR}`
     // Co-presented talks lay their speakers side by side with smaller avatars.
     const multi = speakers.length > 1
     const avatar = multi ? 92 : 120
     const speakerBlocks = speakers.map(author => `<div style="display:flex;flex-direction:column;align-items:center;${multi ? 'flex:1;min-width:0;max-width:240px;' : ''}">
-<img src="/assets/images/${author.avatar}" style="width:${avatar}px;height:${avatar}px;border-radius:50%;object-fit:cover;border:3px solid ${borderColor};margin-bottom:14px;" />
+<img src="${avatarSrc(author)}" style="width:${avatar}px;height:${avatar}px;border-radius:50%;object-fit:cover;border:3px solid ${borderColor};margin-bottom:14px;" />
 <div style="font-weight:700;font-size:1.1em;color:var(--dbz-text);">${author.name}</div>
 <div style="color:var(--dbz-muted);font-size:0.82em;margin:4px 0 14px 0;">${truncateBio(author.bio)}</div>
 </div>`).join('\n')
@@ -168,15 +170,19 @@ function renderSpeaker(type, episode, authors) {
   if (speakers.length === 0) return `<p>Unknown author: ${session.nicks.join(', ')}</p>\n`
 
   const { borderColor } = sessionStyle(type)
+  const DEFAULT_AVATAR = 'color_debezium_64px.png'
 
   // One row per speaker, stacked, so a co-presented talk lists both.
-  const rows = speakers.map(author => `<div style="display:flex;align-items:center;gap:18px;">
-<img src="/assets/images/${author.avatar}" style="width:80px;height:80px;border-radius:50%;object-fit:cover;border:2px solid ${borderColor};flex-shrink:0;" />
+  const rows = speakers.map(author => {
+    const avatar = author.avatar || DEFAULT_AVATAR
+    return `<div style="display:flex;align-items:center;gap:18px;">
+<img src="/assets/images/${avatar}" style="width:80px;height:80px;border-radius:50%;object-fit:cover;border:2px solid ${borderColor};flex-shrink:0;" />
 <div>
 <div style="font-weight:700;font-size:0.95em;color:var(--dbz-text);">${author.name}</div>
 <div style="color:var(--dbz-muted);font-size:0.72em;">${truncateBio(author.bio)}</div>
 </div>
-</div>`).join('\n')
+</div>`
+  }).join('\n')
 
   return `<h2>Debezium</h2>\n<h3>${session.talk}</h3>\n<div style="display:flex;flex-direction:column;gap:18px;margin-top:24px;">\n${rows}\n</div>\n`
 }
