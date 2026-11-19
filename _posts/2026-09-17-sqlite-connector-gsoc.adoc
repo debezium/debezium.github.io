@@ -1,0 +1,165 @@
+---
+layout: post
+title:  "Change Data Capture for SQLite: My Google Summer of Code Journey with Debezium"
+date:   2026-09-17
+tags: [ sqlite, cdc, connector, gsoc, embedded, debezium ]
+author: siddhantcvdi
+---
+
+:imagesdir: /assets/images/2026-09-17-sqlite-connector-gsoc
+
+SQLite is probably the database you use the most without ever thinking about it. It runs inside your browser, your phone, most desktop apps, aircraft software, and countless edge and IoT devices. It ships in billions of copies, and yet it has no server to run and nothing to configure. The whole database is a single tiny file that sits on your disk.
+
+That same simplicity makes it a surprisingly hard database to capture changes from. My Google Summer of Code 2026 project with Debezium was to build a connector that captures every insert, update, delete and schema change from a SQLite file and streams it out as a change event, the same way Debezium already does for Postgres or MySQL. The connector shipped as incubating in Debezium 3.7.
+
+The catch is that SQLite gives you almost nothing to build a change stream on. This post is about how I built it, the design I threw away, the simple idea that replaced it, and the bugs that showed me the simple idea was not so simple.
+
++++<!-- more -->+++
+
+== Why a SQLite connector is worth building
+
+It is really tempting to think of SQLite as a toy database, but real systems run on it every day. A store's checkout terminal records sales offline and needs head office to see live inventory. A delivery app logs jobs with no signal and has to sync them when it reconnects. A notes app saves edits on your laptop that then need to reach your phone.
+
+All of these already run on local SQLite, and today each team needs to build its own way to move those changes out. The connector gives them one standard path instead: the app keeps writing to its file, the connector notices the changes, and Debezium streams them onward to wherever they need to go.
+
+== The core problem: SQLite does not tell you what changed
+
+Most databases Debezium already supports keep a running log of committed changes that an outside reader can follow. SQLite does not offer one. It does keep an internal log of its own, but that log stores raw copies of the pages of the file that changed. It's not a readable description of which row was inserted, updated, or deleted. Looking at it is a bit like being handed two photographs of a filing cabinet, before and after, and being asked exactly which sheet of paper someone edited.
+
+So the first question of the project was not "how do I read SQLite's change log", but "how do I get a change log worth reading at all".
+
+== The road I did not take
+
+My first plan was to read SQLite's WAL file directly. It looked like the clean option. The connector would never touch the database, and it would work the same way Debezium follows the Postgres or MySQL logs. I mapped out the WAL format, the page layout, and the record format in my design.
+
+The more I mapped, the bigger the job got. The WAL only holds changed pages. To turn a page back into a row, the connector would have to rebuild SQLite's B-tree and record parser in Java, and keep that copy correct with every new SQLite release.
+
+image::wal-parsing-road-not-taken.png[The WAL parsing road I did not take,380]
+
+That changed the question. Instead of decoding SQLite from the outside, could SQLite write down its own changes? At the moment of a write, SQLite knows exactly which row changed and what it looked like before and after. It only needs a place to put that.
+
+My next plan was a native C extension that would record each change into a log table. While that was still a plan, I needed something to fill the log so that I could build the Java side. So I wrote a small generator for SQL triggers inside the test code, as a stand-in.
+
+The longer I used the triggers, the better they looked as the real design. They need no native build, so they work on any SQLite 3.35.0 or newer with nothing to install. They run inside the application's own transaction, so a rolled back write leaves no log row behind. And they are plain SQL, so anyone can read exactly what the connector adds to their database. A C extension would have to match all of that and still ship a native library for every platform.
+
+So I made it official. A few pull requests later the generator moved out of the test folder and became the way the connector captures changes. The C extension is still an option we are considering for the future, if it can do something triggers cannot.
+
+== How it works
+
+For each table that you want to watch, the connector installs three triggers, one each for insert, update, and delete. Each trigger writes one row into an internal table called `_debezium_cdc_log`.
+
+image::capture-pipeline.png[An application writes to a table. An AFTER trigger writes a row to _debezium_cdc_log in the same transaction. The connector polls the log, sends change events through Kafka Connect or Debezium Server to a sink, and deletes rows up to the committed offset.,760]
+
+This is the update trigger for a small `customers` table, slightly simplified:
+
+[source,sql]
+----
+CREATE TRIGGER _debezium_cdc_customers_update
+AFTER UPDATE ON "customers"
+BEGIN
+    INSERT INTO _debezium_cdc_log
+        (table_name, operation, old_row_data, new_row_data, committed_at)
+    VALUES ('customers', 'u',
+        json_object('id', OLD."id", 'name', OLD."name"),
+        json_object('id', NEW."id", 'name', NEW."name"),
+        CAST(unixepoch('now', 'subsec') * 1000 AS INTEGER));
+END
+----
+
+After `UPDATE customers SET name = 'Siddhant Chaturvedi' WHERE id = 1`, the log holds this row:
+
+|===
+| change_id | table_name | operation | old_row_data | new_row_data
+
+| 1
+| customers
+| u
+| `{"id":1,"name":"Siddhant"}`
+| `{"id":1,"name":"Siddhant Chaturvedi"}`
+|===
+
+The connector then reads the log like any other table. It asks for rows with a `change_id` greater than the last one it saw, in order, and remembers where it stopped. SQLite does all the hard file-format work. While reading how https://turso.tech/[Turso] built its own change-capture engine, I found it takes the same route rather than decoding the file by hand, which was a reassuring sign.
+
+At the end of it the clever, low-level design was the wrong one, and the plain one was easier to build and easier to maintain.
+
+== Where the simple design got hard
+
+Reading a table is easy. Staying correct while a real application keeps writing to it is the hard part, and this is where the interesting bugs were.
+
+=== Schema changes while the connector is behind
+
+The triggers name every column as fixed text, so a schema change makes them wrong.
+
+SQLite has no DDL trigger, but it does bump `PRAGMA schema_version` on every schema change, so the connector checks that number on each poll. When it moves, the connector works out what SQL each trigger should contain, compares it with what is installed in `sqlite_master`, and rebuilds only the triggers that differ.
+
+Vincenzo caught a nice bug in my first version during review. Rebuilding triggers is itself a schema change, so the rebuild bumped the version and caused one extra rebuild on the next poll, every time. I now read the version back after the rebuild, and a test checks for exactly one rebuild per change.
+
+The next bug was more serious. Say the connector is a few thousand rows behind when someone runs `ALTER TABLE orders ADD COLUMN discount`. The connector sees the new schema at once, but the rows it is about to read were captured under the old one. My code rendered them against the new schema, with a null for a column they never had. The rows for a renamed or dropped table were skipped, so they were lost.
+
+The fix was to make a schema change take effect at a position in the log, not at the moment it is detected. The connector notes the highest `change_id`, keeps the old shape registered, and switches only when streaming passes that point.
+
+image::schema-change-backlog.png[A row of change IDs. Rows 101 to 104 are rendered with the old shape, a boundary follows, row 105 was written during the trigger rebuild and has a null for the new column, and rows 106 to 109 use the new shape.,760]
+
+=== A capture bug must never break the user's write
+
+Because the trigger runs inside the application's transaction, an error in the trigger rolls back the application's own write. A change capture tool that makes your `INSERT` fail is much worse than one that misses an event. That rule shaped two details.
+
+The first is blobs. `json_object` refuses a blob with the error `JSON cannot hold BLOB values`. So the trigger checks each value with `typeof` when the row is written, and stores a blob as hex inside a tagged object: `{"__dbz_hex__": "..."}`. The check has to be on the actual value and not on the column type, because in SQLite a blob can land in a column of any type.
+
+The second is wide tables. SQLite functions take at most 127 arguments by default, so one `json_object` call can hold only 63 columns. The trigger builds wider rows in chunks and merges them. The obvious merge function is `json_patch`, but it follows RFC 7386 and removes keys whose value is null, so it would quietly lose every null column. `json_set` keeps them, so we settled for it.
+
+=== Deleting the log safely
+
+The log would grow forever if nothing cleaned it up, so the connector deletes old rows. The tempting limit is "everything I have already sent". But sent does not mean safe. If the connector crashes before Kafka Connect commits the offset, it has to read those rows again. So compaction only goes up to the offset that has been confirmed as committed.
+
+During the review, my mentors also pointed out that my first version stopped the whole connector if a compaction failed. Compaction only saves space, so now it logs a warning and tries again on the next poll.
+
+== One more surprise: types
+
+Unlike most databases, SQLite does not force a column to hold one type. A column meant for numbers can happily hold text in one row and something else in the next. Fun fact: you can define a column of type Apple, Siddhant, or even ✨Proxima Centauri✨, and SQLite will accept it.
+
+image::type-affinity.png[Anakin and Padme meme: A column will hold the type I declared. Right? ... Right..?,440]
+
+Debezium expects each column to have one predictable shape. SQLite does have a rule for this called type affinity, which looks for substrings in the declared type. So `Apple` gets NUMERIC affinity, and `POINT` gets INTEGER because it contains `INT`. The JDBC driver does not report any of this reliably, so the connector works out the affinity itself and uses it to pick the type of each column.
+
+That leaves values that do not fit their column. The connector can reject the value, write a null with a warning, or use a placeholder if you opt in. Small feature on the surface, and a real design puzzle underneath.
+
+== What Google Summer of Code taught me
+
+The fastest way to get something right was almost always to find how an existing connector already solved the same thing, and to follow it rather than invent my own version.
+
+The best part was the people. Working with the team, and especially my mentors Giovanni and Vincenzo, was a joy. They listened to every approach I brought and, instead of simply approving or rejecting it, pushed me to think further into it. You have already seen how much better the connector got from their reviews. That is also how I ended up deep inside a database, learning about B-trees, file formats, concurrency, and transactions, all things I had only used from the outside.
+
+Near the end, I got the chance to present my work to the community. I was thrilled, and then my social anxiety showed up right on cue. I decided to face it. The day before the talk I did a full dry run with no script, from memory, and that one run did more for my nerves than anything else. I gave the talk and walked away proud of it.
+
+== Limitations
+
+The connector is incubating, and you should know its limits before you use it:
+
+- **It changes your database.** It creates the log table and the triggers, and it needs read and write access. It also requires WAL mode and SQLite 3.35.0 or newer.
+- **Every write costs a little more.** Each captured write also inserts a log row with JSON for the row.
+- **Schema changes have a short window.** Until the next poll rebuilds the triggers, the old ones are still active. After `ADD COLUMN`, a value written in that window is not captured. After `DROP COLUMN`, a write to that table can fail with an error, because the old trigger still names the missing column.
+- **The connector must run on the same host as the writer**, with direct access to the file on a local filesystem. Network filesystems are not supported.
+- **One connector captures one database file**, with a single task.
+
+== Try it, and what comes next
+
+The smallest configuration is just a file path and a topic prefix:
+
+[source,json]
+----
+{
+  "name": "sqlite-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.sqlite.SQLiteSourceConnector",
+    "topic.prefix": "sqlite",
+    "database.file.path": "/data/app.db"
+  }
+}
+----
+
+The https://github.com/debezium/debezium-examples/tree/main/tutorial#using-sqlite[tutorial example] runs it end to end, and the https://debezium.io/documentation/reference/connectors/sqlite.html[connector documentation] covers every option.
+
+There is plenty ahead: a lighter, trigger-free way to record changes, support for related databases like Turso, and even exploring whether the whole thing can run in the browser through WebAssembly.
+
+If you want to try the connector, read the code, or contribute at https://github.com/debezium/debezium-connector-sqlite[debezium/debezium-connector-sqlite], and there is a dedicated SQLite community channel on https://debezium.zulipchat.com/[Zulip]. Showing the work to the community, and hearing back from it, is in the end what turns a summer project into a real product.
