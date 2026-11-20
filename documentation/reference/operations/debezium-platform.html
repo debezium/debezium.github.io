@@ -931,7 +931,7 @@
 <li><a href="#_snapshot_panels">Snapshot panels</a></li>
 </ul>
 </li>
-<li><a href="#debezium-platform-monitoring-prerequisites">Prerequisites</a>
+<li><a href="#debezium-platform-monitoring-prerequisites">Monitoring prerequisites</a>
 <ul class="sectlevel3">
 <li><a href="#_opentelemetry_operator_required">OpenTelemetry Operator (required)</a></li>
 <li><a href="#_prometheus_operator_optional">Prometheus Operator (optional)</a></li>
@@ -946,6 +946,40 @@
 </ul>
 </li>
 <li><a href="#debezium-platform-monitoring-external-prometheus">Using an external Prometheus instance</a></li>
+</ul>
+</li>
+<li><a href="#debezium-platform-alerting">Alerting</a>
+<ul class="sectlevel2">
+<li><a href="#debezium-platform-alerting-prerequisites">Alerting prerequisites</a></li>
+<li><a href="#debezium-platform-alerting-architecture">Alerting architecture and lifecycle</a>
+<ul class="sectlevel3">
+<li><a href="#_alert_lifecycle">Alert lifecycle</a></li>
+<li><a href="#_metric_staleness_and_no_data_handling">Metric staleness and no-data handling</a></li>
+</ul>
+</li>
+<li><a href="#debezium-platform-managing-alert-rules">Managing alert rules</a>
+<ul class="sectlevel3">
+<li><a href="#_anatomy_of_an_alert_rule">Anatomy of an alert rule</a></li>
+<li><a href="#_creating_an_alert_rule">Creating an alert rule</a></li>
+<li><a href="#_enabling_disabling_and_deleting_rules">Enabling, disabling, and deleting rules</a></li>
+</ul>
+</li>
+<li><a href="#debezium-platform-notification-channels">Notification channels</a>
+<ul class="sectlevel3">
+<li><a href="#_webhook_payload_structure">Webhook payload structure</a></li>
+<li><a href="#_webhook_delivery_and_retries">Webhook delivery and retries</a></li>
+<li><a href="#_webhook_security_and_ssrf_protection">Webhook security and SSRF protection</a></li>
+<li><a href="#_creating_and_testing_notification_channels">Creating and testing notification channels</a></li>
+</ul>
+</li>
+<li><a href="#debezium-platform-alert-events">Alert events and history</a>
+<ul class="sectlevel3">
+<li><a href="#_global_alert_badge">Global alert badge</a></li>
+<li><a href="#_reviewing_incidents">Reviewing incidents</a></li>
+<li><a href="#_incident_retention_and_cleanup">Incident retention and cleanup</a></li>
+</ul>
+</li>
+<li><a href="#debezium-platform-alerting-configuration">Alerting configuration reference</a></li>
 </ul>
 </li>
 </ul>
@@ -2607,7 +2641,7 @@ Available options include off (manual refresh), 15 seconds, 30 seconds, 1 minute
 </div>
 </div>
 <div class="sect2">
-<h3 id="debezium-platform-monitoring-prerequisites"><a class="anchor" href="#debezium-platform-monitoring-prerequisites"></a>Prerequisites</h3>
+<h3 id="debezium-platform-monitoring-prerequisites"><a class="anchor" href="#debezium-platform-monitoring-prerequisites"></a>Monitoring prerequisites</h3>
 <div class="paragraph">
 <p>Before you enable monitoring in the Debezium Platform, install the following operators in your Kubernetes cluster.</p>
 </div>
@@ -3060,6 +3094,625 @@ Panels with matching <code>id</code> values override the corresponding built-in 
 </div>
 </div>
 </div>
+<div class="sect1">
+<h2 id="debezium-platform-alerting"><a class="anchor" href="#debezium-platform-alerting"></a>Alerting</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>The Debezium Management Platform provides built-in alerting capabilities that evaluate threshold-based rules against existing monitoring panels and notify you when pipeline performance or health degrades.
+Alerting rules evaluate globally across all pipelines, including pipelines created after the rule is defined, without requiring custom PromQL queries.</p>
+</div>
+<div class="paragraph">
+<p>Alerts are managed natively by the Conductor backend, visualized in the platform UI, and dispatched through configurable external notification channels.</p>
+</div>
+<div class="sect2">
+<h3 id="debezium-platform-alerting-prerequisites"><a class="anchor" href="#debezium-platform-alerting-prerequisites"></a>Alerting prerequisites</h3>
+<div class="paragraph">
+<p>Alerting evaluates the same metrics that the monitoring dashboard displays, and it queries the same Prometheus instance.
+Before you create alert rules, complete the following prerequisites.</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>Enable monitoring by setting <code>monitoring.otel.enabled</code> to <code>true</code>.</p>
+<div class="paragraph">
+<p>For more information, see <a href="#debezium-platform-monitoring-enabling">Enabling monitoring</a>.</p>
+</div>
+</li>
+<li>
+<p>Set <code>monitoring.prometheus.url</code> to the URL of the Prometheus instance that stores your pipeline metrics.</p>
+</li>
+<li>
+<p>To use email notification channels, configure an SMTP server by setting the <code>alerting.email.*</code> properties.</p>
+<div class="paragraph">
+<p>For more information, see <a href="#debezium-platform-alerting-configuration">Alerting configuration reference</a>.</p>
+</div>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>If monitoring is not enabled, the alert evaluation engine has no metrics to query, and rules that you create never transition out of the OK state.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="debezium-platform-alerting-architecture"><a class="anchor" href="#debezium-platform-alerting-architecture"></a>Alerting architecture and lifecycle</h3>
+<div class="paragraph">
+<p>The alerting engine is embedded in the Conductor service and reuses the monitoring infrastructure, querying the same Prometheus instance.
+It consists of the following components:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1">Alert REST API</dt>
+<dd>
+<p>Manages alert rules and notification channels, and serves alert events and status summaries.</p>
+</dd>
+<dt class="hdlist1">Alert Evaluation Engine</dt>
+<dd>
+<p>Evaluates all enabled rules against Prometheus metric series across all active pipelines, on a periodic loop (every 60 seconds by default).</p>
+</dd>
+<dt class="hdlist1">Alert State Manager</dt>
+<dd>
+<p>Maintains the state machine and incident records in the platform database for each rule and pipeline pair.</p>
+</dd>
+<dt class="hdlist1">Notification Dispatcher</dt>
+<dd>
+<p>Delivers notifications to the email and webhook channels that are attached to a rule, when alerts fire or resolve.</p>
+</dd>
+</dl>
+</div>
+<div class="paragraph">
+<p>The dispatcher sends to external channels only.
+In-app alerting uses no channel: the Alert State Manager persists states and incidents to the platform database, and the platform UI reads them from the Alert REST API.
+Alerts are therefore always visible in the platform UI, even for rules that have no channels attached.</p>
+</div>
+<div class="sect3">
+<h4 id="_alert_lifecycle"><a class="anchor" href="#_alert_lifecycle"></a>Alert lifecycle</h4>
+<div class="paragraph">
+<p>For each rule and pipeline pair, the evaluation engine tracks one of the following states, which together suppress noise from transient metric spikes:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1">OK</dt>
+<dd>
+<p>The metric value is within the threshold.</p>
+</dd>
+<dt class="hdlist1">Pending</dt>
+<dd>
+<p>The metric has breached the threshold, but has not held the condition for the configured duration.</p>
+<div class="paragraph">
+<p>No notification is sent while an alert is pending.
+If the metric recovers before the duration expires, the alert resets silently to OK.</p>
+</div>
+</dd>
+<dt class="hdlist1">Firing</dt>
+<dd>
+<p>The condition has held for the full duration, or the rule specifies a duration of zero.</p>
+<div class="paragraph">
+<p>The platform creates an incident record and dispatches notifications to all attached channels.</p>
+</div>
+</dd>
+</dl>
+</div>
+<div class="paragraph">
+<p>When a firing alert recovers, the state returns to OK and the platform closes the incident with a resolution timestamp.
+Incidents in the platform UI therefore show a status of either <code>Firing</code> or <code>Resolved</code>.</p>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>An alert dispatches one notification when it fires, and one when it resolves.
+Notifications are not repeated while the alert remains firing.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_metric_staleness_and_no_data_handling"><a class="anchor" href="#_metric_staleness_and_no_data_handling"></a>Metric staleness and no-data handling</h4>
+<div class="paragraph">
+<p>If a pipeline pod stops or crashes, Prometheus marks its time series as stale and the engine stops receiving data for that pipeline.
+The engine then keeps the last known state: firing alerts stay firing, and pending alerts stay pending.</p>
+</div>
+<div class="paragraph">
+<p>Critical alerts therefore remain visible during an outage, instead of clearing silently when metrics stop arriving.
+When the pipeline recovers and metrics resume, the engine transitions the alert based on the new values.</p>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="debezium-platform-managing-alert-rules"><a class="anchor" href="#debezium-platform-managing-alert-rules"></a>Managing alert rules</h3>
+<div class="paragraph">
+<p>From the platform UI, open the <strong>Alerts</strong> menu and click <strong>Rules</strong> to view, create, edit, enable, disable, and delete alert rules.</p>
+</div>
+<div class="imageblock">
+<div class="content">
+<img src="../_images/debezium-platform-alert-rules.png" alt="Debezium platform alert rules list">
+</div>
+</div>
+<div class="sect3">
+<h4 id="_anatomy_of_an_alert_rule"><a class="anchor" href="#_anatomy_of_an_alert_rule"></a>Anatomy of an alert rule</h4>
+<div class="paragraph">
+<p>An alert rule specifies the condition under which an alert should be triggered:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1">Name</dt>
+<dd>
+<p>A unique identifier for the rule.
+The name must be a lowercase RFC 1123 subdomain, that is, it can contain lowercase alphanumeric characters, hyphens, and dots.</p>
+</dd>
+<dt class="hdlist1">Description</dt>
+<dd>
+<p>An optional explanation of the purpose or context of the rule.</p>
+</dd>
+<dt class="hdlist1">Metric panel</dt>
+<dd>
+<p>The monitoring panel to evaluate, selected from the built-in streaming and snapshot panels or custom panels.</p>
+</dd>
+<dt class="hdlist1">Reduce function</dt>
+<dd>
+<p>The aggregation method used to collapse the panel&#8217;s time-series data into a single scalar value:</p>
+<div class="openblock">
+<div class="content">
+<div class="ulist">
+<ul>
+<li>
+<p><code>last</code> (default): Evaluates the most recent metric value.
+Recommended for gauge metrics such as source lag, queue utilization, and connection status.</p>
+</li>
+<li>
+<p><code>avg</code>: Calculates the average value across the evaluation window.
+Recommended for rate metrics, to smooth out transient spikes.</p>
+</li>
+<li>
+<p><code>min</code>: Calculates the minimum value across the evaluation window.</p>
+</li>
+<li>
+<p><code>max</code>: Calculates the maximum value across the evaluation window.</p>
+</li>
+<li>
+<p><code>sum</code>: Calculates the sum of metric values across the evaluation window.</p>
+</li>
+</ul>
+</div>
+</div>
+</div>
+</dd>
+<dt class="hdlist1">Evaluation window</dt>
+<dd>
+<p>The historical time window used by the reduce function (between 1 minute and 1 hour; default is 5 minutes).
+This field is hidden when the reduce function is set to <code>last</code>.</p>
+</dd>
+<dt class="hdlist1">Operator and threshold</dt>
+<dd>
+<p>The comparison operator (greater than, greater than or equal to, less than, less than or equal to, equal to, or not equal to) and numeric threshold.
+The unit of measurement matches the selected monitoring panel.</p>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>If a metric value is not a number, every comparison operator evaluates to <code>false</code>.
+Gaps in a metric series therefore do not trigger an alert.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+</dd>
+<dt class="hdlist1">Duration</dt>
+<dd>
+<p>The noise suppression period during which the condition must continuously hold before firing (options include Immediately, 1 minute, 2 minutes, 5 minutes, 10 minutes, 15 minutes, and 30 minutes).</p>
+</dd>
+<dt class="hdlist1">Severity</dt>
+<dd>
+<p>The urgency level of the alert:</p>
+<div class="openblock">
+<div class="content">
+<div class="ulist">
+<ul>
+<li>
+<p><code>Critical</code> (danger visual indicator): Counted in the global alert badge.</p>
+</li>
+<li>
+<p><code>Warning</code> (warning visual indicator): Counted in the global alert badge.</p>
+</li>
+<li>
+<p><code>Info</code> (informational visual indicator): Displayed in the incident history, but excluded from the global alert badge.</p>
+</li>
+</ul>
+</div>
+</div>
+</div>
+</dd>
+<dt class="hdlist1">Notification channels</dt>
+<dd>
+<p>One or more external notification channels to notify in addition to in-app visibility.</p>
+</dd>
+</dl>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_creating_an_alert_rule"><a class="anchor" href="#_creating_an_alert_rule"></a>Creating an alert rule</h4>
+<div class="olist arabic">
+<div class="title">Procedure</div>
+<ol class="arabic">
+<li>
+<p>From the platform UI, open the <strong>Alerts</strong> menu, and then click <strong>Rules</strong>.</p>
+</li>
+<li>
+<p>Click <strong>Create Rule</strong>.</p>
+</li>
+<li>
+<p>In the rule creation form, enter a unique <strong>Name</strong> and an optional <strong>Description</strong>.</p>
+</li>
+<li>
+<p>Select the target <strong>Metric</strong> panel from the dropdown.</p>
+</li>
+<li>
+<p>Choose the <strong>Reduce</strong> function and specify the <strong>Evaluation window</strong> if applicable.</p>
+</li>
+<li>
+<p>Select the comparison operator and enter the <strong>Threshold</strong> value.</p>
+</li>
+<li>
+<p>Set the <strong>Duration</strong> for noise suppression.</p>
+</li>
+<li>
+<p>Select the <strong>Severity</strong> level.</p>
+</li>
+<li>
+<p>(Optional) Select one or more <strong>Notification channels</strong> to receive alerts.</p>
+</li>
+<li>
+<p>Click <strong>Create Rule</strong>.</p>
+</li>
+</ol>
+</div>
+<div class="imageblock">
+<div class="content">
+<img src="../_images/debezium-platform-create-alert-rule.png" alt="Debezium platform create alert rule">
+</div>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_enabling_disabling_and_deleting_rules"><a class="anchor" href="#_enabling_disabling_and_deleting_rules"></a>Enabling, disabling, and deleting rules</h4>
+<div class="ulist">
+<ul>
+<li>
+<p>To pause an alert rule without deleting its definition (for example, during scheduled maintenance), toggle the <strong>Status</strong> switch in the rules table.</p>
+</li>
+<li>
+<p>To edit a rule, click the action menu next to the rule and select <strong>Edit</strong>.</p>
+</li>
+<li>
+<p>To delete a rule, click the action menu next to the rule and select <strong>Delete</strong>.</p>
+</li>
+</ul>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="debezium-platform-notification-channels"><a class="anchor" href="#debezium-platform-notification-channels"></a>Notification channels</h3>
+<div class="paragraph">
+<p>Alerts always appear within the platform UI and update the global header badge.
+To receive external alerts, from the platform UI, open the <strong>Alerts</strong> menu, click <strong>Channels</strong>, and then configure a notification channel.</p>
+</div>
+<div class="imageblock">
+<div class="content">
+<img src="../_images/debezium-platform-notification-channels.png" alt="Debezium platform notification channels">
+</div>
+</div>
+<div class="paragraph">
+<p>Notification channels are reusable resources: multiple alert rules can share the same channel, and a single rule can dispatch to multiple channels.</p>
+</div>
+<div class="paragraph">
+<p>The platform supports two external channel types:</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1">Email</dt>
+<dd>
+<p>Sends alert notifications over SMTP to a list of email recipients.
+You can customize the email subject line by using templates with placeholders such as <code>{{rule_name}}</code> and <code>{{severity}}</code>.
+If you do not specify a subject template, the platform uses <code>Debezium Alert: {{rule_name}} - {{severity}}</code>.</p>
+<div class="paragraph">
+<p>Email channels require an SMTP server.
+If you do not set the <code>alerting.email.host</code> and <code>alerting.email.from</code> chart properties, the platform does not configure a mail sender, and email notifications cannot be delivered.
+For more information, see <a href="#debezium-platform-alerting-configuration">Alerting configuration reference</a>.</p>
+</div>
+</dd>
+<dt class="hdlist1">Webhook</dt>
+<dd>
+<p>Sends HTTP POST requests with a JSON payload to external systems, enabling integrations with tools such as Slack, PagerDuty, OpsGenie, and Microsoft Teams.</p>
+</dd>
+</dl>
+</div>
+<div class="sect3">
+<h4 id="_webhook_payload_structure"><a class="anchor" href="#_webhook_payload_structure"></a>Webhook payload structure</h4>
+<div class="paragraph">
+<p>When an alert fires or resolves, the webhook notifier sends an HTTP POST request containing a structured JSON payload:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight nowrap"><code class="language-json hljs" data-lang="json">{
+  "version": "1",
+  "status": "firing",
+  "alert": {
+    "ruleName": "high-source-lag",
+    "severity": "CRITICAL",
+    "pipelineId": "inventory-pipeline",
+    "pipelineName": "inventory-pipeline",
+    "value": 15.2,
+    "threshold": 10.0,
+    "operator": "GREATER_THAN",
+    "message": "Source lag (15.2s) exceeded threshold (10.0s)",
+    "firedAt": "2026-11-02T14:30:00Z",
+    "resolvedAt": null
+  }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>The <code>resolvedAt</code> field is always present.
+Its value is <code>null</code> while the alert is firing.
+When the alert clears, a corresponding payload is sent in which <code>status</code> is set to <code>resolved</code> and <code>resolvedAt</code> contains the resolution timestamp.</p>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_webhook_delivery_and_retries"><a class="anchor" href="#_webhook_delivery_and_retries"></a>Webhook delivery and retries</h4>
+<div class="paragraph">
+<p>If a webhook delivery fails, the platform retries it up to the number of attempts set by the <code>alerting.webhook.maxAttempts</code> property (3 by default).
+Design your webhook receiver to be idempotent, because a single alert transition can result in more than one delivery attempt.
+You can also tune the connection and read timeouts.
+For more information, see <a href="#debezium-platform-alerting-configuration">Alerting configuration reference</a>.</p>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_webhook_security_and_ssrf_protection"><a class="anchor" href="#_webhook_security_and_ssrf_protection"></a>Webhook security and SSRF protection</h4>
+<div class="paragraph">
+<p>To prevent Server-Side Request Forgery (SSRF) within the Kubernetes cluster, the webhook notifier validates target URLs when sending notifications.
+By default, requests to private, loopback, and link-local IP address ranges are blocked.</p>
+</div>
+<div class="paragraph">
+<p>If you want to send notifications to a receiver that runs inside the cluster, for example during development or testing, set the <code>alerting.webhook.allowPrivateNetworks</code> property to <code>true</code>.</p>
+</div>
+<div class="admonitionblock warning">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-warning" title="Warning"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p>Setting <code>alerting.webhook.allowPrivateNetworks</code> to <code>true</code> disables SSRF protection, which enables alert rules to reach internal cluster endpoints.
+Do not enable this property in production environments.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_creating_and_testing_notification_channels"><a class="anchor" href="#_creating_and_testing_notification_channels"></a>Creating and testing notification channels</h4>
+<div class="olist arabic">
+<div class="title">Procedure</div>
+<ol class="arabic">
+<li>
+<p>From the platform UI, open the <strong>Alerts</strong> menu, and then click <strong>Channels</strong>.</p>
+</li>
+<li>
+<p>Click <strong>Create Channel</strong>.</p>
+</li>
+<li>
+<p>Enter a <strong>Name</strong> and select the channel <strong>Type</strong> (Email or Webhook).</p>
+</li>
+<li>
+<p>Configure the channel settings:</p>
+<div class="ulist">
+<ul>
+<li>
+<p>For <strong>Email</strong>, add one or more recipient email addresses and an optional subject template.</p>
+</li>
+<li>
+<p>For <strong>Webhook</strong>, provide the endpoint URL, HTTP method, and optional HTTP headers (for authentication tokens).</p>
+</li>
+</ul>
+</div>
+</li>
+<li>
+<p>Click <strong>Create Channel</strong>.</p>
+</li>
+<li>
+<p>To verify connectivity, open the action menu for the channel in the table and click <strong>Test</strong>.</p>
+</li>
+</ol>
+</div>
+<div class="imageblock">
+<div class="content">
+<img src="../_images/debezium-platform-create-notification-channel.png" alt="Debezium platform create notification channel">
+</div>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="debezium-platform-alert-events"><a class="anchor" href="#debezium-platform-alert-events"></a>Alert events and history</h3>
+<div class="paragraph">
+<p>The platform tracks every alert occurrence as an incident from initial firing to resolution.
+To review active and past alerts, from the platform UI, open the <strong>Alerts</strong> menu, and then click <strong>Events</strong>.</p>
+</div>
+<div class="imageblock">
+<div class="content">
+<img src="../_images/alert-history.gif" alt="Debezium platform alert events">
+</div>
+</div>
+<div class="sect3">
+<h4 id="_global_alert_badge"><a class="anchor" href="#_global_alert_badge"></a>Global alert badge</h4>
+<div class="paragraph">
+<p>The application header displays a persistent alert badge visible across all platform pages.
+The badge reflects the total count of active <code>Critical</code> and <code>Warning</code> alerts across all pipelines, colored according to the highest active severity:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>Red indicator: One or more <code>Critical</code> alerts are currently firing.</p>
+</li>
+<li>
+<p>Amber indicator: One or more <code>Warning</code> alerts are currently firing, with no <code>Critical</code> alerts.</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>Clicking the badge opens the <strong>Events</strong> page pre-filtered to currently firing incidents.</p>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_reviewing_incidents"><a class="anchor" href="#_reviewing_incidents"></a>Reviewing incidents</h4>
+<div class="paragraph">
+<p>The incidents table lists alert events in reverse chronological order:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>Each row shows the alert severity, rule name, affected pipeline, status (Firing or Resolved), start time, and total duration.</p>
+</li>
+<li>
+<p>Active firing incidents are pinned to the top of the table.</p>
+</li>
+<li>
+<p>Expanding an incident row displays detailed information, including the observed metric value, threshold, error message, and exact timestamps.</p>
+</li>
+<li>
+<p>Clicking the pipeline name in an incident navigates directly to the pipeline&#8217;s monitoring dashboard.</p>
+</li>
+<li>
+<p>You can filter incidents by severity, status, pipeline, rule, and date ranges.</p>
+</li>
+</ul>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_incident_retention_and_cleanup"><a class="anchor" href="#_incident_retention_and_cleanup"></a>Incident retention and cleanup</h4>
+<div class="paragraph">
+<p>The platform includes a scheduled background cleanup task that purges resolved incidents that are older than the retention period (30 days by default).
+By default, the task runs every 24 hours.
+Actively firing incidents are retained indefinitely until they are resolved.</p>
+</div>
+<div class="paragraph">
+<p>To change the retention period or how often the cleanup task runs, set the <code>alerting.history.retention</code> and <code>alerting.history.cleanup.interval</code> properties.
+For more information, see <a href="#debezium-platform-alerting-configuration">Alerting configuration reference</a>.</p>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="debezium-platform-alerting-configuration"><a class="anchor" href="#debezium-platform-alerting-configuration"></a>Alerting configuration reference</h3>
+<div class="paragraph">
+<p>The following table lists the Helm chart properties for configuring alerting.</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 33.3333%;">
+<col style="width: 50%;">
+<col style="width: 16.6667%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Name</th>
+<th class="tableblock halign-left valign-top">Description</th>
+<th class="tableblock halign-left valign-top">Default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<th class="tableblock halign-left valign-top" colspan="3"><p class="tableblock">Evaluation</p></th>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">alerting.evaluation.interval</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">How often the alert evaluation engine runs.
+Accepts duration strings, such as <code>30s</code>, <code>60s</code>, or <code>5m</code>.</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">60s</p></td>
+</tr>
+<tr>
+<th class="tableblock halign-left valign-top" colspan="3"><p class="tableblock">History</p></th>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">alerting.history.retention</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">How long resolved alert events are kept before cleanup.</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">30d</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">alerting.history.cleanup.interval</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">How often the history cleanup job runs.</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">24h</p></td>
+</tr>
+<tr>
+<th class="tableblock halign-left valign-top" colspan="3"><p class="tableblock">Webhook notifications</p></th>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">alerting.webhook.allowPrivateNetworks</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Allows webhook URLs to resolve to private, loopback, or link-local IP addresses.
+When the value is <code>false</code>, SSRF protection blocks requests to non-public addresses.</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">false</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">alerting.webhook.maxAttempts</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Maximum number of delivery attempts for webhook notifications.</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">3</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">alerting.webhook.connectTimeout</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Connection timeout for webhook HTTP calls, specified as an ISO 8601 duration.</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">5S</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">alerting.webhook.readTimeout</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Read timeout for webhook HTTP calls, specified as an ISO 8601 duration.</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">10S</p></td>
+</tr>
+<tr>
+<th class="tableblock halign-left valign-top" colspan="3"><p class="tableblock">Email notifications</p></th>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">alerting.email.host</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">SMTP server hostname.
+Email notifications are disabled unless you specify a value.</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">""</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">alerting.email.port</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">SMTP server port.</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">587</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">alerting.email.from</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Sender email address for alert notifications.</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">""</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">alerting.email.startTls</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">STARTTLS mode.
+Valid values are <code>DISABLED</code>, <code>OPTIONAL</code>, and <code>REQUIRED</code>.</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">REQUIRED</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">alerting.email.auth.existingSecret</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Name of an existing Kubernetes secret that contains the <code>username</code> and <code>password</code> keys that the platform uses to authenticate with the SMTP server.
+If you do not specify a value, the platform connects to the SMTP server without authentication.</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">""</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</div>
 </article>
 </div>
 <div class="article-cell2">
@@ -3068,7 +3721,7 @@ Panels with matching <code>id</code> values override the corresponding built-in 
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/ae7a3599fd561a4532f1a48e52c6f711831f04ef">ae7a3599</a></span>)
+            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/c8bdf14f7edbcf0678268df5c0698f1837acdf2b">c8bdf14f</a></span>)
             
         </div>
     </footer>
