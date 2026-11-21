@@ -995,8 +995,12 @@ If the connector is offline for longer than the garbage collection window, a new
 The Debezium CockroachDB connector maps its <code>snapshot.mode</code> configuration to the CockroachDB <code>initial_scan</code> changefeed option, so the connector does not require a separate JDBC-based snapshot phase.</p>
 </div>
 <div class="paragraph">
-<p>During the initial scan phase, captured events are marked <code>op=r</code> to designate a read operation, which distinguishes snapshot events from ongoing change events.
-After the initial scan completes and the changefeed transitions to streaming, events are marked with the appropriate operation type (<code>c</code> for create, <code>u</code> for update, <code>d</code> for delete).</p>
+<p>During the initial scan phase, the connector marks the rows that the scan returns as <code>op=r</code> to designate a read operation, which distinguishes snapshot events from ongoing change events.
+In snapshot modes that continue to stream changes after the scan, the initial scan phase ends when the connector receives the first resolved timestamp from the changefeed.
+CockroachDB can send that timestamp some time after the scan finishes.
+If a row is updated or deleted in the meantime, the connector emits the change with its own operation type (<code>u</code> or <code>d</code>).
+If a row is inserted in the meantime, the connector emits the change as <code>op=r</code>, because CockroachDB reports rows from the scan and inserted rows in the same way.
+After the initial scan phase ends, events are marked with the appropriate operation type (<code>c</code> for create, <code>u</code> for update, <code>d</code> for delete).</p>
 </div>
 <div class="paragraph">
 <p>The following table shows how each <code>snapshot.mode</code> maps to the CockroachDB <code>initial_scan</code> option:</p>
@@ -1048,7 +1052,12 @@ On restart with an existing offset, streaming resumes from the stored cursor.</p
 </div></div></td>
 <td class="tableblock halign-left valign-top"><div class="content"><div class="paragraph">
 <p>The snapshot backfills all existing rows, then the connector stops.
-Useful for one-time data migration.</p>
+Useful for one-time data migration.
+CockroachDB does not allow the <code>updated</code> or <code>diff</code> options together with <code>initial_scan='only'</code>.
+In this mode, the connector ignores <a href="#cockroachdb-property-include-updated"><code>cockroachdb.changefeed.include.updated</code></a> and <a href="#cockroachdb-property-include-diff"><code>cockroachdb.changefeed.include.diff</code></a>, and logs a warning.
+After the snapshot completes, the connector does not repeat it when it restarts.
+If every captured table is empty, no event records the completed snapshot, so the connector repeats the empty scan after a restart unless heartbeats are enabled (<a href="#cockroachdb-property-heartbeat-interval"><code>heartbeat.interval.ms</code></a>).
+If the connector stops before it has read the whole scan, it runs the scan again after it restarts, so some rows can be emitted more than once.</p>
 </div></div></td>
 </tr>
 <tr>
@@ -1166,7 +1175,9 @@ The default value,  <code>source</code> ensures that intermediate topics include
 <p>If any of these conditions is not met, the connector does not recognize the existing changefeed and creates its own.
 A changefeed created with a different <code>topic_prefix</code> or without <code>full_table_name</code> is not recognized as a match, and the connector creates its own.
 If a running changefeed matches the connector&#8217;s topic prefix and tables, but it was created with an envelope other than <code>enriched</code>, the connector cannot consume it.
-The connector then fails to start and returns an error stating that you must recreate that changefeed with <code>envelope='enriched'</code> or else use a different topic prefix.</p>
+The connector then fails to start and returns an error stating that you must recreate that changefeed with <code>envelope='enriched'</code> or else use a different topic prefix.
+In <code>initial_only</code> snapshot mode, the matching changefeed must have been created with <code>initial_scan='only'</code>, because a changefeed that keeps streaming never completes the snapshot.
+Otherwise, the connector fails to start and returns an error that names the changefeed job.</p>
 </div>
 <div class="admonitionblock note">
 <table>
@@ -4335,7 +4346,7 @@ To include the <code>before</code> field in update events, set <code>cockroachdb
 
 <div id="toc-rightbar"></div>    <footer class="footer">
         <div class="wrapper">
-            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/3bcd9ca3b77081f9e199f24f59e8576b963ec32d">3bcd9ca3</a></span>)
+            <div class="copyright">Copyright &copy; 2026 Debezium Community (Rev: <span class="truncated"><a href="https://github.com/debezium/debezium/commit/737c05e40e87936da89247ac9236ea071980ce26">737c05e4</a></span>)
             
         </div>
     </footer>
