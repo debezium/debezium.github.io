@@ -11,7 +11,7 @@ footer: _
 number: 002
 date: November 2026
 day: 17
-youtube: Q46slutMeSA
+youtube: _D7X_0uK66k
 special: gsoc2026 | GSoC 2026 Projects Showcase
 ```
 
