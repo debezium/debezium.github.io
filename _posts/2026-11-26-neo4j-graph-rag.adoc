@@ -1,0 +1,523 @@
+---
+layout: post
+title: "Building a Graph-RAG Assistant with Debezium and Neo4j"
+tags: [ neo4j, graph, postgres, smt, rag, ai]
+date: 2026-11-26
+author: vsantonastaso
+---
+
+I have worked on many products during my career that built on top of relational databases that have been running for years, sometimes decades.
+The data model is solid, the schema has been refined by people who understood the domain, and all of it works as expected: customers, products, orders, invoices and payments, all sitting in PostgreSQL or MySQL or Oracle, exactly where they have always been. +
+Then the AI era arrived, and suddenly everyone wants a virtual assistant to support and assist customers.
+In this era, if you want to stay competitive, offering an AI-powered agent is essential, whether you like it or not.
+An agent that can answer questions, a chatbot that "_knows the business_", something that reads the data the application already owns and talks about it.
+And here's the uncomfortable part nobody mentions at the kickoff meeting: pointing a language model at a mature relational database is often _not very ergonomic_.
+It's not impossible for sure, it's not particularly hard in the sense of the toy demo, but it's just uncomfortable and this discomfort increases as the data becomes more realistic. +
+The questions people actually want to ask an assistant are about _relationships_. In an e-commerce platform, for example, that could be "_who bought this_", "_what else did they order_", or "_which products tend to show up together_".
+The trouble is that in a relational database those relationships aren't stored directly, they only appear when you follow foreign keys and join the rows back together.
+If you dump those rows into a vector store, you could lose the very thing that made the question interesting, how things connect.
+You can still answer "_what is this product_" or "_suggest me a product with these attributes,_" but once the question is about how things connect, you're stuck: either you keep writing more and more complex SQL for the model to run, or you let it guess the joins, and it could guess wrong. +
+A graph is the ideal solution for that kind of question, and that's why I implemented the example we'll use for the rest of this post: take an e-commerce schema that already lives in PostgreSQL, with its customers, products and orders, and build a Neo4j graph of the same data that an assistant can actually traverse.
+Copying it across once is easy, you write a script, you read the tables, you create the nodes and relationships and then the boring task is complete.
+The problem is that the database doesn't stop, rows keep getting inserted, orders change status, someone fixes a typo in a product description, and by the time your import finishes the graph is already outdated.
+So the real task was never "_build a graph_" but "_keep a graph in sync with a database that is always changing_", a very different and much more interesting challenge.
+
+In this post, we will walk through how we solved it with Debezium's Neo4j integration, and then how that same pipeline ended up feeding a https://neo4j.com/blog/genai/what-is-graphrag/[Graph-RAG] based assistant.
+
++++<!-- more -->+++
+
+== Prerequisites
+
+This article assumes you know the following concepts.
+
+* *https://debezium.io/documentation/faq/#what_is_change_data_capture[Debezium and change data capture (CDC)]:* how Debezium streams row-level changes (inserts, updates, deletes) out of a relational database by reading its transaction log
+* *https://docs.confluent.io/platform/current/connect/index.html[Kafka Connect] and https://debezium.io/documentation/reference/stable/transformations/index.html[SMTs]:* the connector model and the Single Message Transformation
+* *Relational database basics:* tables, primary keys, and foreign keys
+* *https://neo4j.com/docs/getting-started/appendix/graphdb-concepts/[Graph databases] and https://neo4j.com/docs/cypher-manual/current/introduction/[Cypher]:* nodes, relationships, properties, and Neo4j's query language
+* *https://www.ibm.com/think/topics/retrieval-augmented-generation[RAG (retrieval-augmented generation)]:* the idea of retrieving relevant data and passing it to an LLM as context
+
+[NOTE]
+====
+In this post we refer to the following example: a small e-commerce schema in PostgreSQL, with `customers`, `products`, `orders`, and an `order_items` join table.
+We use this example to explain the https://debezium.io/documentation/reference/stable/transformations/index.html[SMTs], to follow a single row through the pipeline, and finally to build the Graph-RAG assistant on top.
+Everything is based on the https://github.com/debezium/debezium-examples/tree/main/graph-rag[`graph-rag` example] in the `debezium-examples` repository, so you can run the whole E2E example if you want to follow along.
+Throughout the post, class names and key steps link to their source file in that repository, so you can jump directly to the related code.
+====
+
+== The Debezium Neo4j integration
+
+The obvious first instinct was to build a dedicated Debezium connector for Neo4j.
+However, it would have duplicated work Neo4j has already done in its  https://neo4j.com/docs/kafka/current/source/quickstart/[own Kafka connectors], with the only benefit of having a more integrated experience for Debezium users.
+So we took a step back and asked what was actually missing and after reviewing the official tools that integrate with Neo4j, we realized the gap was a bridge: something that sits between a Debezium change event and what the Neo4j sink connector expects, and handles the translation.
+So we implemented a pair of https://debezium.io/documentation/reference/stable/transformations/index.html[single message transformations (SMTs)], one for each direction:
+
+* The first SMT rewrites Debezium change events into a format the https://neo4j.com/docs/kafka/current/sink/quickstart/[Neo4j Kafka sink connector] understands and enables a pipeline from any relational database that Debezium supports to a Neo4j graph.
+* The second SMT goes the opposite way, i.e. it takes Neo4j's own CDC events and reshapes them into the standard Debezium envelope, so the https://debezium.io/documentation/reference/stable/connectors/jdbc.html[JDBC sink] can write them back into a relational table.
+
+Two SMTs, two directions, and no new connector to build but with the benefit of the Debezium ecosystem integration.
+
+[discrete]
+==== Relational vs graph: the same data, two shapes
+
+In a relational schema, a relationship is a value, an order "_belongs to_" a customer because the `orders` row carries a `customer_id` that matches a `customers` row.
+A many-to-many relationship like "_which products are in which orders_" doesn't even get to be a value, it gets its own table, `order_items`, with two foreign keys.
+So nothing about these rows looks like a connection, which only exists when you `JOIN`.
+
+In a graph, the https://neo4j.com/docs/getting-started/appendix/graphdb-concepts/[relationship] is a first-class citizen.
+`(Order)-[:PLACED_BY]->(:Customer)` is an edge you can traverse, not a column you have to match and the join table collapses into the edges it was always standing in for: `(:Order)-[:CONTAINS {quantity}]->(:Product)`.
+
+So the translation isn't just copy rows into nodes, but it's a sort of "_decide which columns stay as properties, which foreign keys become edges, and which tables are really relationships and which not._" +
+That's a modeling decision, and it's exactly the logic applied in the SMT.
+
+[discrete]
+==== Two converters, two directions
+
+The integration ships as two single message transformations that point in opposite directions.
+
+The https://debezium.io/documentation/reference/stable/transformations/neo4j-cud-converter.html[`Neo4jCudConverter`] goes relational-to-graph.
+It takes a Debezium change event and rewrites it into https://neo4j.com/docs/kafka/current/sink/cud/#_cud_format_specification[Neo4j's CUD format], the Create/Update/Delete instruction format the Neo4j Kafka sink connector understands.
+Every Debezium operation maps onto a CUD operation: `c`, `r`, and `u` all become a `merge` (create-or-update, which is what you want for an idempotent sink), and `d` becomes a `delete`.
+This is the one we used, and the one you reach for when, as in this example, your data is already in a relational database, and you want a graph out the other end.
+
+The https://debezium.io/documentation/reference/stable/transformations/neo4j-debezium-converter.html[`Neo4jDebeziumConverter`] goes the opposite way, graph-to-relational.
+Neo4j has its https://neo4j.com/docs/cdc/current/[own CDC feature], and when you stream those events through this converter it reshapes them back into the standard Debezium envelope, populating `before`, `after`, `source`, `op`, `ts_ms`, so the https://debezium.io/documentation/reference/stable/connectors/jdbc.html[Debezium JDBC sink] can write them into a relational table.
+It's a sort of mirror image, and together the two let you keep a graph and a relational store in agreement in whichever direction your writes actually happen.
+
+Let's spend a moment on the second one even though we didn't use it, because the reason it exists says something about the design.
+You might reasonably ask why graph-to-relational needs a dedicated converter at all and why we put the effort into it.
+The answer is that a Neo4j CDC event carries more than values, it carries structure:
+a node event knows its labels and which property is the key (from Neo4j's own key or uniqueness constraint), a relationship event knows its two endpoints and their keys.
+The converter leans on that: run in Neo4j's `EXTENDED` payload mode and the events become self-describing, so the SMT can derive the target table, the primary key, and the columns for you with zero configuration.
+It can even decide whether a relationship should land as a join table (both endpoint keys as a composite key) or as a foreign-key column on one side, depending on how you want the relational model to look.
+
+That direction is less common, but it can serve more than one might think.
+One case is the graph being the system of record for part of the domain: a team models something intrinsically connected, a recommendation layer, an access-control hierarchy, a fraud or identity graph, directly in Neo4j, and then needs those entities mirrored into a relational store that the rest of the company already reports on, feeds into a data warehouse, or joins against in existing SQL.
+Another is a gradual migration, essentially a https://martinfowler.com/bliki/StranglerFigApplication.html[Strangler Fig], where you're moving a feature from a legacy relational database into a graph, the graph becomes the new system of record for that feature, and for a while both stores have to stay live.
+The graph-to-relational direction lets the old relational tables keep receiving writes from the new graph, so downstream consumers that still read from them don't have to be cut over on day one.
+
+For the rest of this article we'll stay on the relational-to-graph side, because that's the direction the example takes, and it's worth following one row through the pipeline to see what actually happens.
+
+The full pipeline looks like this:
+
+[source]
+----
+PostgreSQL -> Debezium Postgres connector (+ Neo4jCudConverter SMT) -> Kafka -> split step -> Neo4j sink connector -> Neo4j
+----
+
+The only unusual box there is the split step, and it's worth understanding why it's needed.
+
+A single relational row often isn't a single graph change.
+Insert one `orders` row and you get an `Order` node *and* the `PLACED_BY` edge to its customer, and the node has to exist before the edge can attach to it.
+The Debezium CUD converter's default `output.mode=array` preserves that order by packing the node and its relationship events into one JSON array, in one Kafka record.
+But the Neo4j sink currently accepts just one CUD event per record, not an array, so something has to sit between the SMT and the sink and explode each array back into individual records.
+The example does this with a really simple Kafka Streams app (https://github.com/debezium/debezium-examples/blob/main/graph-rag/splitter/src/main/java/io/debezium/examples/neo4j/CudArraySplitter.java[`CudArraySplitter`]), but you could also do it with ksqlDB or Flink.
+
+The example is kafka-based but Debezium also offers an alternative solution, https://debezium.io/documentation/reference/stable/operations/debezium-server.html[Debezium Server] which streams change events from a source database directly to messaging and storage systems without requiring Apache Kafka.
+
+== The example
+
+The example we will use is a small assistant that answers questions about an e-commerce dataset, grounded in the meaning of the data rather than in how the application stored it.
+In particular, we focus on the https://en.wikipedia.org/wiki/Retrieval-augmented_generation[RAG] part: before the model answers, it looks up the relevant entities and relationships and brings them into context, and what makes this interesting is *where* those facts come from.
+Instead of living in a list of documents in a vector store, they live in the Neo4j graph, which is exactly what lets the assistant go beyond "_find a product with these characteristics_" and answer something like "_who bought it, in which order, and is that order shipped yet_", and all other questions that are related to how things connect.
+And because Debezium keeps the graph in sync, the answers follow the database: change an order's status in Postgres and a couple of seconds later the assistant tells you the new status, with no re-indexing, no re-import, and no restart.
+And that is the main reason that we involved CDC here, the answer always tracks the relational database.
+
+[source.animated,mermaid]
+----
+graph LR
+    subgraph SRC["Relational Source"]
+        PG[("Postgres")]
+    end
+
+    subgraph ING["Ingestion"]
+        DBZ("Debezium + neo4j, embed SMTs")
+        KF{{"Kafka"}}
+        SPLIT("Splitter")
+        SINK("Sink")
+    end
+
+    subgraph AI["MODEL"]
+        OLLAMA("Ollama")
+    end
+
+    subgraph GRAPH["Graph Sink"]
+        NEO4J[("Neo4j")]
+    end
+
+    subgraph QRY["Query"]
+        APP("Assistant")
+    end
+
+    PG e1@-->|CDC| DBZ
+    DBZ e2@-->|CUD array| KF
+    KF e3@-->|CUD array| SPLIT
+    SPLIT e4@-->|CUD event| SINK
+    SINK e5@-->|write| NEO4J
+    DBZ e6@-->|text| OLLAMA
+    OLLAMA e7@-.->|vectors| DBZ
+    APP e8@-->|vector, Cypher| NEO4J
+    APP e9@-.->|embed, chat| OLLAMA
+
+    e1@{ animate: true }
+    e2@{ animate: true }
+    e3@{ animate: true }
+    e4@{ animate: true }
+    e5@{ animate: true }
+    e6@{ animate: true }
+    e7@{ animate: true }
+    e8@{ animate: true }
+    e9@{ animate: true }
+
+    classDef source fill:#2196F338,stroke:#2196F3,stroke-width:2px,rx:10,ry:10
+    classDef debezium fill:#4CAF5038,stroke:#4CAF50,stroke-width:2px,rx:10,ry:10
+    classDef kafka fill:#78909C38,stroke:#78909C,stroke-width:2px
+    classDef graphdb fill:#00BCD438,stroke:#00BCD4,stroke-width:2px,rx:10,ry:10
+    classDef ai fill:#FF980038,stroke:#FF9800,stroke-width:2px,rx:10,ry:10
+    classDef app fill:#AB47BC38,stroke:#AB47BC,stroke-width:2px,rx:10,ry:10
+
+    class PG source
+    class DBZ debezium
+    class KF,SPLIT kafka
+    class NEO4J,SINK graphdb
+    class OLLAMA ai
+    class APP app
+
+    style SRC fill:transparent,stroke:#9E9E9E,stroke-dasharray:4 4
+    style ING fill:transparent,stroke:#9E9E9E,stroke-dasharray:4 4
+    style AI fill:transparent,stroke:#9E9E9E,stroke-dasharray:4 4
+    style GRAPH fill:transparent,stroke:#9E9E9E,stroke-dasharray:4 4
+    style QRY fill:transparent,stroke:#9E9E9E,stroke-dasharray:4 4
+----
+
+[discrete]
+==== Under the hood
+
+Before the walkthrough, it's helpful to see everything that's running, because there's a bit more than just Debezium and Neo4j.
+The whole thing comes up with one `docker-compose up`, and the services split into two main parts.
+
+The ingestion part is the pipeline we've been describing above: Postgres holding the e-commerce schema, Kafka in the middle, the Debezium Connect worker running the Postgres source connector with Neo4j and Debezium AI SMTs, the little Kafka Streams splitter, and Neo4j 5 as the sink.
+There is also a local model runner, Ollama, which shows up in the ingestion piece in addition to the query part because of https://debezium.io/documentation/reference/stable/ai/embeddings.html[embeddings] generation.
+We'll explore it later, but the important thing is that nothing in the ingestion is specific to the assistant, it's a generic relational-to-graph pipeline.
+
+The query part is a single standalone process: a small Quarkus command-line app.
+It uses https://docs.langchain4j.dev/[LangChain4j] (through `quarkus-langchain4j-ollama`) to talk to the language model and to orchestrate retrieval, and the plain https://neo4j.com/docs/java-manual/current/[Neo4j Java driver] to execute the https://neo4j.com/docs/cypher-manual/current/introduction/[Cypher] and vector searches.
+There is no Kafka or Debezium interaction.
+Indeed, in this part Neo4j is just a data store, which is exactly the separation of concerns we want: the sync pipeline keeps the graph true, and the assistant just reads it.
+
+== Ingest: Postgres to Neo4j
+
+[discrete]
+==== Data model
+
+On the relational side, the schema is a small e-commerce example with four tables:
+
+[source,sql]
+----
+CREATE TABLE customers   (id, first_name, last_name, email);
+CREATE TABLE products    (id, name, description, price);
+CREATE TABLE orders      (id, customer_id FK -> customers, total, status);
+CREATE TABLE order_items (order_id FK -> orders, product_id FK -> products, quantity,
+                          PRIMARY KEY (order_id, product_id));
+----
+
+Four tables, two foreign keys on `orders` and `order_items`, and one honest many-to-many join table.
+The target is simply a graph representation of the relational schema, with three node types and two relationship types:
+
+[source]
+----
+(:Customer)                                    <- customers
+(:Product {description, embedding})             <- products
+(:Order)-[:PLACED_BY]->(:Customer)              <- orders.customer_id
+(:Order)-[:CONTAINS {quantity}]->(:Product)     <- order_items
+----
+
+It's worth noticing that the table `order_items` does not become a node.
+It is a join table, so in the graph it becomes a relationship, carrying `quantity` as an edge property.
+This kind of decision, 'this table is really an edge', is one of the important modelling challenges you could face designing this kind of pipeline.
+
+[discrete]
+==== Debezium configuration
+
+Most of the Debezium Postgres connector configuration is the usual boilerplate, so let's focus on the SMTs configuration.
+There are two SMTs in the chain, `embed` (the https://debezium.io/documentation/reference/stable/ai/embeddings.html[Debezium AI `FieldToEmbedding`]) and `neo4j` (the https://debezium.io/documentation/reference/stable/transformations/neo4j-cud-converter.html[`Neo4jCudConverter`]):
+
+[source,json]
+----
+"transforms": "embed,neo4j",
+"transforms.neo4j.type": "io.debezium.transforms.Neo4jCudConverter",
+
+"transforms.neo4j.table.customers.node.labels": "Customer",
+"transforms.neo4j.table.customers.node.id.properties": "id",
+
+"transforms.neo4j.table.products.node.labels": "Product",
+"transforms.neo4j.table.products.node.id.properties": "id",
+
+"transforms.neo4j.table.orders.node.labels": "Order",
+"transforms.neo4j.table.orders.node.id.properties": "id",
+"transforms.neo4j.table.orders.relationship.customer_id.type": "PLACED_BY",
+"transforms.neo4j.table.orders.relationship.customer_id.target.label": "Customer",
+"transforms.neo4j.table.orders.relationship.customer_id.target.id": "id",
+"transforms.neo4j.table.orders.relationship.customer_id.target.node.op": "merge"
+----
+
+A single `Neo4jCudConverter` instance handles all four tables.
+Every property is described in the documentation, but take a quick look at the example configuration: each table has its own mapping under a `table.<name>.*` namespace, and the SMT picks the right one for each change event by reading the table name out of the event's `source` block.
+For `customers`, `products`, and `orders`, `node.labels`, properties say which Neo4j label the row becomes (`Customer`, `Product`, `Order`) and `node.id.properties` says which column is the node's key (`id`).
+That's all it takes to turn a relational row into a graph node.
+For the `orders` mapping we declare a relationship on the `customer_id` column, so on top of the `Order` node the SMT also emits a `PLACED_BY` edge to the `Customer` whose `id` matches that foreign key.
+In other words, a foreign-key column becomes an edge.
+
+Another important property is `target.node.op=merge` which controls what happens to the *other* end of that edge, the `Customer`.
+With `merge`, the SMT creates the customer endpoint if it doesn't exist yet.
+Currently, with Debezium integration we cannot guarantee that the customer's own change event arrives before the order that references it, so an order can land first.
+Without `merge`, that out-of-order arrival would fail to attach the edge; with it, the endpoint is stubbed in and later filled when the real `Customer` event arrives.
+
+Let's see the join table configuration:
+
+[source,json]
+----
+"transforms.neo4j.table.order_items.node.mode": "relationship",
+"transforms.neo4j.table.order_items.relationship.order_id.type": "CONTAINS",
+"transforms.neo4j.table.order_items.relationship.order_id.direction": "outgoing",
+"transforms.neo4j.table.order_items.relationship.order_id.target.label": "Order",
+"transforms.neo4j.table.order_items.relationship.order_id.target.id": "id",
+"transforms.neo4j.table.order_items.relationship.product_id.type": "CONTAINS",
+"transforms.neo4j.table.order_items.relationship.product_id.direction": "incoming",
+"transforms.neo4j.table.order_items.relationship.product_id.target.label": "Product",
+"transforms.neo4j.table.order_items.relationship.product_id.target.id": "id",
+"transforms.neo4j.table.order_items.relationship.order_id.properties": "quantity"
+----
+
+`node.mode=relationship` controls whether to make a node for this row or an edge.
+The two foreign keys become the two endpoints, one marked `outgoing` and one `incoming`, so the edge always runs `(:Order)-[:CONTAINS]->(:Product)` regardless of which order the SMT reads the configuration, and `quantity` will be mapped as a property.
+
+There's also a second SMT in the chain, `embed`, which runs ahead of `neo4j` and generates a vector embedding for each product.
+It's not part of the Neo4j story proper, so we'll come back to it when we get to the semantic queries that actually use it; for now it's enough to know it runs *during CDC*.
+
+[discrete]
+==== From relational change event to graph update
+
+Let’s start by looking at the event our Debezium SMTs produce.
+A CUD event is really just an instruction for the Neo4j sink: "_merge this node_", "_merge this relationship_", "_delete this one_".
+Below an example of what the SMT produces when a single row is inserted into `orders`, one Kafka record whose value is this array:
+
+[source,json]
+----
+[
+  {
+    "type": "node",
+    "op": "merge",
+    "labels": ["Order"],
+    "ids": { "id": 5001 },
+    "properties": { "total": 99.95, "status": "pending" }
+  },
+  {
+    "type": "relationship",
+    "op": "merge",
+    "rel_type": "PLACED_BY",
+    "from": { "labels": ["Order"], "ids": { "id": 5001 }, "op": "merge" },
+    "to":   { "labels": ["Customer"], "ids": { "id": 1004 }, "op": "match" },
+    "properties": {}
+  }
+]
+----
+
+The node comes first, the edge second, and the `customer_id` column removed from the node's properties and become a relationship.
+The split step sends these to the sink one at a time in that order, and Neo4j ends up with an 'Order' node connected to its 'Customer'.
+
+That was a single insert, but the same mechanism keeps the graph in sync for every change, so let's analyze the three possible cases.
+
+An **insert** is what we just mentioned: a `merge` on the node and a `merge` on each of its edges.
+Because everything is a `merge`, replaying the same event twice is harmless, and this idempotency is necessary because it allows the pipeline to recover after a restart without producing duplicate nodes.
+
+For **update** we always use neo4j `merge` operation.
+When an order status changes from `pending` to `shipped`, the SMT emits a node `merge` keyed by `id` with the new properties; Neo4j finds the existing `Order` node and updates it.
+No differences on our side, the transaction log already told us the row changed, and `merge` makes applying it trivial.
+
+A **delete** matches the neo4j `delete` operation.
+By default, the node delete is a *detach* delete operation, meaning Neo4j removes the node and any relationships still attached to it, which is usually what you want (a deleted order shouldn't leave a dangling `PLACED_BY` edge behind).
+
+[discrete]
+==== A few considerations
+
+[NOTE,caption=]
+====
+*No different logic between the initial snapshot and streaming* +
+When the connector starts, Debezium takes a https://debezium.io/documentation/reference/stable/connectors/postgresql.html#postgresql-snapshots[snapshot] of the existing tables and emits them as read (`r`) events.
+The CUD converter maps `r` to `merge`, and so the initial load of the graph and the ongoing streaming use the identical code, there is no separate "_snapshot_" mode to build, test, and keep in sync with the streaming path.
+
+*Ordering is the tricky part* +
+An edge can't attach to a node that isn't there yet, and across multiple tables Debezium doesn't guarantee the `Customer` arrives before the `Order` that references it.
+There are two approaches to solve it, and you need both.
+The first problem is within a single row: inserting an order produces both the `Order` node and its `PLACED_BY` edge, and the edge has to come second.
+The _array mode_ takes care of this, it keeps the node ahead of its edge inside the same record.
+The second problem is across rows: the order might simply arrive before the customer it points to.
+This is where `target.node.op=merge` saves you, if the customer isn't in the graph yet, the edge creates a placeholder for it instead of failing, and the real `Customer` event fills in the details later when it lands.
+
+*Idempotency is a must* +
+Because every write is a `merge`, the pipeline is safe to replay.
+Kafka can deliver the same event twice, the connector can restart, a snapshot can run again, and none of it corrupts the graph.
+
+*Decimals need a decision* +
+Neo4j has no arbitrary-precision number type, its numeric properties are 64-bit, so a Postgres `NUMERIC(10,2)` can't be stored as a number without risking a loss of precision.
+The example sets `decimal.handling.mode=double` on the source connector, accepting float precision because prices here are for display and arithmetic, not accounting.
+If you needed exact values you'd choose `string` instead and store them as text.
+The SMT won't make this decision for you because it's about what the data means, not how it moves.
+
+*Schema changes out of scope* +
+The CUD converter transforms *DML* events only.
+It ignores the `DROP TABLE`, `ALTER TABLE`, `TRUNCATE` or any other DDL partly because Debezium publishes schema changes to a different topic that never reaches the SMT, and partly because currently there's no safe universal mapping for these, dropping a table doesn't obviously mean "_delete all those nodes_", and renaming a column doesn't obviously mean "_rename the property in place._"
+So, for now, a schema change is a manual process: change the table, update the per-table mapping, restart the connector, and run any Cypher needed to fix up the data already in the graph.
+This is a current limitation and the schema-change handling is something we plan to work on in future versions.
+====
+
+== Query: the Graph-RAG assistant
+
+With the graph live, the first simplest check is just to look at an order with related products:
+
+[source,cypher]
+----
+MATCH (o:Order)-[r:CONTAINS]->(p:Product)
+RETURN o, r, p;
+----
+
+This is already better than the three-table join it replaces, but the real interesting part, and the reason https://neo4j.com/blog/genai/what-is-graphrag/[Graph-RAG] beats a traditional vector-only RAG here, is that the assistant can answer two very different *kinds* of question against this same graph.
+A traditional RAG only performs semantic lookups over a pile of text; here we can do that *and* follow the relationships between entities, because the data lives in a graph rather than in isolated chunks.
+To make this work, the assistant doesn't try to guess which kind of question you asked: it sends every question to *both* retrievers, a semantic one and a relational one, and merges whatever they find (https://github.com/debezium/debezium-examples/blob/main/graph-rag/client/src/main/java/io/debezium/examples/graphrag/Neo4jRetrievalAugmentor.java[`Neo4jRetrievalAugmentor`]):
+
+[source,java]
+----
+augmentor = DefaultRetrievalAugmentor
+        .builder()
+        .queryRouter(new DefaultQueryRouter(vectorRetriever, cypherRetriever))
+        .build();
+----
+
+[discrete]
+==== The semantic retriever
+
+Let's start with the semantic retriever (https://github.com/debezium/debezium-examples/blob/main/graph-rag/client/src/main/java/io/debezium/examples/graphrag/Neo4jGraphContentRetriever.java[`Neo4jGraphContentRetriever`]).
+Not every question is precise: if we ask, 'What do you have for the garden?', we haven't named a product, but we have described one.
+There is no way to use Cypher to perform string matching and connect 'garden' to a product called 'Widget', which mentions planting flowers in its description.
+To answer that, we need to match by *meaning* rather than by exact words, and that's what semantic search does.
+The idea is to turn each product's description into an https://www.ibm.com/think/topics/embedding[_embedding_], a vector of numbers that captures what the text is about, and do the same with the question.
+Products whose vectors are closest to the question's vector are the best semantic matches, even when they share no words.
+
+This is where the Debezium 'embed' SMT that we configured earlier finally comes into action.
+During CDC, before a `products` change event reaches the CUD converter, the `FieldToEmbedding` SMT takes the product's `description`, sends it to a local embedding model (`nomic-embed-text`, running in Ollama in our example), and stores the resulting embeddings on the event as `after.embedding`:
+
+[source,json]
+----
+"transforms": "embed,neo4j",
+"transforms.embed.type": "io.debezium.ai.embeddings.FieldToEmbedding",
+"transforms.embed.predicate": "isProducts",
+"transforms.embed.field.source": "after.description",
+"transforms.embed.field.embedding": "after.embedding",
+"transforms.embed.ollama.url": "http://ollama:11434",
+"transforms.embed.ollama.model.name": "nomic-embed-text"
+----
+
+So in our pipeline, the `embed` SMT runs first and adds the vector to the event, then `neo4j` SMT converts the whole event into a Neo4j CUD `merge`, so the embedding simply becomes another property on the `Product` node.
+A predicate keeps this scoped to products, embedding customers or orders wouldn't help in our example, since products are the ones with a searchable description.
+
+The only manual task is to build the Neo4j vector index at the first startup of the Neo4j database (https://github.com/debezium/debezium-examples/blob/main/graph-rag/client/src/main/java/io/debezium/examples/graphrag/GraphStore.java[`GraphStore`]).
+
+[source,cypher]
+----
+CREATE VECTOR INDEX product_embeddings IF NOT EXISTS
+FOR (p:Product) ON (p.embedding)
+OPTIONS { indexConfig: {
+    `vector.dimensions`: 768,
+    `vector.similarity_function`: 'cosine'
+} }
+----
+
+Recent Neo4j versions (https://neo4j.com/docs/cypher-manual/current/indexes/search-indexes/vector-indexes/[vector indexes] are available from 5.11) keep the graph and the vector index in the same place, so we can use a single database for both graph and vector search.
+
+With the embeddings on the nodes and the index in place, the semantic retriever embeds your question, runs a vector search for the nearest product nodes, and then, *walks the graph* from each matching product to its orders and customers, all in one query:
+
+[source,cypher]
+----
+CALL db.index.vector.queryNodes($index, $k, $vector) YIELD node AS p, score
+WHERE score >= $minScore
+OPTIONAL MATCH (p)<-[ci:CONTAINS]-(o:Order)-[:PLACED_BY]->(c:Customer)
+RETURN p.name, p.description, p.price, score,
+       collect({ order: o.id, status: o.status, quantity: ci.quantity,
+                 customer: c.first_name + ' ' + c.last_name }) AS orders
+----
+
+So if we ask "_what do you have for the garden and who has bought it?_" the query extracts the garden trowel from its description through the vector search, the `score >= $minScore` filter throws away anything that isn't actually a match (unrelated text floors around 0.72 with this model so we find real matches at 0.89 and up), and the `CONTAINS`/`PLACED_BY` traversal extracts that Sally Thomas ordered two of them and the order is pending.
+A plain vector store could have found the product but could not have extracted who bought it, because that fact isn't in the product text, but it is in its relationships.
+
+[discrete]
+==== The relational retriever
+
+The second retriever (https://github.com/debezium/debezium-examples/blob/main/graph-rag/client/src/main/java/io/debezium/examples/graphrag/Neo4jText2CypherRetriever.java[`Neo4jText2CypherRetriever`]) handles relational questions like "_what did Sally buy?_" or "_which orders have shipped?_".
+For these questions, the retriever asks the language model to generate the Cypher query (only to generate it, we run it ourselves).
+There are two potential issues that could have enabling a model to run queries against your database: a query that's *wrong* and a query that's *dangerous*, so we guard against each in two ways.
+
+First, keeping it correct.
+To write a working query, the model needs to know the graph's structure: which labels, relationships, and properties exist.
+If it has to guess, it invents labels or properties that aren't there and the query fails.
+So rather than describing the schema by hand in the prompt (which would slowly go stale as the graph changes), we extract it from the database at runtime (https://github.com/debezium/debezium-examples/blob/main/graph-rag/client/src/main/java/io/debezium/examples/graphrag/Neo4jSchemaProvider.java[`Neo4jSchemaProvider`]), and pass that to the model, so it always works against the real structure.
+
+Second, keeping it safe.
+The assistant treats whatever the model produces as "_hostile_" until it validates it, checking, for example, that the query is read-only and doesn't contain any write keywords.
+
+
+The assistant always runs both retrievers, so if a question is too "_fuzzy_" for a Cypher query, the vector path still finds something and if it's too specific for the vector path, the generated Cypher handles it.
+The result of both retrievers is combined and sent to the chat model (`qwen2.5-coder:3b`, in our example), which writes the final answer:
+
+[source]
+----
+You: What did Sally buy?
+Assistant: Sally Thomas bought 2 Widgets (order #5001), a stainless-steel garden trowel.
+
+You: what can I buy for DIY jobs?
+Assistant: The Gizmo is a compact cordless power drill, good for home DIY and repairs.
+----
+
+[discrete]
+==== Change the data, change the answer
+
+Now, let's see the streaming part of the CDC in action.
+Change an order's status in Postgres:
+
+[source,shell]
+----
+UPDATE orders SET status = 'shipped' WHERE id = 5001;
+----
+
+Ask again, "_what is the status of the order containing the garden trowel?_", and the assistant now says `shipped`.
+
+The chain is the same: the update went into the transaction log, the connector read it, the SMT turned it into a node `merge`, the splitter and sink applied it.
+No re-indexing or restarting needed.
+
+Even the *semantic* layer stays in sync, because the embeddings are maintained by CDC too.
+Edit a product's description:
+
+[source,shell]
+----
+UPDATE products SET description = 'A heavy-duty snow shovel for clearing driveways in winter.' WHERE id = 200;
+----
+
+The update flows through the same `embed` SMT, which re-embeds the new text, and the refreshed vector is written onto the existing node.
+Now the same product that used to answer "_something for the garden_" starts answering "_something for the winter_" instead, with no manual re-embedding and no index rebuild.
+
+So the main point here is that the retrieval layer, embeddings included, always reflects the current state of the database instead of a stale copy of it.
+
+== Conclusion & Takeaways
+
+If I had to summarize what I learned from working on this integration, it's that the hard part was never building the graph, it was keeping it consistent with a database that never stops changing, and we tried to make that as easy as possible with Debezium.
+
+The Graph-RAG assistant was just something I built on top.
+It's a nice example because we can watch an answer change a few seconds after the update on the relational database, but the same pipeline would work just as well for recommendations, dependency analysis, fraud detection, or anything where the answer lives in the connections rather than the rows.
+
+So the takeaways are:
+
+* *Graph power on top of what you already have* You don't have to migrate or replace anything.
+Debezium streams the changes from the database you already have into a graph that lives next to it.
+* *You only deal with the data mapping.* Your job is deciding what the data means as a graph, which columns are properties, which foreign keys are edges, which tables are relationships.
+Everything else is handled for you.
+* *It builds on the Debezium ecosystem.* Same connectors, same pipeline, same tooling and community you may already be using, so there's no separate stack to adopt and maintain.
+* *Graph-RAG extends what plain RAG can do.* A traditional vector RAG matches similar text; with a graph you can also follow the relationships between entities, so the assistant answers questions that pure vector search can't.
