@@ -1,0 +1,157 @@
+---
+layout: post
+title:  "Snapshot progress monitoring in the Debezium Platform"
+date:   2026-11-23
+tags: [ debezium-platform, monitoring, snapshots, UI, features ]
+author: indrashukla
+---
+:imagesdir: /assets/images/2026-11-23-snapshot-progress-monitoring-in-debezium-platform
+
+The https://debezium.io/documentation/reference/stable/operations/debezium-platform.html[Debezium Management Platform] has been able to run snapshots for a while.
+An initial snapshot happens automatically on the first pipeline start, driven by `snapshot.mode`, and you can trigger an incremental snapshot anytime later yourself from the Platform UI.
+What the Platform could not do was show you what any of that was actually doing.
+
+Once a snapshot started, it disappeared.
+That is a long time to be in the dark, because snapshotting a large database is not a quick operation.
+It can run for hours, and until it finishes the backfill downstream is incomplete and you are the one being asked when it will be done.
+The failure modes are quiet too, as a table without a primary key gets skipped, a permission error knocks out another, and a single very large table holds up everything behind it.
+None of that was visible from the outside, and the only way to check was to read the connector logs, which means cluster access and a lot of scrolling for what should be a routine question.
+
+Debezium already emits https://debezium.io/documentation/reference/stable/configuration/notification.html[notifications] throughout a snapshot, covering start, per table progress, per table completion, and the final outcome.
+The signal existed, nothing was listening to it.
+
+That is now fixed, and this post walks through the new snapshot progress monitoring.
+
++++<!-- more -->+++
+
+[id="how-it-works"]
+== How the numbers reach the UI
+
+The flow is straightforward. As a snapshot progresses, the connector emits notifications for each step which Debezium Server forwards to the Conductor. The Conductor aggregates these events into a consolidated view of the snapshot's current progress and continuously pushes updates to the browser.
+
+Once the snapshot completes its final state is saved as history, and the live progress view returns to its idle state. There's nothing you need to configure or enable. The Platform takes care of wiring everything up when it deploys the pipeline.
+
+[id="starting-a-snapshot"]
+== Starting a snapshot
+
+An initial snapshot runs on its own when the pipeline first starts, you can also trigger other snapshot from the *Actions* tab.
+// screenshot placeholder: Actions tab with the action dropdown open, or the execute snapshot form filled in
+++++
+<div class="imageblock centered-image" style="margin-left:0; margin-right:0;">
+    <img src="/assets/images/2026-11-23-snapshot-progress-monitoring-in-debezium-platform/pipeline-actions-tab.png" style="width:100%; max-width:100%;" class="responsive-image" alt="Actions tab showing the action dropdown and the form for triggering an incremental snapshot">
+</div>
+++++
+
+Action sends https://debezium.io/documentation/reference/stable/configuration/signalling.html#debezium-signaling-incremental-snapshots[Debezium signals] on your behalf.
+Pick an action from the dropdown and a form appears with the fields that action needs.
+You can start an incremental snapshot, and stop, pause or resume one that is already running, or start a blocking snapshot instead.
+You can also target specific tables and add filter conditions to narrow down which rows are included, and the action id comes prefilled with a UUID that you can replace with your own.
+
+[id="snapshots-tab"]
+== The Snapshots tab
+
+Pipeline details has a new *Snapshots* tab.
+While a snapshot is running the tab title carries a badge, blue for *Running* and orange for *Paused*, so you can see snapshot status without actively monitoring it.
+
+Inside, the tab is split into *Snapshot progress* and *Snapshot history*.
+
+[id="progress"]
+=== Snapshot progress
+
+// screenshot placeholder: Snapshots tab, Snapshot progress view, initial snapshot running with the per table list
+++++
+<div class="imageblock centered-image" style="margin-left:0; margin-right:0;">
+    <img src="/assets/images/2026-11-23-snapshot-progress-monitoring-in-debezium-platform/snapshot-progress-tab.png" style="width:100%; max-width:100%;" class="responsive-image" alt="Snapshot progress view showing a global progress bar, summary line and the per table breakdown">
+</div>
+++++
+
+At the top is the global bar with the overall percentage, and under it a summary line carrying the status, the start time, the elapsed duration, how many tables are done out of the total, and the total rows scanned so far.
+The elapsed time ticks live while the snapshot is running, counted from `startedAt` rather than waiting on the next event.
+
+Below that is the per table breakdown, ordered the way you want to read it: completed tables first, then anything skipped or failed, then the table currently being read, then what is still pending.
+Each row shows the table name, its status, progress, and rows scanned.
+
+Where the connector can tell how far through a table it is, progress is a real bar.
+Where it cannot, the row falls back to a spinner and a live rows scanned counter rather than showing a misleading zero.
+You will see this mostly on incremental snapshots, and the counter keeps moving, so a spinner means the table is being read and not that something is stuck.
+
+There is deliberately no scan rate and no ETA.
+Both are easy to compute and easy to get wrong when table sizes vary by orders of magnitude, so we left them out rather than ship a number nobody should trust.
+
+[id="history"]
+=== Snapshot history
+
+When nothing is running, the progress view says so, and the history view is where the interesting part is.
+
+// screenshot placeholder: Snapshot history table with filters, one row expanded to the per table breakdown
+++++
+<div class="imageblock centered-image" style="margin-left:0; margin-right:0;">
+    <img src="/assets/images/2026-11-23-snapshot-progress-monitoring-in-debezium-platform/snapshot-history.png" style="width:100%; max-width:100%;" class="responsive-image" alt="Snapshot history table with type and outcome filters and an expanded row showing per table results">
+</div>
+++++
+
+Completed runs are listed newest first with type, outcome, tables completed out of total, rows scanned, duration, and date.
+Expand a row and you get the per table breakdown for that run, which is how you answer "why did last night's snapshot take forty minutes" after the fact.
+
+You can filter by type or by outcome, and by time using the presets (last 6, 12, or 24 hours) or a custom range.
+History is kept for 30 days by default.
+
+One outcome worth explaining is *Unknown*.
+If the Conductor was down when a snapshot finished, it never saw the terminal notification, and a run that is no longer reporting would otherwise sit in *Running* forever.
+A watchdog closes those after 15 minutes of silence and records the outcome as unknown, which is a lot more honest than a progress bar frozen at 73%.
+
+[id="spotting"]
+== Knowing a snapshot is status
+
+The tab is where you go when you already know there is a snapshot worth watching.
+Two other places in the UI tell you that in the first place, and both of them hand you straight to the tab.
+
+[id="overview-card"]
+===  Pipeline Overview
+
+The Overview is where a pipeline tells you what it is doing right now, so it is the natural home for this.
+Snapshot progress has joined what you find there, as a compact card that is present while a snapshot is running and gone once the pipeline is idle again.
+
+// screenshot placeholder: pipeline Overview page with the snapshot progress card visible
+++++
+<div class="imageblock centered-image" style="margin-left:0; margin-right:0;">
+    <img src="/assets/images/2026-11-23-snapshot-progress-monitoring-in-debezium-platform/snapshot-overview-card.png" style="width:100%; max-width:100%;" class="responsive-image" alt="Snapshot in progress card on the pipeline overview showing type, global bar, percentage, table count and elapsed time">
+</div>
+++++
+
+It shows the snapshot type, the global bar, the percentage, the table count, and how long it has been running.
+*View details* takes you to the Snapshots tab.
+
+[id="listing-page"]
+=== Pipeline list
+
+The pipeline listing page now shows a snapshot indicator next to the pipeline name, for snapshots that are running or paused.
+It is absent when nothing is active, so an idle list stays as clean as it was, and clicking it takes you straight to that pipeline's Snapshots tab.
+
+// screenshot placeholder: pipeline listing page with snapshot indicators next to two pipeline names
+++++
+<div class="imageblock centered-image" style="margin-left:0; margin-right:0;">
+    <img src="/assets/images/2026-11-23-snapshot-progress-monitoring-in-debezium-platform/pipeline-listing-snapshot-indicator.png" style="width:100%; max-width:100%;" class="responsive-image" alt="Pipeline listing page with snapshot status indicators beside the pipeline names">
+</div>
+++++
+
+[id="try-it-out"]
+== Try it out
+
+Update to the latest Platform images, open a pipeline, and trigger an incremental snapshot from the Actions tab.
+The Snapshots tab picks up the label as soon as the first notification arrives, and the Overview card appears alongside it.
+A pipeline starting for the first time gives you the initial snapshot view for free.
+
+If you want something with enough data to actually watch, the https://github.com/debezium/debezium-examples/tree/main/debezium-platform[Debezium Platform examples] bring up a local cluster with PostgreSQL, Kafka and the Platform already wired together.
+
+[id="conclusion"]
+== Conclusion
+
+Snapshots was the part of a pipeline's life that the Platform UI ran but could not show you.
+Now a long snapshot is something you can watch, a stalled one is something you notice, and a finished one is something you can look back at.
+
+Give it a try and tell us what is missing.
+
+If you like the project, you can help with https://debezium.zulipchat.com/#narrow/channel/392459-community-platform[feedback], report issues at https://github.com/debezium/dbz/issues[issues], and add a https://github.com/debezium/debezium-platform[star] to the repository.
+
+As always, feel free to leave a comment below or get in touch with us on the https://groups.google.com/forum/#!forum/debezium[mailing list] or in our https://debezium.zulipchat.com/login/#narrow/stream/302529-users[Zulip chat].
